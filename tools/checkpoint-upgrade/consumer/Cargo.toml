@@ -1,0 +1,17 @@
+[package]
+name = "checkpoint-upgrade-consumer"
+version = "0.1.0"
+edition = "2021"
+publish = false
+license = "Apache-2.0"
+
+[workspace]
+
+[dependencies]
+temporalstore = { package = "temporalstore-rust", git = "https://github.com/matrixarkai/TemporalStore.git", rev = "CONSUMER_REVISION", default-features = true }
+serde_json = "1"
+sha2 = "0.10"
+
+[[bin]]
+name = "checkpoint-upgrade-consumer"
+path = "main.rs"

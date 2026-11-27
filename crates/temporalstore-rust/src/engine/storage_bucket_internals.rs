@@ -14,6 +14,24 @@ thread_local! {
 }
 
 #[cfg(test)]
+thread_local! {
+    static VACATED_BLOCK_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times retiring a vacated block had to WALK the object's refs because the block it
+/// computed was not the one filed, on this thread since the last reset.
+#[cfg(test)]
+pub(in crate::engine) fn vacated_block_walks_for_test(reset: bool) -> u64 {
+    VACATED_BLOCK_WALKS.with(|walks| {
+        let now = walks.get();
+        if reset {
+            walks.set(0);
+        }
+        now
+    })
+}
+
+#[cfg(test)]
 pub(super) fn note_set_write_scan(dirty: bool) {
     SET_WRITE_SCANS.with(|counts| {
         let (supersede, propagation) = counts.get();
@@ -5382,12 +5400,47 @@ pub(super) fn drop_vacated_live_block(
     address: &ElementEntry,
 ) {
     let target = super::live_block_key(address);
-    let targets: Vec<_> = shard.bucket_index.object_block_refs(kind, object_key).into_iter()
+    // THE BLOCK IS NAMED BY ITS HANDLE, NOT FOUND BY A WALK. A block's handle is derived from its
+    // object key and its address, and every block of an object is filed in the one bucket its key
+    // routes to, so the ref this retires is computed from the vacated address in O(log n). The walk
+    // below asked every ref of the object whether its block sat at that address, which made every
+    // removal from a collection cost a pair of lookups per element it held (the term that grew a
+    // removal from 1.7 ms at 10,000 members to 16.7 ms at 100,000). `retire_object_blocks` names
+    // its block the same way. The walk remains for the case where the computed ref is not the one
+    // filed (a block that moved buckets, or whose address differs in a field the handle hashes), so
+    // a miss costs what it always did and the answer is unchanged.
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    let direct_handle = crate::engine::state::block_index_handle(
+        object_key,
+        &BlockIndex::new(stored_model_kind(kind), address.clone(), false, false),
+    );
+    let direct = crate::engine::state::BlockLookupRef {
+        routing_bucket,
+        block_ref_key: direct_handle,
+    };
+    let direct_is_filed = shard
+        .bucket_index
+        .bucket_map
+        .get(&routing_bucket)
+        .and_then(|bucket| bucket.block_index.get(&direct_handle))
+        .is_some_and(|block| !block.deleted() && super::live_block_key(&block.address) == target)
+        && shard
+            .bucket_index
+            .object_block_refs(kind, object_key)
+            .is_some_and(|refs| refs.as_slice().binary_search(&direct).is_ok());
+    let targets: Vec<_> = if direct_is_filed {
+        vec![direct]
+    } else {
+        #[cfg(test)]
+        VACATED_BLOCK_WALKS.with(|walks| walks.set(walks.get() + 1));
+        shard.bucket_index.object_block_refs(kind, object_key).into_iter()
         .flat_map(|refs| refs.iter())
         .filter(|block_ref| shard.bucket_index.bucket_map.get(&block_ref.routing_bucket)
             .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
             .is_some_and(|block| !block.deleted() && super::live_block_key(&block.address) == target))
-        .cloned().collect();
+        .cloned().collect()
+    };
     for block_ref in targets {
         let removed = if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) {
             let removed = bucket.block_index.remove(&block_ref.block_ref_key,

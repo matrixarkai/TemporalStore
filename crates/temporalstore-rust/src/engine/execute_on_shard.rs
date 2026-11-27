@@ -2003,19 +2003,10 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            // THE LENGTH IS TAKEN FROM THE CACHE'S SHARED BYTES, NOT FROM A COPY OF THEM. A string
-            // block is the whole value, so its length is the value's.
             CommandResponse::Integer {
-                value: read_bucket_index_value_shared(
-                    cache,
-                    block_store,
-                    shard_id,
-                    shard,
-                    "string",
-                    &key,
-                    None,
-                )
-                .map_or(0, |bytes| bytes.len() as i64),
+                value: bucket_store::read_bucket_index_string_length(
+                    cache, block_store, shard_id, shard, &key,
+                ),
             }
         }
         Command::StringGetRange { key, start, end } => {
@@ -3025,38 +3016,6 @@ pub(crate) fn execute_on_shard(
             let current = shard.buckets.get(&key[..]).copied();
             let (allowed, remaining, retry_after_ms, next) =
                 bucket_take(current, now, tokens, capacity, refill_per_sec);
-            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
-            // not the take itself. Re-running a take would recompute against a different clock;
-            // installing the resulting bucket cannot.
-            let mut bucket_state = Vec::with_capacity(16);
-            bucket_state.extend_from_slice(&next.0.to_le_bytes());
-            bucket_state.extend_from_slice(&next.1.to_le_bytes());
-            stage_meta_outcome(
-                shard_id,
-                "bucket",
-                &key,
-                start_routing_bucket,
-                end_routing_bucket,
-                Some(bucket_state),
-                None,
-                false,
-            );
-            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
-            // not the take itself. Re-running a take would recompute against a different clock;
-            // installing the resulting bucket cannot.
-            let mut bucket_state = Vec::with_capacity(16);
-            bucket_state.extend_from_slice(&next.0.to_le_bytes());
-            bucket_state.extend_from_slice(&next.1.to_le_bytes());
-            stage_meta_outcome(
-                shard_id,
-                "bucket",
-                &key,
-                start_routing_bucket,
-                end_routing_bucket,
-                Some(bucket_state),
-                None,
-                false,
-            );
             // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
             // not the take itself. Re-running a take would recompute against a different clock;
             // installing the resulting bucket cannot.
@@ -7886,3 +7845,7 @@ pub(crate) fn list_element_name(seq: i64, buf: &mut [u8; 16]) -> &str {
     }
     std::str::from_utf8(buf).expect("hex digits are ascii")
 }
+
+#[cfg(test)]
+#[path = "token_bucket_outcome_tests.rs"]
+mod token_bucket_outcome_tests;

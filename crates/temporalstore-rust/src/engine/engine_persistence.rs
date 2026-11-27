@@ -12,6 +12,23 @@ mod catalog_checkpoint_retirement_tests;
 #[path = "ordered_restore_tests.rs"]
 mod ordered_restore_tests;
 
+// Only an owned durable image, before it is served or its WAL suffix is replayed.
+// Locators, deletion authority, generations, model maps and deadlines remain intact.
+pub(super) fn clear_durable_image_dirty_flags(shard: &mut ShardState) {
+    // Release markers are transient, but ObjectRecord page bits survive encoding.
+    // Clear every covered String's retained dirt before a rebuild can restore it.
+    for slot in shard.strings_mut().values_mut() {
+        let (_, deleted) = slot.record.retained_page_state();
+        slot.record.retain_page_state(false, deleted);
+    }
+    for bucket in shard.bucket_index.bucket_map.values_mut() {
+        bucket.set_dirty(false);
+        for block in bucket.block_index.blocks_mut_unaccounted() {
+            block.set_dirty(false);
+        }
+    }
+}
+
 /// WHICH WAY A LOAD OF THE PERSISTED INDEX WENT.
 ///
 /// # WHY THIS IS NOT TEST SCAFFOLDING
@@ -373,6 +390,9 @@ impl TemporalEngine {
         let Some((mut shard, base_present)) = self.read_index_base(shard_id) else {
             return Ok(None);
         };
+        if base_present {
+            qualified_empty_owners::reconcile_covered_image(&mut shard);
+        }
         if fold_deltas {
             self.fold_index_log_deltas(shard_id, &mut shard, false)?;
         } else {
@@ -397,7 +417,8 @@ impl TemporalEngine {
         // deltas below.
         let shard = match read {
             Ok(bytes) => match decode(&bytes) {
-                Ok(shard) => {
+                Ok(mut shard) => {
+                    clear_durable_image_dirty_flags(&mut shard);
                     note_index_load(IndexLoadPath::Accepted);
                     shard
                 }
@@ -470,12 +491,7 @@ impl TemporalEngine {
         // dirty purely from the live (empty on load) dirty_objects set. This follows
         // the clear-dirty-on-load contract and keeps `bucket.dirty |= ...` from
         // resurrecting a stale persisted dirty flag.
-        for bucket in shard.bucket_index.bucket_map.values_mut() {
-            bucket.set_dirty(false);
-            for block in bucket.block_index.blocks_mut_unaccounted() {
-                block.set_dirty(false);
-            }
-        }
+        clear_durable_image_dirty_flags(&mut shard);
         refresh_bucket_runtime_flags(&mut shard);
         Some(shard)
     }
@@ -509,11 +525,16 @@ impl TemporalEngine {
         };
         if present {
             crate::engine::state::repack_decoded_btrees(&mut state);
+            qualified_empty_owners::reconcile_covered_image(&mut state);
         }
         let catalog = self.fold_relocations_and_catalog(shard_id, &mut state);
         let loaded = if from_manifest {
+            clear_durable_image_dirty_flags(&mut state);
             rebuild_unserialized_model_maps_from_bucket_index(&mut state);
             rebuild_bucket_block_ownership(shard_id, &mut state, 0, u32::MAX);
+            if state.source_owner_range != Some((0, u32::MAX)) {
+                state.source_owner_range = None;
+            }
             Some(state)
         } else {
             self.finish_index_load(shard_id, state, present, warm_cache)
@@ -530,6 +551,9 @@ impl TemporalEngine {
             let catalog = self.index_log_store.recover_delta_records(shard_id, |_| {}).ok().flatten();
             return Ok((None, catalog));
         };
+        if present {
+            qualified_empty_owners::reconcile_covered_image(&mut state);
+        }
         let catalog = self.fold_index_log_deltas(shard_id, &mut state, true)?;
         Ok((self.finish_index_load(shard_id, state, present, warm_cache), catalog))
     }
@@ -1284,7 +1308,7 @@ impl TemporalEngine {
         Ok(())
     }
 
-    pub(super) fn validate_load_version(
+    pub(crate) fn validate_load_version(
         &self,
         shard_id: ShardId,
         load_version: u64,

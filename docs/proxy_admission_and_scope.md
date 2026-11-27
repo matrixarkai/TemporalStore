@@ -1,9 +1,8 @@
 # Proxy admission control and account scope
 
-The proxy in front of TemporalStore is the process that every client request
-passes through before it reaches a data node. That position makes it the right
-place to answer three operational questions, and this block describes how each is
-configured.
+Applications can reach TemporalStore through a proxy or connect directly
+with an SDK. The proxy applies account scope, concurrency quotas, and replica
+read policy to traffic it accepts.
 
 1. **Whose data is this proxy allowed to serve?** — account scope
 2. **How much concurrent work will it accept?** — in-flight quotas
@@ -35,6 +34,23 @@ The proxy binary reads each of them from the environment at startup:
 | `TS_PROXY_MAX_INFLIGHT_REQUESTS` | `max_inflight_requests` |
 | `TS_PROXY_MAX_INFLIGHT_WRITE_REQUESTS` | `max_inflight_write_requests` |
 | `TS_PROXY_PIN_PRIMARY_READS` | `pin_primary_reads` |
+
+## Protobuf listener
+
+Set `TS_PROXY_GRPC_BIND_ADDR` to bind a gRPC listener alongside the HTTP
+listener. Use the `temporalstore.v1.ProxyService` client and include
+`namespace_name` and `table_name` in each execution frame. The proxy derives
+the shard and load version from its SDK's topology. It forwards the original
+serialized commands and pins reads to the primary on this listener.
+
+The gRPC listener requires `TS_META_GRPC_TARGET` to point to the metaserver's
+gRPC endpoint. The proxy uses protobuf for table lookup, topology checks,
+registration, heartbeats, metaserver leader lookup, and shard inventory.
+
+The listener is plaintext. Bind it on a trusted network or terminate TLS at
+your ingress. Account scope matches the request namespace to the proxy's
+configured account. The proxy uses its own metadata credential to discover
+routes.
 
 ## Account scope
 

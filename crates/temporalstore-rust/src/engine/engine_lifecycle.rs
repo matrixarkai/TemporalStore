@@ -8,6 +8,41 @@ use super::*;
 // scope here. Anonymous, because only the methods are wanted.
 use crate::engine::timestamped_series::TimestampedSeries as _;
 
+// A pre-existing unknown debt cannot be narrowed to the record being replayed.
+fn replay_unknown_owner_claims<'a>(
+    shard: &ShardState,
+    keys: impl Iterator<Item = &'a str>,
+    range: (u32, u32),
+) -> std::collections::BTreeSet<u32> {
+    keys.filter_map(|key| {
+        let id = block_routing_bucket(key, range.0, range.1);
+        let logical = shard.dirty_objects.has_bucket(id);
+        let unknown = shard.bucket_index.bucket_map.get(&id)
+            .map(|bucket| (bucket.dirty() || logical) && bucket.first_dirty_wal_sequence == 0)
+            .unwrap_or(logical);
+        unknown.then_some(id)
+    }).collect()
+}
+
+fn note_replayed_owner_claims<'a>(
+    shard: &mut ShardState,
+    keys: impl Iterator<Item = &'a str>,
+    range: (u32, u32),
+    unknown: &std::collections::BTreeSet<u32>,
+    sequence: u64,
+) {
+    for key in keys {
+        let id = block_routing_bucket(key, range.0, range.1);
+        super::storage_bucket_internals::mark_object_dirty_at_bucket(shard, key, id);
+        if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&id) {
+            if bucket.first_dirty_wal_sequence == 0 && !unknown.contains(&id) {
+                bucket.first_dirty_wal_sequence = sequence;
+            }
+        }
+    }
+    // WAL records carry no IndexLog receipt. Do not turn a WAL sequence into one.
+}
+
 impl Default for TemporalEngine {
     fn default() -> Self {
         Self::with_cache_and_block_store(MultiLayerCache::default(), BlockStore::default())
@@ -519,6 +554,22 @@ impl OutcomeBlockElements {
 impl TemporalEngine {
     pub fn new(cache: MultiLayerCache) -> Self {
         Self::with_cache_and_block_store(cache, BlockStore::default())
+    }
+
+    /// Open an isolated engine for state restored by a consensus log or snapshot.
+    pub fn with_scratch_replica_storage(
+        block_store_options: BlockStoreOptions,
+        open_cache: impl FnOnce(&std::path::Path) -> Result<MultiLayerCache, String>,
+    ) -> Result<Self, String> {
+        let scratch = crate::scratch::owned_scratch_dir("raft-replica");
+        let cache = open_cache(&scratch.path().join("cache"))?;
+        let mut engine = Self::with_cache_block_store_and_index_dir(
+            cache,
+            BlockStore::with_options(scratch.path().join("blocks"), block_store_options),
+            scratch.path().join("indexes"),
+        );
+        engine.index_scratch = Some(scratch);
+        Ok(engine)
     }
 
     pub fn with_cache_and_block_store(cache: MultiLayerCache, block_store: BlockStore) -> Self {
@@ -1166,7 +1217,15 @@ impl TemporalEngine {
         if let Some(meta) = catalog {
             let _ = self.block_store.install_slab_catalog(&meta.slabs);
         }
+        let fresh_source = loaded.is_none()
+            && replay_watermark == 0
+            && !routing_range_stamp::store_has_on_disk_state(&self.index_dir, request.shard_id)
+            && self.wal_store.stats_without_rescan(request.shard_id).last_sequence == 0
+            && self.index_log_store.stats(request.shard_id).last_sequence == 0;
         let mut state = loaded.unwrap_or_default();
+        if fresh_source {
+            state.source_owner_range = Some((request.start_routing_bucket, request.end_routing_bucket));
+        }
         promote_model_maps_to_bucket_index_authority(
             request.shard_id,
             &mut state,
@@ -3078,6 +3137,7 @@ impl TemporalEngine {
         let mut config_cursor = 0usize;
 
         let _guard = WalReplayGuard::enter();
+        let replay_range = self.shard_routing_range(shard_id);
         let mut expected = watermark.saturating_add(1);
         let mut replayed_through = watermark;
         let mut wal_resident_updates = HashMap::<u64, crate::engine::state::WalResidentBlock>::new();
@@ -3264,6 +3324,27 @@ impl TemporalEngine {
                 // instead of silently recovering as nothing. The command cannot be dropped from the
                 // record until no accepted write can produce an empty one.
                 if !record.outcomes.is_empty() {
+                    let (keys, unknown) = self.shards.with_state(shard_id, |state| {
+                        let shard = state.ok_or_else(|| Status::error(
+                            "shard_not_loaded", "replaying shard disappeared"))?;
+                        let mut keys = std::collections::BTreeSet::new();
+                        for item in &record.outcomes {
+                            keys.insert(item.object_key.clone());
+                            if item.kind == "object" {
+                                // Capture actual families before a whole-object removal erases them.
+                                // Do not create pending owners for nonexistent family expansions.
+                                for key in super::associated_record_keys(&item.object_key) {
+                                    if super::record_exists_exact(shard, &key)
+                                        || shard.expires_at_ms().contains_key(key.as_str())
+                                    {
+                                        keys.insert(key);
+                                    }
+                                }
+                            }
+                        }
+                        let unknown = replay_unknown_owner_claims(shard, keys.iter().map(String::as_str), replay_range);
+                        Ok::<_, Status>((keys, unknown))
+                    })?;
                     let bindings = super::block_in_wal::outcome_block_bindings(&record.outcomes, &record.staged_blocks);
                     for item in &record.outcomes {
                         let selected = item.resolved_address()
@@ -3333,6 +3414,12 @@ impl TemporalEngine {
                             Ok::<(), Status>(())
                         })?;
                     }
+                    self.shards.with_state_mut(shard_id, |state| {
+                        let shard = state.ok_or_else(|| Status::error(
+                            "shard_not_loaded", "replaying shard disappeared before debt publication"))?;
+                        note_replayed_owner_claims(shard, keys.iter().map(String::as_str), replay_range, &unknown, record.sequence);
+                        Ok::<(), Status>(())
+                    })?;
                     self.replay_installs.fetch_add(
                         record.outcomes.len() as u64,
                         std::sync::atomic::Ordering::Relaxed,
@@ -3373,6 +3460,17 @@ impl TemporalEngine {
                         ),
                     ));
                 };
+                let mut keys = super::command_validation::command_object_keys(&command);
+                if keys.is_empty() {
+                    // A legacy read can have been logged for lazy expiry of its exact key.
+                    if let Some(key) = super::command_validation::command_read_key(&command) {
+                        keys = super::command_validation::CommandObjectKeys::One(key.to_owned());
+                    }
+                }
+                let unknown = self.shards.with_state(shard_id, |state| {
+                    state.map(|shard| replay_unknown_owner_claims(shard, keys.iter().map(String::as_str), replay_range))
+                        .ok_or_else(|| Status::error("shard_not_loaded", "replaying shard disappeared"))
+                })?;
                 let response = self.execute(ExecuteRequest { shard_id, command });
                 if !response.status.ok {
                     return Err(Status::error(
@@ -3380,6 +3478,12 @@ impl TemporalEngine {
                         format!("WAL replay command at sequence {} failed", record.sequence),
                     ));
                 }
+                self.shards.with_state_mut(shard_id, |state| {
+                    let shard = state.ok_or_else(|| Status::error(
+                        "shard_not_loaded", "replaying shard disappeared before debt publication"))?;
+                    note_replayed_owner_claims(shard, keys.iter().map(String::as_str), replay_range, &unknown, record.sequence);
+                    Ok::<(), Status>(())
+                })?;
                 replayed_through = record.sequence;
                 expected = expected.saturating_add(1);
             }
@@ -3592,6 +3696,27 @@ impl TemporalEngine {
                 ),
             };
         }
+        if (request.start_routing_bucket, request.end_routing_bucket)
+            != (existing.start_routing_bucket, existing.end_routing_bucket)
+        {
+            let Some(owner) = self.shards.handle(request.shard_id) else {
+                return LoadShardResponse {
+                    status: Status::error("shard_not_loaded", "reload owner is not loaded"),
+                };
+            };
+            let invalidated = owner.with_write(|state| {
+                let Some(shard) = state else { return false; };
+                // A metadata range change does not re-file old physical ownership.
+                shard.source_owner_range = None;
+                true
+            });
+            if !invalidated {
+                return LoadShardResponse {
+                    status: Status::error("shard_not_loaded", "reload owner was retired"),
+                };
+            }
+        }
+        // No owner guard is held while the changed routing metadata becomes visible.
         self.infos.write().expect("info lock poisoned").insert(
             request.shard_id,
             ShardInfo {

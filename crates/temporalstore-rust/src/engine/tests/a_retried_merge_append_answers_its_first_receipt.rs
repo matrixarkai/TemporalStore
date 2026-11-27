@@ -472,8 +472,12 @@ fn the_token_rides_the_command_bytes_and_a_tokenless_command_is_unchanged_on_eve
     assert!(serde_json::to_string(&receipt_of(true)).unwrap().contains("\"replayed\":true"));
     // The response proto: a plain receipt writes no `replayed` field, a replay writes field 15.
     let wire = |replayed: bool| crate::sdk::types_command_response_to_sdk(receipt_of(replayed)).encode_to_vec();
-    assert_eq!(wire(false).len() + 2, wire(true).len());
-    assert!(wire(true).ends_with(&[0x78, 0x01]), "{:?}", wire(true));
+    let plain = wire(false);
+    let replayed = wire(true);
+    assert_eq!(plain.len() + 2, replayed.len());
+    // Field 23 encodes the result kind after the optional replay flag.
+    assert!(plain.ends_with(&[0xb8, 0x01, 0x09]), "{plain:?}");
+    assert!(replayed.ends_with(&[0x78, 0x01, 0xb8, 0x01, 0x09]), "{replayed:?}");
 }
 
 #[test]

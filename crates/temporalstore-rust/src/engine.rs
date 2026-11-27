@@ -179,6 +179,8 @@ pub use compaction::{
     reset_container_batch_counts, CONTAINER_BATCH_ELEMENT_CAP,
 };
 mod storage_reporting;
+mod selected_owner_absence;
+mod qualified_empty_owners;
 #[path = "engine/engine_hashing.rs"]
 pub(crate) mod hashing;
 mod bucket_store;
@@ -2808,28 +2810,38 @@ impl TemporalEngine {
                 range,
             } => {
                 self.note_fast_read_recency(request.shard_id, routing_bucket);
-                // The shard has already said whether the key is there; an absent key reads nothing.
-                let bytes = match address {
-                    Some(address) => Some(read_block_shared(
-                        &self.cache,
-                        &self.block_store,
-                        request.shard_id,
-                        &address,
-                        BlockIdentity::of(request.shard_id, "string", key, None),
-                        Some(routing_bucket),
-                    )?),
-                    None => None,
-                };
                 let response = match range {
                     None => CommandResponse::Integer {
-                        value: bytes.map_or(0, |bytes| bytes.len() as i64),
+                        value: match address {
+                            Some(address) => read_string_length(
+                                &self.cache,
+                                &self.block_store,
+                                request.shard_id,
+                                &address,
+                                key,
+                                routing_bucket,
+                            )?,
+                            None => 0,
+                        },
                     },
-                    Some((start, end)) => CommandResponse::Bytes {
-                        value: bytes.map(|bytes| {
-                            let (from, to) = crate::redis::normalize_range(start, end, bytes.len());
-                            bytes[from..to].to_vec()
-                        }),
-                    },
+                    Some((start, end)) => {
+                        let value = match address {
+                            Some(address) => {
+                                let bytes = read_block_shared(
+                                    &self.cache,
+                                    &self.block_store,
+                                    request.shard_id,
+                                    &address,
+                                    BlockIdentity::of(request.shard_id, "string", key, None),
+                                    Some(routing_bucket),
+                                )?;
+                                let (from, to) = crate::redis::normalize_range(start, end, bytes.len());
+                                Some(bytes[from..to].to_vec())
+                            }
+                            None => None,
+                        };
+                        CommandResponse::Bytes { value }
+                    }
                 };
                 Some(ExecuteResponse {
                     status: Status::ok(),
@@ -4176,7 +4188,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// the cost of the step is one replay for each existing store, spent deliberately.
 ///
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 32;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 34;
 
 /// Whether `key`, or one of the control-state family keys the ordinary read would also drop with
 /// it, has a deadline that lapsed. The same three families `remove_if_expired_with` examines, asked
@@ -4927,11 +4939,9 @@ fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
                     .try_into()
                     .map_err(|_| "served index version stamp is malformed".to_string())?,
             );
-            // Checked BEFORE decoding, deliberately. This payload is addressed by field order, so
-            // decoding it against a different struct shape does not error, it produces a plausible
-            // and wrong `ShardState`. Refusing is treated like an absent index: the caller replays
-            // the WAL and the index-log deltas, which is slower and correct.
-            if version != SHARD_INDEX_FORMAT_VERSION {
+            // Positional schema: v34 appends only a defaulted source-authority slot to v32.
+            // Other shapes, including String's v33 encoding, need their own decoder.
+            if version != SHARD_INDEX_FORMAT_VERSION && version != 32 {
                 return Err(format!(
                     "served index was written from struct version {version}, this binary is {}",
                     SHARD_INDEX_FORMAT_VERSION
@@ -4941,6 +4951,10 @@ fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
                 .map_err(|error| format!("served index payload did not decompress: {error}"))?;
             let mut state = rmp_serde::from_slice::<ShardState>(&decoded)
                 .map_err(|error| error.to_string())?;
+            if version == 32 {
+                // Legacy images cannot mint routing authority through an extra payload field.
+                state.source_owner_range = None;
+            }
             // THE HEADER IS THE STAMP. The field inside the payload is whatever the writing shard
             // happened to carry -- 0 for one that was never stamped -- and the header is what was
             // checked against `SHARD_INDEX_FORMAT_VERSION` above, so it is the one value here that
@@ -8120,6 +8134,7 @@ fn delete_record_exact_with_identity_batch(
     removed |= shard.control_state_selection.remove(key).is_some();
     removed |= shard.context_nodes_mut().remove(key).is_some();
     removed |= shard.context_events_mut().remove(key).is_some();
+    removed |= shard.context_event_timeline.remove(key).is_some();
     removed |= shard.context_indexes_mut().remove(key).is_some();
     removed |= shard.context_audits_mut().remove(key).is_some();
     removed |= shard.context_entities_mut().remove(key).is_some();
@@ -10122,15 +10137,22 @@ fn read_block_frame_shared(
     if let Ok(Some(bytes)) = cached {
         return Some(bytes);
     }
-    read_block_frame_bytes_after_cache_miss(
-        cache,
-        block_store,
-        shard_id,
-        address,
-        identity,
-        cache_key,
-    )
-    .map(std::sync::Arc::from)
+    read_block_frame_shared_after_cache_miss(cache, block_store, shard_id, address, identity, cache_key)
+}
+
+fn read_block_frame_shared_after_cache_miss(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<std::sync::Arc<[u8]>> {
+    let bytes: std::sync::Arc<[u8]> =
+        read_block_frame_from_storage(block_store, shard_id, address, identity)?.into();
+    // Cache promotion and the reader retain the same frame allocation.
+    let _ = cache.put_shared(cache_key, std::sync::Arc::clone(&bytes));
+    Some(bytes)
 }
 
 /// Read a frame from durable storage after its cache key has already missed.
@@ -10144,6 +10166,17 @@ fn read_block_frame_bytes_after_cache_miss(
     address: &ElementEntry,
     identity: BlockIdentity<'_>,
     cache_key: CacheKey,
+) -> Option<Vec<u8>> {
+    let bytes = read_block_frame_from_storage(block_store, shard_id, address, identity)?;
+    let _ = cache.put(cache_key, bytes.clone());
+    Some(bytes)
+}
+
+fn read_block_frame_from_storage(
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
 ) -> Option<Vec<u8>> {
     // Past the cache, so this call goes to storage. Counted here rather than at each of the
     // three fallbacks below because every one of them is a trip to the store and they must not
@@ -10159,12 +10192,10 @@ fn read_block_frame_bytes_after_cache_miss(
             identity.element_name(),
             address,
         ) {
-            let _ = cache.put(cache_key, bytes.clone());
             return Some(bytes);
         }
     }
     if let Ok(bytes) = block_store.read(address) {
-        let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
     }
     // The block store could not answer, so try the record that carries this block.
@@ -10189,7 +10220,6 @@ fn read_block_frame_bytes_after_cache_miss(
         identity.element_name(),
         address,
     ) {
-        let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
     }
     None
@@ -10332,7 +10362,6 @@ impl BlockKeys {
                 record_key
             }
         };
-        use std::fmt::Write as _;
         // Sized exactly: a miss stores this key, and a string grown by appends can sit on up to
         // twice the bytes it holds for as long as the entry does.
         let width = |n: u64| n.checked_ilog10().map_or(1, |digits| digits as usize + 1);
@@ -10341,10 +10370,19 @@ impl BlockKeys {
             + width(address.length())
             + routing_bucket.map_or(0, |bucket| "slot-".len() + width(u64::from(bucket)) + 1);
         let mut selector = String::with_capacity(capacity);
+        // THE DIGITS ARE WRITTEN DIRECTLY, NOT THROUGH THE FORMATTER. Three integers per key, on
+        // every block a read touches, went through `core::fmt` -- over a quarter of the
+        // instructions of a whole-series feature read. The spelling is the formatter's, byte for
+        // byte (`a_block_key_spells_its_numbers_without_the_formatter`): a changed byte is a silent
+        // cache miss.
         if let Some(bucket) = routing_bucket {
-            let _ = write!(selector, "slot-{bucket}:");
+            selector.push_str("slot-");
+            push_decimal(&mut selector, u64::from(bucket));
+            selector.push(':');
         }
-        let _ = write!(selector, "{}:{}", address.offset(), address.length());
+        push_decimal(&mut selector, address.offset());
+        selector.push(':');
+        push_decimal(&mut selector, address.length());
         CacheKey {
             shard_id,
             record_key,
@@ -10352,6 +10390,21 @@ impl BlockKeys {
             selector: std::borrow::Cow::Owned(selector),
         }
     }
+}
+
+/// Append the decimal digits of `n` to `out`, as `{n}` spells them.
+fn push_decimal(out: &mut String, mut n: u64) {
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.push_str(std::str::from_utf8(&digits[at..]).expect("digits are ascii"));
 }
 
 thread_local! {
@@ -10427,6 +10480,44 @@ pub fn reset_corrupt_container_block_count() {
 /// blocks and picks one out of itself by identity; handed only the object id it answers with the
 /// FIRST block of that object, which is another element's bytes rather than a miss.
 #[allow(clippy::too_many_arguments)]
+fn read_string_length(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    key: &str,
+    routing_bucket: u32,
+) -> Option<i64> {
+    // The live write path assigns this sentinel only to logical bytes carried
+    // in the WAL. Its length excludes all WAL framing and compression.
+    if address.block_slab_id() == HOT_BLOCK_SLAB_ID {
+        return Some(address.length() as i64);
+    }
+
+    let cache_key = read_block_key(shard_id, address, Some(routing_bucket));
+    if let Some(bytes) = cache.get_memory_shared(&cache_key) {
+        return Some(bytes.len() as i64);
+    }
+    if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+        shard_write_guard::note_block_read();
+        if let Some(length) = block_store.local_block_payload_length(address) {
+            return Some(length as i64);
+        }
+    }
+
+    // Older unframed records, remote slabs and alternate WAL locators use
+    // the existing read path.
+    read_block_shared_keyed(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        BlockIdentity::of(shard_id, "string", key, None),
+        cache_key,
+    )
+    .map(|bytes| bytes.len() as i64)
+}
+
 fn read_block_shared(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -10455,11 +10546,10 @@ fn read_block_shared_keyed(
     if let Ok(Some(bytes)) = cached {
         return select_shared_block_value(bytes, identity);
     }
-    // Every path below writes to the cache and hands back what it wrote. Continue after the miss
-    // already observed above so the storage fallbacks stay in one place without probing this key
-    // again.
-    read_block_bytes_after_cache_miss(cache, block_store, shard_id, address, identity, cache_key)
-        .map(std::sync::Arc::from)
+    let frame = read_block_frame_shared_after_cache_miss(
+        cache, block_store, shard_id, address, identity, cache_key,
+    )?;
+    select_shared_block_value(frame, identity)
 }
 
 struct SharedBlockRead<'a> {
@@ -10507,15 +10597,15 @@ fn read_blocks_shared(
             if let Some(bytes) = bytes {
                 return select_shared_block_value(bytes, read.identity);
             }
-            read_block_bytes_after_cache_miss(
+            let frame = read_block_frame_shared_after_cache_miss(
                 cache,
                 block_store,
                 shard_id,
                 read.address,
                 read.identity,
                 cache_key,
-            )
-            .map(std::sync::Arc::from)
+            )?;
+            select_shared_block_value(frame, read.identity)
         })
         .collect()
 }

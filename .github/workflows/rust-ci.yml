@@ -473,11 +473,15 @@ jobs:
           # One invocation per guard, because `cargo test` takes a single positional filter and a
           # second one is silently an error rather than a second filter.
           for t in \
+              engine::maintenance_log::tests::deleting_or_expiring_an_event_series_removes_its_persisted_timeline \
               wal::registration_records::tests::mutations_match_an_independent_slot_model \
               wal::registration_records::tests::uniform_expectations_stay_inline_and_conflicts_release_their_storage \
               engine::block_in_wal::physical::registration_summary_tests::summaries_combine_domains_and_follow_replacement_retirement_and_clear \
               engine::block_in_wal::physical::registration_summary_tests::summary_queries_complete_while_both_locator_registries_are_locked \
               engine::storage_lifecycle_methods::planning_order_tests::claim_ranks_match_manifest_augmented_summaries \
+              engine::tests::expiry_command_boundaries::a_ttl_that_collects_an_expired_key_maintains_the_block_index \
+              engine::tests::part2::a_capped_dump_still_reclaims \
+              engine::tests::reclaim_dump::a_container_tombstone_retains_its_wal_record_after_restart \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::execution_plan_uses_dirty_metadata_without_block_summaries \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::empty_quarantine_purge_skips_every_loaded_shards_live_address_walk \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::nonempty_quarantine_still_walks_liveness_and_keeps_the_grace_window \
@@ -585,6 +589,7 @@ jobs:
             engine::tests::a_set_door_asks_one_member_not_the_set::the_door_never_lists_the_set \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_answers_what_the_sorted_listing_answered \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_reads_a_prefix_and_never_lists \
+            engine::tests::a_removal_retires_its_vacated_block_by_naming_it::removals_never_walk_the_object_and_leave_what_a_model_leaves_across_a_restart \
             engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_pop_takes_the_first_or_last_members_in_order_and_leaves_the_rest \
             engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_range_of_the_first_members_answers_what_the_full_sort_answered \
             engine::tests::a_list_position_and_removal_answer_what_a_walk_answered::positions_and_removals_answer_what_a_walk_answered_with_and_without_a_hole \
@@ -1155,6 +1160,43 @@ jobs:
           done
           [ "$passed_tests" -eq 2 ] || { echo '::error::expected both purge tests to execute and pass'; exit 1; }
 
+      - name: cargo test (captured owner dump completion, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          passed_tests=0
+          for t in \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::create_only_keeps_claims_and_current_normal_completion_clears_them \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::unrelated_write_and_newer_publication_do_not_stall_selected_owner_completion \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::public_unload_reload_and_write_cannot_inherit_a_parked_normal_completion \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::a_newer_write_keeps_its_real_claims_after_the_older_normal_dump \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::replacement_between_entry_handle_and_checkpoint_capture_keeps_new_owner_pending \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::bulk_frozen_image_retains_uncovered_work_and_reopens_acknowledged_tail \
+            engine::checkpoint_publication::tests::captured_owner_check_requires_own_success_and_allows_later_publications \
+            engine::checkpoint_publication::tests::captured_owner_check_keeps_old_success_but_never_borrows_newer_success \
+            engine::checkpoint_publication::tests::forget_closes_a_completed_token_before_same_id_reuse \
+            engine::checkpoint_publication::tests::close_invalidates_a_completed_token_before_drain_and_detachment \
+            engine::checkpoint_publication::tests::captured_owner_check_progresses_while_global_membership_is_locked \
+            engine::checkpoint_publication::tests::captured_owner_check_refuses_revision_wraparound
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee /tmp/dump-owner-completion.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/dump-owner-completion.log || true)
+            one=$(grep -Fxc 'running 1 test' /tmp/dump-owner-completion.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/dump-owner-completion.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/dump-owner-completion.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/dump-owner-completion.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/dump-owner-completion.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 12 ] || { echo '::error::expected twelve completion tests to execute and pass'; exit 1; }
+
       - name: cargo test (dirty owner reconstruction, seven named tests, hard gate)
         timeout-minutes: 30
         run: |
@@ -1211,6 +1253,84 @@ jobs:
             passed_tests=$((passed_tests + 1))
           done
           [ "$passed_tests" -eq 2 ] || { echo '::error::expected both scalar pressure and dirty backlog tests to execute and pass'; exit 1; }
+
+      - name: cargo test (qualified owner retirement and recovery, sixteen named tests, hard gate)
+        timeout-minutes: 40
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          passed_tests=0
+          for t in \
+            engine::tests::expiry_command_boundaries::a_ttl_that_collects_an_expired_key_maintains_the_block_index \
+            engine::tests::part2::a_capped_dump_still_reclaims \
+            engine::tests::reclaim_dump::a_container_tombstone_retains_its_wal_record_after_restart \
+            engine::tests::reclaim_dump::a_durable_manifest_reopens_clean_without_losing_models_deletions_or_ttl \
+            engine::tests::reclaim_dump::a_durable_manifest_is_cleaned_before_its_real_wal_suffix_is_replayed \
+            engine::tests::reclaim_dump::installing_a_durable_image_cleans_its_prefix_before_replaying_current_tail \
+            engine::bucket_dump_manifest_methods::qualified_empty_owner_tests::real_expiry_equal_anchor_base_reopens_without_retired_owner_or_lost_survivor \
+            engine::bucket_dump_manifest_methods::qualified_empty_owner_tests::chosen_prefix_cleanup_does_not_clear_a_readded_wal_suffix_owner \
+            engine::bucket_dump_manifest_methods::qualified_empty_owner_tests::unknown_and_cross_range_authority_refuse_cleanup_without_changing_data_or_ttl \
+            engine::bucket_dump_manifest_methods::qualified_empty_owner_tests::post_rename_publication_failure_preserves_exact_live_authority_for_retry \
+            engine::bucket_dump_manifest_methods::qualified_empty_owner_tests::readd_with_real_ttl_after_capture_keeps_new_claims_and_owner \
+            engine::bucket_dump_manifest_methods::qualified_empty_owner_tests::version34_roundtrips_source_authority_and_does_not_alias_string_version33 \
+            engine::bucket_dump_manifest_methods::qualified_empty_owner_tests::legacy32_header_cannot_mint_authority_from_an_added_payload_field \
+            engine::bucket_dump_manifest_methods::qualified_reload_source_tests::range_reload_invalidates_before_actual_new_range_writes_and_stays_unknown_on_reopen \
+            engine::bucket_dump_manifest_methods::qualified_reload_source_tests::unchanged_range_and_rejected_reload_do_not_wait_for_owner_or_revoke_authority \
+            engine::bucket_dump_manifest_methods::qualified_reload_source_tests::range_reload_while_publication_is_parked_keeps_the_prepared_empty_owner_pending
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/qualified-owner-release-gate.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/qualified-owner-release-gate.log || true)
+            one=$(grep -Fxc 'running 1 test' /tmp/qualified-owner-release-gate.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/qualified-owner-release-gate.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/qualified-owner-release-gate.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/qualified-owner-release-gate.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/qualified-owner-release-gate.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 16 ] || { echo '::error::expected all sixteen retirement and recovery tests to execute and pass'; exit 1; }
+
+      - name: cargo test (selected owner routing and authority, twelve named tests, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          passed_tests=0
+          for t in \
+            engine::selected_owner_absence::tests::real_blockless_seen_bucket_and_control_neighbors_refuse_only_their_bucket \
+            engine::selected_owner_absence::tests::real_deadline_remains_authority_without_a_model_or_known_key_list \
+            engine::selected_owner_absence::tests::entity_routing_uses_decimal_field_not_just_collection_prefix \
+            engine::selected_owner_absence::tests::malformed_composite_and_mismatched_shape_never_grant_absence \
+            engine::selected_owner_absence::tests::real_uuid_producer_refuses_every_ambiguous_boundary_not_the_complete_composite \
+            engine::selected_owner_absence::tests::real_dirty_commands_route_typed_fields_without_using_entry_payload_tenant \
+            engine::selected_owner_absence::tests::event_auxiliary_keys_and_real_rollup_builder_keep_raw_object_routes \
+            engine::selected_owner_absence::tests::zero_candidates_visit_nothing_and_candidate_count_does_not_multiply_walk \
+            engine::selected_owner_absence::tests::first_owner_refuses_without_visiting_later_records \
+            engine::selected_owner_absence::tests::opaque_domain_size_does_not_multiply_refusal_work \
+            engine::selected_owner_absence::tests::every_stored_domain_is_examined_even_without_a_block \
+            engine::selected_owner_absence::tests::capture_schema_changes_require_an_explicit_authority_review
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/selected-owner-classifier-gate.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/selected-owner-classifier-gate.log || true)
+            one=$(grep -Fxc 'running 1 test' /tmp/selected-owner-classifier-gate.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/selected-owner-classifier-gate.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/selected-owner-classifier-gate.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/selected-owner-classifier-gate.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/selected-owner-classifier-gate.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 12 ] || { echo '::error::expected all twelve classifier tests to execute and pass'; exit 1; }
 
       - name: cargo test (loop ordering and quarantine grace guards, hard gate)
         timeout-minutes: 20
@@ -1604,9 +1724,10 @@ jobs:
           set -o pipefail
           for t in \
             snapshot_store::tests::list_snapshots_finds_a_manifest_filed_under_the_binary_suffix \
-            snapshot_store::tests::a_manifest_decodes_from_both_shapes_and_the_encoding_does_not_change_it \
+            snapshot_store::tests::a_manifest_round_trips_and_keeps_its_order \
+            snapshot_store::tests::a_document_that_is_not_the_binary_shape_is_refused \
             snapshot_store::tests::an_unknown_compression_tag_is_refused_rather_than_defaulted \
-            snapshot_store::tests::a_manifest_is_written_binary_and_a_planted_json_one_is_still_read \
+            snapshot_store::tests::a_manifest_is_written_binary_and_every_reader_reads_it \
             snapshot_store::tests::a_staged_manifest_is_still_excluded_under_either_suffix ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-snapshot --lib "$t" \
@@ -1732,6 +1853,7 @@ jobs:
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::a_sequence_query_answers_the_rows_that_were_added \
             engine::tests::a_resident_map_read_takes_the_shared_lock::each_resident_map_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_resident_map_read_takes_the_shared_lock::the_fast_reads_answer_what_the_maps_hold \
+            engine::tests::a_block_key_spells_its_numbers_without_the_formatter::the_selector_is_the_formatters_spelling_at_every_digit_boundary \
             engine::tests::a_rewritten_context_node_replaces_its_block::a_rewritten_node_holds_one_block_entry \
             engine::tests::a_rewritten_context_node_replaces_its_block::a_rewritten_node_reads_back_after_a_restart \
             engine::tests::a_sequence_read_takes_the_shared_lock::a_sequence_read_answers_while_the_shared_lock_is_held \
@@ -2041,3 +2163,56 @@ jobs:
       # --dry-run` performs, without needing a registry token.
       - name: cargo package (verify the published tarball builds)
         run: cargo package --locked
+
+  checkpoint-upgrade:
+    name: physical checkpoint upgrade (required)
+    if: github.event_name != 'push'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/target
+      CARGO_TERM_COLOR: never
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - name: Install system build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake protobuf-compiler
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.89.0 --profile minimal --no-self-update
+      - name: Reuse dependency and build artifacts
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: checkpoint-upgrade-${{ runner.os }}-${{ hashFiles('Cargo.lock', 'tools/checkpoint-upgrade/**/Cargo.toml') }}
+          restore-keys: checkpoint-upgrade-${{ runner.os }}-
+      - name: Validate the exact checkpoint upgrade
+        run: |
+          set -euo pipefail
+          mkdir -p "$CARGO_TARGET_DIR"
+          python3 -m unittest discover -s tools/checkpoint-upgrade -p test_ci.py -v
+          python3 tools/checkpoint-upgrade/hosted_controls.py
+          python3 tools/checkpoint-upgrade/ci.py
+      - name: Retain bounded upgrade evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: checkpoint-upgrade-${{ github.event.pull_request.head.sha || github.sha }}
+          retention-days: 7
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/checkpoint-upgrade-*/receipt.json
+            ${{ runner.temp }}/checkpoint-upgrade-*/*.log
+            ${{ runner.temp }}/checkpoint-upgrade-*/producer/Cargo.lock
+            ${{ runner.temp }}/checkpoint-upgrade-*/consumer/Cargo.lock
+            ${{ runner.temp }}/checkpoint-upgrade-*/empty/*.json
+            ${{ runner.temp }}/checkpoint-upgrade-*/retained/*.json

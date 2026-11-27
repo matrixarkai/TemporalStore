@@ -58,6 +58,7 @@ impl SingleNodeMeta {
         let mut restored = MetaState {
             shards: snapshot.shards.into_iter().collect(),
             servers: snapshot.servers,
+            data_raft_reporters: BTreeMap::new(),
             proxies: snapshot.proxies,
             proxy_groups: snapshot.proxy_groups,
             namespaces: snapshot.namespaces,
@@ -84,6 +85,12 @@ impl SingleNodeMeta {
             table_ranges_overlap: false,
         };
         restored.reindex_table_ranges();
+        for (addr, server) in &restored.servers {
+            for shard in server.shard_states.iter().filter(|shard| shard.raft_role.is_some()) {
+                restored.data_raft_reporters.entry(shard.shard_id)
+                    .or_default().insert(addr.clone());
+            }
+        }
         Ok(restored)
     }
 
