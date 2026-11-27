@@ -670,3 +670,5 @@ mod a_removal_retires_its_vacated_block_by_naming_it;
 
 #[path = "tests/a_block_key_spells_its_numbers_without_the_formatter.rs"]
 mod a_block_key_spells_its_numbers_without_the_formatter;
+#[path = "tests/a_list_write_records_its_block_once.rs"]
+mod a_list_write_records_its_block_once;
