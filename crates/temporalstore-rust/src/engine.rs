@@ -10332,7 +10332,6 @@ impl BlockKeys {
                 record_key
             }
         };
-        use std::fmt::Write as _;
         // Sized exactly: a miss stores this key, and a string grown by appends can sit on up to
         // twice the bytes it holds for as long as the entry does.
         let width = |n: u64| n.checked_ilog10().map_or(1, |digits| digits as usize + 1);
@@ -10341,10 +10340,19 @@ impl BlockKeys {
             + width(address.length())
             + routing_bucket.map_or(0, |bucket| "slot-".len() + width(u64::from(bucket)) + 1);
         let mut selector = String::with_capacity(capacity);
+        // THE DIGITS ARE WRITTEN DIRECTLY, NOT THROUGH THE FORMATTER. Three integers per key, on
+        // every block a read touches, went through `core::fmt` -- over a quarter of the
+        // instructions of a whole-series feature read. The spelling is the formatter's, byte for
+        // byte (`a_block_key_spells_its_numbers_without_the_formatter`): a changed byte is a silent
+        // cache miss.
         if let Some(bucket) = routing_bucket {
-            let _ = write!(selector, "slot-{bucket}:");
+            selector.push_str("slot-");
+            push_decimal(&mut selector, u64::from(bucket));
+            selector.push(':');
         }
-        let _ = write!(selector, "{}:{}", address.offset(), address.length());
+        push_decimal(&mut selector, address.offset());
+        selector.push(':');
+        push_decimal(&mut selector, address.length());
         CacheKey {
             shard_id,
             record_key,
@@ -10352,6 +10360,21 @@ impl BlockKeys {
             selector: std::borrow::Cow::Owned(selector),
         }
     }
+}
+
+/// Append the decimal digits of `n` to `out`, as `{n}` spells them.
+fn push_decimal(out: &mut String, mut n: u64) {
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.push_str(std::str::from_utf8(&digits[at..]).expect("digits are ascii"));
 }
 
 thread_local! {
