@@ -1160,6 +1160,43 @@ jobs:
           done
           [ "$passed_tests" -eq 2 ] || { echo '::error::expected both purge tests to execute and pass'; exit 1; }
 
+      - name: cargo test (captured owner dump completion, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          passed_tests=0
+          for t in \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::create_only_keeps_claims_and_current_normal_completion_clears_them \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::unrelated_write_and_newer_publication_do_not_stall_selected_owner_completion \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::public_unload_reload_and_write_cannot_inherit_a_parked_normal_completion \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::a_newer_write_keeps_its_real_claims_after_the_older_normal_dump \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::replacement_between_entry_handle_and_checkpoint_capture_keeps_new_owner_pending \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::bulk_frozen_image_retains_uncovered_work_and_reopens_acknowledged_tail \
+            engine::checkpoint_publication::tests::captured_owner_check_requires_own_success_and_allows_later_publications \
+            engine::checkpoint_publication::tests::captured_owner_check_keeps_old_success_but_never_borrows_newer_success \
+            engine::checkpoint_publication::tests::forget_closes_a_completed_token_before_same_id_reuse \
+            engine::checkpoint_publication::tests::close_invalidates_a_completed_token_before_drain_and_detachment \
+            engine::checkpoint_publication::tests::captured_owner_check_progresses_while_global_membership_is_locked \
+            engine::checkpoint_publication::tests::captured_owner_check_refuses_revision_wraparound
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee /tmp/dump-owner-completion.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/dump-owner-completion.log || true)
+            one=$(grep -Fxc 'running 1 test' /tmp/dump-owner-completion.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/dump-owner-completion.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/dump-owner-completion.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/dump-owner-completion.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/dump-owner-completion.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 12 ] || { echo '::error::expected twelve completion tests to execute and pass'; exit 1; }
+
       - name: cargo test (loop ordering and quarantine grace guards, hard gate)
         timeout-minutes: 20
         run: |
