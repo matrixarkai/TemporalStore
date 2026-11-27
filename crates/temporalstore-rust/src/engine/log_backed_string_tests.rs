@@ -478,11 +478,11 @@ fn replicated_insert_only_strings_reload_before_and_after_materialization() {
                     value: Some(bytes.clone())
                 }
             );
-            let shards = engine.shards.read().unwrap();
-            assert_eq!(
-                shards[&1].expires_at_ms().get(*key),
-                Some(&(leader_stamp + index as u64 + 600_000))
-            );
+            let deadline = engine.shards.with_state(1, |shard| {
+                let shard = shard.expect("shard 1 is loaded");
+                shard.expires_at_ms().get(*key).copied()
+            });
+            assert_eq!(deadline, Some(leader_stamp + index as u64 + 600_000));
         }
     };
 
