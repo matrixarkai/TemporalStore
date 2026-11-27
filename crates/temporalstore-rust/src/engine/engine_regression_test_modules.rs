@@ -667,3 +667,5 @@ mod a_scalar_reporter_visits_at_most_its_cap_at_every_scale;
 mod shard_lock_holds_are_attributed_by_call_site;
 #[path = "tests/a_removal_retires_its_vacated_block_by_naming_it.rs"]
 mod a_removal_retires_its_vacated_block_by_naming_it;
+#[path = "tests/an_encode_allocates_once.rs"]
+mod an_encode_allocates_once;
