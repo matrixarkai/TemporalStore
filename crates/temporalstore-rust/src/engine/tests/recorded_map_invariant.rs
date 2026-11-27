@@ -259,6 +259,8 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "fold_carried_elements",
         "replay_remove_element",
         "element_values_mut",
+        // Selected compaction has the same value-only lend and cannot change membership.
+        "try_visit_element_values_mut",
         // The two PER-KIND exceptions, each gated by its marker trait.
         "replay_install_element",
         "repack_decoded",
@@ -557,7 +559,7 @@ fn every_kind_records_exactly_once_through_the_one_operation() {
         .map(|b| b.deleted_object_index.object_count())
         .sum();
     let staged_before = staged();
-    let (marked, deletion) = mark_bucket_index_object_deleted_filed(&mut shard, "rec-hash");
+    let (marked, deletion) = mark_bucket_index_object_deleted_filed(&mut shard, "rec-hash", None);
     let deleted_after: usize = shard
         .bucket_index
         .bucket_map
@@ -659,7 +661,7 @@ fn reading_any_kind_hands_back_borrows_and_not_copies() {
 /// Those three caught it, and they are the right kind of guard to have -- but they caught it
 /// DOWNSTREAM, as a reload that lost data, and the message named neither the codec nor the kind.
 /// This asserts the mechanism directly, per kind, so the next person sees "the set codec does not
-/// round-trip" rather than "a framed page did not read back".
+/// round-trip" rather than "a framed block did not read back".
 #[test]
 fn every_kind_round_trip_uses_the_codec_its_field_always_used() {
     // HASH: a plain map, which is what the field always was.

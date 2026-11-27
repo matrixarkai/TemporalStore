@@ -58,7 +58,7 @@ import struct
 import zlib
 from datetime import datetime
 from functools import lru_cache
-from typing import Any, Callable, Dict, List, Literal, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Sequence, Tuple
 
 from google.protobuf.timestamp_pb2 import Timestamp
 from pydantic import StrictStr
@@ -73,6 +73,7 @@ from feast.repo_config import FeastConfigBaseModel
 from feast.types import Int32, Int64
 
 from .client import TemporalStoreClient, decode_bytes
+from .projected_response import populate_projected_response
 
 logger = logging.getLogger(__name__)
 
@@ -116,8 +117,14 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     max_batch_commands: int = 512
     """Maximum commands per HTTP batch during reads."""
 
+    max_async_read_batches: int = 1
+    """Concurrent HTTP batches per async read, from 1 to 32; 1 keeps serial reads."""
+
     max_write_batch_commands: int = 4096
     """Maximum commands per HTTP batch during materialization writes."""
+
+    interleave_materialization: bool = True
+    """Let readers run between atomic row groups; await the configured durability."""
 
     max_batch_request_bytes: int = 4 * 1024 * 1024
     """Approximate encoded command bytes per HTTP batch."""
@@ -217,6 +224,29 @@ def _feature_field(feature_view_name: str, feature_name: str) -> str:
 
 
 @lru_cache(maxsize=128)
+def _cached_view_projection(view_name: str, features: Tuple[str, ...]):
+    fields = [_feature_field(view_name, name) for name in features] + [_ts_field(view_name)]
+    projection = []
+    positions = []
+    indexes = {}
+    for field in fields:
+        position = indexes.get(field)
+        if position is None:
+            position = len(projection)
+            indexes[field] = position
+            projection.append(field)
+        positions.append(position)
+    return tuple(projection), tuple(positions)
+
+
+def _view_projection(view_name: str, features: Tuple[str, ...]):
+    field_chars = len(view_name) + 4 + len(features) * (len(view_name) + 1)
+    if len(features) <= 128 and field_chars + sum(map(len, features)) <= 4096:
+        return _cached_view_projection(view_name, features)
+    return _cached_view_projection.__wrapped__(view_name, features)
+
+
+@lru_cache(maxsize=128)
 def _single_entity_prefix(join_key: str) -> Optional[bytes]:
     prototype = EntityKeyProto(
         join_keys=[join_key], entity_values=[ValueProto(int64_val=0)]
@@ -247,6 +277,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             online_config.max_batch_commands,
             online_config.max_batch_request_bytes,
             online_config.max_write_batch_commands,
+            online_config.max_async_read_batches,
         )
         # Rebuild on a config change rather than handing back a client pointed
         # at the previous node: a cached client that outlives its config reads
@@ -531,15 +562,24 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 + sum(prepared_row_shape_bytes)
                 + 33 * len(prepared_rows)
             )
+            conditional_write = client.batch_hash_timestamp_set
+            if (
+                online_config.interleave_materialization
+                and getattr(client, "_interleaved_conditional_write_supported", None)
+                is not False
+            ):
+                conditional_write = getattr(
+                    client, "batch_hash_timestamp_set_interleaved", conditional_write
+                )
             if ttl_ms is None:
-                conditional_result = client.batch_hash_timestamp_set(
+                conditional_result = conditional_write(
                     list(shared_fields),
                     ts_field,
                     prepared_rows,
                     request_upper_bound,
                 )
             else:
-                conditional_result = client.batch_hash_timestamp_set(
+                conditional_result = conditional_write(
                     list(shared_fields),
                     ts_field,
                     prepared_rows,
@@ -857,6 +897,11 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
         if not entity_keys:
             return []
         client = self._get_client(config)
+        keys, fields, names, indices = self._prepare_online_read(config, table, entity_keys, requested_features)
+        return self._decode_online_rows(client.batch_hash_multi_get(keys, fields), fields, names, indices)
+
+    def _prepare_online_read(self, config: RepoConfig, table: FeatureView,
+                             entity_keys: List[EntityKeyProto], requested_features: Optional[List[str]]):
         view_name = self._view_name(table, config)
 
         requested_feature_names = list(
@@ -883,8 +928,9 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 unique_hash_keys.append(hash_key)
             response_indices.append(response_index)
 
-        responses = client.batch_hash_multi_get(unique_hash_keys, fields)
+        return unique_hash_keys, fields, feature_names, response_indices
 
+    def _decode_online_rows(self, responses, fields, feature_names, response_indices):
         # Storage commands are already coalesced by entity key. Decode on that same
         # unique cardinality instead of reparsing every protobuf for every repeated
         # requested position.
@@ -907,18 +953,28 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 results.append((event_timestamp, self._copy_online_row(row)))
         return results
 
-    def _read_features_per_fv(
+    def _grouped_read_plans(
         self,
         config: RepoConfig,
         grouped_refs: List[Any],
         join_key_values: Dict[str, Any],
         entity_name_to_join_key_map: Dict[str, str],
-        online_features_response: Any,
-        full_feature_names: bool,
-        include_feature_view_version_metadata: bool,
-    ) -> None:
-        """Read feature views sharing an entity set in one compact projection."""
+    ) -> Iterable[Tuple[Any, ...]]:
         if not grouped_refs:
+            return
+        if len(grouped_refs) == 1:
+            table, requested_features = grouped_refs[0]
+            feature_names = list(requested_features)
+            entity_values, row_indexes, output_len = utils._get_unique_entities(
+                table, join_key_values, entity_name_to_join_key_map
+            )
+            entity_keys = utils._get_entity_key_protos(entity_values)
+            hash_keys = [self._entity_hash_key(config, key) for key in entity_keys]
+            projection, positions = _view_projection(
+                self._view_name(table, config), tuple(feature_names)
+            )
+            specs = [(table, feature_names, row_indexes, output_len, entity_keys)]
+            yield hash_keys, list(projection), specs, [(feature_names, list(positions))]
             return
         groups: Dict[Tuple[bytes, ...], List[Tuple[Any, ...]]] = {}
         entity_plans: Dict[Any, Tuple[Any, ...]] = {}
@@ -949,13 +1005,12 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 )
             )
 
-        client = self._get_client(config)
         for specs in groups.values():
             entity_keys = specs[0][4]
             hash_keys = [self._entity_hash_key(config, key) for key in entity_keys]
             projection: List[str] = []
             projection_index: Dict[str, int] = {}
-            layouts: List[Tuple[List[str], List[str], List[int]]] = []
+            layouts: List[Tuple[List[str], List[int]]] = []
             for table, requested_features, *_rest in specs:
                 view_name = self._view_name(table, config)
                 fields = [
@@ -969,33 +1024,63 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                         projection_index[field] = position
                         projection.append(field)
                     positions.append(position)
-                layouts.append((requested_features, fields, positions))
+                layouts.append((requested_features, positions))
 
-            rows = client.batch_hash_multi_get(hash_keys, projection)
-            for spec, layout in zip(specs, layouts):
-                table, requested_features, row_indexes, output_len, _keys = spec
-                feature_names, fields, positions = layout
-                decoded_rows = [
-                    self._decode_online_response(
-                        [
-                            row[position] if position < len(row) else None
-                            for position in positions
-                        ],
-                        fields,
-                        feature_names,
-                    )
-                    for row in rows
-                ]
-                utils._populate_response_from_feature_data(
-                    requested_features,
-                    decoded_rows,
-                    row_indexes,
-                    online_features_response,
-                    full_feature_names,
-                    table,
-                    output_len,
-                    include_feature_view_version_metadata,
-                )
+            yield hash_keys, projection, specs, layouts
+
+    @staticmethod
+    def _populate_grouped_response(rows, specs, layouts, response, full_names, include_versions):
+        for spec, layout in zip(specs, layouts):
+            table, _requested_features, row_indexes, output_len, _keys = spec
+            feature_names, positions = layout
+            populate_projected_response(rows, positions, feature_names, row_indexes, response,
+                full_names, table, output_len, include_versions)
+
+    def _read_features_per_fv(
+        self, config: RepoConfig, grouped_refs: List[Any], join_key_values: Dict[str, Any],
+        entity_name_to_join_key_map: Dict[str, str], online_features_response: Any,
+        full_feature_names: bool, include_feature_view_version_metadata: bool,
+    ) -> None:
+        """Read feature views sharing an entity set in one compact projection."""
+        if not grouped_refs:
+            return
+        client = self._get_client(config)
+        for keys, fields, specs, layouts in self._grouped_read_plans(
+            config, grouped_refs, join_key_values, entity_name_to_join_key_map,
+        ):
+            rows = client.batch_hash_multi_get(keys, fields)
+            self._populate_grouped_response(rows, specs, layouts, online_features_response,
+                full_feature_names, include_feature_view_version_metadata)
+
+    @staticmethod
+    async def _read_hash_rows_async(client, keys, fields):
+        method = getattr(client, "batch_hash_multi_get_async", None)
+        if method is not None:
+            return await method(keys, fields)
+        import asyncio
+        return await asyncio.to_thread(client.batch_hash_multi_get, keys, fields)
+
+    @staticmethod
+    def _read_response_needs_worker(rows, output_cells):
+        if output_cells > 256:
+            return True
+        remaining = 256 * 1024
+        for row in rows:
+            for value in row:
+                if value is not None:
+                    remaining -= len(value)
+                    if remaining < 0:
+                        return True
+        return False
+
+    async def _populate_grouped_response_async(self, rows, specs, layouts, response, full_names, include_versions):
+        cells = sum(spec[3] * len(layout[0]) for spec, layout in zip(specs, layouts))
+        if self._read_response_needs_worker(rows, cells):
+            import asyncio
+            await asyncio.to_thread(self._populate_grouped_response,
+                rows, specs, layouts, response, full_names, include_versions)
+        else:
+            self._populate_grouped_response(rows, specs, layouts, response, full_names, include_versions)
 
     async def _read_features_per_fv_async(
         self,
@@ -1009,16 +1094,21 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
     ) -> None:
         import asyncio
 
-        await asyncio.to_thread(
-            self._read_features_per_fv,
-            config,
-            grouped_refs,
-            join_key_values,
-            entity_name_to_join_key_map,
-            online_features_response,
-            full_feature_names,
-            include_feature_view_version_metadata,
-        )
+        method = self._read_features_per_fv
+        if getattr(method, "__func__", None) is not TemporalStoreCommandOnlineStore._read_features_per_fv:
+            await asyncio.to_thread(method, config, grouped_refs, join_key_values,
+                entity_name_to_join_key_map, online_features_response, full_feature_names,
+                include_feature_view_version_metadata)
+            return
+        if not grouped_refs:
+            return
+        client = self._get_client(config)
+        for keys, fields, specs, layouts in self._grouped_read_plans(
+            config, grouped_refs, join_key_values, entity_name_to_join_key_map,
+        ):
+            rows = await self._read_hash_rows_async(client, keys, fields)
+            await self._populate_grouped_response_async(rows, specs, layouts, online_features_response,
+                full_feature_names, include_feature_view_version_metadata)
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -1225,25 +1315,9 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
     # methods serves synchronously and fails outright on the async endpoint --
     # which is the one a serving deployment under concurrency reaches for.
     #
-    # These offload the synchronous call to a worker thread rather than running
-    # a native async HTTP client, and that is a deliberate choice, not a stub:
-    #
-    #  * The work is one blocking socket round trip. CPython releases the GIL
-    #    around socket reads and writes, so N coroutines on N worker threads
-    #    genuinely overlap their waiting -- the concurrency is real, and it is
-    #    measured in `docs/feast_online_store_benchmark.md` rather than assumed.
-    #  * `asyncio.to_thread` uses the loop's default executor, whose threads are
-    #    REUSED. The client keeps one keep-alive connection per thread, so a
-    #    bounded pool means a bounded number of connections and no handshake per
-    #    read. A native per-request async client would have to pool connections
-    #    itself to match that.
-    #  * It cannot drift from the sync path, because it IS the sync path. Two
-    #    separate request builders would be two places for the wire format to be
-    #    wrong, and only one of them covered by the command-shape tests.
-    #
-    # The honest cost: a worker thread per in-flight request, so this scales
-    # with the executor's size, not with the socket count a native async client
-    # could reach. Raise the loop's default executor if you need more.
+    # Reads share planning/decoding with the blocking path and use loop-owned
+    # HTTP pools. Writes, customized blocking hooks, and legacy read routes
+    # retain the worker path.
 
     # -- what this store TELLS Feast it can do ---------------------------------
     #
@@ -1277,9 +1351,17 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
     ) -> List[Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]]:
         import asyncio
 
-        return await asyncio.to_thread(
-            self.online_read, config, table, entity_keys, requested_features
-        )
+        method = self.online_read
+        if getattr(method, "__func__", None) is not TemporalStoreCommandOnlineStore.online_read:
+            return await asyncio.to_thread(method, config, table, entity_keys, requested_features)
+        if not entity_keys:
+            return []
+        client = self._get_client(config)
+        keys, fields, names, indices = self._prepare_online_read(config, table, entity_keys, requested_features)
+        rows = await self._read_hash_rows_async(client, keys, fields)
+        if self._read_response_needs_worker(rows, len(entity_keys) * len(names)):
+            return await asyncio.to_thread(self._decode_online_rows, rows, fields, names, indices)
+        return self._decode_online_rows(rows, fields, names, indices)
 
     async def online_write_batch_async(
         self,
@@ -1404,17 +1486,18 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
     # -- shutdown --------------------------------------------------------------
 
     def close(self) -> None:
-        """Release every pooled connection this store opened.
+        """Close blocking connections and initiate loop-owned async cleanup.
 
-        The base class's `close` is `pass`, which is correct for a store that
-        holds nothing and wrong for this one: the client keeps a keep-alive
-        connection per thread, and under the async methods those threads belong
-        to an executor the caller never sees. A serving process that builds and
-        discards stores would leak a file descriptor per thread per store with
-        the inherited no-op, and the leak is invisible because every call still
-        succeeds.
+        Use aclose() instead in an async serving lifecycle to await completion.
         """
         if self._client is not None:
             self._client.close()
             self._client = None
             self._client_signature = None
+
+    async def aclose(self) -> None:
+        """Release connections and await async pool shutdown on their owning loops."""
+        client, self._client = self._client, None
+        self._client_signature = None
+        if client is not None:
+            await client.aclose()

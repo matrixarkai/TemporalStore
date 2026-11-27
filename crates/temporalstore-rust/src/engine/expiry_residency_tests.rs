@@ -135,15 +135,13 @@ fn mixed_expiry_scale(live_counts: &[usize], cache_bytes: usize) {
                 );
             }
         }
-        let released_blocks;
-        {
-            let mut shards = engine.shards.write().unwrap();
-            let shard = shards.get_mut(&1).unwrap();
+        let released_blocks = engine.shards.with_state_mut(1, |shard| {
+            let shard = shard.unwrap();
             let buckets: Vec<_> = cold_buckets.iter().copied().collect();
             let result = storage_bucket_internals::release_bucket_blocks(shard, &buckets);
             assert_eq!(result.released_buckets, buckets);
-            released_blocks = result.released_blocks;
-        }
+            result.released_blocks
+        });
         let cache_entries = engine
             .cache
             .item_count_for_tier(matrixcache::CacheTier::Memory);
@@ -176,16 +174,15 @@ fn mixed_expiry_scale(live_counts: &[usize], cache_bytes: usize) {
         assert_eq!(blocked.cold_buckets_scanned, 8);
         assert_eq!(blocked.skipped_records, 8);
         assert_eq!(blocked.loaded_for_expire, 0);
-        {
-            let shards = engine.shards.read().unwrap();
-            let shard = &shards[&1];
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.unwrap();
             for key in &cold_keys {
                 assert!(shard.strings().contains_key(key.as_str()));
             }
             for key in &hot_keys {
                 assert!(!shard.strings().contains_key(key.as_str()));
             }
-        }
+        });
         let mut cold_stage_ns = 0;
         for _ in 0..COLD / 8 {
             let cold_started = std::time::Instant::now();
@@ -230,20 +227,18 @@ fn mixed_expiry_scale(live_counts: &[usize], cache_bytes: usize) {
             index_bytes <= baseline + 4096,
             "expiry delta grew with live population: {index_bytes} versus {baseline}"
         );
-        {
-            let shards = engine.shards.read().unwrap();
-            let shard = &shards[&1];
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.unwrap();
             assert_eq!(shard.strings().len(), live);
             assert!(shard.expires_at_ms().is_empty());
-        }
+        });
         eprintln!("EXPIRY_RESIDENCY live={live} expired={} cold={COLD} hot={HOT} index_bytes={index_bytes} wal_file_length_delta={wal_bytes} wal_encoded_bytes={wal_encoded_bytes} file_delta={file_delta} model_visits=0 payload_reads=0 elapsed_us={elapsed_us} hot_stage_ns={hot_stage_ns} cold_stage_ns={cold_stage_ns} barrier_us={barrier_us} rounds=5 cache_capacity={cache_bytes} cache_entries={cache_entries} cache_memory_bytes={cache_memory_bytes} released_blocks={released_blocks}", COLD + HOT);
         eprintln!("EXPIRY_PHASE live={live} hold_us={} select_us={} delete_us={} invalidate_us={} wal_us={} checkpoint_us={} cache_listings={listings} cache_keys_copied={cache_rows}", hold_ns / 1000, select_ns / 1000, delete_ns / 1000, invalidate_ns / 1000, wal_ns / 1000, checkpoint_ns / 1000);
         engine.wal_store.flush(1).unwrap();
         drop(engine);
         let restored = engine_with_cache(dir.path(), "cache-b", cache_bytes);
-        {
-            let shards = restored.shards.read().unwrap();
-            let shard = &shards[&1];
+        restored.shards.with_state(1, |shard| {
+            let shard = shard.unwrap();
             assert_eq!(shard.strings().len(), live);
             assert!(shard.expires_at_ms().is_empty());
             for key in &cold_keys {
@@ -252,7 +247,7 @@ fn mixed_expiry_scale(live_counts: &[usize], cache_bytes: usize) {
             for key in &hot_keys {
                 assert!(!shard.strings().contains_key(key.as_str()));
             }
-        }
+        });
         if live > 0 {
             for index in 0..live {
                 if cache_bytes < 128 * 1024 * 1024
@@ -306,6 +301,116 @@ fn mixed_hot_and_cold_expiry_with_a_large_resident_cache() {
 }
 
 #[test]
+fn bounded_due_window_resumes_after_selection_and_wraps_to_new_earlier_deadlines() {
+    use std::cell::Cell;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.unwrap();
+        for index in 0..16 {
+            set_expiry(shard, format!("cold-{index:02}"), 2);
+        }
+        set_expiry(shard, "hot-first".into(), 3);
+        set_expiry(shard, "hot-second".into(), 4);
+        set_expiry(shard, "hot-future".into(), 6);
+
+        let visits = Cell::new(0);
+        let keep = |key: &str| {
+            visits.set(visits.get() + 1);
+            key.starts_with("hot-")
+        };
+
+        let (selected, cursor) = due_window_after(shard, 5, 1, 1, None, keep);
+        assert!(selected.is_empty());
+        assert_eq!(visits.replace(0), 16);
+        assert_eq!(cursor.as_ref().map(|(ttl, key)| (*ttl, key.as_ref())),
+            Some((2, "cold-15")));
+
+        let (selected, cursor) = due_window_after(shard, 5, 1, 1, cursor.as_ref(), keep);
+        assert_eq!(selected, vec![("hot-first".to_owned(), 3)]);
+        assert_eq!(visits.replace(0), 1);
+        assert_eq!(cursor.as_ref().map(|(ttl, key)| (*ttl, key.as_ref())),
+            Some((3, "hot-first")));
+
+        assert!(clear_expiry(shard, "hot-first"));
+        set_expiry(shard, "hot-earlier".into(), 1);
+        let (selected, cursor) = due_window_after(shard, 5, 1, 1, cursor.as_ref(), keep);
+        assert_eq!(selected, vec![("hot-second".to_owned(), 4)]);
+        assert_eq!(visits.replace(0), 1);
+        assert!(cursor.is_none());
+
+        assert!(clear_expiry(shard, "hot-second"));
+        let (selected, _) = due_window_after(shard, 5, 1, 1, cursor.as_ref(), keep);
+        assert_eq!(selected, vec![("hot-earlier".to_owned(), 1)]);
+        assert_eq!(visits.get(), 1);
+    });
+}
+
+#[test]
+fn bounded_expiry_resumes_past_a_released_prefix_when_cold_expiry_is_disabled() {
+    assert_bounded_expiry_crosses_residency_prefix(false);
+}
+
+#[test]
+fn bounded_expiry_resumes_past_a_resident_prefix_when_hot_expiry_is_disabled() {
+    assert_bounded_expiry_crosses_residency_prefix(true);
+}
+
+fn assert_bounded_expiry_crosses_residency_prefix(cold_target: bool) {
+    const PREFIX: usize = 1_025;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path(), "cache");
+    let hot = "late-due";
+    let hot_bucket = engine.routing_bucket_for_key(1, hot);
+    let cold: Vec<_> = (0..)
+        .map(|index| format!("cold-{index:04}"))
+        .filter(|key| engine.routing_bucket_for_key(1, key) != hot_bucket)
+        .take(PREFIX)
+        .collect();
+    seed(&engine, cold.iter().map(String::as_str).chain([hot]).map(|key| {
+        Command::StringSet { key: key.to_owned(), value: vec![b'v'; 1024] }
+    }).collect());
+    let dump = engine.create_bucket_dump_manifest(1, []).unwrap();
+    engine.clear_dumped_bucket_dirty_state(1, &dump);
+    let mut buckets: Vec<_> = cold.iter().map(|key| engine.routing_bucket_for_key(1, key)).collect();
+    buckets.sort_unstable();
+    buckets.dedup();
+    {
+        engine.shards.with_state_mut(1, |shard| {
+            let shard = shard.unwrap();
+            let to_release = if cold_target { &[hot_bucket][..] } else { &buckets };
+            let released = storage_bucket_internals::release_bucket_blocks(shard, to_release);
+            assert_eq!(released.released_buckets.len(), to_release.len());
+            for key in &cold {
+                set_expiry(shard, key.clone(), 1);
+                assert_eq!(recovery_sweep_compact::expiry_record_is_hot(shard, key), cold_target);
+            }
+            set_expiry(shard, hot.to_owned(), 2);
+            assert_eq!(recovery_sweep_compact::expiry_record_is_hot(shard, hot), !cold_target);
+        });
+    }
+    let request = ShardExpirySweepRequest {
+        shard_id: 1,
+        max_hot_buckets_per_round: usize::from(!cold_target),
+        max_cold_buckets_per_round: 1,
+        load_cold_buckets: cold_target,
+        ..Default::default()
+    };
+    let before = engine.block_store.stats().bytes_read;
+    assert_eq!(engine.sweep_expired_records_for_maintenance(request.clone())
+        .unwrap().expired_records_removed, 0);
+    assert_eq!(engine.sweep_expired_records_for_maintenance(request)
+        .unwrap().expired_records_removed, 1);
+    assert_eq!(engine.block_store.stats().bytes_read, before);
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.unwrap();
+        assert!(!shard.strings().contains_key(hot));
+        assert!(cold.iter().all(|key| shard.strings().contains_key(key.as_str())));
+    });
+}
+
+#[test]
 fn released_objects_use_the_cold_expiry_policy_without_payload_reload() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_at(dir.path(), "cache-a");
@@ -337,13 +442,12 @@ fn released_objects_use_the_cold_expiry_policy_without_payload_reload() {
     let dump = engine.create_bucket_dump_manifest(1, []).unwrap();
     engine.clear_dumped_bucket_dirty_state(1, &dump);
     let bucket = engine.routing_bucket_for_key(1, "cold-due");
-    {
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&1).unwrap();
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.unwrap();
         let released = storage_bucket_internals::release_bucket_blocks(shard, &[bucket]);
         assert_eq!(released.released_buckets, vec![bucket]);
         assert!(shard.strings().contains_key("cold-due"));
-    }
+    });
     std::thread::sleep(std::time::Duration::from_millis(5));
     let request = reports::StorageManagerCycleRequest {
         shard_id: 1,
@@ -368,12 +472,11 @@ fn released_objects_use_the_cold_expiry_policy_without_payload_reload() {
     assert_eq!(blocked.hot_buckets_scanned, 0);
     assert_eq!(blocked.cold_buckets_scanned, 1);
     assert_eq!(blocked.skipped_records, 1);
-    {
-        let shards = engine.shards.read().unwrap();
-        let shard = &shards[&1];
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.unwrap();
         assert!(shard.strings().contains_key("cold-due"));
         assert!(shard.bucket_index.released_buckets.contains(&bucket));
-    }
+    });
     let bytes_read = engine.block_store.stats().bytes_read;
     let allowed_cycle = engine.run_storage_manager_cycle(request);
     assert!(allowed_cycle.completed, "{:?}", allowed_cycle.errors);
@@ -386,18 +489,19 @@ fn released_objects_use_the_cold_expiry_policy_without_payload_reload() {
         "retained locators allow a metadata-only delete"
     );
     assert_eq!(engine.block_store.stats().bytes_read, bytes_read);
-    {
-        let shards = engine.shards.read().unwrap();
-        let shard = &shards[&1];
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.unwrap();
         assert!(!shard.strings().contains_key("cold-due"));
         assert!(!shard.expires_at_ms().contains_key("cold-due"));
-    }
+    });
     engine.create_bucket_dump_manifest(1, []).unwrap();
     drop(engine);
     let restored = engine_at(dir.path(), "cache-b");
-    assert!(!restored.shards.read().unwrap()[&1]
-        .strings()
-        .contains_key("cold-due"));
+    assert!(!restored.shards.with_state(1, |shard| {
+        shard.unwrap()
+            .strings()
+            .contains_key("cold-due")
+    }));
     let response = restored.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
@@ -423,4 +527,213 @@ fn periodic_cold_expiry_defaults_match_between_typed_and_serialized_requests() {
     )
     .unwrap();
     assert!(!disabled.load_cold_buckets_for_expire);
+}
+
+fn mixed_budget_fixture(root: &std::path::Path) -> TemporalEngine {
+    let engine = engine_at(root, "cache-budget");
+    for key in ["hot-budget-due", "cold-budget-due"] {
+        assert!(engine.execute(ExecuteRequest { shard_id: 1,
+            command: Command::StringSetEx { key: key.into(), value: vec![7; 16], ttl_ms: 1 },
+        }).status.ok);
+    }
+    let hot = engine.routing_bucket_for_key(1, "hot-budget-due");
+    let cold = engine.routing_bucket_for_key(1, "cold-budget-due");
+    assert_ne!(hot, cold);
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.unwrap();
+        let released = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(
+            shard, &[cold],
+        );
+        assert_eq!(released.released_buckets, vec![cold]);
+    });
+    engine.write_ahead_log_store().flush(1).unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    engine
+}
+
+#[test]
+fn expiry_residency_uses_only_exact_records_without_family_key_builds() {
+    for (cold_base, cold_family) in [(false, false), (true, false), (false, true), (true, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_at(dir.path(), "residency-cache");
+        let base = "residency-base";
+        let family = control_state_family_key(ControlStateFamily::Counter, base);
+        seed(&engine, [base, family.as_str()].into_iter().map(|key| Command::StringSet {
+            key: key.to_owned(), value: b"present".to_vec(),
+        }).collect());
+        let base_bucket = engine.routing_bucket_for_key(1, base);
+        let family_bucket = engine.routing_bucket_for_key(1, &family);
+        assert_ne!(base_bucket, family_bucket);
+        engine.shards.with_state_mut(1, |shard| {
+            let shard = shard.unwrap();
+            for (cold, bucket) in [(cold_base, base_bucket), (cold_family, family_bucket)] {
+                if cold {
+                    let released = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(shard, &[bucket]);
+                    assert_eq!(released.released_buckets, vec![bucket]);
+                }
+            }
+            let before = ASSOCIATED_KEY_BUILDS_FOR_TEST.with(|count| count.get());
+            assert_eq!(associated_record_keys(base).len(), 4);
+            assert_eq!(ASSOCIATED_KEY_BUILDS_FOR_TEST.with(|count| count.get()), before + 1);
+            let before = ASSOCIATED_KEY_BUILDS_FOR_TEST.with(|count| count.get());
+            for _ in 0..1024 {
+                assert_eq!(recovery_sweep_compact::expiry_record_is_hot(shard, base), !cold_base);
+                assert_eq!(recovery_sweep_compact::expiry_record_is_hot(shard, &family), !cold_family);
+            }
+            assert_eq!(ASSOCIATED_KEY_BUILDS_FOR_TEST.with(|count| count.get()), before,
+                "residency classification must not construct associated names");
+            assert!(delete_record_exact(shard, base));
+            assert!(record_exists_exact(shard, &family));
+            assert!(!recovery_sweep_compact::expiry_record_is_hot(shard, base),
+                "an absent record cannot inherit a related record's residency");
+        });
+    }
+}
+
+#[test]
+fn hot_expiry_proceeds_while_an_independently_live_related_record_is_cold() {
+    for expire_family in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_at(dir.path(), "hot-due-cache");
+        let base = "hot-due-base".to_string();
+        let family = control_state_family_key(ControlStateFamily::Counter, &base);
+        let (due, live) = if expire_family { (&family, &base) } else { (&base, &family) };
+        seed(&engine, [&base, &family].into_iter().map(|key| Command::StringSetEx {
+            key: key.clone(), value: key.as_bytes().to_vec(), ttl_ms: 60_000,
+        }).collect());
+        seed(&engine, vec![Command::StringSetEx {
+            key: due.clone(), value: due.as_bytes().to_vec(), ttl_ms: 1,
+        }]);
+        if !expire_family {
+            seed(&engine, vec![Command::StringSetEx {
+                key: live.clone(), value: live.as_bytes().to_vec(), ttl_ms: 60_000,
+            }]);
+        }
+        let due_bucket = engine.routing_bucket_for_key(1, due);
+        let live_bucket = engine.routing_bucket_for_key(1, live);
+        assert_ne!(due_bucket, live_bucket);
+        engine.shards.with_state_mut(1, |shard| {
+            let shard = shard.unwrap();
+            assert!(shard.strings().contains_key(due.as_str()));
+            assert!(shard.strings().contains_key(live.as_str()));
+            let released = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(shard, &[live_bucket]);
+            assert_eq!(released.released_buckets, vec![live_bucket]);
+            assert!(!shard.bucket_index.released_buckets.contains(&due_bucket));
+        });
+        engine.write_ahead_log_store().flush(1).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(10));
+        let before = engine.write_ahead_log_store().cached_last_sequence(1);
+        let report = engine.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
+            shard_id: 1, max_hot_buckets_per_round: 1, max_cold_buckets_per_round: 0,
+            load_cold_buckets: false,
+        }).unwrap();
+        assert_eq!(report.expired_records_removed, 1);
+        assert_eq!(report.hot_buckets_scanned, 1);
+        assert_eq!(report.cold_buckets_scanned, 0);
+        assert_eq!(report.loaded_for_expire, 0);
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.unwrap();
+            assert!(!shard.strings().contains_key(due.as_str()));
+            assert!(shard.strings().contains_key(live.as_str()));
+            assert!(shard.bucket_index.released_buckets.contains(&live_bucket));
+        });
+        let wal = engine.write_ahead_log_store();
+        let (records, truncated) = wal.scan_decoded(1, 0, u64::MAX, u64::MAX).unwrap();
+        assert!(!truncated);
+        let deleted: Vec<_> = records.iter().filter(|(_, record)| record.sequence > before)
+            .flat_map(|(_, record)| record.outcomes.iter().map(|item| item.object_key.as_str())).collect();
+        assert_eq!(deleted, vec![due.as_str()]);
+        wal.flush(1).unwrap();
+        drop(wal);
+        drop(engine);
+        let restored = TemporalEngine::with_local_dirs(64 * 1024,
+            dir.path().join("fresh-cache"), dir.path().join("blocks"), dir.path().join("indexes"));
+        restored.load_shard(1);
+        for (key, expected) in [(due, None), (live, Some(live.as_bytes().to_vec()))] {
+            let response = restored.execute(ExecuteRequest { shard_id: 1,
+                command: Command::StringGet { key: key.clone() },
+            });
+            assert!(response.status.ok);
+            assert_eq!(response.response, CommandResponse::Bytes { value: expected });
+        }
+    }
+}
+
+#[test]
+fn maintenance_zero_expiry_budgets_leave_both_residency_classes_untouched() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = mixed_budget_fixture(dir.path());
+    let wal = engine.write_ahead_log_store().stats(1);
+    let invalidations = engine.cache().stats().invalidations;
+    let report = engine.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
+        shard_id: 1, load_cold_buckets: true, ..Default::default()
+    }).unwrap();
+    assert_eq!(report.expired_records_removed, 0);
+    assert_eq!(report.scanned_records, 0);
+    assert_eq!(report.loaded_for_expire, 0);
+    assert_eq!(engine.write_ahead_log_store().stats(1).writes, wal.writes);
+    assert_eq!(engine.cache().stats().invalidations, invalidations);
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.unwrap();
+        assert_eq!(shard.expires_at_ms().len(), 2);
+        assert_eq!(shard.strings().len(), 2);
+    });
+    assert_eq!(engine.sweep_expired_records(1).unwrap().expired_records_removed, 2,
+               "the explicit manual sweep must still find both due records");
+}
+
+#[test]
+fn maintenance_zero_expiry_budget_disables_only_the_requested_residency_class() {
+    for (hot_limit, cold_limit, removed, retained) in [
+        (1, 0, "hot-budget-due", "cold-budget-due"),
+        (0, 1, "cold-budget-due", "hot-budget-due"),
+    ] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = mixed_budget_fixture(dir.path());
+        let report = engine.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
+            shard_id: 1, max_hot_buckets_per_round: hot_limit,
+            max_cold_buckets_per_round: cold_limit, load_cold_buckets: true,
+        }).unwrap();
+        assert_eq!(report.expired_records_removed, 1);
+        assert_eq!(report.hot_buckets_scanned, hot_limit);
+        assert_eq!(report.cold_buckets_scanned, cold_limit);
+        assert_eq!(report.loaded_for_expire, 0);
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.unwrap();
+            assert!(!shard.strings().contains_key(removed));
+            assert!(shard.strings().contains_key(retained));
+            assert!(shard.expires_at_ms().contains_key(retained));
+        });
+        assert_eq!(engine.sweep_expired_records(1).unwrap().expired_records_removed, 1);
+    }
+}
+
+#[test]
+fn operator_cycle_zero_expiry_budgets_preserve_due_records_for_a_later_sweep() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = mixed_budget_fixture(dir.path());
+    let wal = engine.write_ahead_log_store().stats(1);
+    let report = engine.run_storage_manager_cycle(reports::StorageManagerCycleRequest {
+        shard_id: 1, enable_prepare: false, enable_wal_reclaim: false, enable_evict: false,
+        enable_expire: true, enable_block_reclaim: false, enable_block_compaction: false,
+        enable_index_gc: false, min_undumped_wal_records: u64::MAX,
+        min_undumped_wal_bytes: u64::MAX, max_expire_hot_buckets_per_round: 0,
+        max_expire_cold_buckets_per_round: 0, ..Default::default()
+    });
+    assert!(report.completed, "{:?}", report.errors);
+    assert_eq!(report.expiry_report.unwrap().expired_records_removed, 0);
+    assert_eq!(engine.write_ahead_log_store().stats(1).writes, wal.writes);
+    assert_eq!(engine.sweep_expired_records(1).unwrap().expired_records_removed, 2);
+}
+
+#[test]
+fn explicit_sweep_zero_expiry_limits_keep_their_unbounded_meaning() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = mixed_budget_fixture(dir.path());
+    let report = engine.sweep_expired_records_with_request(ShardExpirySweepRequest {
+        shard_id: 1, load_cold_buckets: true, ..Default::default()
+    }).unwrap();
+    assert_eq!(report.expired_records_removed, 2);
+    assert_eq!(report.hot_buckets_scanned, 1);
+    assert_eq!(report.cold_buckets_scanned, 1);
 }

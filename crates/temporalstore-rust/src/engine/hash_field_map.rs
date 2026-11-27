@@ -130,6 +130,23 @@ impl Serialize for HashFieldMap {
 mod hash_field_serialize_tests;
 
 impl HashFieldMap {
+    pub(super) fn from_shared_fields(
+        fields: &super::container_blocks::SharedHashFields,
+        pool: &mut std::collections::HashSet<FieldName>,
+        address: &ElementEntry,
+    ) -> Self {
+        // SharedHashFields guarantees unique sorted names. Size the new row once.
+        let entries = fields.sorted_names().iter().map(|name| {
+            (super::state::intern_shared(pool, name), address.clone())
+        }).collect();
+        Self { entries }
+    }
+
+    #[cfg(test)]
+    pub(super) fn capacity_for_test(&self) -> usize {
+        self.entries.capacity()
+    }
+
     /// Where `field` is, or where it would go.
     fn slot(&self, field: &str) -> Result<usize, usize> {
         #[cfg(test)]
@@ -402,3 +419,7 @@ impl From<HashFieldMap> for HashMap<String, ElementEntry> {
             .collect()
     }
 }
+
+#[cfg(test)]
+#[path = "hash_shared_field_tests.rs"]
+mod shared_field_tests;

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! What one panic under the shard-table guard costs every later caller.
+//! What one panic under the owner state guard costs every later caller.
 //!
 //! `RwLock` marks itself POISONED when a thread unwinds while holding it. Every later
-//! `.read()`/`.write()` on that lock returns `Err`, and the shard table's acquisitions all spell
-//! that `.expect("engine lock poisoned")`. So the question this module answers with a number is
+//! `.read()`/`.write()` on that lock returns `Err`, and the owner state's acquisitions all spell
+//! that `.expect("shard state lock poisoned")`. So the question this module answers with a number is
 //! not "can the lock be poisoned" -- it can -- but what the NEXT ordinary request observes once
 //! it has been, and for how long.
 #![allow(clippy::all)]
@@ -33,6 +33,13 @@ fn engine_with_one_key(dir: &std::path::Path) -> TemporalEngine {
         },
     });
     assert!(written.status.ok, "fixture write: {:?}", written.status);
+    engine.load_shard(2);
+    let peer = engine.execute(ExecuteRequest {
+        shard_id: 2,
+        command: Command::StringSet { key: "k".into(), value: b"peer".to_vec() },
+    });
+    assert!(peer.status.ok, "peer setup: {:?}", peer.status);
+    assert_peer_serves(&engine);
     engine
 }
 
@@ -66,6 +73,25 @@ fn observe_get(engine: &TemporalEngine) -> Observed {
     }
 }
 
+fn assert_peer_serves(engine: &TemporalEngine) {
+    let peer = engine.execute(ExecuteRequest {
+        shard_id: 2,
+        command: Command::StringGet { key: "k".into() },
+    });
+    assert!(peer.status.ok, "peer: {:?}", peer.status);
+    assert_eq!(peer.response, CommandResponse::Bytes { value: Some(b"peer".to_vec()) });
+}
+
+fn owner_lock_is_poisoned(engine: &TemporalEngine, write: bool) -> bool {
+    catch_unwind(AssertUnwindSafe(|| {
+        if write {
+            engine.shards.with_state_mut(1, |_| ());
+        } else {
+            engine.shards.with_state(1, |_| ());
+        }
+    })).is_err_and(|payload| panic_message(payload).contains("shard state lock poisoned"))
+}
+
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     if let Some(text) = payload.downcast_ref::<&str>() {
         (*text).to_string()
@@ -76,20 +102,22 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     }
 }
 
-/// Poison the shard table the way production would: a thread unwinds while holding the guard.
+/// Poison the owner state the way production would: a thread unwinds while holding the guard.
 ///
 /// Nothing here reaches into the lock's internals -- the guard is taken through the same field
 /// every acquisition uses, and the panic is a real unwind on a real thread, so the poison flag is
 /// set by `RwLock` itself rather than simulated.
-fn poison_shard_table(engine: &TemporalEngine) {
+fn poison_owner(engine: &TemporalEngine) {
     let handle = {
         let engine = engine.clone();
         std::thread::spawn(move || {
-            let _guard = engine.shards.write().expect("engine lock poisoned");
+            engine.shards.with_state_mut(1, |state| {
+                assert!(state.is_some(), "the target owner must be installed");
             // Deliberate: this is the event being priced. libtest prints the unwind below; a
-            // "panicked at ... poisoning the shard table on purpose" line in this test's output
+            // "panicked at ... poisoning shard 1 on purpose" line in this test's output
             // is the fixture working, not a failure.
-            panic!("poisoning the shard table on purpose");
+                panic!("poisoning shard 1 on purpose");
+            });
         })
     };
     assert!(
@@ -99,7 +127,7 @@ fn poison_shard_table(engine: &TemporalEngine) {
     );
 }
 
-/// One panic under the shard guard turns every later request on that process into a panic.
+/// One panic under the shard guard turns every later request for that owner into a panic.
 ///
 /// FOUR claims, asserted apart, because a single end-to-end assertion passes when two of them
 /// are wrong in opposite directions:
@@ -109,10 +137,10 @@ fn poison_shard_table(engine: &TemporalEngine) {
 ///   2. POISON  -- the lock itself reports poisoned on BOTH `read()` and `write()`. This is the
 ///                 mechanism; if it does not hold, arm 3 is measuring something else.
 ///   3. AFTER   -- every one of `PROBES` ordinary requests panics, and the panic carries the
-///                 in-tree message, so the failure is the shard-table `expect` and not an
+///                 in-tree message, so the failure is the owner state `expect` and not an
 ///                 unrelated one.
 ///   4. FOREVER -- there is no recovery: the poison is still set after the requests, so this is
-///                 a permanent property of the process, not a transient one.
+///                 a permanent property of this owner, not a transient one.
 #[test]
 fn a_panic_under_the_shard_guard_makes_every_later_request_panic() {
     let dir = tempfile::tempdir().unwrap();
@@ -138,14 +166,15 @@ fn a_panic_under_the_shard_guard_makes_every_later_request_panic() {
     );
 
     // --- 2. POISON ---------------------------------------------------------------------------
-    poison_shard_table(&engine);
+    poison_owner(&engine);
+    assert_peer_serves(&engine);
     assert!(
-        engine.shards.read().is_err(),
-        "the shard table's READ side is not poisoned"
+        owner_lock_is_poisoned(&engine, false),
+        "the owner state's READ side is not poisoned"
     );
     assert!(
-        engine.shards.write().is_err(),
-        "the shard table's WRITE side is not poisoned"
+        owner_lock_is_poisoned(&engine, true),
+        "the owner state's WRITE side is not poisoned"
     );
 
     // --- 3. AFTER ----------------------------------------------------------------------------
@@ -174,13 +203,13 @@ fn a_panic_under_the_shard_guard_makes_every_later_request_panic() {
     assert!(
         messages
             .iter()
-            .all(|message| message.contains("engine lock poisoned")),
-        "the panics must come from the shard-table expect, got {messages:?}"
+            .all(|message| message.contains("shard state lock poisoned")),
+        "the panics must come from the owner state expect, got {messages:?}"
     );
 
     // --- 4. FOREVER --------------------------------------------------------------------------
     assert!(
-        engine.shards.read().is_err(),
+        owner_lock_is_poisoned(&engine, false),
         "nothing on the request path clears the poison, so it must still be set"
     );
 }
@@ -188,13 +217,13 @@ fn a_panic_under_the_shard_guard_makes_every_later_request_panic() {
 
 /// The serving READ fast path is poisoned by the same one panic, at a different acquisition.
 ///
-/// `execute` takes the shard table's WRITE lock even for a read; `execute_durable` declines that
+/// `execute` takes the owner state's WRITE lock even for a read; `execute_durable` declines that
 /// and takes the READ lock through the marked accessor. They are two different acquisitions of
 /// the same lock, so a claim about one is not a claim about the other -- and a `RwLock`'s poison
 /// closes BOTH sides, which is the whole reason the read path is not the cheaper case here.
 ///
 /// Asserted in two halves for that reason: the read route served before, and the read route
-/// panicked after, with the panic carrying the shard-table message rather than some other one.
+/// panicked after, with the panic carrying the owner state message rather than some other one.
 #[test]
 fn the_serving_read_fast_path_is_poisoned_by_the_same_panic() {
     let dir = tempfile::tempdir().unwrap();
@@ -225,7 +254,8 @@ fn the_serving_read_fast_path_is_poisoned_by_the_same_panic() {
     }
     assert_eq!(served_before, PROBES, "read route served before the poison");
 
-    poison_shard_table(&engine);
+    poison_owner(&engine);
+    assert_peer_serves(&engine);
 
     let mut panicked_after = 0usize;
     let mut messages: Vec<String> = Vec::new();
@@ -248,7 +278,7 @@ fn the_serving_read_fast_path_is_poisoned_by_the_same_panic() {
     assert!(
         messages
             .iter()
-            .all(|message| message.contains("engine lock poisoned")),
-        "the read route's panics must come from the shard-table expect, got {messages:?}"
+            .all(|message| message.contains("shard state lock poisoned")),
+        "the read route's panics must come from the owner state expect, got {messages:?}"
     );
 }

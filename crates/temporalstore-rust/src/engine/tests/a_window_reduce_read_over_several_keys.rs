@@ -218,12 +218,11 @@ fn a_key_the_shard_does_not_hold_or_that_expired_contributes_nothing_and_is_not_
     assert_eq!((none.rows.len(), none.keys, none.refused.as_str()), (0, 0, ""));
 
     // Channel 2 expires: it is dropped as a one-key read drops it, and the answer is channel 1's.
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
         let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
         crate::engine::set_expiry(shard, keys[1].clone(), past);
-    }
+    });
     let expired = fan_in(&engine, &named, spec(ALL, lane("shown"), 10));
     assert_eq!((members(&expired), scores(&expired), expired.keys), (vec![3, 2, 1], vec![30, 20, 10], 1));
 }
@@ -424,12 +423,11 @@ fn a_batch_read_drops_an_expired_key_and_answers_it_empty() {
     let queries = vec![(keys[0].clone(), spec(ALL, lane("shown"), 5)), (keys[1].clone(), spec(ALL, lane("shown"), 5))];
     let live = rankings(batch(&engine, queries.clone()));
     assert_eq!((live[0].rows.len(), live[1].rows.len()), (3, 3), "CONTROL: both are live");
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
         let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
         crate::engine::set_expiry(shard, keys[1].clone(), past);
-    }
+    });
     let after = rankings(batch(&engine, queries));
     assert_eq!(after[0], live[0]);
     assert!(after[1].rows.is_empty() && after[1].refused.is_empty());

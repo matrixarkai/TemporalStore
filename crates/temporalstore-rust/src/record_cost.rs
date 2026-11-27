@@ -485,6 +485,8 @@ fn one_delta_record(index: usize) -> crate::index_log::IndexDeltaRecord {
         key_states: Vec::new(),
         upsert: false,
         shared_object_key: None,
+        relocated_from: Vec::new(),
+        relocated_elements: Vec::new(),
     }
 }
 

@@ -68,7 +68,7 @@
 //! # THE ONE WAY THIS COULD HAVE BEEN SILENT DATA LOSS
 //!
 //! `decode_block_record` compares `address.block_id()` against the record header's own block id and
-//! refuses the page with "page id mismatch" when they differ -- the one cross-check on a read that
+//! refuses the page with "block id mismatch" when they differ -- the one cross-check on a read that
 //! can actually fire. It is inert today only because the address side is 0 on both sides. Stamping
 //! the ordinal onto the INDEX's copy of the address after the append would have left the header
 //! saying 0 and the address saying N, and every container block written would have become unreadable.
@@ -140,24 +140,25 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 /// such filter a compile error instead. Element identity is `ordinal_for_element_name` below, which
 /// asks the authority for it.
 fn blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut held = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.deleted() {
-                continue;
-            }
-            if block.model_id().as_str() == kind
-                && &**named.at(bucket.routing_bucket, *handle) == key
-            {
-                held.push(block.address.block_id());
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut held = Vec::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.deleted() {
+                    continue;
+                }
+                if block.model_id().as_str() == kind
+                    && &**named.at(bucket.routing_bucket, *handle) == key
+                {
+                    held.push(block.address.block_id());
+                }
             }
         }
-    }
-    held.sort();
-    held
+        held.sort();
+        held
+    })
 }
 
 /// This object's TOMBSTONE entries: the element each is about, and the ordinal its block carries.
@@ -173,27 +174,28 @@ fn tombstone_blocks_of(
     kind: &str,
     key: &str,
 ) -> Vec<(Option<String>, Option<u64>)> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut held = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.deleted()
-                && block.model_id().as_str() == kind
-                && &**named.at(bucket.routing_bucket, *handle) == key
-            {
-                held.push((
-                    bucket
-                        .tombstone_element_at(&block.address)
-                        .map(|row| row.element_name.to_string()),
-                    block.address.block_id(),
-                ));
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut held = Vec::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.deleted()
+                    && block.model_id().as_str() == kind
+                    && &**named.at(bucket.routing_bucket, *handle) == key
+                {
+                    held.push((
+                        bucket
+                            .tombstone_element_at(&block.address)
+                            .map(|row| row.element_name.to_string()),
+                        block.address.block_id(),
+                    ));
+                }
             }
         }
-    }
-    held.sort();
-    held
+        held.sort();
+        held
+    })
 }
 
 /// The ordinals this object's LIVE page entries carry, ascending, with absence spelled as `None`.
@@ -211,38 +213,39 @@ fn ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64
 /// this is the set a position claim is actually about, and the two are asserted separately wherever
 /// they part company.
 fn resident_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut held: Vec<Option<u64>> = match kind {
-        "hash" => shard
-            .bucket_index.hashes
-            .get(key)
-            .map(|fields| fields.values().map(|address| address.block_id()).collect())
-            .unwrap_or_default(),
-        "set" => shard
-            .bucket_index.sets
-            .get(key)
-            .map(|members| members.values().map(|address| address.block_id()).collect())
-            .unwrap_or_default(),
-        "zset" => shard
-            .bucket_index.zsets
-            .get(key)
-            .map(|members| {
-                members
-                    .values()
-                    .map(|(_score, address)| address.block_id())
-                    .collect()
-            })
-            .unwrap_or_default(),
-        "list" => shard
-            .bucket_index.lists
-            .get(key)
-            .map(|entries| entries.values().map(|address| address.block_id()).collect())
-            .unwrap_or_default(),
-        other => panic!("no resident container map is claimed for kind {other}"),
-    };
-    held.sort();
-    held
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        let mut held: Vec<Option<u64>> = match kind {
+            "hash" => shard
+                .bucket_index.hashes
+                .get(key)
+                .map(|fields| fields.values().map(|address| address.block_id()).collect())
+                .unwrap_or_default(),
+            "set" => shard
+                .bucket_index.sets
+                .get(key)
+                .map(|members| members.values().map(|address| address.block_id()).collect())
+                .unwrap_or_default(),
+            "zset" => shard
+                .bucket_index.zsets
+                .get(key)
+                .map(|members| {
+                    members
+                        .values()
+                        .map(|(_score, address)| address.block_id())
+                        .collect()
+                })
+                .unwrap_or_default(),
+            "list" => shard
+                .bucket_index.lists
+                .get(key)
+                .map(|entries| entries.values().map(|address| address.block_id()).collect())
+                .unwrap_or_default(),
+            other => panic!("no resident container map is claimed for kind {other}"),
+        };
+        held.sort();
+        held
+    })
 }
 
 /// The ordinal the element with exactly this element name holds, if the object holds that element.
@@ -263,10 +266,11 @@ fn ordinal_for_element_name(
     key: &str,
     element_name: &str,
 ) -> Option<Option<u64>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    crate::engine::state::resident_element_name_address(shard, kind, key, element_name)
-        .map(crate::block_store::ElementEntry::block_id)
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        crate::engine::state::resident_element_name_address(shard, kind, key, element_name)
+            .map(crate::block_store::ElementEntry::block_id)
+    })
 }
 
 const MEMBERS: usize = 8;
@@ -942,7 +946,7 @@ fn hash_len_still_answers_the_entry_count() {
 /// A RELOADED CONTAINER STILL READS EVERY ELEMENT, AND KEEPS THE ORDINALS IT WAS WRITTEN WITH.
 ///
 /// THIS IS THE TEST THAT MATTERS. `decode_block_record` refuses a block whose address block id and
-/// record header block id differ ("page id mismatch"), and that arm is inert today only because both
+/// record header block id differ ("block id mismatch"), and that arm is inert today only because both
 /// sides are 0. Had the ordinal been stamped onto the index's copy of the address after the append
 /// -- the obvious way to write this change -- every container block would still have had a header
 /// saying 0, and every one of these reads would come back empty.
@@ -987,7 +991,7 @@ fn a_reloaded_container_still_reads_every_element() {
                 read_back += 1;
             }
             other => panic!(
-                "field {field} did not read back after a reload: {other:?}. A \"page id mismatch\" \
+                "field {field} did not read back after a reload: {other:?}. A \"block id mismatch\" \
                  from `decode_block_record` reads exactly like this -- the block is refused and the \
                  answer is empty"
             ),

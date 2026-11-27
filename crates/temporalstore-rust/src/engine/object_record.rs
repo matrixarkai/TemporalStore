@@ -301,12 +301,23 @@ impl Default for ObjectRecord {
 }
 
 impl ObjectRecord {
+    /// Exact single-page flags while the owning bucket is released; hot blocks own these flags
+    /// otherwise, and refresh this copy on the next release.
+    pub(super) fn retained_page_state(&self) -> (bool, bool) {
+        (self.flags.get(RecordFlags::BLOCK_DIRTY), self.flags.get(RecordFlags::BLOCK_DELETED))
+    }
+
+    pub(super) fn retain_page_state(&mut self, dirty: bool, deleted: bool) {
+        self.flags.set(RecordFlags::BLOCK_DIRTY, dirty);
+        self.flags.set(RecordFlags::BLOCK_DELETED, deleted);
+    }
+
     // --- The tagged words, as arms. ---
 
 
 
     /// The address, decided by its tag bit and not by its value.
-    pub(super) fn page_address(&self) -> BlockAddress {
+    pub(super) fn block_address(&self) -> BlockAddress {
         if self.flags.get(RecordFlags::ADDRESS_IS_POINTER) {
             BlockAddress::Many(BlockLayoutHandle::from_stored(self.address))
         } else {
@@ -416,7 +427,7 @@ impl ObjectRecord {
 
     /// The same, as a `Result`, for a caller that cannot assume the inline arm.
     pub(super) fn try_address(&self) -> Result<ElementEntry, ObjectRecordRefusal> {
-        let word = match self.page_address() {
+        let word = match self.block_address() {
             BlockAddress::One(word) => word,
             BlockAddress::Many(handle) => {
                 return Err(ObjectRecordRefusal::LayoutHandleWithNoLayout { handle })
@@ -466,7 +477,7 @@ impl ObjectRecord {
         // saturated length reads as broken; a truncated one reads as a valid shorter block.
         self.block_size = u32::try_from(address.length()).unwrap_or_else(|_| {
             panic!(
-                "an address length of {} does not fit the record's page size, which cannot happen \
+                "an address length of {} does not fit the record's block size, which cannot happen \
                  while `ElementEntry` holds its length in a u32",
                 address.length()
             )
@@ -615,7 +626,7 @@ impl ObjectRecord {
         &self,
         layout: Option<&BlockLayout>,
     ) -> Result<(ElementEntry, u8), ObjectRecordRefusal> {
-        let (word, length, block_id, has_generation) = match self.page_address() {
+        let (word, length, block_id, has_generation) = match self.block_address() {
             // THE INLINE ARM'S ORDINAL IS ZERO WHEN IT IS PRESENT AT ALL, and `BLOCK_IN_LOG`
             // carries that presence: set means no ordinal, clear means ordinal zero. See
             // `from_object_rows` for the measurement that settled this.
@@ -722,6 +733,32 @@ struct LayoutSlot {
 }
 
 impl BlockLayoutStore {
+    pub(super) fn visit_stored_block_locations(&self, mut visit: impl FnMut(u64, u64, u64)) {
+        for layout in self.slots.iter().filter_map(|slot| slot.layout.as_ref()) {
+            for block in &layout.blocks {
+                visit(
+                    u64::from(extract_block_slab_id(block.address)),
+                    u64::from(extract_block_offset(block.address)),
+                    u64::from(block.length),
+                );
+            }
+        }
+    }
+
+    pub(super) fn translate_stored_block_slabs(
+        &mut self,
+        mut translate: impl FnMut(u64) -> std::io::Result<u32>,
+    ) -> std::io::Result<()> {
+        for layout in self.slots.iter_mut().filter_map(|slot| slot.layout.as_mut()) {
+            for block in &mut layout.blocks {
+                let offset = extract_block_offset(block.address);
+                let slab = translate(u64::from(extract_block_slab_id(block.address)))?;
+                block.address = address_word_from_parts(slab, offset);
+            }
+        }
+        Ok(())
+    }
+
     /// Split a handle into the slot it names and the generation it was issued at.
     ///
     /// `None` for handle zero, which names no slot -- see the type's doc.
@@ -1838,7 +1875,7 @@ mod the_handle_arm_now_has_something_to_point_into {
             ObjectRecord::from_object_rows_with_layout(&address, 9, Some(1_700), true, reserved)
                 .expect("the layout arm refused an entry it is documented to hold");
         assert!(
-            matches!(record.page_address(), BlockAddress::Many(_)),
+            matches!(record.block_address(), BlockAddress::Many(_)),
             "the record should carry a handle, not an inline address"
         );
 
@@ -2030,5 +2067,30 @@ mod a_positional_row_is_refused_unless_it_is_canonical {
         assert!(slot(&format!("[{r},[],0]")).is_err(), "a three-element slot row was read");
         let error = slot(&format!("[{r},[]]")).expect_err("an empty elements array was read");
         assert!(error.to_string().contains("as an empty array"), "unnamed refusal: {error}");
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_layout_slab_tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_layout_inventory_and_rebase_keep_every_offset() {
+        let make_block = |slab, offset, length| StoredBlock {
+            address: address_word_from_parts(slab, offset),
+            length, block_id: 0, has_block_id: true, has_generation: true,
+        };
+        let mut layouts = BlockLayoutStore::default();
+        let handle = layouts.insert(BlockLayout {
+            blocks: vec![make_block(2, 37, 5), make_block(7, 61, 8)],
+        });
+        let mut source = Vec::new();
+        layouts.visit_stored_block_locations(|slab, offset, length| source.push((slab, offset, length)));
+        assert_eq!(source, [(2, 37, 5), (7, 61, 8)]);
+        layouts.translate_stored_block_slabs(|id| Ok(u32::try_from(id + 100).unwrap())).unwrap();
+        let mut destination = Vec::new();
+        layouts.visit_stored_block_locations(|slab, offset, length| destination.push((slab, offset, length)));
+        assert_eq!(destination, [(102, 37, 5), (107, 61, 8)]);
+        assert_eq!(layouts.get(handle).unwrap().len(), 2);
     }
 }

@@ -24,9 +24,10 @@ use std::time::{Duration, Instant};
 /// The tick period, in milliseconds, the server runs the storage manager with when the
 /// environment does not set one. Zero is the whole-round loop.
 ///
-/// The tick loop is opt-in until a comparison of the two on the same fixture, showing whole-round
-/// latency and loop CPU share, is part of the change that makes it the default.
-pub const DEFAULT_STORAGE_MANAGER_TICK_MS: u64 = 0;
+/// The tick loop is the default: a compaction pass runs as 200-key steps, one per tick, instead of
+/// one whole pass per due time (the comparison on a matched fixture is in the change that made it
+/// the default). Setting the variable to 0 selects the whole-round loop.
+pub const DEFAULT_STORAGE_MANAGER_TICK_MS: u64 = 30;
 
 /// The tick period for the value of `MATRIXARK_STORAGE_MANAGER_TICK_MS`, if it is set.
 /// Zero selects the whole-round loop; anything unparseable falls back to the default.
@@ -60,6 +61,10 @@ impl StageBudget {
 
     pub(crate) fn spend(&mut self, units: u64) {
         self.work_left = self.work_left.saturating_sub(units);
+    }
+
+    pub(crate) fn work_left(&self) -> u64 {
+        self.work_left
     }
 
     pub(crate) fn time_left(&self) -> Duration {
@@ -128,7 +133,18 @@ pub(crate) struct RoundPlan {
 /// The resume positions of the stages that have adopted [`BoundedStage`]. Each stage's owner adds
 /// one field here, of that stage's cursor type, and nothing else in this module.
 #[derive(Default)]
-pub(crate) struct StageCursors {}
+pub(crate) struct StageCursors {
+    pub(crate) compaction: super::compaction_stage::CompactionCursor,
+    pub(crate) page: PageCursor,
+}
+
+/// Where the page-GC stage resumes: the highest candidate slab its last bounded round examined.
+/// A slab id, never a position, so slabs destroyed in between cannot shift it; a cursor past
+/// every candidate finds nothing and the pass restarts from the lowest slab.
+#[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PageCursor {
+    pub(crate) after_slab_id: Option<u64>,
+}
 
 /// One heavy unit of the loop. Each is a whole stage, or the group of cheap stages that share the
 /// plan the loop builds before any stage runs.
@@ -174,6 +190,11 @@ pub(crate) fn options_for_slot(
     options.enable_index_gc = false;
     options.enable_block_compaction = false;
     options.enable_metrics_reap = false;
+    // The resident bound can enable eviction independently of enable_evict.
+    // Schedule that gate only with the memory work; keep the base limit intact there.
+    if slot != HeavySlot::Memory {
+        options.index_resident_limit_bytes = 0;
+    }
     match slot {
         HeavySlot::WalReclaim => options.enable_wal_reclaim = base.enable_wal_reclaim,
         HeavySlot::Memory => {
@@ -183,7 +204,9 @@ pub(crate) fn options_for_slot(
         }
         HeavySlot::PageGc => options.enable_block_gc = base.enable_block_gc,
         HeavySlot::IndexGc => options.enable_index_gc = base.enable_index_gc,
-        HeavySlot::Compaction => options.enable_block_compaction = base.enable_block_compaction,
+        // Compaction is a BoundedStage (`compaction_stage.rs`) and runs no legacy whole pass: the
+        // tick calls its step, so there is nothing to switch on here.
+        HeavySlot::Compaction => {}
     }
     options
 }
@@ -219,6 +242,11 @@ impl ShardRoundState {
             .min_by_key(|slot| self.next_due[slot.ordinal()])
     }
 
+    /// The slot ran a step and has more to do: it stays due, so the next tick resumes it.
+    pub(crate) fn resume_next_tick(&mut self, slot: HeavySlot, now: Instant) {
+        self.next_due[slot.ordinal()] = now;
+    }
+
     /// The slot ran and ended at `now`: its next turn is a period later.
     pub(crate) fn finished(&mut self, slot: HeavySlot, now: Instant, period: Duration) {
         self.next_due[slot.ordinal()] = now + period;
@@ -229,15 +257,15 @@ impl ShardRoundState {
 mod tests {
     use super::*;
 
-    /// The server starts the whole-round loop unless the tick period is set, and an unusable
-    /// setting does not switch the tick loop on by accident.
+    /// The server starts the tick loop unless the period is set to zero, and an unusable setting
+    /// does not switch it off by accident.
     #[test]
-    fn the_whole_round_loop_is_the_default_and_the_tick_loop_is_opt_in() {
-        assert_eq!(storage_manager_tick_ms(None), 0, "unset must run the whole-round loop");
-        assert_eq!(storage_manager_tick_ms(Some("not a number")), 0);
-        assert_eq!(storage_manager_tick_ms(Some("")), 0);
-        assert_eq!(storage_manager_tick_ms(Some(" 30 ")), 30);
-        assert_eq!(storage_manager_tick_ms(Some("0")), 0);
+    fn the_server_default_runs_the_tick_loop_and_zero_selects_the_whole_round() {
+        assert_eq!(storage_manager_tick_ms(None), 30, "unset must run the tick loop");
+        assert_eq!(storage_manager_tick_ms(Some("not a number")), 30);
+        assert_eq!(storage_manager_tick_ms(Some("")), 30);
+        assert_eq!(storage_manager_tick_ms(Some(" 50 ")), 50);
+        assert_eq!(storage_manager_tick_ms(Some("0")), 0, "zero is the whole-round loop");
     }
 
     #[test]
@@ -301,14 +329,25 @@ mod tests {
             let count = on.iter().filter(|flag| **flag).count();
             let expected = match slot {
                 HeavySlot::Memory => 1 + base.enable_evict as usize + 1,
+                // A bounded stage: no legacy flag is on for it.
+                HeavySlot::Compaction => 0,
                 _ => 1,
             };
             assert_eq!(count, expected, "{slot:?} left {on:?} switched on");
+            assert_eq!(
+                options.index_resident_limit_bytes,
+                if slot == HeavySlot::Memory { base.index_resident_limit_bytes } else { 0 },
+                "{slot:?} must not schedule another slot's resident bound"
+            );
         }
         let mut off = StorageManagerOptions::default();
         off.enable_wal_reclaim = false;
         let options = options_for_slot(&off, HeavySlot::WalReclaim);
         assert!(!options.enable_wal_reclaim, "a stage the base had off stays off");
+        off.enable_evict = false;
+        let options = options_for_slot(&off, HeavySlot::Memory);
+        assert!(!options.enable_evict);
+        assert_eq!(options.index_resident_limit_bytes, off.index_resident_limit_bytes);
     }
 
     /// A tick runs the cheap work and at most ONE heavy stage, and over the five ticks the five

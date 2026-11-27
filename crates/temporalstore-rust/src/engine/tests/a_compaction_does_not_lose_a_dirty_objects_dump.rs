@@ -110,32 +110,33 @@ fn flags(engine: &TemporalEngine, keys: &[String]) -> Flags {
         min_undumped_wal_bytes: 0,
         ..crate::engine::reports::StorageLifecycleRequest::default()
     });
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    let (start, end) = shard.routing_range();
-    let entries = crate::engine::storage_bucket_internals::collect_live_block_entries(shard);
-    let mut with_clean = Vec::new();
-    let mut dirty_buckets = std::collections::BTreeSet::new();
-    for key in keys {
-        if !shard.dirty_objects.contains(key) {
-            continue;
+    engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.unwrap();
+        let (start, end) = shard.routing_range();
+        let entries = crate::engine::storage_bucket_internals::collect_live_block_entries(shard);
+        let mut with_clean = Vec::new();
+        let mut dirty_buckets = std::collections::BTreeSet::new();
+        for key in keys {
+            if !shard.dirty_objects.contains(key) {
+                continue;
+            }
+            dirty_buckets.insert(crate::engine::block_routing_bucket(key, start, end));
+            if entries.iter().any(|e| e.object_key.as_ref() == key.as_str() && !e.deleted && !e.dirty) {
+                with_clean.push(key.clone());
+            }
         }
-        dirty_buckets.insert(crate::engine::block_routing_bucket(key, start, end));
-        if entries.iter().any(|e| e.object_key.as_ref() == key.as_str() && !e.deleted && !e.dirty) {
-            with_clean.push(key.clone());
+        let planned = dirty_buckets
+            .iter()
+            .filter(|bucket| plan.selected_dump_buckets.contains(bucket))
+            .count();
+        Flags {
+            dirty_objects: keys.iter().filter(|key| shard.dirty_objects.contains(key)).count(),
+            dirty_objects_with_a_clean_block: with_clean,
+            dirty_buckets_in_plan: plan.dirty_buckets.len(),
+            buckets_holding_a_dirty_object: dirty_buckets.len(),
+            buckets_the_plan_would_dump_among_those: planned,
         }
-    }
-    let planned = dirty_buckets
-        .iter()
-        .filter(|bucket| plan.selected_dump_buckets.contains(bucket))
-        .count();
-    Flags {
-        dirty_objects: keys.iter().filter(|key| shard.dirty_objects.contains(key)).count(),
-        dirty_objects_with_a_clean_block: with_clean,
-        dirty_buckets_in_plan: plan.dirty_buckets.len(),
-        buckets_holding_a_dirty_object: dirty_buckets.len(),
-        buckets_the_plan_would_dump_among_those: planned,
-    }
+    })
 }
 
 fn scenario(mutation: impl Fn(&TemporalEngine)) -> (Flags, bool, BTreeMap<String, Vec<Vec<u8>>>, BTreeMap<String, Vec<Vec<u8>>>, usize) {

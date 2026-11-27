@@ -145,7 +145,11 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
         // Each restatement has been STRONGER than the one before, which is why none of them is a
         // relaxation: first any spelling that reached a `HashMap`, then one named per-kind function,
         // and now one generic function whose kind parameter the compiler checks.
-        if body.contains("install_element::<super::recorded_map::SetKind>(") {
+        // Two spellings install: the generic one, and the one the set write took when it began
+        // reporting where its appended block landed. Both are the recorded operation for a set.
+        if body.contains("install_element::<super::recorded_map::SetKind>(")
+            || body.contains("install_appended_element::<super::recorded_map::SetKind>(")
+        {
             installs.push(name.clone());
         }
     }
@@ -154,7 +158,8 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
     // VACUITY: the operation must be findable by name, so a rename cannot make `installs` empty
     // and have someone "fix" this test by expecting nothing.
     assert!(
-        execute.contains("install_element::<super::recorded_map::SetKind>("),
+        execute.contains("install_element::<super::recorded_map::SetKind>(")
+            || execute.contains("install_appended_element::<super::recorded_map::SetKind>("),
         "the recorded set install is not findable by name in `execute_on_shard.rs`, so the census          below would report zero installs for the wrong reason"
     );
     assert_eq!(

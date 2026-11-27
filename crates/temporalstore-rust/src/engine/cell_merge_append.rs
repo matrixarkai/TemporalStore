@@ -62,7 +62,7 @@ fn stored_value(
     key: &str,
     timestamp_ms: u64,
     routing_bucket: u32,
-    page_keys: &mut PageKeys,
+    block_keys: &mut BlockKeys,
 ) -> Result<Option<Vec<u8>>, Status> {
     let Some(address) = series.get(timestamp_ms) else {
         return Ok(None);
@@ -75,7 +75,7 @@ fn stored_value(
         address,
         BlockIdentity::of(shard_id, "feature", key, None),
         Some(routing_bucket),
-        page_keys,
+        block_keys,
         |value| value.to_vec(),
     )
     .map(Some)
@@ -122,8 +122,8 @@ pub(super) fn plan_cell_merge(
     if points.is_empty() {
         return Err(refuse(key, "a merge-reduce append needs at least one point"));
     }
-    // Every read of a stored sample in this plan shares one key for the page it sits in.
-    let mut page_keys = PageKeys::new();
+    // Every read of a stored sample in this plan shares one key for the block it sits in.
+    let mut block_keys = BlockKeys::new();
     // The newest stored sample is read ONCE: its header is the one every request is checked
     // against, and a request point at that timestamp merges into its cells.
     let newest_stored: Option<NewestStored> = match series.and_then(|s| s.range(..).next_back()) {
@@ -137,7 +137,7 @@ pub(super) fn plan_cell_merge(
                 key,
                 timestamp_ms,
                 routing_bucket,
-                &mut page_keys,
+                &mut block_keys,
             )?
             .expect("the newest timestamp has an address");
             let (header_bytes, _) = cell_set::split_value_raw(&value).map_err(|err| {
@@ -184,7 +184,7 @@ pub(super) fn plan_cell_merge(
                             key,
                             timestamp_ms,
                             routing_bucket,
-                            &mut page_keys,
+                            &mut block_keys,
                         )?;
                         match loaded.as_deref() {
                             None => cell_set::Existing::Nothing,

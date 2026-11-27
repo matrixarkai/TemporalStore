@@ -17,8 +17,9 @@
 //! # DELETE
 //!
 //! The selector names the key (`kind`, `channel`), the label predicate and the member set, over
-//! every sample. It maps to the same command and never to the deletion of the key: a delete that
-//! names no label and no member would empty the key and is refused, the way a removal is.
+//! every sample. It maps to the same command; a delete that names no label (the table has none) and
+//! no member leaves every part open, which is the deletion of the whole key in one record. A delete
+//! of a key that holds nothing answers NO_DATA.
 //!
 //! Every translated spec also passes the engine's own admission ([`window_reduce_remove::validate_spec`]),
 //! so a request the translator accepts is one the command accepts.
@@ -94,15 +95,20 @@ pub(crate) fn translate_remove(
         Some(label) => label_filter(profile, label)?.into_iter().collect(),
         None => Vec::new(),
     };
-    command_of(
-        key,
-        WindowReduceRemoveSpec {
-            start_ms,
-            end_ms,
-            members: members_of(&request.members, request.has_members, &request.excluded_members),
-            filters,
-        },
-    )
+    let spec = WindowReduceRemoveSpec {
+        start_ms,
+        end_ms,
+        members: members_of(&request.members, request.has_members, &request.excluded_members),
+        filters,
+    };
+    // A removal that lost its arguments must not look like the deletion of the key: that is `DELETE`.
+    if window_reduce_remove::removes_the_whole_key(&spec) {
+        return Err(invalid(
+            "a removal names no window, member or predicate, so it would empty the key: \
+             use a delete to remove the whole key",
+        ));
+    }
+    command_of(key, spec)
 }
 
 /// A delete request as the engine's removal.
@@ -158,8 +164,11 @@ pub(crate) fn refused_remove_response(request: &wire::WindowReduceRemoveRequest,
 }
 
 pub(crate) fn delete_response(receipt: Receipt) -> wire::WindowReduceDeleteResponse {
+    // A key that held no sample has nothing to delete: NO_DATA, as a read of nothing is not an error
+    // but a delete of nothing is not a deletion.
+    let code = if receipt.samples_before == 0 { WindowReduceStatusCode::NoData } else { WindowReduceStatusCode::Ok };
     wire::WindowReduceDeleteResponse {
-        code: WindowReduceStatusCode::Ok as i32,
+        code: code as i32,
         samples_before: receipt.samples_before,
         samples_after: receipt.samples_after,
         cells_before: receipt.cells_before,

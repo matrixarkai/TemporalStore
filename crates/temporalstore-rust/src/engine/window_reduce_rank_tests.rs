@@ -105,7 +105,7 @@ fn each_score_orders_by_the_value_only_it_produces() {
         lanes: vec!["shown".to_string(), "peak".to_string()],
         weights: vec![1.0, 50.0],
     };
-    let ratio_score = WindowReduceScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() };
+    let ratio_score = WindowReduceScore::Ratio { numerator: "shown".to_string(), denominator: "clicked".to_string() };
     // (name, score, expected member order, expected first score)
     let table: Vec<(&str, WindowReduceScore, Vec<u64>, f64)> = vec![
         // Sum: 200 60 30 10 5.
@@ -114,10 +114,12 @@ fn each_score_orders_by_the_value_only_it_produces() {
         ("lane max", lane("peak"), vec![1, 2, 3, 4, 99], 9.0),
         // Last: m2 and m4 tie at 400, then m1 m3 zz tie at 300; a sum would be 1000 for m1.
         ("lane last", lane("seen"), vec![2, 4, 1, 3, 99], 400.0),
-        // clicked / shown: .8 .5 .45 .1333 0.
-        ("ratio", ratio_score, vec![4, 2, 3, 1, 99], 0.8),
-        // The same data under Wilson: m3 (90/200) overtakes m2 (30/60) on volume.
-        ("wilson", wilson, vec![4, 3, 2, 1, 99], 0.490_157_5),
+        // shown / clicked as a whole number: m1 30/4 = 7, m2 60/30 = 2, m3 200/90 = 2, m4 10/8 = 1,
+        // zz 5/0 = 0 (a zero denominator scores 0 and is ranked); m2 and m3 tie, the smaller leads.
+        ("ratio", ratio_score, vec![1, 2, 3, 4, 99], 7.0),
+        // The same data under Wilson (the smaller lane out of the larger, x 10,000, cut): m4 8/10 =
+        // 4901, m3 90/200 = 3826 overtakes m2 30/60 = 3773 on volume, m1 4/30 = 530, zz 0/5 = 0.
+        ("wilson", wilson, vec![4, 3, 2, 1, 99], 4901.0),
         // shown + 50 * peak: 500 480 460 110 55.
         ("weighted", weighted, vec![3, 1, 2, 4, 99], 500.0),
     ];
@@ -149,13 +151,18 @@ fn a_wilson_bound_is_the_hand_computed_number_and_rewards_volume() {
     //   centre = .8 + 3.8416 / 20                 = .99208
     //   margin = 1.96 * sqrt(.016 + 3.8416 / 400) = 1.96 * .1600125 = .313624
     //   lower  = (.99208 - .313624) / (1 + 3.8416 / 10)           = .678456 / 1.38416 = .49016
-    let value = wilson_lower_bound(8, 10, 1.96).unwrap();
-    assert!((value - 0.490_16).abs() < 1e-4, "{value}");
+    //   score  = .49016 * 10,000 = 4901 (cut to a whole number)
+    assert_eq!(wilson_score(8, 10, 1.96), 4901);
+    // Which lane holds the successes does not matter: the smaller is taken out of the larger.
+    assert_eq!(wilson_score(10, 8, 1.96), 4901);
+    // Nothing in the larger lane scores 0, and so do lanes that leave the finite numbers.
+    assert_eq!(wilson_score(0, 0, 1.96), 0);
+    assert_eq!(wilson_score(1, 2, f64::NAN), 0);
 
     // Two members with the SAME ratio and different volume: the ratio ties them (member order
     // decides), Wilson puts the one with more evidence first. 80 of 100 by hand:
     //   centre = .8 + 3.8416 / 200 = .819208; margin = 1.96 * sqrt(.0016 + 3.8416 / 40000) = 1.96 * .041183 = .080719
-    //   lower  = (.819208 - .080719) / 1.038416 = .71118
+    //   lower  = (.819208 - .080719) / 1.038416 = .71118, so 7111
     let snaps: Samples = vec![(100, vec![cell(1, 0, [10, 8, 0, 0]), cell(2, 0, [100, 80, 0, 0])])];
     let wilson = WindowReduceScore::Wilson { successes: "clicked".to_string(), trials: "shown".to_string(), z: 1.96 };
     let ratio_score = WindowReduceScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() };
@@ -163,21 +170,45 @@ fn a_wilson_bound_is_the_hand_computed_number_and_rewards_volume() {
     let by_wilson = run_on(&spec(ALL, wilson, 5), &snaps, 100).unwrap();
     assert_eq!(order(&by_ratio), vec![1, 2], "equal ratios tie and the smaller member leads");
     assert_eq!(order(&by_wilson), vec![2, 1]);
-    assert!((by_wilson.rows[1].score - 0.490_16).abs() < 1e-4, "{}", by_wilson.rows[1].score);
-    assert!((by_wilson.rows[0].score - 0.711_2).abs() < 1e-3, "{}", by_wilson.rows[0].score);
+    assert_eq!(scores(&by_wilson), vec![7111, 4901]);
 }
 
 #[test]
-fn an_undefined_score_is_counted_and_not_ranked() {
-    // m1 has shown = 0: the ratio's denominator. m2 has clicked > shown: no Wilson bound.
+fn a_ratio_or_wilson_that_cannot_be_formed_is_ranked_at_zero_and_never_dropped() {
+    // m1 has shown = 0: a zero denominator. m2 has clicked > shown.
     let snaps: Samples =
         vec![(100, vec![cell(1, 0, [0, 5, 0, 0]), cell(2, 0, [4, 9, 0, 0]), cell(3, 0, [10, 5, 0, 0])])];
+    // clicked / shown as a whole number: m1 0 (zero denominator), m2 9/4 = 2, m3 5/10 = 0. m1 and m3
+    // tie at 0 and the smaller member leads; nothing is left out.
     let ratio_score = WindowReduceScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() };
     let ranked = run_on(&spec(ALL, ratio_score, 5), &snaps, 100).unwrap();
-    assert_eq!((order(&ranked), ranked.unscored), (vec![2, 3], 1));
+    assert_eq!((order(&ranked), scores(&ranked), ranked.unscored), (vec![2, 1, 3], vec![2, 0, 0], 0));
+    // Wilson takes the smaller lane out of the larger: m1 0 of 5 = 0, m2 4 of 9 = 1887, m3 5 of 10 = 2365.
     let wilson = WindowReduceScore::Wilson { successes: "clicked".to_string(), trials: "shown".to_string(), z: 1.96 };
     let ranked = run_on(&spec(ALL, wilson, 5), &snaps, 100).unwrap();
-    assert_eq!((order(&ranked), ranked.unscored), (vec![3], 2));
+    assert_eq!((order(&ranked), ranked.unscored), (vec![3, 2, 1], 0));
+    assert_eq!(ranked.rows[2].score, 0.0);
+}
+
+#[test]
+fn the_matched_span_is_the_samples_that_held_a_selected_cell_and_the_window_span_is_every_sample() {
+    // Member 4 is in the samples at 200 and 400 only; the window holds 100, 200, 300 and 400.
+    let mut query = spec(ALL, WindowReduceScore::Time, 5);
+    query.members = crate::types::CellMemberFilter { include: Some(vec![CellMemberId::U64(4)]), exclude: vec![] };
+    let ranked = run(&query);
+    assert_eq!((ranked.window_first_ms, ranked.window_last_ms), (100, 400));
+    assert_eq!((ranked.matched_first_ms, ranked.matched_last_ms), (200, 400));
+    // A predicate narrows it the same way: slot 1 cells exist at 100, 200 and 300 only.
+    let mut slot = spec(ALL, WindowReduceScore::Time, 5);
+    slot.filters = vec![filter("slot", FeatureFilterOp::Equal, 1)];
+    let ranked = run(&slot);
+    assert_eq!((ranked.matched_first_ms, ranked.matched_last_ms), (100, 300));
+    // Nothing selected: 0 and 0, with the window span still reported.
+    let mut none = spec(ALL, WindowReduceScore::Time, 5);
+    none.filters = vec![filter("slot", FeatureFilterOp::Equal, 9)];
+    let ranked = run(&none);
+    assert_eq!((ranked.matched_first_ms, ranked.matched_last_ms), (0, 0));
+    assert_eq!((ranked.window_first_ms, ranked.window_last_ms), (100, 400));
 }
 
 #[test]
@@ -543,7 +574,7 @@ fn the_merge_answers_what_a_per_member_table_answers() {
             (WindowReduceScore::Time, Box::new(|(_, ts)| Some(*ts as f64))),
             (
                 WindowReduceScore::Ratio { numerator: "clicked".to_string(), denominator: "shown".to_string() },
-                Box::new(|(l, _)| (l[0] != 0).then(|| l[1] as f64 / l[0] as f64)),
+                Box::new(|(l, _)| Some(if l[0] == 0 { 0.0 } else { (l[1] / l[0]) as f64 })),
             ),
             (
                 WindowReduceScore::Weighted { lanes: vec!["shown".to_string(), "seen".to_string()], weights: vec![0.5, 2.0] },

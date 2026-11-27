@@ -55,8 +55,10 @@
 #![allow(clippy::all)]
 use std::path::{Path, PathBuf};
 
-/// The two loaders that pass `fold_deltas: true`, as they appear at a call site.
-const FOLD_REACHING_CALLS: [&str; 2] = [".load_index(", ".load_index_checked("];
+/// Every loader that can apply ordinary deltas, as spelled at a call site.
+const FOLD_REACHING_CALLS: [&str; 3] = [
+    ".load_index(", ".load_index_checked(", ".load_index_checked_with_catalog(",
+];
 
 /// The production functions allowed to hold a fold-reaching call, each with why it is safe.
 ///
@@ -179,61 +181,87 @@ fn fn_name(trimmed: &str) -> String {
 /// than as "probably production", because an unreadable module chain is exactly the state in
 /// which a real caller could hide.
 fn module_chain_is_test_gated(file: &Path) -> Option<bool> {
-    let root = src_root();
-    let mut current = file.to_path_buf();
-    for _ in 0..12 {
-        let name = current.file_stem()?.to_str()?.to_string();
-        let dir = current.parent()?.to_path_buf();
-        if dir == root && (name == "lib" || name == "main") {
+    fn classify(file: &Path, depth: usize) -> Option<bool> {
+        if depth == 12 { return None; }
+        if file == src_root().join("lib.rs") || file == src_root().join("main.rs") {
             return Some(false);
         }
-        let declaring = if dir == root {
-            root.join("lib.rs")
-        } else {
-            let dir_name = dir.file_name()?.to_str()?.to_string();
-            let sibling = dir.parent()?.join(format!("{dir_name}.rs"));
-            if sibling.exists() {
-                sibling
-            } else {
-                dir.join("mod.rs")
-            }
-        };
-        match declaration_is_cfg_test(&declaring, &name)? {
-            true => return Some(true),
-            false => current = declaring,
+        let parents: Vec<_> = module_edges().iter().filter(|(child, _, _)| child == file).collect();
+        if parents.is_empty() { return None; }
+        let mut all_test = true;
+        for (_, parent, test) in parents {
+            all_test &= *test || classify(parent, depth + 1)?;
         }
+        Some(all_test)
     }
-    None
+    classify(&std::fs::canonicalize(file).ok()?, 0)
 }
 
-/// Does `declaring` hold `mod <name>;`, and is it preceded by `#[cfg(test)]`?
-///
-/// `None` when the declaration is not in that file at all -- which is a fact worth surfacing
-/// rather than defaulting, since it means the module chain is not what this census assumes.
-fn declaration_is_cfg_test(declaring: &Path, name: &str) -> Option<bool> {
-    let text = std::fs::read_to_string(declaring).ok()?;
-    let lines: Vec<&str> = text.lines().collect();
-    let needle = format!("mod {name};");
-    for (index, line) in lines.iter().enumerate() {
-        let trimmed = line.trim();
-        // `mod x;`, `pub mod x;`, `pub(crate) mod x;` -- the visibility is not the question.
-        if !trimmed.ends_with(&needle) {
-            continue;
-        }
-        let mut back = index;
-        while back > 0 {
-            back -= 1;
-            let above = lines[back].trim();
-            if above == "#[cfg(test)]" {
-                return Some(true);
+fn module_edges() -> &'static Vec<(PathBuf, PathBuf, bool)> {
+    static EDGES: std::sync::OnceLock<Vec<(PathBuf, PathBuf, bool)>> = std::sync::OnceLock::new();
+    EDGES.get_or_init(|| {
+        let mut files = Vec::new();
+        collect_rs(&src_root(), &mut files);
+        let mut edges = Vec::new();
+        for file in files {
+            let text = std::fs::read_to_string(&file).expect("module source is readable");
+            let directory = file.parent().unwrap();
+            let mut test = false;
+            let mut explicit = None;
+            for line in text.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with("//") { continue; }
+                if line == "#[cfg(test)]" { test = true; continue; }
+                if let Some(path) = line.strip_prefix("include!(\"").and_then(|tail| tail.strip_suffix("\");")) {
+                    if let Ok(child) = std::fs::canonicalize(directory.join(path)) {
+                        edges.push((child, std::fs::canonicalize(&file).unwrap(), test));
+                    }
+                    test = false;
+                    explicit = None;
+                    continue;
+                }
+                if let Some(path) = line.strip_prefix("#[path = \"").and_then(|tail| tail.strip_suffix("\"]")) {
+                    explicit = Some(directory.join(path));
+                    continue;
+                }
+                if line.starts_with("#[") { continue; }
+                let declaration = ["mod ", "pub mod ", "pub(crate) mod ", "pub(super) mod "]
+                    .iter().find_map(|prefix| line.strip_prefix(prefix));
+                if let Some(name) = declaration.and_then(|name| name.strip_suffix(';'))
+                    .filter(|name| !name.is_empty() && name.chars().all(|ch| ch.is_ascii_alphanumeric() || ch == '_'))
+                {
+                    let child = explicit.take().unwrap_or_else(|| {
+                        let stem = file.file_stem().unwrap().to_str().unwrap();
+                        let base = if matches!(stem, "lib" | "main" | "mod") {
+                            directory.to_path_buf()
+                        } else { directory.join(stem) };
+                        let sibling = base.join(format!("{name}.rs"));
+                        if sibling.exists() { sibling } else { base.join(name).join("mod.rs") }
+                    });
+                    if let Ok(child) = std::fs::canonicalize(child) {
+                        edges.push((child, std::fs::canonicalize(&file).unwrap(), test));
+                    }
+                }
+                test = false;
+                explicit = None;
             }
-            if !above.starts_with("#[") && !above.starts_with("//") && !above.is_empty() {
-                break;
-            }
         }
-        return Some(false);
-    }
-    None
+        edges
+    })
+}
+
+#[test]
+fn module_paths_preserve_test_gates_and_unknowns_fail_closed() {
+    let root = src_root().join("engine");
+    assert_eq!(module_chain_is_test_gated(&root.join("engine_lifecycle.rs")), Some(false));
+    assert_eq!(module_chain_is_test_gated(&root.join("ordered_restore_tests.rs")), Some(true));
+    assert_eq!(module_chain_is_test_gated(&root.join("relocation_fold_tests.rs")), Some(true));
+    assert_eq!(module_chain_is_test_gated(&root.join("tests/index_log_replay_reach.rs")), Some(true));
+    assert_eq!(module_chain_is_test_gated(&root.join("unclassified-caller.rs")), None);
+    let dir = tempfile::tempdir().unwrap();
+    let unlinked = dir.path().join("unlinked.rs");
+    std::fs::write(&unlinked, "fn unlinked() {}\n").unwrap();
+    assert_eq!(module_chain_is_test_gated(&unlinked), None);
 }
 
 /// Every call site of a fold-reaching loader under `src/`, classified.
@@ -324,7 +352,7 @@ fn fold_reaching_call_sites() -> Vec<CallSite> {
 /// deeper. So the three landmarks are unambiguous, and each one is checked for the text it is
 /// supposed to be rather than assumed from its position.
 fn wal_single_barrier_else_lines() -> (usize, usize) {
-    let path = src_root().join("engine").join("lifecycle.rs");
+    let path = src_root().join("engine").join("engine_lifecycle.rs");
     let text = std::fs::read_to_string(&path).expect("lifecycle.rs is readable");
     let lines: Vec<&str> = text.lines().collect();
 
@@ -401,7 +429,7 @@ fn every_production_caller_of_a_fold_reaching_loader_is_flag_gated() {
     );
 
     let (else_start, else_end) = wal_single_barrier_else_lines();
-    let lifecycle = src_root().join("engine").join("lifecycle.rs");
+    let lifecycle = src_root().join("engine").join("engine_lifecycle.rs");
 
     let mut production = Vec::new();
     let mut undetermined = Vec::new();
@@ -565,7 +593,7 @@ fn production_callers_of(name: &str) -> Vec<(PathBuf, usize, String)> {
 /// incomplete.
 #[test]
 fn the_only_fold_reaching_loaders_are_the_two_this_census_knows_about() {
-    let path = src_root().join("engine").join("persistence.rs");
+    let path = src_root().join("engine").join("engine_persistence.rs");
     let text = std::fs::read_to_string(&path).expect("persistence.rs is readable");
     let lines: Vec<&str> = text.lines().collect();
 
@@ -591,6 +619,12 @@ fn the_only_fold_reaching_loaders_are_the_two_this_census_knows_about() {
     }
     passing_true.sort();
     passing_true.dedup();
+
+    let mut direct: Vec<_> = production_callers_of("fold_index_log_deltas")
+        .into_iter().map(|(_, _, function)| function).collect();
+    direct.sort();
+    assert_eq!(direct, vec!["load_index_checked_with_catalog", "load_index_inner"],
+        "a direct ordinary-delta fold caller must join the guarded loader census");
 
     assert_eq!(
         vec!["load_index", "load_index_checked"],

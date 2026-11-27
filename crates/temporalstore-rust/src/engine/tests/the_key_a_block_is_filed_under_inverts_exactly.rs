@@ -92,9 +92,7 @@
 //! reconstruction field by field against the LIVE value the encoder was handed, on all 8,000 blocks
 //! -- not against a re-render of itself, and not on a sample. `a_reload_reads_every_object_back`
 //! writes a corpus, drops the engine, reloads from the same directories and reads every object
-//! back, with a key never written asserted ABSENT in the same moment. The old-format reader is
-//! proved against COMMITTED BYTES in `block_entry_names`, whose `OLD_STORE_INDEX` is the index a
-//! pre-change binary really wrote.
+//! back, with a key never written asserted ABSENT in the same moment.
 //!
 //! rust-internal: measures this crate's own index codec, no product behaviour
 
@@ -288,18 +286,19 @@ impl Seeded {
     /// against the index WITHOUT that map and the map is priced on its own line, under its own
     /// ceiling, in the test. A ceiling that absorbed it would stop biting on a restated key.
     fn surfaces(&self) -> Surfaces {
-        let mut shards = self.engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&SHARD).expect("shard is loaded");
-        let placements = shard.wal_resident_blocks.len();
-        let container_with = crate::engine::encode_index_bytes(shard).len();
-        let stream_with = serde_json::to_vec(shard).expect("the index must serialize as JSON").len();
-        let held = std::mem::take(&mut shard.wal_resident_blocks);
-        let mut surfaces = self.measure(shard);
-        surfaces.placements = placements;
-        surfaces.placement_stream = stream_with - surfaces.stream;
-        surfaces.placement_container_extra = container_with - surfaces.container;
-        shard.wal_resident_blocks = held;
-        surfaces
+        self.engine.shards.with_state_mut(SHARD, |state| {
+            let shard = state.expect("shard is loaded");
+            let placements = shard.wal_resident_blocks.len();
+            let container_with = crate::engine::encode_index_bytes(shard).len();
+            let stream_with = serde_json::to_vec(shard).expect("the index must serialize as JSON").len();
+            let held = std::mem::take(&mut shard.wal_resident_blocks);
+            let mut surfaces = self.measure(shard);
+            surfaces.placements = placements;
+            surfaces.placement_stream = stream_with - surfaces.stream;
+            surfaces.placement_container_extra = container_with - surfaces.container;
+            shard.wal_resident_blocks = held;
+            surfaces
+        })
     }
 
     fn measure(&self, shard: &ShardState) -> Surfaces {
@@ -510,95 +509,96 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
     for shape in [KeyShape::Padded, KeyShape::Scattered] {
         let seeded = seed(HEADLINE_KEYS, PUBLISHED_WIDTH, shape, SHIPPED_END_BUCKET);
         seeded.surfaces().assert_amortised_regime();
-        let shards = seeded.engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&SHARD).expect("shard is loaded");
-        let blocks = super::blocks_with_identity(&shard.bucket_index);
-        assert_eq!(
-            HEADLINE_KEYS,
-            blocks.len(),
-            "[CLAUSE every-block-inverts] the walk reached {} block(s) of {HEADLINE_KEYS}; a \
-             reconstruction claim over a subset is not the claim this change needs",
-            blocks.len()
-        );
-        let mut checked = 0usize;
-        for (_, _, object_key, block) in &blocks {
-            let key = crate::engine::state::block_index_written_key(object_key, block);
-            let parts = crate::index_log::block_ref_key_parts(&key)
-                .unwrap_or_else(|error| panic!("[CLAUSE every-block-inverts] {error}"));
+        seeded.engine.shards.with_state(SHARD, |state| {
+            let shard = state.expect("shard is loaded");
+            let blocks = super::blocks_with_identity(&shard.bucket_index);
             assert_eq!(
-                &**object_key, parts.object_key,
-                "[CLAUSE every-block-inverts] the object key read back out of {key:?} is \
-                 {:?} and the encoder was handed {:?}",
-                parts.object_key, &**object_key
+                HEADLINE_KEYS,
+                blocks.len(),
+                "[CLAUSE every-block-inverts] the walk reached {} block(s) of {HEADLINE_KEYS}; a \
+                 reconstruction claim over a subset is not the claim this change needs",
+                blocks.len()
             );
+            let mut checked = 0usize;
+            for (_, _, object_key, block) in &blocks {
+                let key = crate::engine::state::block_index_written_key(object_key, block);
+                let parts = crate::index_log::block_ref_key_parts(&key)
+                    .unwrap_or_else(|error| panic!("[CLAUSE every-block-inverts] {error}"));
+                assert_eq!(
+                    &**object_key, parts.object_key,
+                    "[CLAUSE every-block-inverts] the object key read back out of {key:?} is \
+                     {:?} and the encoder was handed {:?}",
+                    parts.object_key, &**object_key
+                );
+                assert_eq!(
+                    Some(block.model_id()),
+                    crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
+                        parts.kind
+                    ),
+                    "[CLAUSE every-block-inverts] the kind read back out of {key:?} is {:?} and the \
+                     block holds {:?}",
+                    parts.kind,
+                    block.model_id().as_str()
+                );
+                assert_eq!(
+                    "", parts.element_name,
+                    "[CLAUSE every-block-inverts] the element name slot of {key:?} holds {:?}; the \
+                     renderer passes a literal `None`, so a non-empty slot means the key was composed \
+                     by something else",
+                    parts.element_name
+                );
+                assert_eq!(
+                    block.address.block_slab_id(),
+                    parts.block_slab_id,
+                    "[CLAUSE every-block-inverts] the slab id slot of {key:?} disagrees with the address"
+                );
+                assert_eq!(
+                    block.address.offset(),
+                    parts.offset,
+                    "[CLAUSE every-block-inverts] the offset slot of {key:?} disagrees with the address"
+                );
+                assert_eq!(
+                    block.address.length(),
+                    parts.length,
+                    "[CLAUSE every-block-inverts] the length slot of {key:?} disagrees with the address"
+                );
+                assert_eq!(
+                    block.address.block_id().unwrap_or_default(),
+                    parts.block_id,
+                    "[CLAUSE every-block-inverts] the block id slot of {key:?} disagrees with the address"
+                );
+                assert_eq!(
+                    block.address.generation().unwrap_or_default(),
+                    parts.generation,
+                    "[CLAUSE every-block-inverts] the generation slot of {key:?} disagrees with the \
+                     address"
+                );
+                checked += 1;
+            }
             assert_eq!(
-                Some(block.model_id()),
-                crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
-                    parts.kind
-                ),
-                "[CLAUSE every-block-inverts] the kind read back out of {key:?} is {:?} and the \
-                 block holds {:?}",
-                parts.kind,
-                block.model_id().as_str()
+                HEADLINE_KEYS, checked,
+                "[CLAUSE every-block-inverts] {checked} block(s) were compared rather than {HEADLINE_KEYS}"
             );
-            assert_eq!(
-                "", parts.element_name,
-                "[CLAUSE every-block-inverts] the element name slot of {key:?} holds {:?}; the \
-                 renderer passes a literal `None`, so a non-empty slot means the key was composed \
-                 by something else",
-                parts.element_name
+            println!(
+                "[every-block-inverts] {shape:?}: {checked} block(s), object key and kind read back out \
+                 of the key and equal to what the encoder was handed on every one"
             );
-            assert_eq!(
-                block.address.block_slab_id(),
-                parts.block_slab_id,
-                "[CLAUSE every-block-inverts] the slab id slot of {key:?} disagrees with the address"
-            );
-            assert_eq!(
-                block.address.offset(),
-                parts.offset,
-                "[CLAUSE every-block-inverts] the offset slot of {key:?} disagrees with the address"
-            );
-            assert_eq!(
-                block.address.length(),
-                parts.length,
-                "[CLAUSE every-block-inverts] the length slot of {key:?} disagrees with the address"
-            );
-            assert_eq!(
-                block.address.block_id().unwrap_or_default(),
-                parts.block_id,
-                "[CLAUSE every-block-inverts] the block id slot of {key:?} disagrees with the address"
-            );
-            assert_eq!(
-                block.address.generation().unwrap_or_default(),
-                parts.generation,
-                "[CLAUSE every-block-inverts] the generation slot of {key:?} disagrees with the \
-                 address"
-            );
-            checked += 1;
-        }
-        assert_eq!(
-            HEADLINE_KEYS, checked,
-            "[CLAUSE every-block-inverts] {checked} block(s) were compared rather than {HEADLINE_KEYS}"
-        );
-        println!(
-            "[every-block-inverts] {shape:?}: {checked} block(s), object key and kind read back out \
-             of the key and equal to what the encoder was handed on every one"
-        );
 
-        // --- THE CONTROL. The comparison must be able to FAIL. ---
-        let (_, _, object_key, block) = &blocks[0];
-        let key = crate::engine::state::block_index_written_key(object_key, block);
-        let mut doctored = key.clone();
-        let at = doctored.find('-').expect("a fixture key holds its ordinal tail");
-        doctored.replace_range(at..at + 1, "_");
-        let doctored_parts = crate::index_log::block_ref_key_parts(&doctored)
-            .expect("the doctored key is still an eight-slot composite");
-        assert_ne!(
-            &**object_key, doctored_parts.object_key,
-            "[CLAUSE every-block-inverts] a one-character change to an object key did not change \
-             what the parse reads back, so the 8,000 equalities above are equalities this \
-             instrument cannot distinguish from inequalities"
-        );
+            // --- THE CONTROL. The comparison must be able to FAIL. ---
+            let (_, _, object_key, block) = &blocks[0];
+            let key = crate::engine::state::block_index_written_key(object_key, block);
+            let mut doctored = key.clone();
+            let at = doctored.find('-').expect("a fixture key holds its ordinal tail");
+            doctored.replace_range(at..at + 1, "_");
+            let doctored_parts = crate::index_log::block_ref_key_parts(&doctored)
+                .expect("the doctored key is still an eight-slot composite");
+            assert_ne!(
+                &**object_key, doctored_parts.object_key,
+                "[CLAUSE every-block-inverts] a one-character change to an object key did not change \
+                 what the parse reads back, so the 8,000 equalities above are equalities this \
+                 instrument cannot distinguish from inequalities"
+            );
+        })
     }
 }
 
@@ -680,9 +680,9 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
         );
     }
 
-    // AND A NON-EMPTY ELEMENT NAME IS CARRIED TOO, because an index written before the element name
-    // left the entry spells one -- `block_entry_names::OLD_STORE_INDEX` holds `hash:k:f0:1:9:3:4:4`
-    // -- and the object key in such a key must still come back whole rather than absorbing it.
+    // AND A NON-EMPTY ELEMENT NAME IS CARRIED TOO, because a block key can spell one
+    // (`hash:k:f0:1:9:3:4:4`) and the object key in such a key must still come back whole rather
+    // than absorbing it.
     let named = block_ref_key_from_parts("hash", "a:b", Some("f0"), 1, 9, 3, 4, 4);
     let parts = block_ref_key_parts(&named).expect("an element-named key parses");
     assert_eq!(
@@ -740,140 +740,6 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
 // =================================================================================================
 // THE OLD FORMAT, READ BY THE NEW READER, FROM A FIXTURE COMMITTED AS BYTES
 // =================================================================================================
-
-/// AN INDEX WRITTEN BEFORE THIS CHANGE IS READ BY THIS BINARY, THROUGH THE WHOLE DOOR.
-///
-/// # WHY A ROUND TRIP WOULD NOT HAVE BEEN EVIDENCE
-///
-/// A round trip writes and reads with the SAME build, so both halves are wrong together and agree.
-/// What has to be proved is that the reconstruction reads what a PREVIOUS binary wrote, and the
-/// only form of a previous binary's output that outlives the field is BYTES.
-///
-/// `block_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8` is such bytes: a whole shard index a
-/// pre-change binary really wrote, captured by that module's own capture instrument, whose three
-/// page entries each spell `object_key` and `model_id` as named fields -- and whose composite keys
-/// each spell the same two values. This arm takes it through the struct's own deserializer -- the
-/// read the retired plain-JSON arm of `decode_index_bytes` made -- and asserts the identity the new
-/// reader reconstructs is the identity the OLD entry carried, block by block.
-///
-/// # AND IT IS THE HARDEST AVAILABLE CASE, WHICH IS WHY IT IS THIS FIXTURE AND NOT A NEWER ONE
-///
-/// Its keys carry a NON-EMPTY element name slot -- `hash:ungated/hash:f0:0:0:27:0:0` and
-/// `zset:ungated/zset:6d30:0:54:34:0:0` -- from an era when a block entry named its element. A parse
-/// that searched for its fields rather than counting them from the END would read the object key
-/// short on exactly these keys and would still look right on every key this binary writes. Nothing
-/// a current store contains would catch that.
-///
-/// # WHAT THIS ARM DOES NOT CLAIM
-///
-/// It is not a claim that such a store is SERVED. A stamp-8 image is refused by `persistence`'s `<`
-/// comparison before anything reads it, which
-/// `block_entry_names::an_ungated_store_is_refused_before_it_is_served` drives. This is a claim
-/// about the DECODE, which happens first and which is where a reconstruction can go silently wrong.
-///
-/// rust-internal: decodes committed bytes through this crate's own door, no product behaviour
-#[test]
-fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carried() {
-    let bytes = super::block_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8;
-
-    // ---- THE FIXTURE REALLY CARRIES THE TWO FIELDS, ASSERTED ON THE TEXT ----
-    //
-    // On the TEXT and not on the decoded value, because what this binary can still read off an
-    // entry is exactly what the change took away. If the bytes did not spell them, this arm would
-    // be about an index that never had them and the reconstruction would have nothing to agree
-    // with.
-    for spelling in [
-        r#""object_key":"ungated/hash""#,
-        r#""object_key":"ungated/zset""#,
-        r#""model_id":"hash""#,
-        r#""model_id":"zset""#,
-    ] {
-        assert!(
-            bytes.contains(spelling),
-            "[CLAUSE old-bytes-carry-the-fields] the committed fixture does not spell {spelling}, \
-             so it is not an index whose entries name their object and this arm tests no \
-             reconstruction"
-        );
-    }
-
-    let decoded = serde_json::from_str::<crate::engine::state::ShardState>(bytes).expect(
-        "[CLAUSE old-bytes-decode] an index written by a pre-change binary must still be READ -- \
-         the header refuses it one layer up, and a read that failed here would mean the new \
-         reader cannot read the old shape at all",
-    );
-    assert_eq!(
-        8, decoded.index_format_version,
-        "[CLAUSE old-bytes-decode] the fixture's stamp is {} rather than 8, so it is not the \
-         pre-change store this guard is about",
-        decoded.index_format_version
-    );
-
-    // ---- EVERY BLOCK, AND THE IDENTITY IT CAME BACK WITH ----
-    let blocks = super::blocks_with_identity(&decoded.bucket_index);
-    let mut rebuilt: Vec<(String, String)> = blocks
-        .iter()
-        .map(|(_, _, object_key, block)| {
-            (object_key.to_string(), block.model_id().as_str().to_string())
-        })
-        .collect();
-    rebuilt.sort();
-    println!("\n=== a pre-change store, decoded and re-identified by this binary ===");
-    for row in &rebuilt {
-        println!("  {row:?}");
-    }
-
-    // THE EXPECTATION IS WHAT THE OLD ENTRIES SPELL, written out independently of the fixture text
-    // -- three rows, one per block, which is the set `an_ungated_store_is_refused_before_it_is_served`
-    // counts in the same bytes.
-    let expected: Vec<(String, String)> = {
-        let mut rows = vec![
-            ("ungated/hash".to_string(), "hash".to_string()),
-            ("ungated/hash".to_string(), "hash".to_string()),
-            ("ungated/zset".to_string(), "zset".to_string()),
-        ];
-        rows.sort();
-        rows
-    };
-    assert_eq!(
-        expected.len(),
-        rebuilt.len(),
-        "[CLAUSE old-bytes-rebuild-exactly] the fixture holds {} block(s) and {} came back",
-        expected.len(),
-        rebuilt.len()
-    );
-    for (at, (want, got)) in expected.iter().zip(rebuilt.iter()).enumerate() {
-        assert_eq!(
-            want, got,
-            "[CLAUSE old-bytes-rebuild-exactly] block {at} came back with the identity {got:?} \
-             where the stored entry spelled {want:?} -- a reconstruction that disagrees with what \
-             the old binary wrote is data loss wearing an optimisation's clothes"
-        );
-    }
-
-    // ---- THE CONTROL: THE COMPARISON MUST BE ABLE TO FAIL ----
-    let mut injected = rebuilt.clone();
-    injected[0].0.push('Z');
-    assert_ne!(
-        injected, rebuilt,
-        "[CLAUSE old-bytes-rebuild-exactly] the comparison cannot report a difference when one is \
-         injected, so the equalities above are equalities it cannot distinguish from inequalities"
-    );
-
-    // ---- AND THE ELEMENT NAME-BEARING KEY IS THE CASE THIS FIXTURE EXISTS FOR ----
-    assert!(
-        bytes.contains("hash:ungated/hash:f0:0:0:27:0:0"),
-        "[CLAUSE old-bytes-carry-the-fields] the fixture carries no element-named block key, so the \
-         split that could have read an object key short is not exercised"
-    );
-    let named = crate::index_log::block_ref_key_parts("hash:ungated/hash:f0:0:0:27:0:0")
-        .expect("an element-named key from a real pre-change store must parse");
-    assert_eq!(
-        ("hash", "ungated/hash", "f0"),
-        (named.kind, named.object_key, named.element_name),
-        "[CLAUSE old-bytes-rebuild-exactly] an element-named key splits in the wrong place, so a \
-         pre-change store's object keys would come back short"
-    );
-}
 
 // =================================================================================================
 // THE FIELD THAT CANNOT GO: THE PRESENCE BITS
@@ -1353,14 +1219,15 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
             expected.insert(key, value);
         }
         {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&SHARD).expect("shard is loaded");
-            for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
-                identities_before.insert(
-                    handle,
-                    (object_key.to_string(), block.model_id().as_str().to_string()),
-                );
-            }
+            engine.shards.with_state(SHARD, |state| {
+                let shard = state.expect("shard is loaded");
+                for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
+                    identities_before.insert(
+                        handle,
+                        (object_key.to_string(), block.model_id().as_str().to_string()),
+                    );
+                }
+            })
         }
         assert_eq!(
             OBJECTS,
@@ -1477,39 +1344,40 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
     // row and not through the block index's kind, so the 600 reads below are silent about the
     // `model_id` the reconstruction produces. This is the arm that is not.
     {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&SHARD).expect("shard is loaded");
-        let mut after: BTreeMap<u64, (String, String)> = BTreeMap::new();
-        for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
-            after.insert(
-                handle,
-                (object_key.to_string(), block.model_id().as_str().to_string()),
+        engine.shards.with_state(SHARD, |state| {
+            let shard = state.expect("shard is loaded");
+            let mut after: BTreeMap<u64, (String, String)> = BTreeMap::new();
+            for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
+                after.insert(
+                    handle,
+                    (object_key.to_string(), block.model_id().as_str().to_string()),
+                );
+            }
+            assert_eq!(
+                identities_before.len(),
+                after.len(),
+                "[CLAUSE reload-rebuilds-every-identity] {} block identity(ies) were written and {} came \
+                 back",
+                identities_before.len(),
+                after.len()
             );
-        }
-        assert_eq!(
-            identities_before.len(),
-            after.len(),
-            "[CLAUSE reload-rebuilds-every-identity] {} block identity(ies) were written and {} came \
-             back",
-            identities_before.len(),
-            after.len()
-        );
-        assert_eq!(
-            identities_before, after,
-            "[CLAUSE reload-rebuilds-every-identity] a block came back under a different object key \
-             or a different kind than the writer held -- the identity is reconstructed from the \
-             stored key now, so a disagreement here is the reconstruction being wrong"
-        );
-        // THE CONTROL: the comparison must be able to fail.
-        let mut injected = after.clone();
-        if let Some((_, row)) = injected.iter_mut().next() {
-            row.1.push('Z');
-        }
-        assert_ne!(
-            injected, identities_before,
-            "[CLAUSE reload-rebuilds-every-identity] the comparison cannot report a difference when \
-             one is injected"
-        );
+            assert_eq!(
+                identities_before, after,
+                "[CLAUSE reload-rebuilds-every-identity] a block came back under a different object key \
+                 or a different kind than the writer held -- the identity is reconstructed from the \
+                 stored key now, so a disagreement here is the reconstruction being wrong"
+            );
+            // THE CONTROL: the comparison must be able to fail.
+            let mut injected = after.clone();
+            if let Some((_, row)) = injected.iter_mut().next() {
+                row.1.push('Z');
+            }
+            assert_ne!(
+                injected, identities_before,
+                "[CLAUSE reload-rebuilds-every-identity] the comparison cannot report a difference when \
+                 one is injected"
+            );
+        })
     }
 
     let mut found = 0usize;

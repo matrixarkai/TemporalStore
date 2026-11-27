@@ -4,6 +4,25 @@
 //! Storage readiness / compatibility / cache-warmup / recovery-boundary reports for TemporalEngine, split from engine.rs.
 use super::*;
 
+fn summarize_cache_buckets(entries: &[CacheEntryInfo]) -> BTreeMap<u32, StorageCacheBucketSummary> {
+    let mut buckets = BTreeMap::<u32, StorageCacheBucketSummary>::new();
+    for entry in entries {
+        let Some(routing_bucket) = cache_entry_routing_bucket(entry) else { continue; };
+        let summary = buckets.entry(routing_bucket).or_insert_with(|| StorageCacheBucketSummary {
+            routing_bucket,
+            ..Default::default()
+        });
+        summary.entry_count = summary.entry_count.saturating_add(1);
+        summary.memory_bytes = summary.memory_bytes.saturating_add(entry.memory_bytes);
+        summary.disk_bytes = summary.disk_bytes.saturating_add(entry.disk_bytes);
+        if entry.pinned {
+            summary.pinned_entries = summary.pinned_entries.saturating_add(1);
+            summary.pinned_bytes = summary.pinned_bytes.saturating_add(entry.memory_bytes);
+        }
+    }
+    buckets
+}
+
 impl TemporalEngine {
     /// A BOUNDED, RESUMABLE SWEEP OF PER-BUCKET GAUGES: at most `max` buckets after `after`, in
     /// routing order, each with how many objects and blocks it holds and how many bytes those
@@ -17,37 +36,40 @@ impl TemporalEngine {
         after: Option<u32>,
         max: usize,
     ) -> BucketGaugeSweep {
-        let shards = self.shards.read().expect("shards lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return BucketGaugeSweep::default();
-        };
-        let buckets = &shard.bucket_index.bucket_map;
-        let mut sweep = BucketGaugeSweep {
-            buckets_total: buckets.len(),
-            ..BucketGaugeSweep::default()
-        };
-        let mut remaining = buckets.range_after(after);
-        for (routing_bucket, node) in remaining.by_ref().take(max) {
-            sweep.gauges.push(BucketGauge {
-                routing_bucket: *routing_bucket,
-                object_count: node.object_index.object_count() as u64,
-                block_count: node.block_index.len() as u64,
-                block_bytes: node
-                    .block_index
-                    .values()
-                    .map(|block| block.address.length())
-                    .sum::<u64>(),
-            });
-        }
-        // Resume after the last bucket read, unless that was the end.
-        sweep.next_after = if remaining.next().is_some() {
-            sweep.gauges.last().map(|gauge| gauge.routing_bucket)
-        } else {
-            None
-        };
-        sweep
+        self.shards.with_shard(shard_id, |shard, visited| {
+            let Some(shard) = shard else {
+                return BucketGaugeSweep::default();
+            };
+            let buckets = &shard.bucket_index.bucket_map;
+            let mut sweep = BucketGaugeSweep {
+                buckets_total: buckets.len(),
+                ..BucketGaugeSweep::default()
+            };
+            let mut remaining = buckets.range_after(after);
+            for (routing_bucket, node) in remaining.by_ref().take(max) {
+                // One entry per bucket read; the bucket's own blocks are summed below and charged
+                // too, because that sum is a walk of them.
+                visited.add(1 + node.block_index.len() as u64);
+                sweep.gauges.push(BucketGauge {
+                    routing_bucket: *routing_bucket,
+                    object_count: node.object_index.object_count() as u64,
+                    block_count: node.block_index.len() as u64,
+                    block_bytes: node
+                        .block_index
+                        .values()
+                        .map(|block| block.address.length())
+                        .sum::<u64>(),
+                });
+            }
+            // Resume after the last bucket read, unless that was the end.
+            sweep.next_after = if remaining.next().is_some() {
+                sweep.gauges.last().map(|gauge| gauge.routing_bucket)
+            } else {
+                None
+            };
+            sweep
+        })
     }
-
 
     /// WHAT THE SERVED HASH READ HAS SEEN OF ITS TWO SOURCES, read off the counters the read
     /// path keeps.
@@ -66,10 +88,8 @@ impl TemporalEngine {
             reads_served,
             index_named_fields_the_container_lacked,
             divergences_logged,
-            last_divergence: last.map(|(object_key, field)| HashReadDivergenceSample {
-                object_key,
-                field,
-            }),
+            last_divergence: last
+                .map(|(object_key, field)| HashReadDivergenceSample { object_key, field }),
         }
     }
     /// WHAT THE BUCKET MAINTENANCE SCAN HAS SEEN of the blocks and the object list.
@@ -90,10 +110,12 @@ impl TemporalEngine {
             list_held_an_object_no_block_names: counts.list_held_an_object_no_block_names,
             divergences_logged: counts.divergences_logged,
             stored_slots_repeated_an_id: super::state::stored_slots_repeated_an_id(),
-            last_divergence: counts.last.map(|(what, object_id)| ObjectIndexDivergenceSample {
-                what: what.to_string(),
-                object_id,
-            }),
+            last_divergence: counts
+                .last
+                .map(|(what, object_id)| ObjectIndexDivergenceSample {
+                    what: what.to_string(),
+                    object_id,
+                }),
         }
     }
 
@@ -479,7 +501,10 @@ impl TemporalEngine {
         // round as that pair: fixing only the other would have left every round still reading
         // both logs in full, from a second site.
         let wal_records = self.wal_store.record_count(shard_id).unwrap_or_default();
-        let index_log_records = self.index_log_store.record_count(shard_id).unwrap_or_default();
+        let index_log_records = self
+            .index_log_store
+            .record_count(shard_id)
+            .unwrap_or_default();
         StorageLogCompatibilityReport {
             shard_id,
             wal_format: "rust-protobuf-wal-v1".to_string(),
@@ -590,12 +615,33 @@ impl TemporalEngine {
         // of bytes that are still on disk, not a claim that the block is live, and nothing reads
         // the cache to decide what is live. This is a REPORT and a cache fill; it decides no
         // reclaim, so a stale answer costs at most one wasted cache slot.
-        let mut plan: Vec<(CacheKey, ElementEntry)> = Vec::new();
-        let held_across_io = {
-            let shards = self.shards_read_marked();
-            let Some(shard) = shards.get(&shard_id) else {
-                return report;
-            };
+        let warm = |report: &mut StorageCacheWarmupReport, plan: Vec<(CacheKey, ElementEntry)>| {
+            for (key, address) in plan {
+                if self.cache.peek_tier(&key).is_some() {
+                    report.already_cached_block_refs =
+                        report.already_cached_block_refs.saturating_add(1);
+                    report.warmed_block_refs = report.warmed_block_refs.saturating_add(1);
+                } else if let Ok(bytes) = self.read_block_counted(&address) {
+                    report.page_store_reads = report.page_store_reads.saturating_add(1);
+                    report.block_store_reads = report.block_store_reads.saturating_add(1);
+                    let byte_len = bytes.len() as u64;
+                    match self.cache.put(key, bytes) {
+                        Ok(()) => {
+                            report.warmed_block_refs = report.warmed_block_refs.saturating_add(1);
+                            report.warmed_bytes = report.warmed_bytes.saturating_add(byte_len);
+                        }
+                        Err(_) => {
+                            report.failed_block_refs = report.failed_block_refs.saturating_add(1);
+                        }
+                    }
+                } else {
+                    report.failed_block_refs = report.failed_block_refs.saturating_add(1);
+                }
+            }
+        };
+        let plan = self.shards.with_state(shard_id, |shard| {
+            let mut plan = Vec::new();
+            let Some(shard) = shard else { return plan };
             for entry in collect_live_block_entries(shard) {
                 let routing_bucket = self.routing_bucket_for_key(shard_id, &entry.object_key);
                 if !selected_buckets.is_empty() && !selected_buckets.contains(&routing_bucket) {
@@ -612,35 +658,13 @@ impl TemporalEngine {
                 );
                 plan.push((key, entry.address));
             }
-            // The control arm of `the_cache_warmup_reads_blocks_after_the_shard_guard_drops` keeps
-            // the guard held across the reads, so the guard has a positive control to compare
-            // against rather than an assertion that nothing can fail.
-            self.warm_cache_under_shard_guard
-                .load(std::sync::atomic::Ordering::Relaxed)
-                .then_some(shards)
-        };
-        for (key, address) in plan {
-            if self.cache.peek_tier(&key).is_some() {
-                report.already_cached_block_refs = report.already_cached_block_refs.saturating_add(1);
-                report.warmed_block_refs = report.warmed_block_refs.saturating_add(1);
-            } else if let Ok(bytes) = self.read_block_counted(&address) {
-                report.page_store_reads = report.page_store_reads.saturating_add(1);
-                report.block_store_reads = report.block_store_reads.saturating_add(1);
-                let byte_len = bytes.len() as u64;
-                match self.cache.put(key, bytes) {
-                    Ok(()) => {
-                        report.warmed_block_refs = report.warmed_block_refs.saturating_add(1);
-                        report.warmed_bytes = report.warmed_bytes.saturating_add(byte_len);
-                    }
-                    Err(_) => {
-                        report.failed_block_refs = report.failed_block_refs.saturating_add(1);
-                    }
-                }
-            } else {
-                report.failed_block_refs = report.failed_block_refs.saturating_add(1);
+            // Positive control for the existing guard-scope fixture.
+            if self.warm_cache_under_shard_guard.load(std::sync::atomic::Ordering::Relaxed) {
+                warm(&mut report, std::mem::take(&mut plan));
             }
-        }
-        drop(held_across_io);
+            plan
+        });
+        warm(&mut report, plan);
         report
     }
 
@@ -652,31 +676,32 @@ impl TemporalEngine {
         let entries = self.cache.entries_for_shard(shard_id);
         STORAGE_CACHE_INSPECTION_LISTING_ENTRIES
             .with(|cell| cell.set(cell.get().saturating_add(entries.len() as u64)));
-        let mut bucket_summaries = BTreeMap::<u32, StorageCacheBucketSummary>::new();
-        for entry in &entries {
-            let Some(routing_bucket) = cache_entry_routing_bucket(entry) else {
-                continue;
-            };
-            let summary = bucket_summaries
-                .entry(routing_bucket)
-                .or_insert(StorageCacheBucketSummary {
-                    routing_bucket,
-                    ..StorageCacheBucketSummary::default()
-                });
-            summary.entry_count = summary.entry_count.saturating_add(1);
-            summary.memory_bytes = summary.memory_bytes.saturating_add(entry.memory_bytes);
-            summary.disk_bytes = summary.disk_bytes.saturating_add(entry.disk_bytes);
-            if entry.pinned {
-                summary.pinned_entries = summary.pinned_entries.saturating_add(1);
-                summary.pinned_bytes = summary.pinned_bytes.saturating_add(entry.memory_bytes);
-            }
-        }
+        let bucket_summaries = summarize_cache_buckets(&entries);
         StorageCacheInspectionReport {
             shard_id,
             stats: self.cache.stats(),
             entries,
             bucket_summaries: bucket_summaries.into_values().collect(),
         }
+    }
+
+    pub(super) fn storage_cache_summaries_for_buckets(
+        &self,
+        shard_id: ShardId,
+        buckets: &BTreeSet<u32>,
+    ) -> BTreeMap<u32, StorageCacheBucketSummary> {
+        if buckets.is_empty() {
+            return BTreeMap::new();
+        }
+        STORAGE_CACHE_INSPECTION_LISTINGS.with(|cell| cell.set(cell.get().saturating_add(1)));
+        let entries = self.cache.entries_for_shard_matching(shard_id, |key| {
+            key.selector.strip_prefix("slot-").and_then(|suffix| suffix.split(':').next())
+                .and_then(|slot| slot.parse::<u32>().ok())
+                .is_some_and(|slot| buckets.contains(&slot))
+        });
+        STORAGE_CACHE_INSPECTION_LISTING_ENTRIES
+            .with(|cell| cell.set(cell.get().saturating_add(entries.len() as u64)));
+        summarize_cache_buckets(&entries)
     }
 
     pub fn invalidate_storage_cache_bucket(
@@ -742,20 +767,8 @@ impl TemporalEngine {
         // the bucket's own flag rather than derived from a count of dirty OBJECTS. See
         // `dirty_bucket_nodes`. A bucket with no node reads the same either way, because the set
         // loop contributes no count to one.
-        let dirty_nodes = self
-            .shards
-            .read()
-            .expect("shards lock poisoned")
-            .get(&shard_id)
-            .map(super::storage_reporting::dirty_bucket_nodes)
-            .unwrap_or_default();
-        let missing_dump_bucket_ids = self
-            .bucket_storage_summaries(shard_id)
-            .into_iter()
-            .filter(|summary| dirty_nodes.contains(&summary.routing_bucket))
-            .map(|summary| summary.routing_bucket)
-            .filter(|bucket| !latest_dump_buckets.contains(bucket))
-            .collect::<Vec<_>>();
+        let missing_dump_bucket_ids =
+            self.recovery_missing_dump_bucket_ids(shard_id, &latest_dump_buckets);
         let interrupted_bucket_dump_installs = self.interrupted_bucket_dump_installs(shard_id);
         let (
             prepared_bucket_dump_install_count,
@@ -783,8 +796,7 @@ impl TemporalEngine {
             latest_safe_index_log_sequence,
             latest_dump_wal_sequence,
             latest_dump_index_log_sequence,
-            selected_replay_wal_sequence: latest_dump_wal_sequence
-                .min(latest_safe_wal_sequence),
+            selected_replay_wal_sequence: latest_dump_wal_sequence.min(latest_safe_wal_sequence),
             selected_replay_index_log_sequence: latest_dump_index_log_sequence
                 .min(latest_safe_index_log_sequence),
             orphan_block_slab_ids,
@@ -802,10 +814,22 @@ impl TemporalEngine {
             unreadable_block_bytes,
         }
     }
+
+    fn recovery_missing_dump_bucket_ids(
+        &self,
+        shard_id: ShardId,
+        latest_dump_buckets: &BTreeSet<u32>,
+    ) -> Vec<u32> {
+        self.shards.with_state(shard_id, |shard| {
+            let Some(shard) = shard else { return Vec::new() };
+            // Dirty nodes always receive summaries, including nodes without live blocks.
+            shard.bucket_index.bucket_map.dirty_buckets()
+                .difference(latest_dump_buckets).copied().collect()
+        })
+    }
 }
 
-/// Calls to [`TemporalEngine::storage_cache_inspection_report`], which is the only cache listing
-/// the storage-manager round makes.
+/// Full or selected-bucket cache inspection calls made on this thread.
 ///
 /// WHY THIS IS COUNTED AND NOT TIMED. The listing is `MultiLayerCache::entries_for_shard`, which
 /// materialises and SORTS one entry per cached record for the shard and falls through to a
@@ -828,7 +852,7 @@ thread_local! {
         const { std::cell::Cell::new(0) };
 }
 
-/// Cache listings made by `storage_cache_inspection_report` ON THIS THREAD since the last reset.
+/// Full or selected-bucket cache listings ON THIS THREAD since the last reset.
 pub fn storage_cache_inspection_listings() -> u64 {
     STORAGE_CACHE_INSPECTION_LISTINGS.with(|cell| cell.get())
 }
@@ -843,3 +867,11 @@ pub fn reset_storage_cache_inspection_listings() {
     STORAGE_CACHE_INSPECTION_LISTINGS.with(|cell| cell.set(0));
     STORAGE_CACHE_INSPECTION_LISTING_ENTRIES.with(|cell| cell.set(0));
 }
+
+#[cfg(test)]
+#[path = "recovery_dirty_bucket_tests.rs"]
+mod recovery_dirty_bucket_tests;
+
+#[cfg(test)]
+#[path = "selected_cache_inspection_tests.rs"]
+mod selected_cache_inspection_tests;

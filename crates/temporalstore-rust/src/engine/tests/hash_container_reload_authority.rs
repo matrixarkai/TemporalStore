@@ -72,72 +72,74 @@ fn write_to(engine: &TemporalEngine, command: Command) {
 
 /// (map length, map's element names) for one container, read straight off the resident map.
 fn map_state(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, Vec<String>) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    match kind {
-        "hash" => shard
-            .bucket_index.hashes
-            .get(key)
-            .map(|fields| {
-                let mut names: Vec<String> = fields.keys().map(|k| k.to_string()).collect();
-                names.sort();
-                (fields.len(), names)
-            })
-            .unwrap_or((0, Vec::new())),
-        "set" => shard
-            .bucket_index.sets
-            .get(key)
-            .map(|members| {
-                let mut names: Vec<String> = members
-                    .keys()
-                    .map(|m| String::from_utf8_lossy(m).to_string())
-                    .collect();
-                names.sort();
-                (members.len(), names)
-            })
-            .unwrap_or((0, Vec::new())),
-        "zset" => shard
-            .bucket_index.zsets
-            .get(key)
-            .map(|members| {
-                let mut names: Vec<String> = members
-                    .keys()
-                    .map(|m| String::from_utf8_lossy(m).to_string())
-                    .collect();
-                names.sort();
-                (members.len(), names)
-            })
-            .unwrap_or((0, Vec::new())),
-        "list" => shard
-            .bucket_index.lists
-            .get(key)
-            .map(|elements| (elements.len(), Vec::new()))
-            .unwrap_or((0, Vec::new())),
-        other => panic!("unclassified kind {other}"),
-    }
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        match kind {
+            "hash" => shard
+                .bucket_index.hashes
+                .get(key)
+                .map(|fields| {
+                    let mut names: Vec<String> = fields.keys().map(|k| k.to_string()).collect();
+                    names.sort();
+                    (fields.len(), names)
+                })
+                .unwrap_or((0, Vec::new())),
+            "set" => shard
+                .bucket_index.sets
+                .get(key)
+                .map(|members| {
+                    let mut names: Vec<String> = members
+                        .keys()
+                        .map(|m| String::from_utf8_lossy(m).to_string())
+                        .collect();
+                    names.sort();
+                    (members.len(), names)
+                })
+                .unwrap_or((0, Vec::new())),
+            "zset" => shard
+                .bucket_index.zsets
+                .get(key)
+                .map(|members| {
+                    let mut names: Vec<String> = members
+                        .keys()
+                        .map(|m| String::from_utf8_lossy(m).to_string())
+                        .collect();
+                    names.sort();
+                    (members.len(), names)
+                })
+                .unwrap_or((0, Vec::new())),
+            "list" => shard
+                .bucket_index.lists
+                .get(key)
+                .map(|elements| (elements.len(), Vec::new()))
+                .unwrap_or((0, Vec::new())),
+            other => panic!("unclassified kind {other}"),
+        }
+    })
 }
 
 /// Live block-index entries for one container -- what `HashLen` answers from TODAY.
 fn live_entries(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| {
-            bucket
-                .block_index
-                .iter()
-                .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
-        })
-        .filter(|(routing_bucket, handle, block)| {
-            !block.deleted()
-                && block.model_id().as_str() == kind
-                && &**named.at(*routing_bucket, *handle) == key
-        })
-        .count()
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .flat_map(|bucket| {
+                bucket
+                    .block_index
+                    .iter()
+                    .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
+            })
+            .filter(|(routing_bucket, handle, block)| {
+                !block.deleted()
+                    && block.model_id().as_str() == kind
+                    && &**named.at(*routing_bucket, *handle) == key
+            })
+            .count()
+    })
 }
 
 fn hash_len_served(engine: &TemporalEngine, key: &str) -> i64 {

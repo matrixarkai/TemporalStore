@@ -98,13 +98,7 @@ fn an_in_place_read_answers_what_the_decoder_answered() {
         .collect();
     let json_block = {
         let mut bytes = crate::engine::constants::FEATURE_BLOCK_MAGIC.to_vec();
-        bytes.extend_from_slice(
-            &serde_json::to_vec(&crate::engine::state::PackedFeatureBlock {
-                version: 1,
-                points: many.clone(),
-            })
-            .expect("the block serialises"),
-        );
+        bytes.extend_from_slice(br#"{"version":1,"points":[]}"#);
         bytes
     };
     let blocks: Vec<(&str, Vec<u8>)> = vec![
@@ -133,7 +127,7 @@ fn an_in_place_read_answers_what_the_decoder_answered() {
                 point_of(&row(2, 2)),
             ]),
         ),
-        ("the JSON shape", json_block),
+        ("the retired JSON shape, refused by both readers", json_block),
         ("an unframed value", row(77, 4).encode_feature_proto_value()),
     ];
 
@@ -157,7 +151,7 @@ fn an_in_place_read_answers_what_the_decoder_answered() {
     }
     // DENOMINATORS: every arm of the answer was met, or the comparison proves nothing about it.
     assert!(compared > 7_000);
-    assert!(rows >= 20 + 1 + 3 + 2 + 20, "only {rows} reads decoded a row");
+    assert!(rows >= 20 + 1 + 3 + 2, "only {rows} reads decoded a row");
     assert!(unreadable >= 2, "only {unreadable} reads met an unreadable value");
     assert!(none > 1_000, "only {none} reads asked a sound block for a point it lacks");
 
@@ -351,7 +345,7 @@ fn a_sequence_query_answers_the_rows_that_were_added() {
 #[cfg(feature = "alloc-probe")]
 mod probe {
     use super::*;
-    use crate::alloc_probe::Probe;
+    use crate::alloc_probe::{owned_buffer_control_allocations, Probe};
 
     const OPS: usize = 20;
 
@@ -386,7 +380,7 @@ mod probe {
         }
     }
 
-    /// The control is the range query over the same points, which still builds a point per point.
+    /// A range query over the same points, retained as a relative allocation comparison.
     fn feature_command() -> Command {
         Command::FeatureQuery {
             key: "s".to_string(),
@@ -399,8 +393,8 @@ mod probe {
     /// Allocations a sequence read spends PER ROW, as the slope between two series lengths.
     ///
     /// The slope and not the quotient: the fixed cost of the command divides out of a difference, and
-    /// the claim is about what grows with the rows read. The CONTROL must show a per-row cost, or the
-    /// probe cannot see work that grows with the series.
+    /// the claim is about what grows with the rows read. Calibrate with two owned buffers per row
+    /// independently of the range reader, which may also shed allocations over time.
     #[test]
     #[ignore = "measurement: run with --features alloc-probe --ignored"]
     fn a_sequence_query_does_not_allocate_per_row() {
@@ -413,15 +407,17 @@ mod probe {
         let control_short = per_op(10, 1, feature_command);
         let control_long = per_op(100, 1, feature_command);
         let control_slope = (control_long - control_short) / 90.0;
+        let calibration_slope = (owned_buffer_control_allocations(OPS, 100)
+            - owned_buffer_control_allocations(OPS, 10)) / 90.0;
         println!(
             "sequence: {short:.1} @10, {long:.1} @100, {slope:.2}/row; \
              batched by 10: {batched_short:.1} @10, {batched_long:.1} @100, {batched_slope:.2}/row; \
-             feature range (control): {control_short:.1} @10, {control_long:.1} @100, \
-             {control_slope:.2}/row"
+             feature range: {control_short:.1} @10, {control_long:.1} @100, \
+             {control_slope:.2}/row; owned-buffer control: {calibration_slope:.2}/row"
         );
         assert!(
-            control_slope >= 2.0,
-            "the control spent {control_slope:.2} allocations per row, so the probe cannot see \
+            calibration_slope >= 2.0,
+            "the control spent {calibration_slope:.2} allocations per row, so the probe cannot see \
              work that grows with the series"
         );
         // THE CONTROL NOW READS EACH POINT WHERE IT SITS TOO (a feature range read keeps one value

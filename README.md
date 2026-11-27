@@ -41,7 +41,39 @@ others; choose the API and acknowledgement policy before measuring a workload.
 | **Control state** | Set/get online state, atomic single-key counters, quotas, pacing, suppression, and risk/fraud decisions | [Control-state guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_control_state_frequency_caps.md) |
 | **Frequency caps** | Per-user, campaign, or placement exposure limits using windowed counters | [Frequency-cap guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/blog_control_state_frequency_caps.md) |
 | **LLM context and agent memory** | Conversations, resources, entities, reusable memory, retrieval, and token-budgeted context assembly | [Context guide](https://github.com/matrixarkai/TemporalStore/blob/main/docs/context_management_on_temporalstore.md) |
+| **vLLM KV cache** | Reuse prompt KV blocks across requests and worker processes with LMCache | [KV cache setup](#llm-kv-cache-with-lmcache-and-vllm) |
 | **Collections, blobs, and streams** | Membership/deduplication, sorted sets, lists, multipart blobs, range reads, and batch/stream ingestion | [Command surface](https://github.com/matrixarkai/TemporalStore/blob/main/docs/redis_compatibility_matrix.md) |
+
+### LLM KV cache with LMCache and vLLM
+
+TemporalStore provides an L2 storage tier for LMCache. vLLM's
+`LMCacheMPConnector` exchanges KV blocks with a local LMCache server.
+TemporalStore streams the block payloads through its blob API and batches
+metadata commands for lookup and expiry. Workers attached to the same LMCache
+server can reuse a prompt prefix when the model and KV layout match.
+
+1. Start a TemporalStore datanode. Install the adapter and its command client
+   from this checkout with `python -m pip install ./integrations/feast ./integrations/lmcache`.
+2. Start LMCache with the TemporalStore adapter. Point the blob and command URLs
+   at the same datanode. Use a separate adapter for each independent datanode
+   when configuring replicas.
+3. Start vLLM with `LMCacheMPConnector`. On a test deployment, disable vLLM's
+   prefix cache, send a prompt, and wait for the adapter's store counter to
+   increase. Clear LMCache L1 with `POST /cache/clear` and repeat the prompt.
+   The adapter's load counter in `GET /status` confirms TemporalStore served it.
+
+The adapter enforces a capacity budget per process and evicts unlocked entries.
+Use one writer per namespace to enforce that budget. Metadata expiry controls
+lookup visibility. Eviction or explicit deletion reclaims the payload.
+LMCache's default store policy sends each block to all configured replicas,
+and a reachable replica can serve blocks it accepted.
+
+In a local WSL test with two CPU vLLM workers, eight concurrent clients, and
+three datanodes, all 64 cross-worker replays loaded their KV blocks from L2.
+All 32 replays also succeeded with one datanode disconnected.
+
+See the [LMCache integration guide](integrations/lmcache/README.md) for
+configuration, replica setup, a vLLM smoke test, and the L2 benchmark.
 
 ### Feast API support
 
@@ -57,6 +89,9 @@ is an online store and materialization target, not an offline training store.
 | `update` / `teardown` | Schemaless updates and tracked cleanup; exact teardown requires key tracking before materialization. |
 
 Feast async calls change client scheduling, not the node's persistence policy.
+Eligible latest-only materialization uses interleaved atomic row groups by
+default, with a final synchronous durability fence and older-node fallback.
+Set `interleave_materialization: false` to keep the original atomic batch route.
 See [latency, amplification, and allocation choices](integrations/feast/feast_temporalstore_command/README.md#latency-amplification-and-allocations)
 before comparing latest-only serving, history queries, or another backend. Provider
 vector-search hooks and offline point-in-time retrieval are not implemented here.
@@ -67,7 +102,7 @@ Start the data node with the [quick start](#quick-start). From this checkout,
 install Feast and enable the native provider on Python's import path:
 
 ```bash
-pip install feast msgpack
+pip install feast msgpack 'aiohttp>=3.9,<4'
 export PYTHONPATH="$PWD/integrations/feast${PYTHONPATH:+:$PYTHONPATH}"
 ```
 
@@ -110,6 +145,44 @@ online values; Feast's configured offline source and materialization engine
 remain responsible for loading them. Async API calls do not relax the node's
 durability policy. See the [provider configuration and API guide](integrations/feast/feast_temporalstore_command/README.md)
 for history, aggregates, async calls, older-node behavior, and cleanup limits.
+
+### Read features with Feast
+
+After registering and materializing a feature view, use Feast's public APIs.
+Replace `driver_stats:trips` and `driver_id` with a registered feature and its
+entity join key in your repository:
+
+```python
+import asyncio
+from feast import FeatureStore
+
+store = FeatureStore(repo_path=".")
+request = {
+    "features": ["driver_stats:trips"],
+    "entity_rows": [{"driver_id": 1001}, {"driver_id": 1002}],
+}
+
+values = store.get_online_features(**request).to_dict()
+print(values)
+
+async def read_features():
+    response = await store.get_online_features_async(**request)
+    return response.to_dict()
+
+async_values = asyncio.run(read_features())
+print(async_values)
+```
+
+In an existing async application, await `read_features()` on its running event
+loop instead of calling `asyncio.run`. An entity with no materialized value
+returns a missing feature, not a numeric zero. Both APIs serve the latest online
+values; enabling history does not turn them into point-in-time training queries.
+Async reads reuse loop-owned HTTP pools. Reuse the store during serving and await
+`store._get_provider().online_store.aclose()` once at application shutdown;
+applications managing loops manually must shut down async generators before
+closing those loops. Async writes retain their blocking-worker path.
+See the [provider API coverage](integrations/feast/feast_temporalstore_command/README.md#what-of-feasts-onlinestore-contract-is-covered)
+for supported hooks and the separate history and aggregate extensions.
 
 ### Choose a Feast materialization path
 
@@ -449,7 +522,7 @@ with deployment guides and readiness reports for the chosen configuration.
 
 All six projects are public under **Apache-2.0**, available worldwide for anyone
 to use, fork, modify, test, and contribute to under the license. The storage,
-cache, consensus, and object-store components are Rust; MatrixArk is Python
+cache, consensus, and object-store parts are Rust; MatrixArk is Python
 companion tooling. MatrixAdsDemo is a standalone Python demonstration using
 generated data. Context-management code and serving remain in TemporalStore.
 

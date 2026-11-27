@@ -385,9 +385,9 @@ fn a_cap_keeps_the_best_of_each_group_breaks_ties_by_member_and_reports_the_drop
 }
 
 #[test]
-fn a_cell_whose_score_is_undefined_ranks_after_every_scored_cell() {
-    // shown / events: m1 = 4/2 = 2, m2 has no events (undefined), m3 = 1/1 = 1. keep 2 keeps m1
-    // and m3 although m2 has the smallest member after m1.
+fn a_cell_whose_denominator_is_zero_scores_zero_and_ranks_after_the_cells_with_a_higher_ratio() {
+    // shown / events as a whole number: m1 = 4/2 = 2, m2 has no events (a zero denominator scores
+    // 0), m3 = 1/1 = 1. keep 2 keeps m1 and m3 although m2 has the smallest member after m1.
     let mut cells = vec![
         cell(1, 0, [4, 2, 0, 0, 0, 0]),
         cell(2, 0, [100, 0, 0, 0, 0, 0]),

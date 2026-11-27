@@ -589,7 +589,7 @@ pub(super) fn install_packed_hash_block_at_bucket<'a>(
             shard, routing_bucket, object_key, |field| written.contains(field),
         );
     }
-    install_packed_hash_fields(shard, object_key, fields, address, filed, complete);
+    install_packed_hash_fields(shard, object_key, fields, address, filed, complete, shared);
 }
 
 fn install_packed_hash_fields<'a>(
@@ -599,6 +599,7 @@ fn install_packed_hash_fields<'a>(
     address: ElementEntry,
     _filed: BlockFiled,
     complete: bool,
+    shared: Option<&super::container_blocks::SharedHashFields>,
 ) {
     // Exact names were checked under this exclusive shard borrow before the block was filed.
     if complete {
@@ -608,6 +609,16 @@ fn install_packed_hash_fields<'a>(
             }
             return;
         }
+    }
+    if let Some(shared) = shared.filter(|_| !shard.bucket_index.hashes.contains_key(object_key)) {
+        let fields = super::hash_field_map::HashFieldMap::from_shared_fields(
+            shared, &mut shard.bucket_index.kind_pool, &address,
+        );
+        let resident = HashKind::resident(shard);
+        resident.ordinals.invalidate(object_key);
+        resident.timestamp_hints.remove(object_key);
+        resident.entries.insert(std::sync::Arc::from(object_key), fields);
+        return;
     }
     for field in fields {
         let handle = super::state::intern_shared(&mut shard.bucket_index.kind_pool, field);
@@ -1161,6 +1172,28 @@ impl<K: RecordedKind> RecordedMap<K> {
             .iter_mut()
             .map(|(object_key, elements)| (&**object_key, ElementValuesMut { elements }))
     }
+
+    /// Visit address values without lending membership mutation. A selected visit uses direct
+    /// object lookups and invalidates only those objects' cached ordinals.
+    pub(super) fn try_visit_element_values_mut<E>(
+        &mut self,
+        selected: Option<&HashSet<ModelKey>>,
+        mut visit: impl FnMut(&str, ElementValuesMut<'_, K>) -> Result<(), E>,
+    ) -> Result<(), E> {
+        if let Some(keys) = selected {
+            for key in keys {
+                self.ordinals.invalidate(key);
+                if let Some(elements) = self.entries.get_mut(&**key) {
+                    visit(key, ElementValuesMut { elements })?;
+                }
+            }
+        } else {
+            for (key, elements) in self.element_values_mut() {
+                visit(key, elements)?;
+            }
+        }
+        Ok(())
+    }
 }
 
 /// PER-KIND EXCEPTION, hash only.
@@ -1277,7 +1310,7 @@ pub(super) trait AddressedElementMap: ElementMap {
     /// The address this map currently holds for `element`, if it holds the element at all.
     fn element_address(&self, element: &Self::Element) -> Option<&ElementEntry>;
 
-    /// Whether any element OTHER THAN `skip` currently sits on the page `page` names.
+    /// Whether any element OTHER THAN `skip` currently sits on the block `page` names.
     ///
     /// Compared by BLOCK KEY -- slab, offset and length -- and not by the whole address, because
     /// that triple is what an index entry's identity is under the gate.
@@ -1705,6 +1738,10 @@ impl<'de, K: RecordedKind> serde::Deserialize<'de> for RecordedMap<K> {
 #[cfg(test)]
 #[path = "tests/shared_hash_fields.rs"]
 mod shared_hash_fields_tests;
+
+#[cfg(test)]
+#[path = "recorded_selected_compaction_tests.rs"]
+mod selected_compaction_visits;
 
 #[cfg(test)]
 #[path = "recorded_ordinal_tests.rs"]

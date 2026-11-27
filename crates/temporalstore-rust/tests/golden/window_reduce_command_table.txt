@@ -134,6 +134,8 @@ field Command 78 2 single
 field Command 79 2 single
 field Command 80 2 single
 field Command 81 2 single
+# Additive string length command.
+field Command 82 2 single
 message CommandResponse
 field CommandResponse 1 2 single
 field CommandResponse 2 2 single
@@ -151,5 +153,7 @@ field CommandResponse 12 0 single
 field CommandResponse 13 0 single
 field CommandResponse 14 0 single
 field CommandResponse 16 0 single
+field CommandResponse 17 0 single
+field CommandResponse 18 0 single
 enum CellRollupAnchor 0 1
 enum CellPredicateOp 0 1 2 3 4 5

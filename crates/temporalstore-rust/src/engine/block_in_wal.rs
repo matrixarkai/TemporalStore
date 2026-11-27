@@ -48,10 +48,16 @@ use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedBlock};
 #[path = "wal_physical_blocks.rs"]
 mod physical;
 
+#[path = "wal_read_snapshot.rs"]
+mod read_snapshot;
+pub(super) use read_snapshot::ReadSnapshotGuard;
+
 #[cfg(test)]
 thread_local! {
     static OLDEST_REGISTERED_SCANS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
     static REGISTRATION_QUERY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// The most entries one registry-lock hold copied in a sliced walk, since the last reset.
+    static LARGEST_PART_COPY: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
 }
 
 #[cfg(test)]
@@ -206,11 +212,27 @@ pub(super) fn take_staged() -> Vec<StagedBlock> {
 // The final count is zero when an index-only registration has not read its carrying record.
 type Registration = std::sync::Arc<(LocalWriteAheadLogStore, u64, u64, usize, Option<usize>)>;
 
+fn track_location(owner: usize, shard: ShardId, location: &Registration, previous: Option<&Registration>) {
+    location.0.replace_block_location(owner, shard, location.2, location.3,
+        previous.map(|old| (&old.0, old.2, old.3)));
+}
+
+fn untrack_location(owner: usize, shard: ShardId, location: &Registration) {
+    location.0.remove_block_location(owner, shard, location.2, location.3);
+}
+
 fn packed_objects(outcomes: &[crate::wal::WalOutcomeItem]) -> std::collections::HashSet<u64> {
+    inspect_registration_outcomes(outcomes, true)
+}
+
+fn inspect_registration_outcomes(
+    outcomes: &[crate::wal::WalOutcomeItem],
+    collect_packed: bool,
+) -> std::collections::HashSet<u64> {
     let mut maximum: Option<u64> = None;
     let mut packed = std::collections::HashSet::new();
     for item in outcomes {
-        if item.kind == "hash" && !item.deleted {
+        if collect_packed && item.kind == "hash" && !item.deleted {
             packed.insert(item.object_id);
         }
         if let Some(address) = item.resolved_address() {
@@ -386,7 +408,135 @@ pub(super) fn wal_resident_key(object_id: u64, element_name: Option<&str>) -> u6
 /// asked. It is not sufficient on its own -- the map resolves a record and the block is then chosen
 /// INSIDE that record -- which is why [`StagedBlock::element_name`] exists as well.
 // Hash randomization is process-local; persisted block identities keep their stable hash.
-type ShardRegistrations = HashMap<BlockKey, Registration, ahash::RandomState>;
+/// How many parts one shard's registrations are split into. A walk over the whole shard takes the
+/// registry lock once per part, so a registering writer waits for at most one part's worth of
+/// entries (a 64th of the shard) instead of for the whole walk.
+const REGISTRATION_PARTS: usize = 64;
+
+type RegistrationPart = HashMap<BlockKey, Registration, ahash::RandomState>;
+
+struct ShardRegistrations {
+    owner: usize,
+    shard: ShardId,
+    parts: Vec<RegistrationPart>,
+    /// Picks a key's part. Fixed for the life of the shard so a key always lands in the same part.
+    split: ahash::RandomState,
+    len: usize,
+    folded_counts: Option<HashMap<u64, usize, ahash::RandomState>>,
+}
+
+impl Default for ShardRegistrations {
+    fn default() -> Self { Self::new(0, 0) }
+}
+
+impl ShardRegistrations {
+    fn new(owner: usize, shard: ShardId) -> Self {
+        Self {
+            owner,
+            shard,
+            parts: (0..REGISTRATION_PARTS).map(|_| RegistrationPart::default()).collect(),
+            split: ahash::RandomState::new(),
+            len: 0,
+            folded_counts: None,
+        }
+    }
+
+    fn part_of(&self, key: &BlockKey) -> usize {
+        use std::hash::BuildHasher;
+        (self.split.hash_one(key) >> 58) as usize % REGISTRATION_PARTS
+    }
+
+    fn len(&self) -> usize { self.len }
+
+    fn is_empty(&self) -> bool { self.len == 0 }
+
+    fn capacity(&self) -> usize { self.parts.iter().map(|part| part.capacity()).sum() }
+
+    fn get(&self, key: &BlockKey) -> Option<&Registration> {
+        self.parts[self.part_of(key)].get(key)
+    }
+
+    fn iter(&self) -> impl Iterator<Item = (&BlockKey, &Registration)> {
+        self.parts.iter().flat_map(|part| part.iter())
+    }
+
+    /// One part's registrations, cloned, so the caller can drop the registry lock before doing
+    /// anything with them. The clone is one reference-count bump per entry.
+    fn part_snapshot(&self, part: usize) -> Vec<(BlockKey, Registration)> {
+        let part = &self.parts[part];
+        let mut out = Vec::with_capacity(part.len());
+        for (key, location) in part {
+            #[cfg(test)]
+            REGISTRATION_QUERY_VISITS.with(|count| count.set(count.get() + 1));
+            out.push((key.clone(), location.clone()));
+        }
+        #[cfg(test)]
+        LARGEST_PART_COPY.with(|largest| largest.set(largest.get().max(out.len())));
+        out
+    }
+
+    fn enable_fold_tracking(&mut self) {
+        if self.folded_counts.is_none() {
+            let mut counts = HashMap::<_, _, ahash::RandomState>::default();
+            for (key, _) in self.iter() {
+                *counts.entry(wal_resident_key(key.0, key.1.as_deref())).or_default() += 1;
+            }
+            self.folded_counts = Some(counts);
+        }
+    }
+
+    fn has_fold(&self, key: &u64) -> bool {
+        self.folded_counts.as_ref().is_some_and(|counts| counts.contains_key(key))
+    }
+
+    fn release_empty_capacity(&mut self) {
+        if self.is_empty() {
+            for part in &mut self.parts { part.shrink_to_fit(); }
+            if let Some(counts) = self.folded_counts.as_mut() { counts.shrink_to_fit(); }
+        }
+    }
+
+    fn insert(&mut self, key: BlockKey, location: Registration) -> Option<Registration> {
+        let at = self.part_of(&key);
+        track_location(self.owner, self.shard, &location, self.parts[at].get(&key));
+        match self.parts[at].entry(key) {
+            std::collections::hash_map::Entry::Occupied(mut entry) => Some(entry.insert(location)),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                let key = entry.key();
+                if let Some(counts) = self.folded_counts.as_mut() {
+                    *counts.entry(wal_resident_key(key.0, key.1.as_deref())).or_default() += 1;
+                }
+                entry.insert(location);
+                self.len += 1;
+                None
+            }
+        }
+    }
+
+    fn remove(&mut self, key: &BlockKey) -> Option<Registration> {
+        let at = self.part_of(key);
+        let removed = self.parts[at].remove(key);
+        if let Some(location) = &removed {
+            untrack_location(self.owner, self.shard, location);
+            self.len -= 1;
+        }
+        if let (Some(_), Some(counts)) = (&removed, self.folded_counts.as_mut()) {
+            let folded = wal_resident_key(key.0, key.1.as_deref());
+            let count = counts.get_mut(&folded).expect("registered fold exists");
+            *count -= 1;
+            if *count == 0 { counts.remove(&folded); }
+        }
+        removed
+    }
+}
+
+impl Drop for ShardRegistrations {
+    fn drop(&mut self) {
+        for part in &self.parts {
+            for location in part.values() { untrack_location(self.owner, self.shard, location); }
+        }
+    }
+}
 
 #[derive(Default)]
 struct RegistrationRegistry {
@@ -399,7 +549,9 @@ impl RegistrationRegistry {
     }
 
     fn shard_mut(&mut self, owner: usize, shard: ShardId) -> &mut ShardRegistrations {
-        self.stores.entry(owner).or_default().entry(shard).or_default()
+        self.stores.entry(owner).or_default().entry(shard).or_insert_with(|| {
+            ShardRegistrations::new(owner, shard)
+        })
     }
 
     fn entries(&self, owner: usize, shard: ShardId)
@@ -424,7 +576,8 @@ impl RegistrationRegistry {
         let empty = self.stores.get_mut(&owner).and_then(|shards| shards.get_mut(&shard))
             .map(|entries| {
                 entries.remove(key);
-                entries.is_empty()
+                entries.release_empty_capacity();
+                entries.is_empty() && entries.folded_counts.is_none()
             }).unwrap_or(false);
         if empty {
             self.remove_shard(owner, shard);
@@ -440,6 +593,14 @@ fn registry() -> &'static Mutex<RegistrationRegistry> {
 #[cfg(test)]
 #[path = "registration_scope_tests.rs"]
 mod registration_scope_tests;
+
+#[cfg(test)]
+#[path = "a_registry_walk_copies_one_part_at_a_time.rs"]
+mod a_registry_walk_copies_one_part_at_a_time;
+
+#[cfg(test)]
+#[path = "registry_walk_measure.rs"]
+mod registry_walk_measure;
 
 #[cfg(test)]
 #[path = "registration_hash_tests.rs"]
@@ -470,7 +631,7 @@ pub(super) fn register_record_with_outcomes(
     sequence: u64,
     store: &LocalWriteAheadLogStore,
 ) -> Vec<u64> {
-    register_record_locations(block_store, shard_id, staged_blocks, outcomes, log_id, sequence, store, None)
+    register_record_locations(block_store, shard_id, staged_blocks, outcomes, log_id, sequence, store, None, false, None, None)
 }
 
 pub(super) fn register_shared_hash_record(
@@ -482,8 +643,52 @@ pub(super) fn register_shared_hash_record(
     sequence: u64,
     store: &LocalWriteAheadLogStore,
     projection: &[std::sync::Arc<str>],
+    shard: &mut crate::engine::ShardState,
 ) -> Vec<u64> {
-    register_record_locations(block_store, shard_id, staged_blocks, outcomes, log_id, sequence, store, Some(projection))
+    let bindings = physical::bindings(outcomes, staged_blocks, true);
+    let eligible = !staged_blocks.is_empty() && outcomes.iter().all(|item| item.kind == "hash" || item.resolved_address().is_none())
+        && bindings.len() == staged_blocks.len();
+    if eligible { physical::enable_fold_tracking(block_store, shard_id); }
+    let mut retired_logical = Vec::new();
+    let mut folded = register_record_locations(block_store, shard_id, staged_blocks, outcomes, log_id, sequence, store, Some(projection), eligible, Some(&mut retired_logical), eligible.then_some(bindings));
+    if eligible {
+        physical::retire_logical_hints(block_store, shard_id, shard, &retired_logical);
+        let retired = physical::prune_hash_frames(block_store, shard_id, store, shard, outcomes);
+        folded.retain(|key| !retired.contains(key));
+    }
+    folded
+}
+
+enum PhysicalIndexCoverage {
+    All(usize),
+    Selected(std::collections::HashSet<usize>),
+}
+
+impl PhysicalIndexCoverage {
+    fn new(bindings: &[(physical::PhysicalKey, usize)], block_count: usize) -> Self {
+        if bindings.len() == block_count
+            && bindings.iter().enumerate().all(|(index, (_, selected))| index == *selected)
+        {
+            Self::All(block_count)
+        } else {
+            Self::Selected(bindings.iter().map(|(_, index)| *index).collect())
+        }
+    }
+
+    fn contains(&self, index: usize) -> bool {
+        match self {
+            Self::All(count) => index < *count,
+            Self::Selected(indices) => indices.contains(&index),
+        }
+    }
+
+    fn covers_all(&self, block_count: usize) -> bool {
+        match self {
+            Self::All(count) => *count == block_count,
+            Self::Selected(indices) => indices.len() == block_count
+                && indices.iter().all(|index| *index < block_count),
+        }
+    }
 }
 
 fn register_record_locations(
@@ -495,29 +700,76 @@ fn register_record_locations(
     sequence: u64,
     store: &LocalWriteAheadLogStore,
     projection: Option<&[std::sync::Arc<str>]>,
+    shared_hash_frames: bool,
+    mut retired_logical: Option<&mut Vec<(u64, Registration)>>,
+    prepared_bindings: Option<Vec<(physical::PhysicalKey, usize)>>,
 ) -> Vec<u64> {
     if staged_blocks.is_empty() {
         return Vec::new();
     }
-    let packed = packed_objects(outcomes);
-    let mut pool = std::collections::HashSet::new();
-    let physical_blocks = physical::bindings(outcomes, staged_blocks);
-    let physical_indices: std::collections::HashSet<_> = physical_blocks.iter().map(|(_, index)| *index).collect();
-    let names: Vec<_> = staged_blocks.iter().enumerate().map(|(index, block)| {
-        if physical_indices.contains(&index) {
-            RegistrationNames::Owned(Vec::new())
-        } else { select_registration_names(block, &packed, projection, &mut pool) }
-    }).collect();
-    let expected = names.iter().map(RegistrationNames::len).sum::<usize>() + physical_blocks.len();
+    let physical_blocks = prepared_bindings.unwrap_or_else(|| physical::bindings(outcomes, staged_blocks, shared_hash_frames));
+    let physical_indices = PhysicalIndexCoverage::new(&physical_blocks, staged_blocks.len());
+    let all_physical = physical_indices.covers_all(staged_blocks.len());
+    // Recovery must advance synthetic offsets even when no logical name plan is needed.
+    let packed = inspect_registration_outcomes(outcomes, !all_physical);
+    let build_names = || {
+        let fallback_packed;
+        let packed = if all_physical {
+            fallback_packed = packed_objects(outcomes);
+            &fallback_packed
+        } else { &packed };
+        let mut pool = std::collections::HashSet::new();
+        staged_blocks.iter().enumerate().map(|(index, block)| {
+            if physical_indices.contains(index) && !shared_hash_frames {
+                RegistrationNames::Owned(Vec::new())
+            } else { select_registration_names(block, packed, projection, &mut pool) }
+        }).collect::<Vec<_>>()
+    };
+    let names = (!all_physical).then(|| build_names());
+    let expected = names.as_ref().map_or(0, |names| names.iter().enumerate()
+        .filter(|(index, _)| !physical_indices.contains(*index))
+        .map(|(_, names)| names.len()).sum::<usize>()) + physical_blocks.len();
     let mut folded = physical::install_many(block_store, shard_id, physical_blocks.into_iter().map(|(key, index)| {
         let location = Arc::new((store.clone(), log_id, sequence, expected, Some(index)));
         (key, location)
     }));
     folded.reserve(expected - folded.len());
+    if all_physical {
+        if let Ok(map) = registry().lock() {
+            if map.shard(block_store.store_id(), shard_id).is_none_or(|entries| entries.is_empty()) {
+                return folded;
+            }
+        }
+    }
+    let names = names.unwrap_or_else(build_names);
     if let Ok(mut map) = registry().lock() {
+        if all_physical && map.shard(block_store.store_id(), shard_id).is_none_or(|entries| entries.is_empty()) {
+            return folded;
+        }
         let entries = map.shard_mut(block_store.store_id(), shard_id);
         for (index, (block, names)) in staged_blocks.iter().zip(names).enumerate() {
             if names.len() == 0 { continue; }
+            if physical_indices.contains(index) {
+                if !entries.is_empty() {
+                    let mut retire = |name| {
+                        let key = (block.object_id, name);
+                        if let Some(location) = entries.remove(&key) {
+                            if let Some(retired) = retired_logical.as_deref_mut() {
+                                retired.push((wal_resident_key(key.0, key.1.as_deref()), location));
+                            }
+                        }
+                    };
+                    match names {
+                        RegistrationNames::Shared(fields) => {
+                            for field in fields { retire(Some(field.clone())); }
+                        }
+                        RegistrationNames::Owned(names) => {
+                            for name in names { retire(name); }
+                        }
+                    }
+                }
+                continue;
+            }
             let location = std::sync::Arc::new((store.clone(), log_id, sequence, expected, Some(index)));
             let mut install = |name: Option<std::sync::Arc<str>>| {
                 folded.push(wal_resident_key(block.object_id, name.as_deref()));
@@ -531,6 +783,10 @@ fn register_record_locations(
                     for name in names { install(name); }
                 }
             }
+        }
+        if entries.is_empty() {
+            entries.release_empty_capacity();
+            if entries.folded_counts.is_none() { map.remove_shard(block_store.store_id(), shard_id); }
         }
     }
     folded
@@ -629,13 +885,7 @@ pub(super) fn min_registered_sequence(
     shard_id: ShardId,
     store: &LocalWriteAheadLogStore,
 ) -> Option<u64> {
-    let map = registry().lock().ok()?;
-    let logical = map.entries(block_store.store_id(), shard_id)
-        .filter(|(_, location)| location.0.same_log(store))
-        .map(|(_, location)| location.2)
-        .min();
-    logical.into_iter().chain(physical::locations(block_store, shard_id).into_iter()
-        .filter(|location| location.0.same_log(store)).map(|location| location.2)).min()
+    store.registered_block_floor(block_store.store_id(), shard_id)
 }
 
 /// A necessary relocation-pressure signal, not permission to reclaim any record.
@@ -646,23 +896,7 @@ pub(super) fn registered_record_span_has_holes(
     shard_id: ShardId,
     store: &LocalWriteAheadLogStore,
 ) -> bool {
-    let Ok(map) = registry().lock() else { return false };
-    let mut records = std::collections::BTreeMap::<u64, (usize, usize)>::new();
-    let physical = physical::locations(block_store, shard_id);
-    for location in map.entries(block_store.store_id(), shard_id).map(|(_, location)| location).chain(physical.iter()) {
-        let (log, _, sequence, expected, _) = &**location;
-        if !log.same_log(store) {
-            continue;
-        }
-        let record = records.entry(*sequence).or_insert((0, *expected));
-        if record.1 != *expected { return true; }
-        record.0 += 1;
-    }
-    if records.values().any(|(live, expected)| *expected == 0 || live != expected) {
-        return true;
-    }
-    let (Some(first), Some(last)) = (records.keys().next(), records.keys().next_back()) else { return false };
-    (records.len() as u64) < last.saturating_sub(*first).saturating_add(1)
+    store.registered_block_span_has_holes(block_store.store_id(), shard_id)
 }
 
 /// How many registrations this shard is holding.
@@ -685,14 +919,10 @@ pub(super) fn oldest_registered_objects(
 ) -> Vec<(u64, BlockKey)> {
     #[cfg(test)]
     OLDEST_REGISTERED_SCANS.with(|scans| scans.set(scans.get() + 1));
-    let Ok(map) = registry().lock() else {
-        return Vec::new();
-    };
-    let owner = block_store.store_id();
-    let mut entries: Vec<(u64, BlockKey)> = map
-        .entries(owner, shard_id)
-        .map(|(block, location)| (location.2, block.clone()))
-        .collect();
+    let mut entries: Vec<(u64, BlockKey)> = Vec::new();
+    for_each_registration_sliced(block_store.store_id(), shard_id, |block, location| {
+        entries.push((location.2, block));
+    });
     entries.sort_unstable();
     entries
 }
@@ -705,7 +935,7 @@ pub(super) fn registration_count(
         return 0;
     };
     let owner = block_store.store_id();
-    map.shard(owner, shard_id).map_or(0, HashMap::len) + physical::count(block_store, shard_id)
+    map.shard(owner, shard_id).map_or(0, |entries| entries.len()) + physical::count(block_store, shard_id)
 }
 
 pub(super) struct RegistrationRetirement {
@@ -721,6 +951,20 @@ enum RetirementKey {
     Physical(physical::PhysicalKey),
 }
 
+/// Whether this shard holds any block-in-WAL registration, logical or physical. Deciding which
+/// registrations to retire starts with a walk of every live block; with none registered there is
+/// nothing to retire and the walk can be skipped. An unreadable registry reads as "yes".
+pub(super) fn has_registrations(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+) -> bool {
+    let logical = registry()
+        .lock()
+        .map(|map| map.entries(block_store.store_id(), shard_id).next().is_some())
+        .unwrap_or(true);
+    logical || physical::has_entries(block_store, shard_id)
+}
+
 pub(super) fn unreferenced_physical_registrations(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
@@ -731,6 +975,28 @@ pub(super) fn unreferenced_physical_registrations(
     physical::retirements(block_store, shard_id, store, shard, retain_live_real_frames)
 }
 
+/// Visit every registration of a shard one part at a time, taking the registry lock for ONE part's
+/// copy and releasing it before `visit` sees any entry. A registering writer therefore waits for a
+/// 64th of the shard, not for the whole walk. Entries written or removed between parts may be seen
+/// or missed; every caller either re-checks identity before acting (`Arc::ptr_eq`) or acts under
+/// a guard that already refuses a shard that changed.
+fn for_each_registration_sliced(
+    owner: usize,
+    shard_id: ShardId,
+    mut visit: impl FnMut(BlockKey, Registration),
+) {
+    for part in 0..REGISTRATION_PARTS {
+        let slice = {
+            let Ok(map) = registry().lock() else { return };
+            let Some(entries) = map.shard(owner, shard_id) else { return };
+            entries.part_snapshot(part)
+        };
+        for (key, location) in slice { visit(key, location); }
+        // Let a waiting writer take the lock before the next part's copy.
+        std::thread::yield_now();
+    }
+}
+
 /// Propose removals; the caller must publish an image that no longer needs them first.
 pub(super) fn unreferenced_registrations(
     block_store: &crate::block_store::BlockStore,
@@ -738,27 +1004,22 @@ pub(super) fn unreferenced_registrations(
     store: &LocalWriteAheadLogStore,
     retained_objects: &std::collections::HashSet<u64>,
 ) -> Vec<RegistrationRetirement> {
-    let Ok(map) = registry().lock() else { return Vec::new(); };
     let owner = block_store.store_id();
-    let mut candidates: Vec<_> = map.entries(owner, shard_id)
-        .filter_map(|(block, location)| {
-            let folded_key = wal_resident_key(block.0, block.1.as_deref());
-            if retained_objects.contains(&block.0) || !location.0.same_log(store)
-            {
-                return None;
-            }
-            Some(RegistrationRetirement {
+    let mut candidates = Vec::new();
+    // Folded placement keys are hashes. Preserve a collision with any retained object.
+    let mut protected = std::collections::HashSet::<u64>::new();
+    for_each_registration_sliced(owner, shard_id, |block, location| {
+        let folded_key = wal_resident_key(block.0, block.1.as_deref());
+        if retained_objects.contains(&block.0) {
+            protected.insert(folded_key);
+        } else if location.0.same_log(store) {
+            candidates.push(RegistrationRetirement {
                 folded_key, log_id: location.1, sequence: location.2,
-                block: RetirementKey::Logical(block.clone()), location: location.clone(),
-            })
-        })
-        .collect();
+                block: RetirementKey::Logical(block), location,
+            });
+        }
+    });
     if !candidates.is_empty() {
-        // Folded placement keys are hashes. Preserve a collision with any retained object.
-        let mut protected: std::collections::HashSet<_> = map.entries(owner, shard_id)
-            .filter(|((object_id, _), _)| retained_objects.contains(object_id))
-            .map(|((object_id, name), _)| wal_resident_key(*object_id, name.as_deref()))
-            .collect();
         protected.extend(physical::folded_keys(block_store, shard_id));
         candidates.retain(|candidate| !protected.contains(&candidate.folded_key));
     }
@@ -899,23 +1160,31 @@ mod shared_registration_tests {
 
     fn assert_shared_rows(engine: &crate::engine::TemporalEngine) {
         let owner = engine.block_store.store_id();
-        let entries: Vec<_> = registry().lock().unwrap().entries(owner, 1)
-            .map(|((object, name), location)| (*object, name.clone(), location.clone()))
-            .collect();
-        assert_eq!(entries.len(), 24);
-        let allocations: HashSet<_> = entries.iter().map(|(_, name, _)|
-            Arc::as_ptr(name.as_ref().unwrap()) as *const () as usize).collect();
-        assert_eq!(allocations.len(), 3, "one field-name allocation per column, not per row");
-        for (object, name, location) in entries {
-            let name = name.unwrap();
-            let frame = read_block(&engine.block_store, 1, object, Some(&name)).unwrap();
-            assert!(location.4.is_some(), "each alias retains its exact staged frame");
-            let ContainerElementRead::Found(value) = select_container_element(&frame, &name)
-                else { panic!("registered field must select a value") };
-            let row = location.4.unwrap() as u8;
-            let field = name.strip_prefix("field-").unwrap().parse::<u8>().unwrap();
-            assert_eq!(value, vec![row * 3 + field; 48]);
-        }
+        assert_eq!(registry().lock().unwrap().entries(owner, 1).count(), 0);
+        assert_eq!(physical::count(&engine.block_store, 1), 8);
+        engine.shards.with_state(1, |state| {
+            let shard = state.unwrap();
+            assert_eq!(shard.wal_resident_blocks.len(), 8);
+            let mut allocations = HashSet::new();
+            for row in 0..8u8 {
+                let key = format!("row-{row}");
+                let object = crate::engine::stable_block_object_id(1, "hash", &key);
+                let fields = shard.bucket_index.hashes.get(&key).unwrap();
+                for name in fields.keys() { allocations.insert(Arc::as_ptr(name) as *const () as usize); }
+                for field in 0..3u8 {
+                    let name = format!("field-{field}");
+                    let address = fields.get(&name).unwrap();
+                    let location = physical::lookup(&engine.block_store, 1, object,
+                        crate::engine::live_block_key(address)).unwrap().unwrap();
+                    assert_eq!(location.4, Some(row as usize));
+                    let frame = read_block_at(&engine.block_store, 1, object, Some(&name), address).unwrap();
+                    let ContainerElementRead::Found(value) = select_container_element(&frame, &name)
+                        else { panic!("registered field must select a value") };
+                    assert_eq!(value, vec![row * 3 + field; 48]);
+                }
+            }
+            assert_eq!(allocations.len(), 3, "one field-name allocation per column, not per row");
+        });
     }
 
     #[test]
@@ -976,11 +1245,51 @@ pub(super) fn read_block_at(
     element_name: Option<&str>,
     address: &crate::block_store::ElementEntry,
 ) -> Option<Vec<u8>> {
+    if let Some(value) = read_snapshot::try_read(
+        block_store, shard_id, object_id, element_name, address,
+    ) {
+        return value;
+    }
     match physical::lookup(block_store, shard_id, object_id, super::live_block_key(address)) {
         Some(Some(location)) => read_registration(&location, shard_id, object_id, element_name),
-        Some(None) => None,
+        Some(None) => read_logical_block_at(block_store, shard_id, object_id, element_name, address),
         None => read_block(block_store, shard_id, object_id, element_name),
     }
+}
+
+fn read_logical_block_at(
+    block_store: &crate::block_store::BlockStore,
+    shard_id: ShardId,
+    object_id: u64,
+    element_name: Option<&str>,
+    address: &crate::block_store::ElementEntry,
+) -> Option<Vec<u8>> {
+    let location = {
+        let map = registry().lock().ok()?;
+        let entries = map.shard(block_store.store_id(), shard_id)?;
+        entries.get(&block_key(object_id, element_name))
+            .or_else(|| entries.get(&block_key(object_id, None)))?.clone()
+    };
+    read_logical_registration_at(&location, shard_id, object_id, element_name, address)
+}
+
+fn read_logical_registration_at(
+    location: &Registration,
+    shard_id: ShardId,
+    object_id: u64,
+    element_name: Option<&str>,
+    address: &crate::block_store::ElementEntry,
+) -> Option<Vec<u8>> {
+    let (store, log_id, sequence, _, selected) = &**location;
+    let bytes = store.read_frame_at_log_id(shard_id, *log_id).ok()??;
+    let record = decode_wal_line(&bytes).ok()?;
+    if record.sequence != *sequence { return None; }
+    let bindings = outcome_block_bindings(&record.outcomes, &record.staged_blocks);
+    let index = *bindings.get(&(object_id, super::live_block_key(address)))?;
+    if selected.is_some_and(|selected| selected != index) { return None; }
+    let block = record.staged_blocks.get(index)?;
+    (names_block(block, object_id, element_name) || names_block(block, object_id, None))
+        .then(|| block.bytes.clone())
 }
 
 fn read_registration(

@@ -58,32 +58,33 @@ fn member_bytes(index: usize) -> Vec<u8> {
 
 /// Distinct live blocks, live entries, and tombstoned entries this set object resolves to.
 fn blocks_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut blocks = std::collections::BTreeSet::new();
-    let mut live = 0usize;
-    let mut tombstoned = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-            {
-                continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut blocks = std::collections::BTreeSet::new();
+        let mut live = 0usize;
+        let mut tombstoned = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                {
+                    continue;
+                }
+                if block.deleted() {
+                    tombstoned += 1;
+                    continue;
+                }
+                live += 1;
+                blocks.insert((
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                ));
             }
-            if block.deleted() {
-                tombstoned += 1;
-                continue;
-            }
-            live += 1;
-            blocks.insert((
-                block.address.block_slab_id(),
-                block.address.offset(),
-                block.address.length(),
-            ));
         }
-    }
-    (blocks.len(), live, tombstoned)
+        (blocks.len(), live, tombstoned)
+    })
 }
 
 /// Every member the set listing answers with.
@@ -103,10 +104,11 @@ fn listed_members(engine: &TemporalEngine, object_key: &str) -> Vec<Vec<u8>> {
 
 /// Re-derive the whole projection, which is what a compaction sweep does twice.
 fn rederive(engine: &TemporalEngine) {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 loaded");
-    let (start, end) = shard.routing_range();
-    crate::engine::storage_bucket_internals::rebuild_bucket_first_index(1, shard, start, end);
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let (start, end) = shard.routing_range();
+        crate::engine::storage_bucket_internals::rebuild_bucket_first_index(1, shard, start, end);
+    })
 }
 
 #[test]

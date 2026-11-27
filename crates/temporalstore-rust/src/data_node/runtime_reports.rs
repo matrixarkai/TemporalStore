@@ -29,11 +29,7 @@ impl DataNodeRuntime {
             .queue
             .lock()
             .expect("runtime queue lock poisoned");
-        let dirty = self
-            .inner
-            .dirty
-            .lock()
-            .expect("dirty tracker lock poisoned");
+        let (dirty_object_count, dirty_shard_count) = self.inner.dirty.counts();
         let stats = self
             .inner
             .stats
@@ -42,12 +38,6 @@ impl DataNodeRuntime {
         let queue_depth = queue.queued_total;
         let queued_shard_count = queue.by_shard.len();
         let running_shard_count = queue.running_shards.len();
-        let dirty_shard_count = dirty
-            .by_key
-            .keys()
-            .map(|(shard_id, _)| *shard_id)
-            .collect::<BTreeSet<_>>()
-            .len();
         DataNodeRuntimeStats {
             worker_threads: self.inner.options.worker_threads,
             max_queue_depth: self.inner.options.max_queue_depth,
@@ -62,7 +52,7 @@ impl DataNodeRuntime {
             background_queue_depth: queue.background_queued_total,
             queued_shard_count,
             running_shard_count,
-            dirty_object_count: dirty.by_key.len(),
+            dirty_object_count,
             dirty_shard_count,
             expiry_sweeps: stats.expiry_sweeps,
             expired_records_removed: stats.expired_records_removed,
@@ -463,11 +453,7 @@ impl DataNodeRuntime {
     }
 
     pub fn shard_serving_states(&self) -> Vec<ServerShardServingState> {
-        let dirty_objects = self.dirty_objects();
-        let mut dirty_by_shard = HashMap::<ShardId, usize>::new();
-        for dirty in dirty_objects {
-            *dirty_by_shard.entry(dirty.shard_id).or_default() += 1;
-        }
+        let dirty_by_shard = self.inner.dirty.counts_by_shard();
         let queue = self
             .inner
             .queue

@@ -416,6 +416,9 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
     matches!(
         command,
         Command::CommonDelete { .. }
+            // TTL edits leave blocks in place; lazy expiry uses the same filed deletion path.
+            | Command::CommonExpire { .. }
+            | Command::CommonPersist { .. }
             | Command::StringDelete { .. }
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }
@@ -1447,6 +1450,26 @@ struct CachedValues {
     values: Vec<Option<Vec<u8>>>,
 }
 
+#[derive(serde::Deserialize)]
+struct CachedFeaturePoints {
+    points: Vec<crate::types::FeaturePoint>,
+}
+
+#[derive(serde::Deserialize)]
+struct CachedFeaturePointGroups {
+    groups: Vec<(String, Vec<crate::types::FeaturePoint>)>,
+}
+
+#[derive(serde::Deserialize)]
+struct CachedSequenceRows {
+    rows: Vec<crate::types::SequenceFeatureRow>,
+}
+
+#[derive(serde::Deserialize)]
+struct CachedSequenceRowGroups {
+    groups: Vec<(String, Vec<crate::types::SequenceFeatureRow>)>,
+}
+
 /// Encode a cached response.
 ///
 /// Nothing on disk depends on this being msgpack rather than anything else, but it does depend on
@@ -1475,9 +1498,19 @@ pub(super) fn decode_cached_response(bytes: &[u8]) -> Option<CommandResponse> {
         "values" => Some(CommandResponse::Values {
             values: rmp_serde::from_slice::<CachedValues>(bytes).ok()?.values,
         }),
-        // Every other shape carries no bulk payload, so the buffering costs nothing worth avoiding
-        // and the whole enum reads back as itself. A variant added later lands here: slower than it
-        // could be, never wrong.
+        "feature_points" => Some(CommandResponse::FeaturePoints {
+            points: rmp_serde::from_slice::<CachedFeaturePoints>(bytes).ok()?.points,
+        }),
+        "feature_point_groups" => Some(CommandResponse::FeaturePointGroups {
+            groups: rmp_serde::from_slice::<CachedFeaturePointGroups>(bytes).ok()?.groups,
+        }),
+        "sequence_rows" => Some(CommandResponse::SequenceRows {
+            rows: rmp_serde::from_slice::<CachedSequenceRows>(bytes).ok()?.rows,
+        }),
+        "sequence_row_groups" => Some(CommandResponse::SequenceRowGroups {
+            groups: rmp_serde::from_slice::<CachedSequenceRowGroups>(bytes).ok()?.groups,
+        }),
+        // Retain the general decoder for the other response shapes.
         _ => rmp_serde::from_slice::<CommandResponse>(bytes).ok(),
     }
 }
@@ -1546,6 +1579,10 @@ pub(super) fn cached_bytes_with<R>(
 #[cfg(test)]
 #[path = "tests/borrowed_cache.rs"]
 mod borrowed_cache_tests;
+
+#[cfg(test)]
+#[path = "tests/series_cache.rs"]
+mod series_cache_tests;
 
 pub(super) fn invalidate_if_cached(cache: &MultiLayerCache, key: CacheKey) {
     invalidate_if_cached_ref(cache, &key);

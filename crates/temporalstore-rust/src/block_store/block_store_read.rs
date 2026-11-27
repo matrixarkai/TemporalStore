@@ -10,9 +10,12 @@ impl BlockStore {
         // On-demand lazy recovery: if this slab lives only in shared storage after a
         // metadata-only restore, fetch + cache it before serving the read.
         self.ensure_slab_present(address.block_slab_id())?;
+        // NO STORE LOCK ANYWHERE IN A READ. The root is fixed when the store opens and the
+        // counters are atomics, so the file open, the positioned read and the decode all run
+        // without the mutex that writers, rolls and collection hold -- a read no longer waits
+        // behind them, and they no longer wait behind a read's disk and decompression time.
         let mut tally = BlockStoreReadTally::start();
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let read = LocalSlabBackend::new(&inner.root).read_range(
+        let read = LocalSlabBackend::new(&self.read_view.root).read_range(
             address.block_slab_id(),
             address.offset(),
             address.length(),
@@ -21,7 +24,7 @@ impl BlockStore {
         // Charged before the decode, not after. A read that reached the disk cost the disk
         // whether or not the record on it decodes, and the old order left a failed decode
         // looking like a read that never happened.
-        let bytes = read.charge(&mut inner.stats);
+        let bytes = read.charge(&self.read_view.counters);
         let decoded = decode_block_record(&bytes, address)?;
         // `decode_block_record` just verified this payload against the CRC32C stored in the
         // record envelope, and cross-checked the record header's block id against this address.
@@ -32,10 +35,10 @@ impl BlockStore {
         // the stored-length check, not the CRC, that stand against an entry pointing at the wrong
         // block.
         let bytes = decoded.payload;
-        inner.stats.logical_bytes_read += decoded.logical_len as u64;
-        if decoded.compression == BlockRecordCompression::Zstd {
-            inner.stats.compressed_records_read += 1;
-        }
+        self.read_view.counters.add_logical(
+            decoded.logical_len as u64,
+            u64::from(decoded.compression == BlockRecordCompression::Zstd),
+        );
         Ok(bytes)
     }
 
@@ -49,14 +52,13 @@ impl BlockStore {
         // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
         self.ensure_slab_present(block_slab_id)?;
         let mut tally = BlockStoreReadTally::start();
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let read = LocalSlabBackend::new(&inner.root).read_range_at_most(
+        let read = LocalSlabBackend::new(&self.read_view.root).read_range_at_most(
             block_slab_id,
             offset,
             size,
             &mut tally,
         )?;
-        Ok(read.charge(&mut inner.stats))
+        Ok(read.charge(&self.read_view.counters))
     }
 
     pub fn read_logical_range(
@@ -69,16 +71,18 @@ impl BlockStore {
         // streaming reads too, so a not-yet-fetched checkpoint slab is pulled + cached on demand.
         self.ensure_slab_present(block_slab_id)?;
         let mut tally = BlockStoreReadTally::start();
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
         // `bytes_read` is charged the WHOLE slab, which is what this read pulls off disk to
         // answer a logical range. It used to be charged the length of the slice handed back --
         // the same number `logical_bytes_read` gets, which is the field that means that.
-        let read = LocalSlabBackend::new(&inner.root).read_all(block_slab_id, &mut tally)?;
-        let slab = read.charge(&mut inner.stats);
-        let range = logical_range_from_slab(&slab, block_slab_id, offset, size)?;
+        let read =
+            LocalSlabBackend::new(&self.read_view.root).read_all(block_slab_id, &mut tally)?;
+        let slab = read.charge(&self.read_view.counters);
+        let owned_format = owned_writer::has_owned_format(&self.read_view.root, block_slab_id)?;
+        let range = logical_range_from_slab(&slab, block_slab_id, offset, size, owned_format)?;
         let bytes = range.bytes;
-        inner.stats.logical_bytes_read += bytes.len() as u64;
-        inner.stats.compressed_records_read += range.compressed_records_read;
+        self.read_view
+            .counters
+            .add_logical(bytes.len() as u64, range.compressed_records_read);
         Ok(bytes)
     }
 
@@ -90,20 +94,14 @@ impl BlockStore {
     /// entry points beside it all charged. Going through the backend makes that impossible to
     /// repeat: `CountedSlabRead` does not give up its bytes without a `&mut BlockStoreStats`.
     ///
-    /// The store lock is still NOT held across the file read -- the root is cloned for the read
-    /// and the lock is taken again only to charge -- because a whole-slab read under the lock
-    /// would block every writer for the length of a slab.
+    /// No store lock is taken for any of it, because a whole-slab read under the lock would block
+    /// every writer for the length of a slab.
     pub fn read_slab(&self, block_slab_id: u64) -> Result<Vec<u8>, BlockStoreError> {
         self.ensure_slab_present(block_slab_id)?;
-        let root = self
-            .inner
-            .lock()
-            .expect("block store lock poisoned")
-            .root
-            .clone();
         let mut tally = BlockStoreReadTally::start();
-        let read = LocalSlabBackend::new(&root).read_all(block_slab_id, &mut tally)?;
-        let bytes = read.charge(&mut self.inner.lock().expect("block store lock poisoned").stats);
+        let read =
+            LocalSlabBackend::new(&self.read_view.root).read_all(block_slab_id, &mut tally)?;
+        let bytes = read.charge(&self.read_view.counters);
         #[cfg(test)]
         crate::snapshot_probe::note_slab_read(bytes.len() as u64);
         Ok(bytes)
@@ -127,11 +125,137 @@ impl BlockStore {
         block_slab_id: u64,
         bytes: &[u8],
     ) -> Result<(), BlockStoreError> {
+        self.install_slab_with_format(block_slab_id, bytes, None, None, false)
+    }
+
+    pub(crate) fn install_transferred_slab(
+        &self,
+        block_slab_id: u64,
+        bytes: &[u8],
+        owner: Option<u64>,
+    ) -> Result<(), BlockStoreError> {
+        self.install_slab_with_format(block_slab_id, bytes, Some(owner), None, false)
+    }
+
+    pub(crate) fn stage_transferred_slab(
+        &self,
+        block_slab_id: u64,
+        bytes: &[u8],
+        owner: Option<u64>,
+        retained: &mut BlockStoreReadSnapshot,
+        reserved_destination: bool,
+    ) -> Result<(), BlockStoreError> {
+        if !retained.belongs_to(self) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "slab retention belongs to a different block store",
+            ).into());
+        }
+        self.install_slab_with_format(
+            block_slab_id, bytes, Some(owner), Some(retained), reserved_destination,
+        )
+    }
+
+    pub(crate) fn exported_slab_owner(&self, block_slab_id: u64) -> Result<Option<u64>, BlockStoreError> {
+        owned_writer::stored_slab_owner(&self.read_view.root, block_slab_id)
+    }
+
+    pub(crate) fn read_slab_for_transfer(
+        &self,
+        block_slab_id: u64,
+    ) -> Result<(Vec<u8>, Option<u64>), BlockStoreError> {
+        let mut retained = BlockStoreReadSnapshot::new(self);
+        retained.pin(block_slab_id);
+        let bytes = self.read_slab(block_slab_id)?;
+        let owner = self.exported_slab_owner(block_slab_id)?;
+        if owner.is_some() && record::slab_owner(&bytes, block_slab_id)? != owner {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "slab bytes do not match their durable ownership",
+            ).into());
+        }
+        Ok((bytes, owner))
+    }
+
+    pub(super) fn install_slab_with_format(
+        &self,
+        block_slab_id: u64,
+        bytes: &[u8],
+        transferred_owner: Option<Option<u64>>,
+        mut retained: Option<&mut BlockStoreReadSnapshot>,
+        reserved_destination: bool,
+    ) -> Result<(), BlockStoreError> {
         #[cfg(test)]
         crate::snapshot_probe::note_slab_install(bytes.len() as u64);
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        std::fs::create_dir_all(&inner.root)?;
+        inner.check_owned_recovery()?;
+        let registered = owned_writer::stored_slab_owner(&inner.root, block_slab_id)?;
+        let expected_owner = transferred_owner.unwrap_or(registered);
         let path = slab_path(&inner.root, block_slab_id);
+        let slab_summary = summarize_slab(bytes, block_slab_id, expected_owner.is_some())?;
+        if slab_summary.owner_shard_id != expected_owner
+            || (registered.is_some() && registered != expected_owner)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "transferred slab ownership does not match its declared owner",
+            ).into());
+        }
+        // Checkpoint staging leaves an existing slab unchanged. Exact already-installed
+        // content may be reused without replacing the file or disturbing its readers.
+        if reserved_destination || retained.is_some() {
+            if let Some(existing_len) = verify_owned_import_prefix(&path, bytes)? {
+                if existing_len != bytes.len() as u64 || registered != expected_owner {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::AlreadyExists,
+                        "checkpoint slab overlaps a different installed slab",
+                    ).into());
+                }
+                if let Some(retained) = retained.as_deref_mut() {
+                    retained.pin_locked(&mut inner, block_slab_id);
+                }
+                return Ok(());
+            }
+            if inner.slabs.get(&block_slab_id).is_some_and(|slab| {
+                matches!(slab.state, BlockStoreSlabState::DelayedDestroy | BlockStoreSlabState::Purged)
+            }) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "checkpoint slab overlaps a retired slab ID",
+                ).into());
+            }
+        }
+        if inner.read_pins.contains_key(&block_slab_id) && path.try_exists()? {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::WouldBlock,
+                "a reader holds the installed slab",
+            ).into());
+        }
+        if inner.owned_active.contains(&block_slab_id)
+            || (slab_summary.owner_shard_id.is_some() && block_slab_id == inner.block_slab_id)
+        {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "import overlaps an active slab writer",
+            )
+            .into());
+        }
+        let advances_legacy_cursor = !reserved_destination
+            && slab_summary.owner_shard_id.is_none() && block_slab_id >= inner.block_slab_id;
+        if transferred_owner.is_some() && registered.is_some() {
+            if let Some(existing_len) = verify_owned_import_prefix(&path, bytes)? {
+                if existing_len >= bytes.len() as u64 {
+                    return Ok(());
+                }
+            }
+        }
+        std::fs::create_dir_all(&inner.root)?;
+        owned_writer::check_imported_slab_owner(
+            &inner.root, block_slab_id, slab_summary.owner_shard_id,
+        )?;
+        if slab_summary.owner_shard_id.is_some() {
+            inner.owned_highest_id = inner.owned_highest_id.max(block_slab_id);
+        }
         let temp_path = path.with_extension(format!(
             "seg.tmp.{}",
             std::time::SystemTime::now()
@@ -145,16 +269,15 @@ impl BlockStore {
             temp.flush()?;
             temp.sync_all()?;
         }
-        if block_slab_id >= inner.block_slab_id {
+        if advances_legacy_cursor {
             inner.active_append_file = None;
         }
         std::fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
-        if block_slab_id >= inner.block_slab_id {
+        if advances_legacy_cursor {
             inner.block_slab_id = block_slab_id;
             inner.write_offset = bytes.len() as u64;
         }
-        let slab_summary = summarize_slab(bytes, block_slab_id)?;
         if let Some(max_block_id) = slab_summary.last_block_id {
             inner.next_block_id = inner.next_block_id.max(max_block_id.saturating_add(1));
         }
@@ -165,6 +288,7 @@ impl BlockStore {
             BlockStoreSlabDescriptor {
                 stored_slab_id: block_slab_id,
                 block_slab_id,
+                owner_shard_id: slab_summary.owner_shard_id,
                 state: if is_current_slab {
                     BlockStoreSlabState::Active
                 } else {
@@ -191,6 +315,7 @@ impl BlockStore {
             for slab in inner.slabs.values_mut() {
                 if slab.block_slab_id != block_slab_id
                     && slab.state == BlockStoreSlabState::Active
+                    && slab.owner_shard_id.is_none()
                 {
                     slab.state = BlockStoreSlabState::Sealed;
                 }
@@ -205,8 +330,33 @@ impl BlockStore {
             inner.slabs_unwritten = 0;
             inner.persist_slab_manifest_counted()?;
         }
+        if let Some(retained) = retained {
+            retained.pin_locked(&mut inner, block_slab_id);
+        }
         Ok(())
     }
+}
+
+fn verify_owned_import_prefix(path: &std::path::Path, incoming: &[u8]) -> std::io::Result<Option<u64>> {
+    let mut existing = match std::fs::File::open(path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(error),
+    };
+    let existing_len = existing.metadata()?.len();
+    let common_len = existing_len.min(incoming.len() as u64) as usize;
+    let mut buffer = [0; 32 * 1024];
+    for shared in incoming[..common_len].chunks(buffer.len()) {
+        let actual = &mut buffer[..shared.len()];
+        existing.read_exact(actual)?;
+        if actual != shared {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "incoming slab ID names different installed contents",
+            ));
+        }
+    }
+    Ok(Some(existing_len))
 }
 
 /// Every way into the block store that reads slab bytes, and whether the store counts it.

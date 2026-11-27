@@ -67,7 +67,42 @@ fn sealed_readers_reuse_the_descriptor_without_relisting_or_reopening() {
     }
     assert_eq!(FILE_OPENS.with(|count| count.get()), 1);
     assert_eq!(WAL_SEGMENT_LISTINGS.with(|count| count.get()), 1);
-    assert_eq!(store.inner.lock().unwrap().point_readers.readers.len(), 1);
+    assert_eq!(store.shard_writer(7).lock_inner_raw().point_readers.readers.len(), 1);
+}
+
+#[cfg(unix)]
+#[test]
+fn returned_descriptors_replace_only_the_exact_stored_path() {
+    let _policy = RollPolicy::new(1);
+    let dir = tempfile::tempdir().unwrap();
+    let position = {
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        append(&store, 7, 1)
+    };
+    let mut cache = Cache::default();
+    let first = cache.take(dir.path(), 7, position.1).unwrap().unwrap();
+    let second = cache.take(dir.path(), 7, position.1).unwrap().unwrap();
+    assert_eq!(first.path.as_os_str(), second.path.as_os_str());
+    cache.put(first);
+    cache.put(second);
+    assert_eq!(cache.readers.len(), 1);
+    let original_path = cache.readers[0].path.clone();
+    let original_bytes = cache.reader_bytes;
+    let original_extent = cache.open_file_bytes;
+    let first = cache.take(dir.path(), 7, position.1).unwrap().unwrap();
+    let mut other_spelling = cache.take(dir.path(), 7, position.1).unwrap().unwrap();
+    other_spelling.path = dir.path().join(".").join(original_path.file_name().unwrap());
+    assert_ne!(other_spelling.path.as_os_str(), original_path.as_os_str());
+    cache.put(first);
+    cache.put(other_spelling);
+    assert_eq!(cache.readers.len(), 2);
+    assert_eq!(cache.open_file_bytes, 2 * original_extent);
+    assert!(cache.reader_bytes >= 2 * original_bytes);
+    let selected = cache.take(dir.path(), 7, position.1).unwrap().unwrap();
+    assert!(selected.stamp.is_some() || !cfg!(unix));
+    cache.put(selected);
+    assert!(cache.readers.len() <= MAX_READERS);
+    assert!(cache.reader_bytes <= READER_BYTES && cache.open_file_bytes <= OPEN_FILE_BYTES);
 }
 
 #[cfg(unix)]
@@ -84,7 +119,7 @@ fn a_sealed_descriptor_serves_different_records_inside_its_extent() {
     read(&store, 7, first, 127, 1);
     read(&store, 7, second, 127, 2);
     assert_eq!(FILE_OPENS.with(|count| count.get()), 1);
-    assert_eq!(store.inner.lock().unwrap().point_readers.readers.len(), 1);
+    assert_eq!(store.shard_writer(7).lock_inner_raw().point_readers.readers.len(), 1);
 }
 
 #[test]
@@ -97,7 +132,8 @@ fn growing_active_segments_do_not_retain_descriptors() {
     let second = append(&store, 7, 2);
     read(&store, 7, second, 127, 2);
     read(&store, 7, first, 0, 1);
-    let inner = store.inner.lock().unwrap();
+    let shard_writer = store.shard_writer(7);
+    let inner = shard_writer.lock_inner_raw();
     assert!(inner.point_readers.readers.is_empty());
     assert_eq!(inner.point_readers.open_file_bytes, 0);
 }
@@ -112,10 +148,11 @@ fn owned_reclaim_closes_descriptors_before_unlink_and_preserves_survivors() {
     let second = append(&store, 7, 2);
     read(&store, 7, first, 0, 1);
     read(&store, 7, second, 0, 2);
-    assert_eq!(store.inner.lock().unwrap().point_readers.readers.len(), 2);
+    assert_eq!(store.shard_writer(7).lock_inner_raw().point_readers.readers.len(), 2);
     store.gc_before_sequence_unchecked(7, second.0).unwrap();
     {
-        let inner = store.inner.lock().unwrap();
+        let shard_writer = store.shard_writer(7);
+        let inner = shard_writer.lock_inner_raw();
         assert!(inner.point_readers.readers.is_empty());
         assert_eq!(inner.point_readers.open_file_bytes, 0);
     }
@@ -143,7 +180,7 @@ fn replaced_same_length_files_do_not_serve_cached_inode_bytes() {
     assert!(store
         .read_carried_block_at_log_id(7, position.1, position.0, 127, 127, None)
         .is_err());
-    assert!(store.inner.lock().unwrap().point_readers.readers.is_empty());
+    assert!(store.shard_writer(7).lock_inner_raw().point_readers.readers.is_empty());
 }
 
 #[cfg(unix)]
@@ -159,7 +196,8 @@ fn deleted_sealed_files_are_not_read_through_retained_descriptors() {
         .read_carried_block_at_log_id(7, position.1, position.0, 0, 0, None)
         .unwrap()
         .is_none());
-    let inner = store.inner.lock().unwrap();
+    let shard_writer = store.shard_writer(7);
+    let inner = shard_writer.lock_inner_raw();
     assert!(inner.point_readers.readers.is_empty());
     assert_eq!(inner.point_readers.open_file_bytes, 0);
 }
@@ -169,14 +207,17 @@ fn deleted_sealed_files_are_not_read_through_retained_descriptors() {
 fn stale_directory_generations_force_one_refresh_when_another_writer_rolls() {
     let _policy = RollPolicy::new(1);
     let dir = tempfile::tempdir().unwrap();
+    // One writer owns the directory; the store under test only reads it, so it never takes the
+    // append lock the writer holds.
+    let writer = LocalWriteAheadLogStore::new(dir.path());
+    let first = append(&writer, 7, 1);
     let store = LocalWriteAheadLogStore::new(dir.path());
-    let first = append(&store, 7, 1);
     read(&store, 7, first, 0, 1);
-    let other = LocalWriteAheadLogStore::new(dir.path());
-    let second = append(&other, 7, 2);
+    let second = append(&writer, 7, 2);
     {
         // Simulate a filesystem whose directory timestamps did not distinguish the roll.
-        let mut inner = store.inner.lock().unwrap();
+        let shard_writer = store.shard_writer(7);
+        let mut inner = shard_writer.lock_inner_raw();
         let directory = inner.point_readers.directories.front_mut().unwrap();
         Arc::get_mut(directory).unwrap().stamp = stamp(&dir.path().metadata().unwrap());
     }
@@ -201,8 +242,9 @@ fn reader_cache_keeps_shards_and_store_owners_separate() {
         read(&first, 8, first_eight, 127, 2);
         read(&second, 7, second_seven, 127, 3);
     }
-    assert_eq!(first.inner.lock().unwrap().point_readers.readers.len(), 2);
-    assert_eq!(second.inner.lock().unwrap().point_readers.readers.len(), 1);
+    assert_eq!(first.shard_writer(7).lock_inner_raw().point_readers.readers.len(), 1);
+    assert_eq!(first.shard_writer(8).lock_inner_raw().point_readers.readers.len(), 1);
+    assert_eq!(second.shard_writer(7).lock_inner_raw().point_readers.readers.len(), 1);
 }
 
 #[cfg(unix)]
@@ -216,7 +258,8 @@ fn descriptor_count_and_retained_metadata_stay_bounded() {
         .collect();
     for (index, position) in positions.into_iter().enumerate() {
         read(&store, 7, position, 0, index as u8);
-        let inner = store.inner.lock().unwrap();
+        let shard_writer = store.shard_writer(7);
+        let inner = shard_writer.lock_inner_raw();
         let cache = &inner.point_readers;
         assert!(cache.readers.len() <= MAX_READERS);
         assert!(
@@ -252,4 +295,107 @@ fn represented_file_lengths_limit_delayed_external_reclaim() {
         assert_eq!(cache.readers.len(), 1);
         assert!(cache.open_file_bytes <= OPEN_FILE_BYTES);
     }
+}
+
+fn write_piece_header(path: &Path, base: u64) {
+    let mut bytes = crate::log_framing::encode_base_header(base);
+    bytes.extend_from_slice(&[crate::log_framing::FRAME_MAGIC_V3, 1, 2, 3]);
+    fs::write(path, bytes).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
+fn compact_directory_reuses_large_listings_without_retaining_descriptors() {
+    const PIECES: usize = 20_000;
+    let dir = tempfile::tempdir().unwrap();
+    for index in (0..PIECES).rev() {
+        let base = index as u64 * 8;
+        write_piece_header(&sealed_wal_path(dir.path(), 7, base), base);
+    }
+    let previous = wal_segment_pieces(dir.path(), 7);
+    let old_minimum = previous.capacity() * std::mem::size_of::<WalPiece>()
+        + previous.iter().map(|piece| piece.path.capacity()).sum::<usize>();
+    assert!(old_minimum > DIRECTORY_BYTES, "the full-path control must exceed admission");
+    drop(previous);
+    let mut cache = Cache::default();
+    WAL_SEGMENT_LISTINGS.with(|count| count.set(0));
+    for index in [0, PIECES / 2, PIECES - 1] {
+        let base = index as u64 * 8;
+        let reader = cache.take(dir.path(), 7, base).unwrap().unwrap();
+        assert_eq!(reader.base, base);
+        assert_eq!(reader.path, sealed_wal_path(dir.path(), 7, base));
+        assert!(reader.sealed);
+        // Each lookup misses the descriptor cache, so only the directory can be reused.
+        drop(reader);
+    }
+    assert_eq!(WAL_SEGMENT_LISTINGS.with(|count| count.get()), 1);
+    assert_eq!(cache.directories.len(), 1);
+    assert!(cache.readers.is_empty());
+    assert!(cache.directories[0].aliases.is_empty());
+    assert_eq!(cache.directories[0].pieces.len(), PIECES);
+    assert!(cache.directory_bytes < DIRECTORY_BYTES);
+    println!("pieces={PIECES} full_path_minimum_bytes={old_minimum} compact_bytes={} listings=1", cache.directory_bytes);
+}
+
+#[test]
+fn compact_directory_preserves_current_legacy_and_noncanonical_names() {
+    let dir = tempfile::tempdir().unwrap();
+    let names = [
+        (0, format!("shard-7.wal.{:020}.{WAL_PIECE_SUFFIX}", 0)),
+        (8, format!("shard-7.wal.{:020}.{LEGACY_WAL_PIECE_SUFFIX}", 8)),
+        (16, format!("shard-7.wal.16.{WAL_PIECE_SUFFIX}")),
+        (24, format!("shard-7.wal.+24.{LEGACY_WAL_PIECE_SUFFIX}")),
+        (32, format!("shard-7.wal.{:040}.{WAL_PIECE_SUFFIX}", 32)),
+        (u64::MAX, format!("shard-7.wal.{:020}.{WAL_PIECE_SUFFIX}", u64::MAX)),
+    ];
+    for (base, name) in &names {
+        write_piece_header(&dir.path().join(name), *base);
+    }
+    fs::write(dir.path().join("foreign"), b"ignore").unwrap();
+    write_piece_header(&sealed_wal_path(dir.path(), 8, 48), 48);
+    let mut cache = Cache::default();
+    for (base, name) in names {
+        let reader = cache.take(dir.path(), 7, base).unwrap().unwrap();
+        assert_eq!(reader.base, base);
+        assert_eq!(reader.path, dir.path().join(name));
+        assert!(reader.sealed);
+    }
+    let listed = cache.directory(dir.path(), 7, false).unwrap();
+    assert_eq!(listed.pieces.len(), 6);
+    assert_eq!(listed.aliases.len(), 3);
+}
+
+#[cfg(unix)]
+#[test]
+fn oversized_alias_metadata_stays_outside_the_directory_cache() {
+    let dir = tempfile::tempdir().unwrap();
+    for base in (0..6_000).map(|index| index * 8) {
+        let name = format!("shard-7.wal.{base:0180}.{WAL_PIECE_SUFFIX}");
+        write_piece_header(&dir.path().join(name), base);
+    }
+    let mut cache = Cache::default();
+    let listed = cache.directory(dir.path(), 7, false).unwrap();
+    assert_eq!(listed.pieces.len(), 6_000);
+    assert_eq!(listed.aliases.len(), 6_000);
+    assert!(listed.weight > DIRECTORY_BYTES);
+    assert!(cache.directories.is_empty());
+    assert_eq!(cache.directory_bytes, 0);
+    let base = 5_999 * 8;
+    let reader = cache.take(dir.path(), 7, base).unwrap().unwrap();
+    assert_eq!(reader.path, dir.path().join(format!("shard-7.wal.{base:0180}.{WAL_PIECE_SUFFIX}")));
+}
+
+#[cfg(unix)]
+#[test]
+fn compact_directory_preserves_non_utf8_root_paths() {
+    use std::os::unix::ffi::OsStringExt;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join(OsString::from_vec(b"root-\xff".to_vec()));
+    fs::create_dir(&root).unwrap();
+    let path = sealed_wal_path(&root, 7, 42);
+    write_piece_header(&path, 42);
+    let mut cache = Cache::default();
+    let reader = cache.take(&root, 7, 42).unwrap().unwrap();
+    assert_eq!(reader.path, path);
+    assert_eq!(reader.base, 42);
 }

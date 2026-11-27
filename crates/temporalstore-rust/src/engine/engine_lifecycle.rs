@@ -595,7 +595,7 @@ impl TemporalEngine {
         }
     }
 
-    /// Warm this engine's page cache in the BACKGROUND rather than during `load_shard`, so a
+    /// Warm this engine's block cache in the BACKGROUND rather than during `load_shard`, so a
     /// restart publishes serving state before the promotion pass finishes.
     ///
     /// A caller that holds the engine says this to the engine. The proxy used to say it to the
@@ -744,54 +744,55 @@ impl TemporalEngine {
         object_key: &str,
         element_name: Option<&str>,
     ) -> Option<Vec<u8>> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&shard_id)?;
-        let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-        // A NAMED ELEMENT'S ADDRESS COMES FROM THE RESIDENT MAP.
-        //
-        // This asked `bucket_index_block_address`, which requires
-        // `block.element_name.as_deref() == element_name` on every branch. An entry carries no element
-        // name, so for a container element that resolved NOTHING and this door answered `None` for
-        // elements that were present and served:
-        // `container_block_element_key::every_container_kind_reads_back_the_value_it_wrote_through_a_
-        // framed_page` failed at "no stored block for hash hash-key element_name field-0000".
-        //
-        // The resident map is keyed BY the element and is where the production readers that used to
-        // resolve this way now go, so this door follows them rather than keeping a resolution the
-        // engine no longer has. The index is still asked as a FALLBACK, because it is the door for
-        // a kind that has no resident element map -- and because a caller naming an element name for
-        // such a kind should get the same answer it always did.
-        let address = match element_name {
-            Some(element_name) => {
-                super::state::resident_element_name_address(shard, model_id, object_key, element_name)
-                    .cloned()
-                    .or_else(|| {
-                        super::bucket_store::bucket_index_block_address(
-                            shard,
-                            model_id,
-                            object_key,
-                            Some(element_name),
-                        )
-                    })?
-            }
-            None => super::bucket_store::bucket_index_block_address(
-                shard, model_id, object_key, None,
-            )?,
-        };
-        let routing_bucket = super::hashing::block_routing_bucket(
-            object_key,
-            start_routing_bucket,
-            end_routing_bucket,
-        );
-        super::read_block_frame_bytes(
-            &self.cache,
-            &self.block_store,
-            shard_id,
-            &address,
-            // The same three terms `bucket_index_block_address` was just asked, above.
-            BlockIdentity::of(shard_id, model_id, object_key, element_name),
-            Some(routing_bucket),
-        )
+        self.shards.with_state(shard_id, |state| {
+            let shard = state?;
+            let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+            // A NAMED ELEMENT'S ADDRESS COMES FROM THE RESIDENT MAP.
+            //
+            // This asked `bucket_index_block_address`, which requires
+            // `block.element_name.as_deref() == element_name` on every branch. An entry carries no element
+            // name, so for a container element that resolved NOTHING and this door answered `None` for
+            // elements that were present and served:
+            // `container_block_element_key::every_container_kind_reads_back_the_value_it_wrote_through_a_
+            // framed_page` failed at "no stored block for hash hash-key element_name field-0000".
+            //
+            // The resident map is keyed BY the element and is where the production readers that used to
+            // resolve this way now go, so this door follows them rather than keeping a resolution the
+            // engine no longer has. The index is still asked as a FALLBACK, because it is the door for
+            // a kind that has no resident element map -- and because a caller naming an element name for
+            // such a kind should get the same answer it always did.
+            let address = match element_name {
+                Some(element_name) => {
+                    super::state::resident_element_name_address(shard, model_id, object_key, element_name)
+                        .cloned()
+                        .or_else(|| {
+                            super::bucket_store::bucket_index_block_address(
+                                shard,
+                                model_id,
+                                object_key,
+                                Some(element_name),
+                            )
+                        })?
+                }
+                None => super::bucket_store::bucket_index_block_address(
+                    shard, model_id, object_key, None,
+                )?,
+            };
+            let routing_bucket = super::hashing::block_routing_bucket(
+                object_key,
+                start_routing_bucket,
+                end_routing_bucket,
+            );
+            super::read_block_frame_bytes(
+                &self.cache,
+                &self.block_store,
+                shard_id,
+                &address,
+                // The same three terms `bucket_index_block_address` was just asked, above.
+                BlockIdentity::of(shard_id, model_id, object_key, element_name),
+                Some(routing_bucket),
+            )
+        })
     }
 
     /// Install a hash field whose block carries NO element frame, the way every block written before
@@ -812,42 +813,43 @@ impl TemporalEngine {
         field: &str,
         value: &[u8],
     ) -> bool {
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return false;
-        };
-        let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-        // The OBJECT's id, not the element's -- #2019 made that the only shape. The element is
-        // named by the element name argument below, as it is on the real write path.
-        let object_id = super::stable_block_object_id(shard_id, "hash", object_key);
-        let routing_bucket = super::hashing::block_routing_bucket(
-            object_key,
-            start_routing_bucket,
-            end_routing_bucket,
-        );
-        let Ok(address) = super::append_value(
-            &self.cache,
-            &self.block_store,
-            shard_id,
-            value,
-            Some(object_id),
-            Some(field),
-            Some(routing_bucket),
-            false,
-        ) else {
-            return false;
-        };
-        super::recorded_map::install_element::<super::recorded_map::HashKind>(
-            shard,
-            shard_id,
-            object_key,
-            Some(field.to_string()),
-            std::sync::Arc::from(&field[..]),
-            address.clone(),
-            true,
-            address,
-        );
-        true
+        self.shards.with_state_mut(shard_id, |state| {
+            let Some(shard) = state else {
+                return false;
+            };
+            let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+            // The OBJECT's id, not the element's -- #2019 made that the only shape. The element is
+            // named by the element name argument below, as it is on the real write path.
+            let object_id = super::stable_block_object_id(shard_id, "hash", object_key);
+            let routing_bucket = super::hashing::block_routing_bucket(
+                object_key,
+                start_routing_bucket,
+                end_routing_bucket,
+            );
+            let Ok(address) = super::append_value(
+                &self.cache,
+                &self.block_store,
+                shard_id,
+                value,
+                Some(object_id),
+                Some(field),
+                Some(routing_bucket),
+                false,
+            ) else {
+                return false;
+            };
+            super::recorded_map::install_element::<super::recorded_map::HashKind>(
+                shard,
+                shard_id,
+                object_key,
+                Some(field.to_string()),
+                std::sync::Arc::from(&field[..]),
+                address.clone(),
+                true,
+                address,
+            );
+            true
+        })
     }
 
     /// How many recorded outcomes recovery has installed (see `replay_installs`).
@@ -1008,6 +1010,22 @@ impl TemporalEngine {
     }
 
     pub fn load_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
+        self.load_shard_with_shared_tail(request, || Ok(()))
+    }
+
+    pub(crate) fn load_shard_with_shared_tail(
+        &self,
+        request: LoadShardRequest,
+        replay_tail: impl FnOnce() -> Result<(), Status>,
+    ) -> LoadShardResponse {
+        let slot = self.pass_slot(request.shard_id);
+        let _lifecycle = slot.lock().expect("compaction pass lock poisoned");
+        self.load_shard_with_shared_tail_reserved(request, replay_tail)
+    }
+
+    fn load_shard_with_shared_tail_reserved(
+        &self, request: LoadShardRequest, replay_tail: impl FnOnce() -> Result<(), Status>,
+    ) -> LoadShardResponse {
         if self
             .infos
             .read()
@@ -1089,129 +1107,10 @@ impl TemporalEngine {
 
         #[cfg(test)]
         restore_phase_probe::begin();
-        let (loaded, replay_watermark) = if wal_single_barrier() {
-            // SINGLE-BARRIER RECOVERY TRUST (base-only). The data-block + delta fdatasyncs are
-            // deferred, so neither the served-index delta nor the anchor it advances can be
-            // trusted -- they may reference blocks that were never fsync'd. Recover ONLY from
-            // durable checkpoints:
-            //  * the base index snapshot, materialized durably (fsync) at the last dump/unload --
-            //    flush_shard_index fsyncs every block BEFORE advancing its watermark, so every block
-            //    at/below the base watermark is on disk; and
-            //  * the latest durable dump manifest, if newer than the base file.
-            // Then replay the WAL tail from that durable watermark, re-deriving every block written
-            // after it (a lost un-synced block is rebuilt, never left dangling) and, via the
-            // config-log, re-applying config-driven eviction at the exact frontier. The delta is
-            // deliberately NOT folded (load_index_base_only), so each tail record is applied
-            // EXACTLY ONCE -- no double-apply of non-idempotent commands (counters, appends).
-            let base_only =
-                self.load_index_base_only(request.shard_id, self.eager_cache_warm());
-            let base_watermark = base_only
-                .as_ref()
-                .and_then(|state| state.applied_wal_sequence)
-                .unwrap_or(0);
-            // THIS ARM IS ALSO WHAT MAKES WAL RECLAIM SAFE, which is not obvious from here.
-            // `storage_wal_reclaim_plan` takes its floor from the SAME bucket dump manifests
-            // (a minimum over them), so the floor can only stay at or below the point this
-            // raises the replay to. After an expiry round the base index FILE can sit far behind
-            // -- measured, anchor 1 against a delta at 9, with the log already cut to sequence 9
-            // -- and it is the manifest read here, not the base file, that covers the difference.
-            // Narrowing this arm narrows what a load can reconstruct without narrowing what
-            // reclaim is willing to drop.
-            // `wal_reclaim_never_frees_what_the_default_load_path_replays`
-            // (engine/tests/expiry_scale.rs) fails if the two ever come apart.
-            //
-            // AND IT HAS TO BE THE MAXIMUM OVER THEM, NOT THE LATEST OF THEM. This read
-            // `latest_bucket_dump_manifest_at`, which orders by `index_log_sequence`. That is a
-            // MEMBER of the set the floor minimises over but not an UPPER BOUND on it, and the
-            // two orderings genuinely come apart: a dump minted while `MATRIXARK_BULK_INGEST` is
-            // set takes its `wal_sequence` from the frozen base FILE, so it lands newest in
-            // index-log order carrying the LOWEST WAL anchor on disk. Measured on one shard in
-            // one process: the floor stood at 9 (retain_from 10) while a load off these same
-            // files replayed from 1, leaving sequences (1, 9] -- the expiry tombstones among them
-            // -- both reclaimable and required. A MAXIMUM bounds every subset by construction.
-            // See `durable_recovery_bucket_dump_manifest_at`.
-            match durable_recovery_bucket_dump_manifest_at(&self.index_dir, request.shard_id) {
-                Some(manifest) if manifest.wal_sequence > base_watermark => {
-                    // A durable dump is newer than the base file (base not materialized at that
-                    // dump). Use the manifest's embedded durable index as the recovery base. Read
-                    // it directly (not install_bucket_dump_manifest) so the stale-manifest guard --
-                    // which refuses to install a manifest older than the delta-advanced index-log
-                    // sequence -- cannot block trusting the durable checkpoint over the un-synced
-                    // delta.
-                    //
-                    // THE INDEX-LOG-SEQUENCE GUARD IS WHAT THAT BYPASSES, AND THE FORMAT STAMP IS
-                    // NOT. The two are different questions and only one of them is about how far
-                    // along the log a manifest sits. `index_log_sequence` says the delta may be
-                    // ahead of this checkpoint, which is exactly the thing this arm is right to
-                    // ignore -- the un-synced delta is what it does not trust.
-                    // The struct version in the image's header says the BYTES mean something other
-                    // than what this binary will read them as, and no amount of durability makes a
-                    // misinterpreted field correct. `decode_index_bytes` refuses such an image
-                    // before it reads the payload, so the `Err` arm below is where it lands, and
-                    // that arm falls back to the base file and the log, which is the same trade
-                    // `load_index_inner` makes.
-                    //
-                    // This path is the reason the stamp needed covering at all: it is reached by
-                    // an ORDINARY restart, not by anyone calling an install endpoint, so an old
-                    // store with an old dump manifest on disk met no gate whatsoever.
-                    match installable_image(&manifest)
-                        .map_err(|err| err.to_string())
-                        .and_then(crate::engine::decode_index_bytes)
-                    {
-                        Ok(mut restored) => {
-                            // RE-DERIVE THE UNSERIALIZED MODEL MAPS BEFORE REBUILDING OWNERSHIP,
-                            // for the reason `install_bucket_dump_manifest` states at its own call
-                            // to the same pair. Three of the maps
-                            // `collect_model_live_block_entries` walks are `skip_serializing`, so a
-                            // manifest index decodes with them EMPTY while its `bucket_map` --
-                            // which does serialize -- still names every block they owned.
-                            // `rebuild_bucket_block_ownership` clears `bucket_map` and repopulates
-                            // it FROM the model maps, so on its own here it deleted exactly the
-                            // blocks only the index still knew about, and this restored state is
-                            // what becomes the shard.
-                            //
-                            // Measured before this line existed, on the DEFAULT recovery arm: a
-                            // shard dumped holding six hash fields and six strings came back
-                            // serving 0 of 6 hash fields and 6 of 6 strings. The install path has
-                            // always done this; only this arm did not.
-                            //
-                            // `hashes` is the map this re-derives. `context_events` and
-                            // `context_indexes` are keyed by timestamp and their index entries
-                            // carry `element_name: None`, so their keys are not recoverable from the
-                            // index and they stay dropped here -- the same hole the install path
-                            // carries, recorded at
-                            // `rebuild_unserialized_model_maps_from_bucket_index`.
-                            rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
-                            // THE WHOLE RANGE, for the same reason `install_bucket_dump_manifest`
-                            // keeps it: `restored` is a DECODED MANIFEST INDEX, a whole-shard image
-                            // carrying explicit routing buckets from whatever range wrote it, and
-                            // `rebuild_bucket_block_ownership` FILTERS on the range it is given. A
-                            // load that narrows the range would silently drop every block the
-                            // manifest holds outside it rather than re-file it. The promote below
-                            // this match passes `request`'s range and should: it runs over this
-                            // shard's own live model maps, not over a foreign image.
-                            rebuild_bucket_block_ownership(
-                                request.shard_id,
-                                &mut restored,
-                                0,
-                                u32::MAX,
-                            );
-                            (Some(restored), manifest.wal_sequence)
-                        }
-                        // COUNTED, exactly as `load_index_inner` counts an image it refuses, and
-                        // for the reason it gives: this arm answers with the base file and the log
-                        // whether the manifest was refused or was never there, and without the
-                        // count nothing downstream can tell the two apart.
-                        Err(_) => {
-                            crate::engine::persistence::note_index_load(
-                                crate::engine::persistence::IndexLoadPath::Undecodable,
-                            );
-                            (base_only, base_watermark)
-                        }
-                    }
-                }
-                _ => (base_only, base_watermark),
-            }
+        let (loaded, replay_watermark, catalog) = if wal_single_barrier() {
+            // Only the selected durable image sets the replay frontier. Ordinary unsynced
+            // deltas cannot advance it; the same scan recovers relocations and slab metadata.
+            self.load_durable_index_with_catalog(request.shard_id, self.eager_cache_warm())
         } else {
             // If the latest durable dump manifest is newer than the served index, install
             // it as the load base first (recovers data already dumped into a manifest and
@@ -1228,7 +1127,7 @@ impl TemporalEngine {
             // Fold-aware load: a corrupt served-index delta log is fatal here. Silently
             // folding a holed delta prefix would advance the anchor past a removal/eviction
             // recorded only in the delta -> silent loss. Refuse the load instead.
-            let loaded = match self.load_index_checked(request.shard_id, self.eager_cache_warm()) {
+            let (loaded, catalog) = match self.load_index_checked_with_catalog(request.shard_id, self.eager_cache_warm()) {
                 Ok(loaded) => loaded,
                 Err(status) => return LoadShardResponse { status },
             };
@@ -1246,7 +1145,7 @@ impl TemporalEngine {
                         .unwrap_or_else(|| self.wal_store.stats(request.shard_id).last_sequence),
                 },
             };
-            (loaded, replay_watermark)
+            (loaded, replay_watermark, catalog)
         };
         // What this load decided to SKIP. A recovery that loses a write loses it by choosing a
         // watermark, and that choice is invisible from outside: the shard loads clean, no error
@@ -1265,7 +1164,7 @@ impl TemporalEngine {
         // physical bytes below the slab's real size, so it cannot lose durable state -- it is a
         // metadata refinement over the lossless disk-derived catalog, making the per-write
         // slab-manifest file unnecessary as the catalog's source of truth.
-        if let Ok(Some(meta)) = self.index_log_store.latest_slab_catalog(request.shard_id) {
+        if let Some(meta) = catalog {
             let _ = self.block_store.install_slab_catalog(&meta.slabs);
         }
         let mut state = loaded.unwrap_or_default();
@@ -1280,7 +1179,7 @@ impl TemporalEngine {
         // per-slab live tally derived once, here, before anything can read it.
         crate::engine::storage_bucket_internals::seed_block_slab_live(&mut state);
         // Publish the info row WITH recovering:true BEFORE inserting into `shards`. A
-        // concurrent execute() acquires shards.write() first, so if it observes the shard
+        // concurrent execute() acquires the shard state guard first, so if it observes the shard
         // present it is guaranteed (happens-before via the shards lock) to also observe
         // recovering:true and reject the write. Inserting into `shards` first would open a
         // window where the shard is visible but the info row is absent -> the gate defaults
@@ -1347,27 +1246,13 @@ impl TemporalEngine {
             self.wal_store
                 .seed_undumped_from_sequence(request.shard_id, replay_watermark);
         }
+        let restore_result = restore_result.and_then(|_| replay_tail());
         if let Err(status) = restore_result {
             // ReplayWal returns DataLoss on a WAL hole and aborts Load. Unwind the
             // partially-loaded shard and refuse the load rather than serve truncated
             // state -- a not-loaded shard is recoverable/re-routable; silent truncation
             // is not.
-            self.shards
-                .write()
-                .expect("engine lock poisoned")
-                .remove(&request.shard_id);
-            self.infos
-                .write()
-                .expect("info lock poisoned")
-                .remove(&request.shard_id);
-            self.configs
-                .write()
-                .expect("config lock poisoned")
-                .remove(&request.shard_id);
-            self.admissions
-                .write()
-                .expect("admission lock poisoned")
-                .remove(&AdmissionScope::Shard(request.shard_id));
+            self.retire_loaded_shard_reserved(request.shard_id, || {});
             return LoadShardResponse { status };
         }
         // Replay succeeded and the shard is consistent: open it for serving. While
@@ -1445,7 +1330,7 @@ impl TemporalEngine {
         if manifest.wal_sequence <= served_anchor {
             return Ok(None);
         }
-        match self.install_bucket_dump_manifest(&manifest) {
+        match self.install_bucket_dump_manifest_reserved(&manifest) {
             Ok(()) => Ok(Some(manifest.wal_sequence)),
             Err(status) => Err(status),
         }
@@ -1473,219 +1358,221 @@ impl TemporalEngine {
     /// sequences describe what still needs writing out, not what the shard holds, and they
     /// legitimately differ between a shard built by commands and one rebuilt from records.
     pub(super) fn bucket_index_shape_for_test(&self, shard_id: ShardId) -> String {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return String::from("<no shard>");
-        };
-        let mut out = String::new();
-        let identities = shard.bucket_index.block_identities();
-        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-            for (block_ref_key, block) in &bucket.block_index {
-                // A block whose neighbours do not name an object prints an empty key and a zero
-                // id, which is what this shape has to say about a block nothing names.
-                let beside = identities.identity_of(bucket, *block_ref_key, block);
-                let object_key = beside
-                    .as_ref()
-                    .map_or("", |beside| beside.object_key.as_ref());
-                let object_id = beside
-                    .as_ref()
-                    .map_or(0, |beside| block.object_id(shard_id, beside.object_key));
-                out.push_str(&format!(
-                    "bucket={routing_bucket} ref={block_ref_key} kind={} key={} object_id={} slab={} off={} len={} deleted={} log_backed={}
+        self.shards.with_state(shard_id, |state| {
+            let Some(shard) = state else {
+                return String::from("<no shard>");
+            };
+            let mut out = String::new();
+            let identities = shard.bucket_index.block_identities();
+            for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+                for (block_ref_key, block) in &bucket.block_index {
+                    // A block whose neighbours do not name an object prints an empty key and a zero
+                    // id, which is what this shape has to say about a block nothing names.
+                    let beside = identities.identity_of(bucket, *block_ref_key, block);
+                    let object_key = beside
+                        .as_ref()
+                        .map_or("", |beside| beside.object_key.as_ref());
+                    let object_id = beside
+                        .as_ref()
+                        .map_or(0, |beside| block.object_id(shard_id, beside.object_key));
+                    out.push_str(&format!(
+                        "bucket={routing_bucket} ref={block_ref_key} kind={} key={} object_id={} slab={} off={} len={} deleted={} log_backed={}
 ",
-                    block.model_id(),
-                    object_key,
-                    object_id,
-                    block.address.block_slab_id(),
-                    block.address.offset(),
-                    block.address.length(),
-                    block.deleted(),
-                    block.log_backed(),
-                ));
+                        block.model_id(),
+                        object_key,
+                        object_id,
+                        block.address.block_slab_id(),
+                        block.address.offset(),
+                        block.address.length(),
+                        block.deleted(),
+                        block.log_backed(),
+                    ));
+                }
             }
-        }
-        out
+            out
+        })
     }
 
     pub(super) fn index_shape_for_test(&self, shard_id: ShardId) -> String {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return String::from("<no shard>");
-        };
-        let mut out = String::new();
-        let mut strings: Vec<_> = shard.strings().iter().collect();
-        strings.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, address) in strings {
-            out.push_str(&format!(
-                "string {key} slab={} off={} len={}\n",
-                address.block_slab_id(), address.offset(), address.length()
-            ));
-        }
-        for (key, deadline) in shard.expires_at_ms() {
-            out.push_str(&format!("expires {key} at={deadline}\n"));
-        }
-        let mut seen: Vec<_> = shard.seen.iter().collect();
-        seen.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, set) in seen {
-            let mut members: Vec<_> = set.by_member.iter().collect();
-            members.sort();
-            for (member, at) in members {
-                out.push_str(&format!("seen {key} member={member:?} at={at}\n"));
-            }
-        }
-        // Every timestamped series renders the same way, so a kind that stops being installed
-        // shows up as a missing line rather than as a map nobody compares.
-        let mut entities: Vec<_> = shard.context_entities().iter().collect();
-        entities.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, members) in entities {
-            // `points()` on the slot, and the hash by VALUE: this kind's ordered key is an entity
-            // hash rather than an instant, which is why the loop variable keeps its name.
-            for (entity_hash, address) in members.points() {
+        self.shards.with_state(shard_id, |state| {
+            let Some(shard) = state else {
+                return String::from("<no shard>");
+            };
+            let mut out = String::new();
+            let mut strings: Vec<_> = shard.strings().iter().collect();
+            strings.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, address) in strings {
                 out.push_str(&format!(
-                    "context_entity {key} id={entity_hash} slab={} off={} len={}
+                    "string {key} slab={} off={} len={}\n",
+                    address.block_slab_id(), address.offset(), address.length()
+                ));
+            }
+            for (key, deadline) in shard.expires_at_ms() {
+                out.push_str(&format!("expires {key} at={deadline}\n"));
+            }
+            let mut seen: Vec<_> = shard.seen.iter().collect();
+            seen.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, set) in seen {
+                let mut members: Vec<_> = set.by_member.iter().collect();
+                members.sort();
+                for (member, at) in members {
+                    out.push_str(&format!("seen {key} member={member:?} at={at}\n"));
+                }
+            }
+            // Every timestamped series renders the same way, so a kind that stops being installed
+            // shows up as a missing line rather than as a map nobody compares.
+            let mut entities: Vec<_> = shard.context_entities().iter().collect();
+            entities.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, members) in entities {
+                // `points()` on the slot, and the hash by VALUE: this kind's ordered key is an entity
+                // hash rather than an instant, which is why the loop variable keeps its name.
+                for (entity_hash, address) in members.points() {
+                    out.push_str(&format!(
+                        "context_entity {key} id={entity_hash} slab={} off={} len={}
+",
+                        address.block_slab_id(), address.offset(), address.length()
+                    ));
+                }
+            }
+            let mut counter_blocks: Vec<_> = shard.control_state_blocks().iter().collect();
+            counter_blocks.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, record) in counter_blocks {
+                let address = record.address();
+                out.push_str(&format!(
+                    "control_state_page {key} slab={} off={} len={}
 ",
                     address.block_slab_id(), address.offset(), address.length()
                 ));
             }
-        }
-        let mut counter_blocks: Vec<_> = shard.control_state_blocks().iter().collect();
-        counter_blocks.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, record) in counter_blocks {
-            let address = record.address();
-            out.push_str(&format!(
-                "control_state_page {key} slab={} off={} len={}
-",
-                address.block_slab_id(), address.offset(), address.length()
-            ));
-        }
-        let mut counters: Vec<_> = shard.control_state().iter().collect();
-        counters.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, series) in counters {
-            for (bucket_ms, total) in series {
-                out.push_str(&format!("control_counter {key} at={bucket_ms} total={total}
+            let mut counters: Vec<_> = shard.control_state().iter().collect();
+            counters.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, series) in counters {
+                for (bucket_ms, total) in series {
+                    out.push_str(&format!("control_counter {key} at={bucket_ms} total={total}
 "));
+                }
             }
-        }
-        let mut selections: Vec<_> = shard.control_state_selection.iter().collect();
-        selections.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, selected) in selections {
-            out.push_str(&format!(
-                "control_selection {key} at={} value={:?}
-",
-                selected.occur_time_ms, selected.value
-            ));
-        }
-        let mut changes: Vec<_> = shard.control_state_changes.iter().collect();
-        changes.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, buckets) in changes {
-            for (bucket_ms, bucket) in buckets {
-                // THE REPRESENTATION IS NAMED, because `members=` on a sketched bucket would read
-                // as an exact count and it is an estimate. A dump that silently rounds is worse
-                // than one that says which kind of number it is holding.
-                let kind = match bucket {
-                    crate::engine::hll::DistinctBucket::Exact(_) => "members",
-                    crate::engine::hll::DistinctBucket::Sketch(_) => "sketched",
-                };
+            let mut selections: Vec<_> = shard.control_state_selection.iter().collect();
+            selections.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, selected) in selections {
                 out.push_str(&format!(
-                    "control_change {key} at={bucket_ms} {kind}={}
+                    "control_selection {key} at={} value={:?}
 ",
-                    bucket.distinct_hint()
+                    selected.occur_time_ms, selected.value
                 ));
             }
-        }
-        let mut event_keys: Vec<_> = shard.context_events().iter().collect();
-        event_keys.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, entries) in event_keys {
-            for (event_id_hash, address) in entries.points() {
-                out.push_str(&format!(
-                    "context_event {key} id={event_id_hash} slab={} off={} len={}
+            let mut changes: Vec<_> = shard.control_state_changes.iter().collect();
+            changes.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, buckets) in changes {
+                for (bucket_ms, bucket) in buckets {
+                    // THE REPRESENTATION IS NAMED, because `members=` on a sketched bucket would read
+                    // as an exact count and it is an estimate. A dump that silently rounds is worse
+                    // than one that says which kind of number it is holding.
+                    let kind = match bucket {
+                        crate::engine::hll::DistinctBucket::Exact(_) => "members",
+                        crate::engine::hll::DistinctBucket::Sketch(_) => "sketched",
+                    };
+                    out.push_str(&format!(
+                        "control_change {key} at={bucket_ms} {kind}={}
 ",
-                    address.block_slab_id(), address.offset(), address.length()
-                ));
+                        bucket.distinct_hint()
+                    ));
+                }
             }
-        }
-        // The time index is what every windowed read goes through, so a primary map that is
-        // right and a timeline that is empty must not compare equal.
-        let mut timeline_keys: Vec<_> = shard.context_event_timeline.iter().collect();
-        timeline_keys.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, entries) in timeline_keys {
-            for (timeline_key, event_id_hash) in entries {
-                out.push_str(&format!(
-                    "context_timeline {key} at={timeline_key} id={event_id_hash}
+            let mut event_keys: Vec<_> = shard.context_events().iter().collect();
+            event_keys.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, entries) in event_keys {
+                for (event_id_hash, address) in entries.points() {
+                    out.push_str(&format!(
+                        "context_event {key} id={event_id_hash} slab={} off={} len={}
+",
+                        address.block_slab_id(), address.offset(), address.length()
+                    ));
+                }
+            }
+            // The time index is what every windowed read goes through, so a primary map that is
+            // right and a timeline that is empty must not compare equal.
+            let mut timeline_keys: Vec<_> = shard.context_event_timeline.iter().collect();
+            timeline_keys.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, entries) in timeline_keys {
+                for (timeline_key, event_id_hash) in entries {
+                    out.push_str(&format!(
+                        "context_timeline {key} at={timeline_key} id={event_id_hash}
 "
-                ));
+                    ));
+                }
             }
-        }
-        // CALLED PER MAP RATHER THAN ITERATED OVER AN ARRAY, because the maps no longer agree on
-        // one key type: the context kinds are keyed by `ModelKey` so they can share one allocation
-        // with the block index, while `features` keeps its `String` key -- that map holds 40 keys at
-        // a 40,040-key corpus, so converting it would buy nothing and touch 87 call sites. An array
-        // literal forces one type on every element; a generic call does not.
-        append_series_shape(&mut out, "feature", shard.features());
-        append_series_shape(&mut out, "context_index", shard.context_indexes());
-        append_series_shape(&mut out, "context_audit", shard.context_audits());
-        append_series_shape(&mut out, "context_child", shard.context_children());
-        append_series_shape(&mut out, "context_summary", shard.context_summaries());
-        append_series_shape(&mut out, "context_compression", shard.context_compressions());
-        let mut hashes: Vec<_> = shard.bucket_index.hashes.iter().collect();
-        hashes.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, fields) in hashes {
-            // NO SORT, and no `Vec` to sort. The field map keeps its entries in field order, so
-            // this is already the order the sort produced: the output is byte-identical.
-            //
-            // The sort was here because the container was a hashed TABLE whose iteration order was
-            // arbitrary, so a deterministic shape had to impose one. The `sets` loop immediately
-            // below has never needed a sort for the same reason in reverse -- its inner container is
-            // ordered -- and this walk now matches it.
-            //
-            // WHAT THIS IS NOT: a production saving. `index_shape_for_test` is a test-only shape
-            // helper, and it is the ONLY reader of `shard.bucket_index.hashes` that sorted the fields on every
-            // call. So "an ordered container removes a per-call sort" is true here and nowhere on a
-            // serving path, which is worth writing down rather than leaving to be inferred from the
-            // fact that a sort was removed.
-            for (field, address) in fields.iter() {
-                out.push_str(&format!(
-                    "hash {key}.{field} slab={} off={}\n",
-                    address.block_slab_id(), address.offset()
-                ));
+            // CALLED PER MAP RATHER THAN ITERATED OVER AN ARRAY, because the maps no longer agree on
+            // one key type: the context kinds are keyed by `ModelKey` so they can share one allocation
+            // with the block index, while `features` keeps its `String` key -- that map holds 40 keys at
+            // a 40,040-key corpus, so converting it would buy nothing and touch 87 call sites. An array
+            // literal forces one type on every element; a generic call does not.
+            append_series_shape(&mut out, "feature", shard.features());
+            append_series_shape(&mut out, "context_index", shard.context_indexes());
+            append_series_shape(&mut out, "context_audit", shard.context_audits());
+            append_series_shape(&mut out, "context_child", shard.context_children());
+            append_series_shape(&mut out, "context_summary", shard.context_summaries());
+            append_series_shape(&mut out, "context_compression", shard.context_compressions());
+            let mut hashes: Vec<_> = shard.bucket_index.hashes.iter().collect();
+            hashes.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, fields) in hashes {
+                // NO SORT, and no `Vec` to sort. The field map keeps its entries in field order, so
+                // this is already the order the sort produced: the output is byte-identical.
+                //
+                // The sort was here because the container was a hashed TABLE whose iteration order was
+                // arbitrary, so a deterministic shape had to impose one. The `sets` loop immediately
+                // below has never needed a sort for the same reason in reverse -- its inner container is
+                // ordered -- and this walk now matches it.
+                //
+                // WHAT THIS IS NOT: a production saving. `index_shape_for_test` is a test-only shape
+                // helper, and it is the ONLY reader of `shard.bucket_index.hashes` that sorted the fields on every
+                // call. So "an ordered container removes a per-call sort" is true here and nowhere on a
+                // serving path, which is worth writing down rather than leaving to be inferred from the
+                // fact that a sort was removed.
+                for (field, address) in fields.iter() {
+                    out.push_str(&format!(
+                        "hash {key}.{field} slab={} off={}\n",
+                        address.block_slab_id(), address.offset()
+                    ));
+                }
             }
-        }
-        let mut sets: Vec<_> = shard.bucket_index.sets.iter().collect();
-        sets.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, members) in sets {
-            for (member, address) in members {
-                out.push_str(&format!(
-                    "set {key} member={member:?} slab={} off={}\n",
-                    address.block_slab_id(), address.offset()
-                ));
+            let mut sets: Vec<_> = shard.bucket_index.sets.iter().collect();
+            sets.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, members) in sets {
+                for (member, address) in members {
+                    out.push_str(&format!(
+                        "set {key} member={member:?} slab={} off={}\n",
+                        address.block_slab_id(), address.offset()
+                    ));
+                }
             }
-        }
-        let mut lists: Vec<_> = shard.bucket_index.lists.iter().collect();
-        lists.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, elements) in lists {
-            for (sequence, address) in elements {
-                out.push_str(&format!(
-                    "list {key}[{sequence}] slab={} off={}\n",
-                    address.block_slab_id(), address.offset()
-                ));
+            let mut lists: Vec<_> = shard.bucket_index.lists.iter().collect();
+            lists.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, elements) in lists {
+                for (sequence, address) in elements {
+                    out.push_str(&format!(
+                        "list {key}[{sequence}] slab={} off={}\n",
+                        address.block_slab_id(), address.offset()
+                    ));
+                }
             }
-        }
-        let mut zsets: Vec<_> = shard.bucket_index.zsets.iter().collect();
-        zsets.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, members) in zsets {
-            for (member, (score, address)) in members {
-                out.push_str(&format!(
-                    "zset {key} member={member:?} score={score} slab={} off={}\n",
-                    address.block_slab_id(), address.offset()
-                ));
+            let mut zsets: Vec<_> = shard.bucket_index.zsets.iter().collect();
+            zsets.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, members) in zsets {
+                for (member, (score, address)) in members {
+                    out.push_str(&format!(
+                        "zset {key} member={member:?} score={score} slab={} off={}\n",
+                        address.block_slab_id(), address.offset()
+                    ));
+                }
             }
-        }
-        let mut buckets: Vec<_> = shard.buckets.iter().collect();
-        buckets.sort_by(|left, right| left.0.cmp(right.0));
-        for (key, (tokens, refilled)) in buckets {
-            out.push_str(&format!("bucket {key} tokens={tokens} at={refilled}\n"));
-        }
-        out
+            let mut buckets: Vec<_> = shard.buckets.iter().collect();
+            buckets.sort_by(|left, right| left.0.cmp(right.0));
+            for (key, (tokens, refilled)) in buckets {
+                out.push_str(&format!("bucket {key} tokens={tokens} at={refilled}\n"));
+            }
+            out
+        })
     }
 
     /// Install one recorded outcome, without running the command that produced it.
@@ -1699,6 +1586,105 @@ impl TemporalEngine {
     /// Partial application is the failure this exists to prevent: a successor that installs four
     /// of five items serves a shard that looks whole and is not. Refusing sends the caller back to
     /// re-executing, which is worse but honest.
+    pub(crate) fn local_file_restore_frontier(
+        &self,
+        shard_id: ShardId,
+        source: &str,
+    ) -> Result<Option<u64>, Status> {
+        let Some(snapshot) = self.load_index_base_only(shard_id, false) else { return Ok(None) };
+        match snapshot.file_restore_frontier {
+            Some((stored, index)) if stored == source => Ok(Some(index)),
+            Some(_) => Err(Status::error(
+                "shared_wal_source_mismatch", "local restored image belongs to another shared WAL source",
+            )),
+            None => Ok(None),
+        }
+    }
+
+    pub(crate) fn commit_file_restore_image(
+        &self,
+        shard_id: ShardId,
+        source: &str,
+        remote_index: u64,
+    ) -> Result<(), Status> {
+        let (start, end) = self.shard_routing_range(shard_id);
+        self.shards.with_state_mut(shard_id, |state| {
+            let shard = state.ok_or_else(|| {
+                Status::error("shared_wal_commit_failed", "shared restore shard is absent")
+            })?;
+            if promote_model_maps_to_bucket_index_authority(shard_id, shard, start, end) {
+                reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
+            }
+            rebuild_bucket_first_index(shard_id, shard, start, end);
+            // The block barrier and the captured publication below make this
+            // complete restored generation local. No client can add a dirty
+            // prefix while this shard is recovering.
+            if shard.applied_wal_sequence.unwrap_or(0) == 0
+                && shard.captured_relocation_sequence == 0
+            {
+                let buckets = shard.bucket_index.bucket_map.iter()
+                    .map(|(&bucket, _)| bucket).collect::<Vec<_>>();
+                let generations = super::storage_reporting::dirty_generations_of(
+                    shard, &buckets, start, end,
+                );
+                for &id in &buckets {
+                    if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&id) {
+                        if let Some(&generation) = generations.get(&id) {
+                            bucket.dirty_generation = bucket.dirty_generation.max(generation);
+                        }
+                        bucket.set_dirty(false);
+                        bucket.first_dirty_wal_sequence = 0;
+                        bucket.first_dirty_index_log_sequence = 0;
+                        for block in bucket.block_index.blocks_mut_unaccounted() {
+                            block.set_dirty(false);
+                        }
+                    }
+                }
+                super::storage_bucket_internals::clear_retained_inline_page_dirty_state(shard, &buckets);
+                shard.dirty_objects.drain_buckets(&buckets);
+                shard.mark_items_dumped();
+            }
+            refresh_bucket_runtime_flags(shard);
+            Ok::<(), Status>(())
+        })?;
+        let (mut snapshot, publication) = self.capture_shard_checkpoint(shard_id).ok_or_else(|| {
+            Status::error("shared_wal_commit_failed", "shared restore has no complete local image")
+        })?;
+        let has_synthetic = std::cell::Cell::new(false);
+        visit_live_block_entries(&snapshot, |entry| {
+            if crate::wal_record::is_wal_resident(entry.address.block_slab_id()) {
+                has_synthetic.set(true);
+            }
+        });
+        if has_synthetic.get() {
+            return Err(Status::error(
+                "shared_wal_commit_failed", "shared restore image depends on unavailable local WAL",
+            ));
+        }
+        self.block_store.sync_durable()
+            .map_err(|err| Status::error("shared_wal_commit_failed", err.to_string()))?;
+        snapshot.file_restore_frontier = Some((source.to_owned(), remote_index));
+        let bytes = serialize_index(&snapshot);
+        let superseded = || Status::error(
+            "shared_wal_commit_superseded", "shared restore checkpoint was superseded",
+        );
+        let published = self.checkpoint_publications.publish(&publication, || {
+            fs::create_dir_all(&self.index_dir)?;
+            atomic_write_bytes(&self.index_path(shard_id), &bytes)
+        }).map_err(|err| Status::error("shared_wal_commit_failed", err.to_string()))?;
+        if published.is_none() {
+            return Err(superseded());
+        }
+        self.shards.with_state_mut(shard_id, |state| {
+            if !self.checkpoint_publications.is_current_after_publish(&publication) {
+                return Err(superseded());
+            }
+            let shard = state.ok_or_else(superseded)?;
+            shard.file_restore_frontier = snapshot.file_restore_frontier;
+            Ok(())
+        })
+    }
+
     pub fn install_shared_outcomes(
         &self,
         shard_id: ShardId,
@@ -1720,16 +1706,58 @@ impl TemporalEngine {
         outcomes: &[crate::wal::WalOutcomeItem],
         carried: &[crate::wal::StagedBlock],
     ) -> bool {
+        self.install_shared_outcomes_with_carriers(shard_id, outcomes, carried, None)
+    }
+
+    pub(crate) fn install_shared_outcomes_with_carriers(
+        &self,
+        shard_id: ShardId,
+        outcomes: &[crate::wal::WalOutcomeItem],
+        carried: &[crate::wal::StagedBlock],
+        carriers: Option<&[Option<usize>]>,
+    ) -> bool {
+        if !outcomes.is_empty() && outcomes.iter().all(|item| {
+            item.kind == "record" && item.deleted && item.meta && item.address.is_none()
+                && item.element_name.is_none() && item.value.is_none() && item.ttl.is_none()
+        }) {
+            return self.shards.with_state_mut(shard_id, |state| {
+                let Some(shard) = state else {
+                    return false;
+                };
+                let keys: Vec<_> = outcomes.iter().map(|item| item.object_key.as_str()).collect();
+                // Invalidate the frame under the deletion guard so warm followers cannot serve stale values.
+                super::invalidate_records_all_batched(&self.cache, shard_id, &keys, &super::CACHE_SWEEP_COUNTS);
+                for key in keys {
+                    super::delete_record_exact(shard, key);
+                }
+                self.replay_installs.fetch_add(outcomes.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                true
+            });
+        }
         let mut localised = Vec::with_capacity(outcomes.len());
-        for item in outcomes {
+        let mut packed_addresses = BTreeMap::<(u64, u64, usize), ElementEntry>::new();
+        for (position, item) in outcomes.iter().enumerate() {
             let mut item = item.clone();
-            if let (Some(address), Some(block)) = (
-                item.resolved_address(),
-                carried.iter().find(|block| {
+            let carrier = carriers.and_then(|carriers| carriers[position]);
+            let block = match carriers {
+                Some(_) => carrier.and_then(|index| carried.get(index)),
+                None => carried.iter().find(|block| {
                     block.object_id == item.object_id
                         && block.element_name.as_deref() == item.element_name.as_deref()
                 }),
+            };
+            if let (Some(address), Some(block)) = (
+                item.resolved_address(),
+                block,
             ) {
+                let packed_key = carrier
+                    .filter(|_| item.element_name.is_some() && block.element_name.is_none())
+                    .map(|index| (address.address_word(), address.length(), index));
+                if let Some(local) = packed_key.and_then(|key| packed_addresses.get(&key)) {
+                    item.address = Some(local.clone());
+                    localised.push(item);
+                    continue;
+                }
                 if !matches!(self.block_store.read(&address), Ok(bytes) if bytes == block.bytes) {
                     // A foreign address can resolve to unrelated local bytes. The carried
                     // block is authoritative, even when that address is readable here.
@@ -1746,6 +1774,9 @@ impl TemporalEngine {
                         Some(item.routing_bucket),
                         false,
                     ) {
+                        if let Some(key) = packed_key {
+                            packed_addresses.insert(key, local.clone());
+                        }
                         item.address = Some(local);
                     } else {
                         return false;
@@ -1754,10 +1785,13 @@ impl TemporalEngine {
             }
             localised.push(item);
         }
-        if localised
-            .iter()
-            .any(|item| !self.apply_outcome_item(shard_id, item, carried))
-        {
+        if localised.iter().enumerate().any(|(position, item)| {
+            let item_blocks = carriers.and_then(|indices| indices[position])
+                .and_then(|index| carried.get(index))
+                .map(std::slice::from_ref)
+                .unwrap_or(carried);
+            !self.apply_outcome_item(shard_id, item, item_blocks)
+        }) {
             return false;
         }
         let outcomes = &localised[..];
@@ -1954,14 +1988,11 @@ impl TemporalEngine {
     ) -> bool {
         let applied = self.apply_outcome_item_inner(shard_id, item, carried);
         if applied {
-            if let Some(shard) = self
-                .shards
-                .write()
-                .expect("engine lock poisoned")
-                .get_mut(&shard_id)
-            {
-                shard.adopt_object_key_allocations(&item.object_key);
-            }
+            self.shards.with_state_mut(shard_id, |state| {
+                if let Some(shard) = state {
+                    shard.adopt_object_key_allocations(&item.object_key);
+                }
+            });
         }
         applied
     }
@@ -1991,717 +2022,718 @@ impl TemporalEngine {
         } else {
             0
         };
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return false;
-        };
-        match item.kind.as_str() {
-            // A TYPED REMOVAL. `mark_bucket_index_block_deleted` records one with no address --
-            // nothing was written, so there is none to name -- and `stage_meta_outcome` does the
-            // same for a string delete. Every arm below opens by demanding an address, so before
-            // this branch existed a removal could not be installed, `apply_outcome_item` answered
-            // false, and the caller refused the whole shard load over a member that is meant to be
-            // gone. `list_recovery` and `zset_recovery` fail on main for exactly that, and the
-            // string, hash and set equivalents were untested.
-            //
-            // `meta` is what says this is not a block upsert. It is written on every such outcome
-            // and it round-trips as `meta_log`; nothing read it until now.
-            //
-            // Each removal mirrors the write path it undoes: the same element name decoding as the
-            // insert arm below, and the bucket index cleared through the same helper, asked not
-            // to stage -- replay installs a removal that was already recorded, and staging another
-            // would record the recovery as a write of its own.
-            "string" | "hash" | "set" | "list" | "zset" if item.deleted => {
-                // THE TOMBSTONE BLOCK NAMES WHAT WAS REMOVED, so a removal reads its element the
-                // same way an insert does.
+        self.shards.with_state_mut(shard_id, |state| {
+            let Some(shard) = state else {
+                return false;
+            };
+            match item.kind.as_str() {
+                // A TYPED REMOVAL. `mark_bucket_index_block_deleted` records one with no address --
+                // nothing was written, so there is none to name -- and `stage_meta_outcome` does the
+                // same for a string delete. Every arm below opens by demanding an address, so before
+                // this branch existed a removal could not be installed, `apply_outcome_item` answered
+                // false, and the caller refused the whole shard load over a member that is meant to be
+                // gone. `list_recovery` and `zset_recovery` fail on main for exactly that, and the
+                // string, hash and set equivalents were untested.
                 //
-                // `remove_container_element` appends `container_blocks::tombstone_block(kind,
-                // element name)` before it records anything, and the outcome carries THAT block's
-                // address -- the comment on the re-filing below already says the address travels
-                // for the entry's sake. The block it names is a frame whose item for the removed
-                // element has `deleted` set, which is the whole reason the v2 block shape exists.
-                // So the element the removal is about is readable from the block, and the recorded
-                // outcome does not have to spell it.
+                // `meta` is what says this is not a block upsert. It is written on every such outcome
+                // and it round-trips as `meta_log`; nothing read it until now.
                 //
-                // A REMOVAL WITH NO TOMBSTONE BLOCK IS REFUSED, and that is a deliberate narrowing
-                // rather than a gap left open. `tombstone_block` answers `None` for a kind with no
-                // element-key spelling and counts it, and the append can fail and is counted by
-                // `TOMBSTONE_APPEND_FAILURES`. In either case the removal was never recorded IN THE
-                // BLOCKS -- so a derivation after the replay would resurrect the element whatever
-                // this arm did with it. Refusing the load says so; installing from a name the
-                // outcome happened to carry would hide it. `"string"` is untouched: its block is its
-                // whole object, it has no element, and it never had an element name.
-                // ONE REMOVAL AT A TIME, by taking the SINGLE removed element and refusing a
-                // block that names several. A tombstone block is written per removal and holds
-                // exactly one removed item; a frame naming two would mean one outcome stood for two
-                // removals, and dropping both from a record that recorded one is a guess.
-                let element_name = match removed.as_deref() {
-                    Some([only]) => Some(only.clone()),
-                    _ => None,
-                };
-                let vacated = match (item.kind.as_str(), element_name.as_deref()) {
-                    ("string", _) => {
-                        super::mark_bucket_index_object_deleted(shard, &item.object_key);
-                        shard.remove_string_row(item.object_key.as_str());
-                        None
-                    }
-                    ("hash", Some(field)) => {
-                        // `&field.to_string()` because this kind's element IS a `String` and the replayed item
-                        // carries a `&str`. One allocation on a replay removal, which is the honest
-                        // cost of the element type being the key rather than a borrow of it.
-                        super::recorded_map::remove_replayed_element::<super::recorded_map::HashKind>(
-                                shard,
-                                &item.object_key,
-                                &std::sync::Arc::from(&field[..]),
-                            )
-                    }
-                    ("set", Some(encoded)) => {
-                        let Some(member) =
-                            super::container_blocks::member_from_element_name(encoded)
-                        else {
-                            return false;
-                        };
-                        super::recorded_map::remove_replayed_element::<super::recorded_map::SetKind>(shard, &item.object_key, &member)
-                    }
-                    ("list", Some(encoded)) => {
-                        let Ok(biased) = u64::from_str_radix(encoded, 16) else {
-                            return false;
-                        };
-                        let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
-                        super::recorded_map::remove_replayed_element::<super::recorded_map::ListKind>(shard, &item.object_key, &sequence)
-                    }
-                    // THE SCORE HALF IS GONE FROM THIS STRING -- a removal never needed it for
-                    // anything beyond finding the member to drop, which is still all this arm
-                    // does.
-                    ("zset", Some(encoded)) => {
-                        let Some(member) =
-                            super::container_blocks::member_from_element_name(encoded)
-                        else {
-                            return false;
-                        };
-                        super::recorded_map::remove_replayed_element::<super::recorded_map::ZSetKind>(shard, &item.object_key, &member)
-                    }
-                    // An element-name-keyed kind with no element names nothing to remove.
-                    _ => return false,
-                };
-                if item.kind != "string" {
-                    // THE OUTCOME'S ADDRESS IS THE TOMBSTONE BLOCK, AND REPLAY HAS TO RE-FILE IT.
+                // Each removal mirrors the write path it undoes: the same element name decoding as the
+                // insert arm below, and the bucket index cleared through the same helper, asked not
+                // to stage -- replay installs a removal that was already recorded, and staging another
+                // would record the recovery as a write of its own.
+                "string" | "hash" | "set" | "list" | "zset" if item.deleted => {
+                    // THE TOMBSTONE BLOCK NAMES WHAT WAS REMOVED, so a removal reads its element the
+                    // same way an insert does.
                     //
-                    // A container removal appends a block stating the removal and keeps an entry
-                    // pointing at it, so a membership derived from the blocks does not resurrect the
-                    // element. The block survives a crash like any other block. The ENTRY does not: it
-                    // lives in the index, and a replay is what runs when the index was not usable.
+                    // `remove_container_element` appends `container_blocks::tombstone_block(kind,
+                    // element name)` before it records anything, and the outcome carries THAT block's
+                    // address -- the comment on the re-filing below already says the address travels
+                    // for the entry's sake. The block it names is a frame whose item for the removed
+                    // element has `deleted` set, which is the whole reason the v2 block shape exists.
+                    // So the element the removal is about is readable from the block, and the recorded
+                    // outcome does not have to spell it.
                     //
-                    // So the address travels in the outcome -- `mark_bucket_index_block_deleted_recording`
-                    // puts it there at the original removal -- and is handed back here. Drop it and the
-                    // replay re-drops the entry, the tombstone block is named by nothing, and a
-                    // derivation after the recovery puts the element back: the original defect,
-                    // reappearing only on the path where it is hardest to see.
-                    //
-                    // `None` for an outcome written before this change, which is correct: there was no
-                    // tombstone block, so there is no entry to file.
-                    super::mark_bucket_index_block_deleted_recording(
-                        shard,
-                        shard_id,
-                        &item.kind,
-                        &item.object_key,
-                        element_name.as_deref(),
-                        false,
-                        item.address.clone(),
-                    );
-                    if let Some(address) = vacated {
-                        super::storage_bucket_internals::drop_vacated_live_block(
-                            shard, &item.kind, &item.object_key, &address);
-                    }
-                }
-                true
-            }
-            // Lazy expiry retires one exact record, not its independently live families.
-            "record" if item.deleted && item.meta && item.address.is_none()
-                && item.element_name.is_none() && item.value.is_none() && item.ttl.is_none() => {
-                super::delete_record_exact(shard, &item.object_key);
-                true
-            }
-            // The object is gone, everywhere it appeared.
-            "object" if item.deleted => {
-                super::delete_record(shard, &item.object_key);
-                true
-            }
-            // A deadline, already resolved by the write that set it -- so installing it needs
-            // no clock, where re-running the command would resolve it against this one.
-            "object" => {
-                // No deadline and no deletion means the deadline was CLEARED -- which a write
-                // that refreshes a value without a TTL does, and which has to be installable or
-                // a lapsed deadline from an earlier record outlives the write that removed it.
-                let Some(expires_at) = item.ttl else {
-                    for record_key in super::associated_record_keys(&item.object_key) {
-                        crate::engine::clear_expiry(shard, &record_key);
-                    }
-                    return true;
-                };
-                for record_key in super::associated_record_keys(&item.object_key) {
-                    if super::record_exists_exact(shard, &record_key) {
-                        crate::engine::set_expiry(shard, record_key, expires_at);
-                    }
-                }
-                true
-            }
-            // State no block backs: the member and the moment it was seen.
-            "seen" => {
-                let (Some(member), Some(seen_at)) = (item.value.clone(), item.ttl) else {
-                    return false;
-                };
-                let seen = shard.seen.entry(std::sync::Arc::from(&item.object_key[..])).or_default();
-                if let Some(previous) = seen.by_member.insert(member.clone(), seen_at) {
-                    seen.by_time.remove(&(previous, member.clone()));
-                }
-                seen.by_time.insert((seen_at, member), ());
-                true
-            }
-            // The bucket the take left behind: tokens, then the refill moment.
-            "bucket" => {
-                let Some(bytes) = item.value.as_ref() else {
-                    return false;
-                };
-                if bytes.len() != 16 {
-                    return false;
-                }
-                let tokens = f64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
-                let refilled_at = u64::from_le_bytes(bytes[8..].try_into().expect("8 bytes"));
-                shard
-                    .buckets
-                    .insert(std::sync::Arc::from(&item.object_key[..]), (tokens, refilled_at));
-                true
-            }
-            // A retry token a merge-reduce append filed in its key's ring, and the receipt it
-            // landed: state no block backs, which lives in the index image and so is older than
-            // the append when the append is only in the log. Installing it files the entry the
-            // write filed, so a retry of that request after a crash answers its first receipt.
-            //
-            // The series is installed by the items before this one in the record, so the same rule
-            // the write applies holds here: a key that holds no snapshot remembers nothing. A
-            // token the ring already holds (the image was flushed after this record) is left as
-            // it is, which is what makes the record replayable more than once. A value that is not
-            // one entry in its one spelling is refused, and a refused item fails the load.
-            // The item kind text is stored in the log, so it keeps its original spelling: it is a storage tag, not a name.
-            "cell_retry" => {
-                let Some(Ok((token, receipt))) =
-                    item.value.as_deref().map(super::cell_retry_ring::decode_logged_entry)
-                else {
-                    return false;
-                };
-                let live = shard.features().get(&item.object_key[..]).is_some_and(|series| series.len() > 0);
-                if !live {
-                    shard.forget_retry_ring(&item.object_key);
-                    return true;
-                }
-                let held = shard.retry_ring(&item.object_key).map(|ring| ring.admit(token));
-                if matches!(held, Some(super::cell_retry_ring::Admission::Replay(_))) {
-                    return true;
-                }
-                shard.record_retry_token(&item.object_key, token, receipt).is_ok()
-            }
-            "string" => {
-                let Some(address) = item.resolved_address() else {
-                    return false;
-                };
-                super::upsert_bucket_index_block(
-                    shard,
-                    shard_id,
-                    "string",
-                    &item.object_key,
-                    None,
-                    address.clone(),
-                    true,
-                );
-                let stored_key = shard
-                    .bucket_index
-                    .any_shared_object_key(item.object_key.as_str())
-                    .unwrap_or_else(|| std::sync::Arc::from(item.object_key.as_str()));
-                shard.set_string_address(stored_key, &address);
-                true
-            }
-            // The element name is what the map is keyed by, encoded. Each of these mirrors the
-            // encoder that produced it; a wrong decode shows up as an equivalence failure, not
-            // as a silently different shard.
-            // THE BLOCK SAYS WHICH FIELD IT HOLDS, AND THE OUTCOME NO LONGER HAS TO.
-            //
-            // This arm read `item.element_name` -- the recorded outcome's own copy of the field name
-            // -- and refused when it was absent. It reads the block the outcome's address names
-            // instead, through `elements_the_outcome_block_holds`, which decodes the container frame
-            // and renders each element key back through the spelling the write path used.
-            //
-            // EVERY ELEMENT THE BLOCK NAMES IS INSTALLED, not one, and that is a widening rather
-            // than a substitution. Under one entry a block a folded block backs SEVERAL fields at one
-            // address, and all of them resolve through it -- so installing the block's whole element
-            // set is what the resident map should hold, where the outcome's single name could only
-            // ever describe one of them. Measured on the shape a write actually produces: every
-            // staged block holds exactly ONE item, so on the common path this installs exactly what
-            // the previous arm did.
-            //
-            // A REMOVED ITEM IS SKIPPED AND NOT INSTALLED. The v2 block shape can say an element is
-            // gone, and `ContainerBlockItem::deleted` is that statement; installing it would put
-            // back the element the block records the removal of, which is the resurrection the shape
-            // exists to prevent.
-            "hash" => {
-                let (Some(address), Some(fields)) = (item.resolved_address(), live.as_ref()) else {
-                    return false;
-                };
-                let (start, end) = shard.routing_range();
-                let routing_bucket = super::hashing::block_routing_bucket(&item.object_key, start, end);
-                let object_id = super::stable_block_object_id(shard_id, "hash", &item.object_key);
-                super::recorded_map::install_packed_hash_block_at_bucket(
-                    &self.cache, shard, shard_id, routing_bucket, object_id, &item.object_key,
-                    fields.iter().map(String::as_str), address, None,
-                );
-                true
-            }
-            // set: the PAGE spells the member, and the page's key IS the member.
-            //
-            // THE SAME MOVE AS THE HASH ARM AND ONE DEGREE MORE DIRECT. For
-            // `ElementKeySpelling::Name`, and for `Hex` before it on blocks written earlier, the
-            // element key stored in the block is the member's own bytes and the element name is a
-            // rendering of them -- so the round trip below is undoing a rendering that only
-            // ever existed to put the member in a `String`. It is kept rather than short-circuited
-            // because `elements_the_outcome_block_holds` answers in element names for every kind, which
-            // is what lets all four arms share one resolver instead of each decoding the frame its
-            // own way.
-            "set" => {
-                let (Some(address), Some(members)) = (item.resolved_address(), live.as_ref()) else {
-                    return false;
-                };
-                for element_name in members {
-                    let Some(member) = super::container_blocks::member_from_element_name(element_name)
-                    else {
-                        return false;
+                    // A REMOVAL WITH NO TOMBSTONE BLOCK IS REFUSED, and that is a deliberate narrowing
+                    // rather than a gap left open. `tombstone_block` answers `None` for a kind with no
+                    // element-key spelling and counts it, and the append can fail and is counted by
+                    // `TOMBSTONE_APPEND_FAILURES`. In either case the removal was never recorded IN THE
+                    // BLOCKS -- so a derivation after the replay would resurrect the element whatever
+                    // this arm did with it. Refusing the load says so; installing from a name the
+                    // outcome happened to carry would hide it. `"string"` is untouched: its block is its
+                    // whole object, it has no element, and it never had an element name.
+                    // ONE REMOVAL AT A TIME, by taking the SINGLE removed element and refusing a
+                    // block that names several. A tombstone block is written per removal and holds
+                    // exactly one removed item; a frame naming two would mean one outcome stood for two
+                    // removals, and dropping both from a record that recorded one is a guess.
+                    let element_name = match removed.as_deref() {
+                        Some([only]) => Some(only.clone()),
+                        _ => None,
                     };
-                    let element_name = element_name.clone();
-                    let address = address.clone();
-                // RECORDED, NOT AN EXCEPTION. This arm re-files the block in the bucket index
-                // before installing, so it goes through the ordinary recorded path. Hash's
-                // `context_node` arm needed an exception because it installs and files nothing;
-                // this one does not, which is the per-kind difference worth noticing.
-                    super::recorded_map::install_element::<super::recorded_map::SetKind>(
-                        shard,
-                        shard_id,
-                        &item.object_key,
-                        Some(element_name),
-                        member,
-                        address.clone(),
-                        true,
-                        address,
-                    );
-                }
-                true
-            }
-            // list: the PAGE spells the sequence, as sixteen hex digits of a biased word so the
-            // text sorts in list order.
-            "list" => {
-                let (Some(address), Some(positions)) =
-                    (item.resolved_address(), live.as_ref())
-                else {
-                    return false;
-                };
-                for element_name in positions {
-                    let Ok(biased) = u64::from_str_radix(element_name, 16) else {
-                        return false;
-                    };
-                    let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
-                    let element_name = element_name.clone();
-                    let address = address.clone();
-                // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
-                // filed the record twice, which a replay would then install twice -- the mirror
-                // image of the defect the container exists to stop, and the compiler caught it as
-                // a moved `element_name` rather than as a double write.
-                    super::recorded_map::install_element::<super::recorded_map::ListKind>(
-                        shard,
-                        shard_id,
-                        &item.object_key,
-                        Some(element_name),
-                        sequence,
-                        address.clone(),
-                        true,
-                        address,
-                    );
-                }
-                true
-            }
-            // zset: the member in hex. THE SCORE NO LONGER RIDES THE ELEMENT NAME -- it rides
-            // `item.value`, eight big-endian bytes, which `RecordedKind::outcome_value` is the
-            // only producer of. There is no fallback to a score-shaped element name: a record this
-            // old does not exist, because this replay arm and the writer that feeds it moved in
-            // the same change, and a value-less zset insert outcome is therefore always a replay
-            // this arm cannot recover -- refuse rather than install a wrong score.
-            // zset: the PAGE spells the member. THE SCORE STILL COMES FROM THE OUTCOME, and that
-            // is deliberate rather than an oversight.
-            //
-            // The page's key for this spelling is eight bytes of biased score followed by the
-            // member, so the score IS in the block -- but `element_name_from_element_key` drops those
-            // eight bytes, because the element name stopped spelling a score when zset collapsed to
-            // one entry a block. Reading the score back out of the key would mean this arm decoding
-            // the frame itself instead of going through the shared resolver, for a value the
-            // outcome already carries in `value`. The member is what was duplicated; the score was
-            // not.
-            "zset" => {
-                let (Some(address), Some(members)) = (item.resolved_address(), live.as_ref()) else {
-                    return false;
-                };
-                let Some(biased) = item
-                    .value
-                    .as_deref()
-                    .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
-                    .map(u64::from_be_bytes)
-                else {
-                    return false;
-                };
-                for element_name in members {
-                    let Some(member) = super::container_blocks::member_from_element_name(element_name)
-                    else {
-                        return false;
-                    };
-                    let element_name = element_name.clone();
-                    let address = address.clone();
-                // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
-                // filed the record twice, which a replay would then install twice -- the mirror
-                // image of the defect the container exists to stop, and the compiler caught it as
-                // a moved `element_name` rather than as a double write.
-                    super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
-                        shard,
-                        shard_id,
-                        &item.object_key,
-                        Some(element_name),
-                        member,
-                        (biased, address.clone()),
-                        true,
-                        address,
-                    );
-                }
-                true
-            }
-            // Every timestamped series is the same shape: stored key -> block, with the key in
-            // the element name. One arm covers all of them, so a new kind is a line in the map
-            // below rather than another branch that can be forgotten here.
-            //
-            // For a feature the key is the point's timestamp, and a trim or a replace arrives
-            // as a removal -- which is the whole reason replay can stop consulting the config
-            // that decided the trim.
-            "feature"
-            | "context_index"
-            | "context_audit"
-            | "context_child"
-            | "context_summary"
-            | "context_compression" => {
-                // No element name on a removal means the whole series went, not one point of it.
-                if item.deleted && item.element_name.is_none() {
-                    // The kind is one of the six matched above, so a `false` here can only mean
-                    // the key held no series -- which a removal has nothing to do about.
-                    remove_timestamped_series(shard, &item.kind, &item.object_key);
-                    super::mark_bucket_index_object_deleted(shard, &item.object_key);
-                    return true;
-                }
-                let Some(element_name) = item.element_name.clone() else {
-                    return false;
-                };
-                // A TRIM STATES ITS BOUNDARY, not every point it dropped: one record stands for as
-                // many as the append was wide. Resolved back to the set here, so everything below
-                // keeps working on one instant at a time and an emptied series still takes its key
-                // with it.
-                if item.deleted {
-                    if let Some(through) = super::packed_blocks::timestamped_boundary_through(
-                        Some(element_name.as_str()),
-                    ) {
-                        let Some(instants) = timestamped_instants_through(
-                            shard,
-                            &item.kind,
-                            &item.object_key,
-                            through,
-                        ) else {
-                            return false;
-                        };
-                        // Nothing at or below the boundary is not a failure to apply -- a replay
-                        // that has already dropped them, or a dump taken after the trim, both
-                        // arrive here with nothing left to do.
-                        let mut live_addresses = None;
-                        for stored_key in instants {
-                            live_addresses = apply_timestamped_point(
-                                shard,
-                                &item.kind,
-                                &item.object_key,
-                                stored_key,
-                                None,
-                            );
+                    let vacated = match (item.kind.as_str(), element_name.as_deref()) {
+                        ("string", _) => {
+                            super::mark_bucket_index_object_deleted(shard, &item.object_key);
+                            shard.remove_string_row(item.object_key.as_str());
+                            None
                         }
-                        if let Some(live_addresses) = live_addresses {
-                            super::sync_bucket_index_object_blocks(
-                                shard,
-                                shard_id,
-                                &item.kind,
-                                &item.object_key,
-                                live_addresses,
-                                true,
-                            );
+                        ("hash", Some(field)) => {
+                            // `&field.to_string()` because this kind's element IS a `String` and the replayed item
+                            // carries a `&str`. One allocation on a replay removal, which is the honest
+                            // cost of the element type being the key rather than a borrow of it.
+                            super::recorded_map::remove_replayed_element::<super::recorded_map::HashKind>(
+                                    shard,
+                                    &item.object_key,
+                                    &std::sync::Arc::from(&field[..]),
+                                )
                         }
-                        return true;
-                    }
-                }
-                let Ok(stored_key) = element_name.parse::<u64>() else {
-                    return false;
-                };
-                if !item.deleted && item.address.is_none() {
-                    return false;
-                }
-                // Mutate the series, then hand the SURVIVING blocks to the same index sync the
-                // write path uses. Registering the block directly here instead looked equivalent
-                // and was not: the write path registers a timestamped block with no element name,
-                // one entry per address, so imitating it with an element name produced a bucket
-                // index that disagreed about every block while the typed maps matched exactly.
-                let point = match item.resolved_address() {
-                    Some(address) if !item.deleted => Some(address),
-                    _ => None,
-                };
-                if let Some(address) = point.as_ref() {
-                    if insert_timestamped_point_if_absent(
-                        shard,
-                        &item.kind,
-                        &item.object_key,
-                        stored_key,
-                        address,
-                    ) == Some(true) {
-                        // Match the live append path: no existing point was displaced.
-                        super::sync_bucket_index_object_blocks_with_mode(
+                        ("set", Some(encoded)) => {
+                            let Some(member) =
+                                super::container_blocks::member_from_element_name(encoded)
+                            else {
+                                return false;
+                            };
+                            super::recorded_map::remove_replayed_element::<super::recorded_map::SetKind>(shard, &item.object_key, &member)
+                        }
+                        ("list", Some(encoded)) => {
+                            let Ok(biased) = u64::from_str_radix(encoded, 16) else {
+                                return false;
+                            };
+                            let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
+                            super::recorded_map::remove_replayed_element::<super::recorded_map::ListKind>(shard, &item.object_key, &sequence)
+                        }
+                        // THE SCORE HALF IS GONE FROM THIS STRING -- a removal never needed it for
+                        // anything beyond finding the member to drop, which is still all this arm
+                        // does.
+                        ("zset", Some(encoded)) => {
+                            let Some(member) =
+                                super::container_blocks::member_from_element_name(encoded)
+                            else {
+                                return false;
+                            };
+                            super::recorded_map::remove_replayed_element::<super::recorded_map::ZSetKind>(shard, &item.object_key, &member)
+                        }
+                        // An element-name-keyed kind with no element names nothing to remove.
+                        _ => return false,
+                    };
+                    if item.kind != "string" {
+                        // THE OUTCOME'S ADDRESS IS THE TOMBSTONE BLOCK, AND REPLAY HAS TO RE-FILE IT.
+                        //
+                        // A container removal appends a block stating the removal and keeps an entry
+                        // pointing at it, so a membership derived from the blocks does not resurrect the
+                        // element. The block survives a crash like any other block. The ENTRY does not: it
+                        // lives in the index, and a replay is what runs when the index was not usable.
+                        //
+                        // So the address travels in the outcome -- `mark_bucket_index_block_deleted_recording`
+                        // puts it there at the original removal -- and is handed back here. Drop it and the
+                        // replay re-drops the entry, the tombstone block is named by nothing, and a
+                        // derivation after the recovery puts the element back: the original defect,
+                        // reappearing only on the path where it is hardest to see.
+                        //
+                        // `None` for an outcome written before this change, which is correct: there was no
+                        // tombstone block, so there is no entry to file.
+                        super::mark_bucket_index_block_deleted_recording(
                             shard,
                             shard_id,
                             &item.kind,
                             &item.object_key,
-                            vec![address.clone()],
-                            true,
+                            element_name.as_deref(),
                             false,
+                            item.address.clone(),
                         );
+                        if let Some(address) = vacated {
+                            super::storage_bucket_internals::drop_vacated_live_block(
+                                shard, &item.kind, &item.object_key, &address);
+                        }
+                    }
+                    true
+                }
+                // Lazy expiry retires one exact record, not its independently live families.
+                "record" if item.deleted && item.meta && item.address.is_none()
+                    && item.element_name.is_none() && item.value.is_none() && item.ttl.is_none() => {
+                    super::delete_record_exact(shard, &item.object_key);
+                    true
+                }
+                // The object is gone, everywhere it appeared.
+                "object" if item.deleted => {
+                    super::delete_record(shard, &item.object_key);
+                    true
+                }
+                // A deadline, already resolved by the write that set it -- so installing it needs
+                // no clock, where re-running the command would resolve it against this one.
+                "object" => {
+                    // No deadline and no deletion means the deadline was CLEARED -- which a write
+                    // that refreshes a value without a TTL does, and which has to be installable or
+                    // a lapsed deadline from an earlier record outlives the write that removed it.
+                    let Some(expires_at) = item.ttl else {
+                        for record_key in super::associated_record_keys(&item.object_key) {
+                            crate::engine::clear_expiry(shard, &record_key);
+                        }
+                        return true;
+                    };
+                    for record_key in super::associated_record_keys(&item.object_key) {
+                        if super::record_exists_exact(shard, &record_key) {
+                            crate::engine::set_expiry(shard, record_key, expires_at);
+                        }
+                    }
+                    true
+                }
+                // State no block backs: the member and the moment it was seen.
+                "seen" => {
+                    let (Some(member), Some(seen_at)) = (item.value.clone(), item.ttl) else {
+                        return false;
+                    };
+                    let seen = shard.seen.entry(std::sync::Arc::from(&item.object_key[..])).or_default();
+                    if let Some(previous) = seen.by_member.insert(member.clone(), seen_at) {
+                        seen.by_time.remove(&(previous, member.clone()));
+                    }
+                    seen.by_time.insert((seen_at, member), ());
+                    true
+                }
+                // The bucket the take left behind: tokens, then the refill moment.
+                "bucket" => {
+                    let Some(bytes) = item.value.as_ref() else {
+                        return false;
+                    };
+                    if bytes.len() != 16 {
+                        return false;
+                    }
+                    let tokens = f64::from_le_bytes(bytes[..8].try_into().expect("8 bytes"));
+                    let refilled_at = u64::from_le_bytes(bytes[8..].try_into().expect("8 bytes"));
+                    shard
+                        .buckets
+                        .insert(std::sync::Arc::from(&item.object_key[..]), (tokens, refilled_at));
+                    true
+                }
+                // A retry token a merge-reduce append filed in its key's ring, and the receipt it
+                // landed: state no block backs, which lives in the index image and so is older than
+                // the append when the append is only in the log. Installing it files the entry the
+                // write filed, so a retry of that request after a crash answers its first receipt.
+                //
+                // The series is installed by the items before this one in the record, so the same rule
+                // the write applies holds here: a key that holds no snapshot remembers nothing. A
+                // token the ring already holds (the image was flushed after this record) is left as
+                // it is, which is what makes the record replayable more than once. A value that is not
+                // one entry in its one spelling is refused, and a refused item fails the load.
+                // The item kind text is stored in the log, so it keeps its original spelling: it is a storage tag, not a name.
+                "cell_retry" => {
+                    let Some(Ok((token, receipt))) =
+                        item.value.as_deref().map(super::cell_retry_ring::decode_logged_entry)
+                    else {
+                        return false;
+                    };
+                    let live = shard.features().get(&item.object_key[..]).is_some_and(|series| series.len() > 0);
+                    if !live {
+                        shard.forget_retry_ring(&item.object_key);
                         return true;
                     }
+                    let held = shard.retry_ring(&item.object_key).map(|ring| ring.admit(token));
+                    if matches!(held, Some(super::cell_retry_ring::Admission::Replay(_))) {
+                        return true;
+                    }
+                    shard.record_retry_token(&item.object_key, token, receipt).is_ok()
                 }
-                let Some(live_addresses) =
-                    apply_timestamped_point(shard, &item.kind, &item.object_key, stored_key, point)
-                else {
-                    return false;
-                };
-                super::sync_bucket_index_object_blocks(
-                    shard,
-                    shard_id,
-                    &item.kind,
-                    &item.object_key,
-                    live_addresses,
-                    true,
-                );
-                true
-            }
-            // context_event: the block is timestamp-keyed but the index entry is keyed by the
-            // event id, so the element name carries both -- sixteen hex digits of the timeline key,
-            // then sixteen of the id. Two maps have to move together: the primary, and the time
-            // index that every windowed read goes through. Installing only the primary leaves a
-            // shard whose events exist and whose time queries return nothing.
-            "context_event" => {
-                let Some(element_name) = item.element_name.clone() else {
-                    return false;
-                };
-                if element_name.len() != 32 {
-                    return false;
-                }
-                let (timeline_hex, id_hex) = element_name.split_at(16);
-                let (Ok(timeline_key), Ok(event_id_hash)) = (
-                    u64::from_str_radix(timeline_hex, 16),
-                    u64::from_str_radix(id_hex, 16),
-                ) else {
-                    return false;
-                };
-                if !item.deleted && item.address.is_none() {
-                    return false;
-                }
-                let live_addresses = {
-                    // ONE POINT, THROUGH THE SHARED GENERIC OPERATION. That helper takes the key
-                    // out of the map when the series empties, which is what the two statements at
-                    // the end of this block used to do by hand. It can be handed this map directly
-                    // because there is one live copy: no closure, no re-mirroring on exit.
-                    // ONE HANDLE, AND BOTH MAPS TAKE IT. The series map and the time index are filed
-                    // under the same object key, so they share one allocation instead of minting two.
-                    // Taken here rather than before the append on purpose: the handle this borrows has
-                    // to exist already, and the block index is what holds it.
+                "string" => {
+                    let Some(address) = item.resolved_address() else {
+                        return false;
+                    };
+                    super::upsert_bucket_index_block(
+                        shard,
+                        shard_id,
+                        "string",
+                        &item.object_key,
+                        None,
+                        address.clone(),
+                        true,
+                    );
                     let stored_key = shard
                         .bucket_index
-                        .any_shared_object_key(&*item.object_key)
-                        .unwrap_or_else(|| std::sync::Arc::from(&*item.object_key));
-                    let live = super::timestamped_series::set_point_and_collect_live(
-                        shard.context_events_mut(),
-                        std::sync::Arc::clone(&stored_key),
-                        event_id_hash,
-                        match item.resolved_address() {
-                            Some(address) if !item.deleted => Some(address),
-                            _ => None,
+                        .any_shared_object_key(item.object_key.as_str())
+                        .unwrap_or_else(|| std::sync::Arc::from(item.object_key.as_str()));
+                    shard.set_string_address(stored_key, &address);
+                    true
+                }
+                // The element name is what the map is keyed by, encoded. Each of these mirrors the
+                // encoder that produced it; a wrong decode shows up as an equivalence failure, not
+                // as a silently different shard.
+                // THE BLOCK SAYS WHICH FIELD IT HOLDS, AND THE OUTCOME NO LONGER HAS TO.
+                //
+                // This arm read `item.element_name` -- the recorded outcome's own copy of the field name
+                // -- and refused when it was absent. It reads the block the outcome's address names
+                // instead, through `elements_the_outcome_block_holds`, which decodes the container frame
+                // and renders each element key back through the spelling the write path used.
+                //
+                // EVERY ELEMENT THE BLOCK NAMES IS INSTALLED, not one, and that is a widening rather
+                // than a substitution. Under one entry a block a folded block backs SEVERAL fields at one
+                // address, and all of them resolve through it -- so installing the block's whole element
+                // set is what the resident map should hold, where the outcome's single name could only
+                // ever describe one of them. Measured on the shape a write actually produces: every
+                // staged block holds exactly ONE item, so on the common path this installs exactly what
+                // the previous arm did.
+                //
+                // A REMOVED ITEM IS SKIPPED AND NOT INSTALLED. The v2 block shape can say an element is
+                // gone, and `ContainerBlockItem::deleted` is that statement; installing it would put
+                // back the element the block records the removal of, which is the resurrection the shape
+                // exists to prevent.
+                "hash" => {
+                    let (Some(address), Some(fields)) = (item.resolved_address(), live.as_ref()) else {
+                        return false;
+                    };
+                    let (start, end) = shard.routing_range();
+                    let routing_bucket = super::hashing::block_routing_bucket(&item.object_key, start, end);
+                    let object_id = super::stable_block_object_id(shard_id, "hash", &item.object_key);
+                    super::recorded_map::install_packed_hash_block_at_bucket(
+                        &self.cache, shard, shard_id, routing_bucket, object_id, &item.object_key,
+                        fields.iter().map(String::as_str), address, None,
+                    );
+                    true
+                }
+                // set: the BLOCK spells the member, and the block's key IS the member.
+                //
+                // THE SAME MOVE AS THE HASH ARM AND ONE DEGREE MORE DIRECT. For
+                // `ElementKeySpelling::Name`, and for `Hex` before it on blocks written earlier, the
+                // element key stored in the block is the member's own bytes and the element name is a
+                // rendering of them -- so the round trip below is undoing a rendering that only
+                // ever existed to put the member in a `String`. It is kept rather than short-circuited
+                // because `elements_the_outcome_block_holds` answers in element names for every kind, which
+                // is what lets all four arms share one resolver instead of each decoding the frame its
+                // own way.
+                "set" => {
+                    let (Some(address), Some(members)) = (item.resolved_address(), live.as_ref()) else {
+                        return false;
+                    };
+                    for element_name in members {
+                        let Some(member) = super::container_blocks::member_from_element_name(element_name)
+                        else {
+                            return false;
+                        };
+                        let element_name = element_name.clone();
+                        let address = address.clone();
+                    // RECORDED, NOT AN EXCEPTION. This arm re-files the block in the bucket index
+                    // before installing, so it goes through the ordinary recorded path. Hash's
+                    // `context_node` arm needed an exception because it installs and files nothing;
+                    // this one does not, which is the per-kind difference worth noticing.
+                        super::recorded_map::install_element::<super::recorded_map::SetKind>(
+                            shard,
+                            shard_id,
+                            &item.object_key,
+                            Some(element_name),
+                            member,
+                            address.clone(),
+                            true,
+                            address,
+                        );
+                    }
+                    true
+                }
+                // list: the BLOCK spells the sequence, as sixteen hex digits of a biased word so the
+                // text sorts in list order.
+                "list" => {
+                    let (Some(address), Some(positions)) =
+                        (item.resolved_address(), live.as_ref())
+                    else {
+                        return false;
+                    };
+                    for element_name in positions {
+                        let Ok(biased) = u64::from_str_radix(element_name, 16) else {
+                            return false;
+                        };
+                        let sequence = biased.wrapping_add(i64::MIN as u64) as i64;
+                        let element_name = element_name.clone();
+                        let address = address.clone();
+                    // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
+                    // filed the record twice, which a replay would then install twice -- the mirror
+                    // image of the defect the container exists to stop, and the compiler caught it as
+                    // a moved `element_name` rather than as a double write.
+                        super::recorded_map::install_element::<super::recorded_map::ListKind>(
+                            shard,
+                            shard_id,
+                            &item.object_key,
+                            Some(element_name),
+                            sequence,
+                            address.clone(),
+                            true,
+                            address,
+                        );
+                    }
+                    true
+                }
+                // zset: the member in hex. THE SCORE NO LONGER RIDES THE ELEMENT NAME -- it rides
+                // `item.value`, eight big-endian bytes, which `RecordedKind::outcome_value` is the
+                // only producer of. There is no fallback to a score-shaped element name: a record this
+                // old does not exist, because this replay arm and the writer that feeds it moved in
+                // the same change, and a value-less zset insert outcome is therefore always a replay
+                // this arm cannot recover -- refuse rather than install a wrong score.
+                // zset: the BLOCK spells the member. THE SCORE STILL COMES FROM THE OUTCOME, and that
+                // is deliberate rather than an oversight.
+                //
+                // The block's key for this spelling is eight bytes of biased score followed by the
+                // member, so the score IS in the block -- but `element_name_from_element_key` drops those
+                // eight bytes, because the element name stopped spelling a score when zset collapsed to
+                // one entry a block. Reading the score back out of the key would mean this arm decoding
+                // the frame itself instead of going through the shared resolver, for a value the
+                // outcome already carries in `value`. The member is what was duplicated; the score was
+                // not.
+                "zset" => {
+                    let (Some(address), Some(members)) = (item.resolved_address(), live.as_ref()) else {
+                        return false;
+                    };
+                    let Some(biased) = item
+                        .value
+                        .as_deref()
+                        .and_then(|bytes| <[u8; 8]>::try_from(bytes).ok())
+                        .map(u64::from_be_bytes)
+                    else {
+                        return false;
+                    };
+                    for element_name in members {
+                        let Some(member) = super::container_blocks::member_from_element_name(element_name)
+                        else {
+                            return false;
+                        };
+                        let element_name = element_name.clone();
+                        let address = address.clone();
+                    // THE STANDALONE UPSERT IS GONE BECAUSE THE OPERATION DOES IT. Leaving both
+                    // filed the record twice, which a replay would then install twice -- the mirror
+                    // image of the defect the container exists to stop, and the compiler caught it as
+                    // a moved `element_name` rather than as a double write.
+                        super::recorded_map::install_element::<super::recorded_map::ZSetKind>(
+                            shard,
+                            shard_id,
+                            &item.object_key,
+                            Some(element_name),
+                            member,
+                            (biased, address.clone()),
+                            true,
+                            address,
+                        );
+                    }
+                    true
+                }
+                // Every timestamped series is the same shape: stored key -> block, with the key in
+                // the element name. One arm covers all of them, so a new kind is a line in the map
+                // below rather than another branch that can be forgotten here.
+                //
+                // For a feature the key is the point's timestamp, and a trim or a replace arrives
+                // as a removal -- which is the whole reason replay can stop consulting the config
+                // that decided the trim.
+                "feature"
+                | "context_index"
+                | "context_audit"
+                | "context_child"
+                | "context_summary"
+                | "context_compression" => {
+                    // No element name on a removal means the whole series went, not one point of it.
+                    if item.deleted && item.element_name.is_none() {
+                        // The kind is one of the six matched above, so a `false` here can only mean
+                        // the key held no series -- which a removal has nothing to do about.
+                        remove_timestamped_series(shard, &item.kind, &item.object_key);
+                        super::mark_bucket_index_object_deleted(shard, &item.object_key);
+                        return true;
+                    }
+                    let Some(element_name) = item.element_name.clone() else {
+                        return false;
+                    };
+                    // A TRIM STATES ITS BOUNDARY, not every point it dropped: one record stands for as
+                    // many as the append was wide. Resolved back to the set here, so everything below
+                    // keeps working on one instant at a time and an emptied series still takes its key
+                    // with it.
+                    if item.deleted {
+                        if let Some(through) = super::packed_blocks::timestamped_boundary_through(
+                            Some(element_name.as_str()),
+                        ) {
+                            let Some(instants) = timestamped_instants_through(
+                                shard,
+                                &item.kind,
+                                &item.object_key,
+                                through,
+                            ) else {
+                                return false;
+                            };
+                            // Nothing at or below the boundary is not a failure to apply -- a replay
+                            // that has already dropped them, or a dump taken after the trim, both
+                            // arrive here with nothing left to do.
+                            let mut live_addresses = None;
+                            for stored_key in instants {
+                                live_addresses = apply_timestamped_point(
+                                    shard,
+                                    &item.kind,
+                                    &item.object_key,
+                                    stored_key,
+                                    None,
+                                );
+                            }
+                            if let Some(live_addresses) = live_addresses {
+                                super::sync_bucket_index_object_blocks(
+                                    shard,
+                                    shard_id,
+                                    &item.kind,
+                                    &item.object_key,
+                                    live_addresses,
+                                    true,
+                                );
+                            }
+                            return true;
+                        }
+                    }
+                    let Ok(stored_key) = element_name.parse::<u64>() else {
+                        return false;
+                    };
+                    if !item.deleted && item.address.is_none() {
+                        return false;
+                    }
+                    // Mutate the series, then hand the SURVIVING blocks to the same index sync the
+                    // write path uses. Registering the block directly here instead looked equivalent
+                    // and was not: the write path registers a timestamped block with no element name,
+                    // one entry per address, so imitating it with an element name produced a bucket
+                    // index that disagreed about every block while the typed maps matched exactly.
+                    let point = match item.resolved_address() {
+                        Some(address) if !item.deleted => Some(address),
+                        _ => None,
+                    };
+                    if let Some(address) = point.as_ref() {
+                        if insert_timestamped_point_if_absent(
+                            shard,
+                            &item.kind,
+                            &item.object_key,
+                            stored_key,
+                            address,
+                        ) == Some(true) {
+                            // Match the live append path: no existing point was displaced.
+                            super::sync_bucket_index_object_blocks_with_mode(
+                                shard,
+                                shard_id,
+                                &item.kind,
+                                &item.object_key,
+                                vec![address.clone()],
+                                true,
+                                false,
+                            );
+                            return true;
+                        }
+                    }
+                    let Some(live_addresses) =
+                        apply_timestamped_point(shard, &item.kind, &item.object_key, stored_key, point)
+                    else {
+                        return false;
+                    };
+                    super::sync_bucket_index_object_blocks(
+                        shard,
+                        shard_id,
+                        &item.kind,
+                        &item.object_key,
+                        live_addresses,
+                        true,
+                    );
+                    true
+                }
+                // context_event: the block is timestamp-keyed but the index entry is keyed by the
+                // event id, so the element name carries both -- sixteen hex digits of the timeline key,
+                // then sixteen of the id. Two maps have to move together: the primary, and the time
+                // index that every windowed read goes through. Installing only the primary leaves a
+                // shard whose events exist and whose time queries return nothing.
+                "context_event" => {
+                    let Some(element_name) = item.element_name.clone() else {
+                        return false;
+                    };
+                    if element_name.len() != 32 {
+                        return false;
+                    }
+                    let (timeline_hex, id_hex) = element_name.split_at(16);
+                    let (Ok(timeline_key), Ok(event_id_hash)) = (
+                        u64::from_str_radix(timeline_hex, 16),
+                        u64::from_str_radix(id_hex, 16),
+                    ) else {
+                        return false;
+                    };
+                    if !item.deleted && item.address.is_none() {
+                        return false;
+                    }
+                    let live_addresses = {
+                        // ONE POINT, THROUGH THE SHARED GENERIC OPERATION. That helper takes the key
+                        // out of the map when the series empties, which is what the two statements at
+                        // the end of this block used to do by hand. It can be handed this map directly
+                        // because there is one live copy: no closure, no re-mirroring on exit.
+                        // ONE HANDLE, AND BOTH MAPS TAKE IT. The series map and the time index are filed
+                        // under the same object key, so they share one allocation instead of minting two.
+                        // Taken here rather than before the append on purpose: the handle this borrows has
+                        // to exist already, and the block index is what holds it.
+                        let stored_key = shard
+                            .bucket_index
+                            .any_shared_object_key(&*item.object_key)
+                            .unwrap_or_else(|| std::sync::Arc::from(&*item.object_key));
+                        let live = super::timestamped_series::set_point_and_collect_live(
+                            shard.context_events_mut(),
+                            std::sync::Arc::clone(&stored_key),
+                            event_id_hash,
+                            match item.resolved_address() {
+                                Some(address) if !item.deleted => Some(address),
+                                _ => None,
+                            },
+                        );
+                        let timeline = shard
+                            .context_event_timeline
+                            .entry(std::sync::Arc::clone(&stored_key))
+                            .or_default();
+                        if item.deleted {
+                            timeline.remove(&timeline_key);
+                        } else {
+                            timeline.insert(timeline_key, event_id_hash);
+                        }
+                        if timeline.is_empty() {
+                            shard.context_event_timeline.remove(&*stored_key);
+                        }
+                        live
+                    };
+                    super::sync_bucket_index_object_blocks(
+                        shard,
+                        shard_id,
+                        "context_event",
+                        &item.object_key,
+                        live_addresses,
+                        true,
+                    );
+                    true
+                }
+                // A context node's block. Its own kind because the write registers no bucket-index
+                // entry for it, unlike every other hash block -- so installing it as a "hash" would
+                // add an entry the write never made.
+                // An entity, under its node's collection. Like the node above, the write registers
+                // no bucket-index entry for it, so neither does this.
+                // The whole counter series, serialized to one block. The write registers it in the
+                // bucket index through the same upsert the string kind uses, so this does too.
+                "control_state" => {
+                    let Some(address) = item.resolved_address() else {
+                        return false;
+                    };
+                    super::upsert_bucket_index_block(
+                        shard,
+                        shard_id,
+                        "control_state",
+                        &item.object_key,
+                        None,
+                        address.clone(),
+                        true,
+                    );
+                    let mut record = crate::engine::object_record::ObjectRecord::default();
+                    record.set_address(&address);
+                    shard.insert_control_state_block(
+                        item.object_key.as_str().into(),
+                        record.into(),
+                    );
+                    true
+                }
+                "context_entity" => {
+                    let (Some(address), Some(element_name)) =
+                        (item.resolved_address(), item.element_name.clone())
+                    else {
+                        return false;
+                    };
+                    let Ok(entity_hash) = element_name.parse::<u64>() else {
+                        return false;
+                    };
+                    shard
+                        .context_entities_mut()
+                        .entry(std::sync::Arc::from(&item.object_key[..]))
+                        .or_default()
+                        .set(entity_hash, address);
+                    true
+                }
+                "context_node" => {
+                    let (Some(address), Some(field)) = (item.resolved_address(), item.element_name.clone())
+                    else {
+                        return false;
+                    };
+                    // NO OUTCOME RECORD IS FILED HERE, and that is this arm's own rule rather than
+                    // an oversight: the item being replayed IS the record. See
+                    // `replay_install_element`.
+                    //
+                    // CORRECTED, AND THE OLD WORDING SAID SOMETHING FALSE. This read "a context node is
+                    // never registered in the bucket index". It IS registered -- `append_value` files
+                    // the block from its own object-id, element name and routing-bucket arguments, and
+                    // `context_node_survives_reload` reads `("hash", Some("meta"), deleted=false)` back
+                    // out of `bucket_index` for a node written through the command path. What is not
+                    // filed is the OUTCOME record under kind `hash`, which is deliberate: recording it
+                    // as a hash would have a rebuild add an entry naming a block the outcome never
+                    // described. "Not recorded as a hash outcome" is not "absent from the index", and
+                    // conflating the two is what made a whole route look like it had no durable
+                    // source.
+                    shard
+                        .bucket_index.hashes
+                        .replay_install_element(
+                            &item.object_key,
+                            std::sync::Arc::from(&field[..]),
+                            address,
+                        );
+                    true
+                }
+                // The counter's RESULTING value at one bucket. Installing a result twice is the same
+                // result; replaying an increment twice is not, which is the whole reason the record
+                // carries the total rather than the delta.
+                "control_counter" => {
+                    let (Some(bytes), Some(element_name)) = (item.value.as_ref(), item.element_name.clone())
+                    else {
+                        return false;
+                    };
+                    let (Ok(bucket_ms), Ok(total)) = (
+                        element_name.parse::<u64>(),
+                        bytes.as_slice().try_into().map(i64::from_le_bytes),
+                    ) else {
+                        return false;
+                    };
+                    shard
+                        .control_state_mut()
+                        .entry(std::sync::Arc::from(&item.object_key[..]))
+                        .or_default()
+                        .insert(bucket_ms, total);
+                    // THE TRIM THE WRITE RAN AFTER ADDING THIS POINT. An outcome carries the point and
+                    // not the trim that followed it, and no removal is recorded for the points that
+                    // trim dropped, so installing without it brought every one of them back: a series
+                    // recovered with no unload held the live points plus every point the bound had
+                    // trimmed since the log began (10,500 points against a bound of 10,000 after 10,500
+                    // increments). The same function, in the same order, as the write path ran, so the
+                    // series converges on the one the write path held, whatever order the buckets
+                    // arrived in.
+                    super::trim_control_state_series(shard, &item.object_key, counter_bound);
+                    true
+                }
+                // A distinct member. Installed through the write path's own producer so the exact-set
+                // and sketch representations are chosen the same way they were originally.
+                "control_change" => {
+                    let (Some(value), Some(element_name)) = (item.value.clone(), item.element_name.clone())
+                    else {
+                        return false;
+                    };
+                    let Ok(bucket_ms) = element_name.parse::<u64>() else {
+                        return false;
+                    };
+                    super::hll::record_change(shard, &item.object_key, bucket_ms, value);
+                    true
+                }
+                // The value that won a first/last comparison. The winner is installed directly rather
+                // than re-comparing against whatever this shard happens to hold.
+                "control_selection" => {
+                    let (Some(value), Some(element_name)) = (item.value.clone(), item.element_name.clone())
+                    else {
+                        return false;
+                    };
+                    let selection_type = match element_name.as_str() {
+                        "first" => crate::types::ControlStateSelectionType::First,
+                        "last" => crate::types::ControlStateSelectionType::Last,
+                        _ => return false,
+                    };
+                    shard.control_state_selection.insert(
+                        std::sync::Arc::from(&item.object_key[..]),
+                        super::state::ControlStateSelectionValue {
+                            occur_time_ms: item.ttl.unwrap_or_default(),
+                            value,
+                            selection_type,
                         },
                     );
-                    let timeline = shard
-                        .context_event_timeline
-                        .entry(std::sync::Arc::clone(&stored_key))
-                        .or_default();
-                    if item.deleted {
-                        timeline.remove(&timeline_key);
-                    } else {
-                        timeline.insert(timeline_key, event_id_hash);
-                    }
-                    if timeline.is_empty() {
-                        shard.context_event_timeline.remove(&*stored_key);
-                    }
-                    live
-                };
-                super::sync_bucket_index_object_blocks(
-                    shard,
-                    shard_id,
-                    "context_event",
-                    &item.object_key,
-                    live_addresses,
-                    true,
-                );
-                true
+                    true
+                }
+                _ => false,
             }
-            // A context node's block. Its own kind because the write registers no bucket-index
-            // entry for it, unlike every other hash block -- so installing it as a "hash" would
-            // add an entry the write never made.
-            // An entity, under its node's collection. Like the node above, the write registers
-            // no bucket-index entry for it, so neither does this.
-            // The whole counter series, serialized to one block. The write registers it in the
-            // bucket index through the same upsert the string kind uses, so this does too.
-            "control_state" => {
-                let Some(address) = item.resolved_address() else {
-                    return false;
-                };
-                super::upsert_bucket_index_block(
-                    shard,
-                    shard_id,
-                    "control_state",
-                    &item.object_key,
-                    None,
-                    address.clone(),
-                    true,
-                );
-                let mut record = crate::engine::object_record::ObjectRecord::default();
-                record.set_address(&address);
-                shard.insert_control_state_block(
-                    item.object_key.as_str().into(),
-                    record.into(),
-                );
-                true
-            }
-            "context_entity" => {
-                let (Some(address), Some(element_name)) =
-                    (item.resolved_address(), item.element_name.clone())
-                else {
-                    return false;
-                };
-                let Ok(entity_hash) = element_name.parse::<u64>() else {
-                    return false;
-                };
-                shard
-                    .context_entities_mut()
-                    .entry(std::sync::Arc::from(&item.object_key[..]))
-                    .or_default()
-                    .set(entity_hash, address);
-                true
-            }
-            "context_node" => {
-                let (Some(address), Some(field)) = (item.resolved_address(), item.element_name.clone())
-                else {
-                    return false;
-                };
-                // NO OUTCOME RECORD IS FILED HERE, and that is this arm's own rule rather than
-                // an oversight: the item being replayed IS the record. See
-                // `replay_install_element`.
-                //
-                // CORRECTED, AND THE OLD WORDING SAID SOMETHING FALSE. This read "a context node is
-                // never registered in the bucket index". It IS registered -- `append_value` files
-                // the block from its own object-id, element name and routing-bucket arguments, and
-                // `context_node_survives_reload` reads `("hash", Some("meta"), deleted=false)` back
-                // out of `bucket_index` for a node written through the command path. What is not
-                // filed is the OUTCOME record under kind `hash`, which is deliberate: recording it
-                // as a hash would have a rebuild add an entry naming a block the outcome never
-                // described. "Not recorded as a hash outcome" is not "absent from the index", and
-                // conflating the two is what made a whole route look like it had no durable
-                // source.
-                shard
-                    .bucket_index.hashes
-                    .replay_install_element(
-                        &item.object_key,
-                        std::sync::Arc::from(&field[..]),
-                        address,
-                    );
-                true
-            }
-            // The counter's RESULTING value at one bucket. Installing a result twice is the same
-            // result; replaying an increment twice is not, which is the whole reason the record
-            // carries the total rather than the delta.
-            "control_counter" => {
-                let (Some(bytes), Some(element_name)) = (item.value.as_ref(), item.element_name.clone())
-                else {
-                    return false;
-                };
-                let (Ok(bucket_ms), Ok(total)) = (
-                    element_name.parse::<u64>(),
-                    bytes.as_slice().try_into().map(i64::from_le_bytes),
-                ) else {
-                    return false;
-                };
-                shard
-                    .control_state_mut()
-                    .entry(std::sync::Arc::from(&item.object_key[..]))
-                    .or_default()
-                    .insert(bucket_ms, total);
-                // THE TRIM THE WRITE RAN AFTER ADDING THIS POINT. An outcome carries the point and
-                // not the trim that followed it, and no removal is recorded for the points that
-                // trim dropped, so installing without it brought every one of them back: a series
-                // recovered with no unload held the live points plus every point the bound had
-                // trimmed since the log began (10,500 points against a bound of 10,000 after 10,500
-                // increments). The same function, in the same order, as the write path ran, so the
-                // series converges on the one the write path held, whatever order the buckets
-                // arrived in.
-                super::trim_control_state_series(shard, &item.object_key, counter_bound);
-                true
-            }
-            // A distinct member. Installed through the write path's own producer so the exact-set
-            // and sketch representations are chosen the same way they were originally.
-            "control_change" => {
-                let (Some(value), Some(element_name)) = (item.value.clone(), item.element_name.clone())
-                else {
-                    return false;
-                };
-                let Ok(bucket_ms) = element_name.parse::<u64>() else {
-                    return false;
-                };
-                super::hll::record_change(shard, &item.object_key, bucket_ms, value);
-                true
-            }
-            // The value that won a first/last comparison. The winner is installed directly rather
-            // than re-comparing against whatever this shard happens to hold.
-            "control_selection" => {
-                let (Some(value), Some(element_name)) = (item.value.clone(), item.element_name.clone())
-                else {
-                    return false;
-                };
-                let selection_type = match element_name.as_str() {
-                    "first" => crate::types::ControlStateSelectionType::First,
-                    "last" => crate::types::ControlStateSelectionType::Last,
-                    _ => return false,
-                };
-                shard.control_state_selection.insert(
-                    std::sync::Arc::from(&item.object_key[..]),
-                    super::state::ControlStateSelectionValue {
-                        occur_time_ms: item.ttl.unwrap_or_default(),
-                        value,
-                        selection_type,
-                    },
-                );
-                true
-            }
-            _ => false,
-        }
+        })
     }
 
     /// The address the index holds for a string key, so a test can compare it against what a
@@ -2711,11 +2743,7 @@ impl TemporalEngine {
         shard_id: ShardId,
         key: &str,
     ) -> Option<crate::block_store::ElementEntry> {
-        self.shards
-            .read()
-            .expect("engine lock poisoned")
-            .get(&shard_id)
-            .and_then(|shard| shard.string_address(key))
+        self.shards.with_state(shard_id, |state| state.and_then(|shard| shard.string_address(key)))
     }
 
     /// Write every in-process-only block into the block store, so the index can travel.
@@ -2776,29 +2804,16 @@ impl TemporalEngine {
     ) -> usize {
         // The range is read under the same guard as the addresses, so a block is read and
         // rewritten under the bucket the shard is actually loaded on.
-        let (addresses, start_routing_bucket, end_routing_bucket): (
-            Vec<(String, crate::block_store::ElementEntry)>,
-            u32,
-            u32,
-        ) = {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            let Some(shard) = shards.get(&shard_id) else {
-                return 0;
-            };
-            let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-            (
-                shard
-                    .strings()
-                    .iter()
-                    .filter(|(_, address)| {
-                        crate::wal_record::is_wal_resident(address.block_slab_id())
-                    })
-                    .map(|(key, slot)| (key.to_string(), slot.address()))
-                    .collect(),
-                start_routing_bucket,
-                end_routing_bucket,
-            )
-        };
+        let Some(handle) = self.shards.handle(shard_id) else { return 0; };
+        let Some((addresses, start_routing_bucket, end_routing_bucket)) = handle.with_read(|state| {
+            let shard = state?;
+            let (start, end) = shard.routing_range();
+            let addresses: Vec<_> = shard.strings().iter()
+                .filter(|(_, address)| crate::wal_record::is_wal_resident(address.block_slab_id()))
+                .map(|(key, slot)| (key.to_string(), slot.address()))
+                .collect();
+            Some((addresses, start, end))
+        }) else { return 0; };
         let mut moved = 0usize;
         for (key, address) in addresses {
             let object_id = super::stable_block_object_id(shard_id, "string", &key);
@@ -2838,13 +2853,12 @@ impl TemporalEngine {
                 continue;
             };
             before_publish(&key);
-            {
-                let mut shards = self.shards.write().expect("engine lock poisoned");
-                if let Some(shard) = shards.get_mut(&shard_id) {
+            handle.with_write(|state| {
+                if let Some(shard) = state {
                     // The slab write ran without the shard lock. A writer or deleter may
                     // have superseded the captured address while it was in flight.
                     if shard.string_address(&key).as_ref() != Some(&address) {
-                        continue;
+                        return;
                     }
                     let stored_key = shard
                         .bucket_index
@@ -2874,7 +2888,7 @@ impl TemporalEngine {
                     super::block_in_wal::deregister(&self.block_store, shard_id, object_id, None);
                     moved += 1;
                 }
-            }
+            });
         }
         moved
     }
@@ -2890,35 +2904,36 @@ impl TemporalEngine {
     /// through this process's registry. A checkpoint uploads the slabs the block store HAS, so an
     /// address like this cannot travel: it names a place that does not exist anywhere else.
     pub(crate) fn synthetic_address_count_for_test(&self, shard_id: ShardId) -> usize {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return 0;
-        };
-        let mut count = 0usize;
-        let mut check = |address: &crate::block_store::ElementEntry| {
-            if crate::wal_record::is_wal_resident(address.block_slab_id()) {
-                count += 1;
+        self.shards.with_state(shard_id, |state| {
+            let Some(shard) = state else {
+                return 0;
+            };
+            let mut count = 0usize;
+            let mut check = |address: &crate::block_store::ElementEntry| {
+                if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                    count += 1;
+                }
+            };
+            for slot in shard.strings().values() {
+                check(&slot.address());
             }
-        };
-        for slot in shard.strings().values() {
-            check(&slot.address());
-        }
-        for fields in shard.bucket_index.hashes.values() {
-            for address in fields.values() {
-                check(address);
+            for fields in shard.bucket_index.hashes.values() {
+                for address in fields.values() {
+                    check(address);
+                }
             }
-        }
-        for series in shard.features().values() {
-            for address in series.addresses() {
-                check(address);
+            for series in shard.features().values() {
+                for address in series.addresses() {
+                    check(address);
+                }
             }
-        }
-        for bucket in shard.bucket_index.bucket_map.values() {
-            for block in bucket.block_index.values() {
-                check(&block.address);
+            for bucket in shard.bucket_index.bucket_map.values() {
+                for block in bucket.block_index.values() {
+                    check(&block.address);
+                }
             }
-        }
-        count
+            count
+        })
     }
 
     /// How many WAL-resident block locations this shard's index is carrying.
@@ -2926,40 +2941,31 @@ impl TemporalEngine {
     /// The point of the map is that it is part of the index rather than process state, so a
     /// test needs to be able to look at it to say anything about that.
     pub(crate) fn wal_resident_block_count(&self, shard_id: ShardId) -> usize {
-        self.shards
-            .read()
-            .expect("engine lock poisoned")
-            .get(&shard_id)
-            .map(|shard| shard.wal_resident_blocks.len())
-            .unwrap_or(0)
+        self.shards.with_state(shard_id, |state| state.map_or(0, |shard| shard.wal_resident_blocks.len()))
     }
 
     /// Restore persisted locations one record at a time, including packed-frame field aliases.
     pub(super) fn rehydrate_wal_resident_blocks(&self, shard_id: ShardId) -> Result<(), Status> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return Ok(());
-        };
-        if shard.wal_resident_blocks.is_empty() {
-            return Ok(());
-        }
-        // A complete checkpoint can carry old placement metadata after its blocks moved to
-        // durable slabs. Such an image needs only those slabs, not the source node's WAL.
-        // Keep strict record validation whenever any served block still needs that WAL.
-        let needs_wal = shard.bucket_index.bucket_map.values().any(|bucket| {
-            bucket.block_index.values().any(|block| {
-                crate::wal_record::is_wal_resident(block.address.block_slab_id())
-            })
-        });
-        let require_wal = needs_wal || shard.bucket_index.bucket_map.is_empty();
-        let mut unresolved = std::collections::BTreeMap::<u64, Vec<(u64, u64)>>::new();
-        for (folded, placement) in &shard.wal_resident_blocks {
-            unresolved
-                .entry(placement.log_id)
-                .or_default()
-                .push((*folded, placement.sequence));
-        }
-        drop(shards);
+        let Some((unresolved, require_wal)) = self.shards.with_state(shard_id, |state| {
+            let shard = state.filter(|shard| !shard.wal_resident_blocks.is_empty())?;
+            // A complete checkpoint can carry old placement metadata after its blocks moved to
+            // durable slabs. Such an image needs only those slabs, not the source node's WAL.
+            // Keep strict record validation whenever any served block still needs that WAL.
+            let needs_wal = shard.bucket_index.bucket_map.values().any(|bucket| {
+                bucket.block_index.values().any(|block| {
+                    crate::wal_record::is_wal_resident(block.address.block_slab_id())
+                })
+            });
+            let require_wal = needs_wal || shard.bucket_index.bucket_map.is_empty();
+            let mut unresolved = std::collections::BTreeMap::<u64, Vec<(u64, u64)>>::new();
+            for (folded, placement) in &shard.wal_resident_blocks {
+                unresolved
+                    .entry(placement.log_id)
+                    .or_default()
+                    .push((*folded, placement.sequence));
+            }
+            Some((unresolved, require_wal))
+        }) else { return Ok(()); };
         // The records are read in batches, in log-id order: a batch lists the log's segments once
         // and reuses the open file, where a read per value listed them every time (about 100 s for
         // 100,000 values over a 300 MB log). A batch that fails as a whole is read value by value,
@@ -3215,7 +3221,10 @@ impl TemporalEngine {
                 // an error, not an empty shard: a durably acknowledged write reported as absent,
                 // which is the quietest way a store can lose data. Registering here, where the log
                 // id is still in hand, makes a replayed record as addressable as a written one.
-                if !record.staged_blocks.is_empty() {
+                let deferred_hash_log = (!record.staged_blocks.is_empty() && !record.outcomes.is_empty()
+                    && record.outcomes.iter().all(|item| item.kind == "hash" || item.resolved_address().is_none()))
+                    .then(|| log_id_by_sequence.get(&record.sequence).copied()).flatten();
+                if !record.staged_blocks.is_empty() && deferred_hash_log.is_none() {
                     if let Some(&log_id) = log_id_by_sequence.get(&record.sequence) {
                         let locations = super::block_in_wal::register_record_with_outcomes(
                             &self.block_store,
@@ -3304,6 +3313,27 @@ impl TemporalEngine {
                             ));
                         }
                     }
+                    if let Some(log_id) = deferred_hash_log {
+                        self.shards.with_state_mut(shard_id, |state| {
+                            let shard = state.ok_or_else(|| Status::error(
+                                "shard_not_loaded", "replaying shard disappeared before frame publication"))?;
+                            for (folded, placement) in wal_resident_updates.drain() {
+                                shard.wal_resident_blocks.insert(folded, placement);
+                            }
+                            let locations = super::block_in_wal::register_shared_hash_record(
+                                &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
+                                log_id, record.sequence, &self.wal_store, &[], shard,
+                            );
+                            #[cfg(test)]
+                            super::replay_scratch::observe_placements(locations.len(), locations.capacity());
+                            for folded in locations {
+                                shard.wal_resident_blocks.insert(folded, crate::engine::state::WalResidentBlock {
+                                    log_id, sequence: record.sequence,
+                                });
+                            }
+                            Ok::<(), Status>(())
+                        })?;
+                    }
                     self.replay_installs.fetch_add(
                         record.outcomes.len() as u64,
                         std::sync::atomic::Ordering::Relaxed,
@@ -3359,12 +3389,13 @@ impl TemporalEngine {
             // the window retain only their latest location; none of this advances a durable
             // replay frontier or publishes an index before the entire replay succeeds.
             if !wal_resident_updates.is_empty() {
-                let mut shards = self.shards.write().expect("engine lock poisoned");
-                if let Some(shard) = shards.get_mut(&shard_id) {
-                    for (object_id, placement) in wal_resident_updates.drain() {
-                        shard.wal_resident_blocks.insert(object_id, placement);
+                self.shards.with_state_mut(shard_id, |state| {
+                    if let Some(shard) = state {
+                        for (object_id, placement) in wal_resident_updates.drain() {
+                            shard.wal_resident_blocks.insert(object_id, placement);
+                        }
                     }
-                }
+                });
             }
             if !more_to_come {
                 break;
@@ -3415,11 +3446,10 @@ impl TemporalEngine {
             // a non-question rather than a convention to keep. Taken here rather than inside the
             // block below so that stays true by construction.
             let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
-            let index_bytes = {
-                let mut shards = self.shards.write().expect("engine lock poisoned");
+            let index_bytes = self.shards.with_state_mut(shard_id, |state| {
                 #[cfg(test)]
                 restore_phase_probe::lock_held_begin();
-                match shards.get_mut(&shard_id) {
+                match state {
                     Some(shard) => {
                         // The per-command model-map -> bucket-index promotion and
                         // first-index rebuild were deferred for every replayed command
@@ -3452,7 +3482,7 @@ impl TemporalEngine {
                     }
                     None => None,
                 }
-            };
+            });
             #[cfg(test)]
             restore_phase_probe::lock_held_end();
             if let Some(index_bytes) = index_bytes {
@@ -3483,6 +3513,14 @@ impl TemporalEngine {
     }
 
     pub fn unload_shard_with(&self, request: UnloadShardRequest) -> UnloadShardResponse {
+        self.unload_shard_with_hooks(request, || {}, || {})
+    }
+
+    fn unload_shard_with_hooks(
+        &self, request: UnloadShardRequest, after_flush: impl FnOnce(), before_drain: impl FnOnce(),
+    ) -> UnloadShardResponse {
+        let slot = self.pass_slot(request.shard_id);
+        let _lifecycle = slot.lock().expect("compaction pass lock poisoned");
         if !self
             .infos
             .read()
@@ -3501,36 +3539,41 @@ impl TemporalEngine {
         // base. The index-log is bounded separately by the storage-manager's consumer-aware
         // index GC, so unload does not truncate it here.
         self.flush_shard_index(request.shard_id);
-        {
-            let mut shards = self.shards.write().expect("engine lock poisoned");
-            self.checkpoint_publications.forget(request.shard_id);
-            shards.remove(&request.shard_id);
-            // The index was flushed above and a reload reads it, so nothing is left to hold.
-            self.unpublished_compaction_slabs
-                .write().expect("unpublished compaction lock poisoned")
-                .remove(&request.shard_id);
-        }
-        self.infos
-            .write()
-            .expect("info lock poisoned")
-            .remove(&request.shard_id);
-        self.configs
-            .write()
-            .expect("config lock poisoned")
-            .remove(&request.shard_id);
-        self.admissions
-            .write()
-            .expect("admission lock poisoned")
-            .remove(&AdmissionScope::Shard(request.shard_id));
-        // Drop this shard's WAL-resident registrations too: they name records in a log this
-        // engine no longer serves, and a reload re-derives them from the WAL anyway.
-        block_in_wal::clear_shard(&self.block_store, request.shard_id);
-        UnloadShardResponse {
-            status: Status::ok(),
-        }
+        after_flush();
+        self.retire_loaded_shard_reserved(request.shard_id, before_drain);
+        UnloadShardResponse { status: Status::ok() }
+    }
+
+    /// The caller holds the same-ID pass reservation through side cleanup.
+    fn retire_loaded_shard_reserved(&self, shard_id: ShardId, before_drain: impl FnOnce()) {
+        let Some(handle) = self.shards.handle(shard_id) else { return; };
+        let Some(closing) = handle.with_write(|state| {
+            state?;
+            if let Some(info) = self.infos.write().expect("info lock poisoned").get_mut(&shard_id) {
+                info.recovering = true;
+            }
+            Some(self.checkpoint_publications.begin_close(shard_id))
+        }) else { return; };
+
+        before_drain();
+        let drained = closing.drain();
+        assert!(self.checkpoint_publications.is_current_close(&drained));
+        let retired = self.shards.retire_if_current(&handle)
+            .expect("reserved shard changed during close");
+        let scrape_cache = self.detach_scrape_bucket_summaries(&handle);
+        let unpublished = self.unpublished_compaction_slabs.write()
+            .expect("unpublished compaction lock poisoned").remove(&shard_id);
+        self.infos.write().expect("info lock poisoned").remove(&shard_id);
+        self.configs.write().expect("config lock poisoned").remove(&shard_id);
+        self.admissions.write().expect("admission lock poisoned").remove(&AdmissionScope::Shard(shard_id));
+        block_in_wal::clear_shard(&self.block_store, shard_id);
+        assert!(self.checkpoint_publications.finish_close(drained));
+        drop((retired, unpublished, scrape_cache));
     }
 
     pub fn reload_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
+        let slot = self.pass_slot(request.shard_id);
+        let _lifecycle = slot.lock().expect("compaction pass lock poisoned");
         let existing = self
             .infos
             .read()
@@ -3538,7 +3581,7 @@ impl TemporalEngine {
             .get(&request.shard_id)
             .cloned();
         let Some(existing) = existing else {
-            return self.load_shard_with(request);
+            return self.load_shard_with_shared_tail_reserved(request, || Ok(()));
         };
         if request.load_version < existing.load_version {
             return LoadShardResponse {
@@ -3551,28 +3594,48 @@ impl TemporalEngine {
                 ),
             };
         }
-        self.infos.write().expect("info lock poisoned").insert(
-            request.shard_id,
-            ShardInfo {
-                shard_id: request.shard_id,
-                loaded: true,
-                table_name: request.table_name,
-                shard_uri: request.shard_uri,
-                start_routing_bucket: request.start_routing_bucket,
-                end_routing_bucket: request.end_routing_bucket,
-                readonly: request.readonly,
-                load_version: request.load_version,
-                local_node_id: request.local_node_id,
-                membership_version: existing.membership_version,
-                replica_membership_version: existing.replica_membership_version,
-                membership_valid: existing.membership_valid,
-                replica_node_ids: existing.replica_node_ids,
-                leader_node_id: existing.leader_node_id,
-                // Reload updates metadata only; it does not replay the WAL, so it serves
-                // immediately.
-                recovering: false,
-            },
-        );
+        let Some(owner) = self.shards.handle(request.shard_id) else {
+            return LoadShardResponse {
+                status: Status::error("shard_not_found", "shard owner is not loaded"),
+            };
+        };
+        let replacement = ShardInfo {
+            shard_id: request.shard_id,
+            loaded: true,
+            table_name: request.table_name,
+            shard_uri: request.shard_uri,
+            start_routing_bucket: request.start_routing_bucket,
+            end_routing_bucket: request.end_routing_bucket,
+            readonly: request.readonly,
+            load_version: request.load_version,
+            local_node_id: request.local_node_id,
+            membership_version: existing.membership_version,
+            replica_membership_version: existing.replica_membership_version,
+            membership_valid: existing.membership_valid,
+            replica_node_ids: existing.replica_node_ids,
+            leader_node_id: existing.leader_node_id,
+            // Reload updates metadata only; it does not replay the WAL, so it serves
+            // immediately.
+            recovering: false,
+        };
+        // No refresh mutex is taken here. The owner write fences old refresh
+        // publication while metadata and its cache incarnation change together.
+        let displaced = self.shards.with_handle_state_mut(&owner, |state| {
+            state.map(|_| {
+                let previous = self
+                    .infos
+                    .write()
+                    .expect("info lock poisoned")
+                    .insert(request.shard_id, replacement);
+                (previous, self.detach_scrape_bucket_summaries(&owner))
+            })
+        });
+        if displaced.is_none() {
+            return LoadShardResponse {
+                status: Status::error("shard_not_found", "shard owner was retired"),
+            };
+        }
+        drop(displaced);
         LoadShardResponse {
             status: Status::ok(),
         }
@@ -3608,6 +3671,8 @@ impl TemporalEngine {
     /// `load_shard_with` into two steps a single-threaded test can observe between.
     #[cfg(test)]
     pub(crate) fn test_publish_recovering_shard(&self, shard_id: ShardId) -> u64 {
+        let slot = self.pass_slot(shard_id);
+        let _lifecycle = slot.lock().expect("compaction pass lock poisoned");
         let installed_manifest_watermark = self
             .install_latest_manifest_if_newer_on_load(shard_id)
             .expect("manifest install should succeed in test");
@@ -3937,5 +4002,217 @@ where
                 address.length()
             ));
         }
+    }
+}
+
+#[cfg(test)]
+mod file_restore_publication_tests {
+    use super::*;
+
+    #[test]
+    fn file_restore_checkpoint_cannot_publish_after_its_capture_is_invalidated() {
+        let root = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 << 20, root.path().join("cache"), root.path().join("blocks"),
+            root.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(engine.execute_durable(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: "prior".into(), value: b"seed".to_vec() },
+        }).status.ok);
+        engine.materialize_synthetic_blocks(1);
+        engine.flush_shard_index(1);
+        let prior = std::fs::read(engine.index_path(1)).unwrap();
+        let owner = engine.clone();
+        let failure = engine.block_store.with_after_next_sync_for_test(
+            move || owner.checkpoint_publications.forget(1),
+            || engine.commit_file_restore_image(1, "source", 1),
+        ).unwrap_err();
+        assert_eq!(failure.code, "shared_wal_commit_superseded");
+        assert_eq!(std::fs::read(engine.index_path(1)).unwrap(), prior);
+        assert!(engine.capture_shard_checkpoint(1).unwrap().0.file_restore_frontier.is_none());
+    }
+}
+
+#[cfg(test)]
+mod unload_publication_tests {
+    use super::*;
+    use std::sync::mpsc::channel;
+    use std::time::Duration;
+
+    fn record(shard_id: ShardId, key: &str) -> ExecuteRequest {
+        ExecuteRequest {
+            shard_id,
+            command: Command::StringSet { key: key.into(), value: b"acknowledged".to_vec() },
+        }
+    }
+
+    fn check(engine: &TemporalEngine, shard_id: ShardId, key: &str) {
+        let response = engine.execute(ExecuteRequest {
+            shard_id, command: Command::StringGet { key: key.into() },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(b"acknowledged".to_vec()) });
+    }
+
+    fn local_load(shard_id: ShardId) -> LoadShardRequest {
+        LoadShardRequest {
+            shard_id, load_version: 0, local_node_id: None,
+            shard_uri: String::new(), start_routing_bucket: 0, end_routing_bucket: u32::MAX,
+            readonly: false, table_name: String::new(),
+        }
+    }
+
+    #[test]
+    fn fast_read_waiting_for_owner_refuses_a_shard_in_unload_drain() {
+        let timeout = Duration::from_secs(10);
+        let root = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            16 << 20, root.path().join("cache"), root.path().join("blocks"), root.path().join("indexes"),
+        );
+        assert!(engine.load_shard_with(local_load(1)).status.ok);
+        assert!(engine.execute_durable(record(1, "seed")).status.ok);
+        check(&engine, 1, "seed");
+        assert_eq!(engine.execute_read_only_fast_path(&ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key: "seed".into() },
+        }).unwrap().response, CommandResponse::Bytes { value: Some(b"acknowledged".to_vec()) });
+
+        std::thread::scope(|scope| {
+            let (before_owner, owner_reached) = channel();
+            let (allow_owner, wait_owner) = channel();
+            let (reader_finished, reader_result) = channel();
+            let read_engine = &engine;
+            let reader = scope.spawn(move || {
+                super::super::BEFORE_FAST_READ_OWNER.with(|slot| {
+                    *slot.borrow_mut() = Some(Box::new(move || {
+                        before_owner.send(()).unwrap();
+                        wait_owner.recv_timeout(timeout).unwrap();
+                    }));
+                });
+                let response = read_engine.execute(ExecuteRequest {
+                    shard_id: 1, command: Command::StringGet { key: "seed".into() },
+                });
+                reader_finished.send(response).unwrap();
+            });
+            owner_reached.recv_timeout(timeout).unwrap();
+
+            let (before_drain, drain_reached) = channel();
+            let (allow_drain, wait_drain) = channel();
+            let unload_engine = &engine;
+            let unloader = scope.spawn(move || {
+                unload_engine.unload_shard_with_hooks(
+                    UnloadShardRequest { shard_id: 1 },
+                    || {},
+                    || {
+                        before_drain.send(()).unwrap();
+                        wait_drain.recv_timeout(timeout).unwrap();
+                    },
+                )
+            });
+            drain_reached.recv_timeout(timeout).unwrap();
+            // The flag is visible, but the old owner and its exact value are still installed.
+            assert!(engine.get_info(1).info.unwrap().recovering);
+            assert!(engine.shards.with_state(1, |state| state.unwrap().string_address("seed").is_some()));
+            allow_owner.send(()).unwrap();
+            let response = reader_result.recv_timeout(timeout);
+            // Resume and join both workers before asserting the read result.
+            allow_drain.send(()).unwrap();
+            reader.join().unwrap();
+            assert!(unloader.join().unwrap().status.ok);
+            let response = response.expect("read waited for the parked unload to finish");
+            assert_eq!(response.status.code, "shard_not_loaded", "{response:?}");
+            assert_eq!(response.response, CommandResponse::Empty);
+        });
+        assert!(engine.load_shard_with(local_load(1)).status.ok);
+        check(&engine, 1, "seed");
+    }
+
+    fn run_close_case(fail_publication: bool) {
+        let timeout = Duration::from_secs(10);
+        let root = tempfile::tempdir().unwrap();
+        let open = || TemporalEngine::with_local_dirs(
+            16 << 20, root.path().join("cache"), root.path().join("blocks"), root.path().join("indexes"),
+        );
+        let engine = open();
+        for id in [1, 2] {
+            assert!(engine.load_shard_with(local_load(id)).status.ok);
+            assert!(engine.execute_durable(record(id, "seed")).status.ok);
+        }
+        let old = engine.shards.handle(1).unwrap();
+        let (flushed_tx, flushed_rx) = channel();
+        let (publishing_tx, publishing_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let (draining_tx, draining_rx) = channel();
+        let unload_engine = engine.clone();
+        let unload = std::thread::spawn(move || {
+            unload_engine.unload_shard_with_hooks(
+                UnloadShardRequest { shard_id: 1 },
+                || {
+                    flushed_tx.send(()).unwrap();
+                    publishing_rx.recv_timeout(timeout).unwrap();
+                },
+                || draining_tx.send(()).unwrap(),
+            )
+        });
+        flushed_rx.recv_timeout(timeout).unwrap();
+        let writer = engine.clone();
+        let publishing = std::thread::spawn(move || {
+            writer.checkpoint_publications.publish_current(1, || {
+                publishing_tx.send(()).unwrap();
+                release_rx.recv_timeout(timeout).unwrap();
+                if fail_publication { return Err(std::io::Error::other("injected publication failure")); }
+                Ok(())
+            })
+        });
+        draining_rx.recv_timeout(timeout).unwrap();
+        assert!(engine.pass_slot(1).try_lock().is_err());
+
+        let (peer_tx, peer_rx) = channel();
+        let peer_engine = engine.clone();
+        let peer = std::thread::spawn(move || {
+            assert!(peer_engine.execute_durable(record(2, "peer-direct")).status.ok);
+            assert!(peer_engine.execute_raft_apply(record(2, "peer-raft")).status.ok);
+            check(&peer_engine, 2, "peer-direct");
+            check(&peer_engine, 2, "peer-raft");
+            peer_tx.send(()).unwrap();
+        });
+        let reload_engine = engine.clone();
+        let (reload_tx, reload_rx) = channel();
+        let reload = std::thread::spawn(move || {
+            reload_tx.send(reload_engine.reload_shard_with(local_load(1))).unwrap();
+        });
+        let progressed = peer_rx.recv_timeout(timeout);
+        assert!(reload_rx.try_recv().is_err());
+        release_tx.send(()).unwrap();
+        assert_eq!(publishing.join().unwrap().is_err(), fail_publication);
+        assert!(unload.join().unwrap().status.ok);
+        assert!(reload_rx.recv_timeout(timeout).unwrap().status.ok);
+        reload.join().unwrap();
+        peer.join().unwrap();
+        progressed.expect("peer writes waited for shard 1 publication drain");
+
+        let new = engine.shards.handle(1).unwrap();
+        assert!(!old.same_incarnation(&new));
+        assert!(old.with_read(|state| state.is_none()));
+        check(&engine, 1, "seed");
+        drop(engine);
+        let reopened = open();
+        for id in [1, 2] {
+            assert!(reopened.load_shard_with(local_load(id)).status.ok);
+            check(&reopened, id, "seed");
+        }
+        check(&reopened, 2, "peer-direct");
+        check(&reopened, 2, "peer-raft");
+    }
+
+    #[test]
+    fn unload_drains_after_flush_without_blocking_peer_engine_writers() {
+        run_close_case(false);
+    }
+
+    #[test]
+    fn failed_publication_still_allows_close_and_exact_reload() {
+        run_close_case(true);
     }
 }

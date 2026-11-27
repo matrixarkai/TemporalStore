@@ -250,9 +250,8 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
         "persistent block read should populate block-cache files"
     );
 
-    let target_block_key = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard should exist");
+    let target_block_key = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard should exist");
         let address = shard.string_address("target").expect("target address should exist");
         let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
@@ -262,7 +261,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
             address.length(),
             Some(crate::engine::hashing::block_routing_bucket("target", start, end)),
         )
-    };
+    });
     assert_eq!(
         cache.get_memory(&target_block_key),
         None,
@@ -365,9 +364,8 @@ fn cache_replacement_policy_soak() {
         "pressure pass should leave a disk-cache tier for cold read refill"
     );
 
-    let target_block_key = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
+    let target_block_key = engine.shards.with_state(1, |state| {
+        let shard = state.expect("loaded shard");
         let address = shard
             .strings()
             .get("soak-target")
@@ -381,8 +379,9 @@ fn cache_replacement_policy_soak() {
             address.length(),
             Some(crate::engine::hashing::block_routing_bucket("soak-target", start, end)),
         )
-    };
+    });
 
+    let cached_pages = engine.cache().entries_for_shard(1);
     let evict_report = engine.apply_storage_eviction(1, 1, 4, true, false);
     assert_eq!(evict_report.mode, "evict_cache");
     assert!(evict_report.pressure_gate_open, "{evict_report:?}");
@@ -392,13 +391,13 @@ fn cache_replacement_policy_soak() {
         "{evict_report:?}"
     );
     assert!(
-        !evict_report.dump_manifest_ids.is_empty(),
-        "dump-before-evict should durably dump dirty victim slots: {evict_report:?}"
+        evict_report.dump_manifest_ids.is_empty(),
+        "inline string eviction must not publish an unnecessary dump: {evict_report:?}"
     );
-    assert!(
-        evict_report.cache_entries_removed > 0 || evict_report.cache_disk_bytes_removed > 0,
-        "eviction should remove at least one cache entry or disk-cache block: {evict_report:?}"
-    );
+    assert!(evict_report.bucket_index_buckets_released > 0, "{evict_report:?}");
+    assert_eq!(evict_report.cache_entries_removed, 0);
+    assert_eq!(evict_report.cache_disk_bytes_removed, 0);
+    assert_eq!(engine.cache().entries_for_shard(1), cached_pages);
 
     let _ = engine.cache().invalidate(&target_block_key);
     engine.cache().clear_memory_for_test();
@@ -618,10 +617,8 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     restarted.load_shard(1);
     let restarted_cache = restarted.cache();
     let restarted_block_store = restarted.block_store();
-    let target_block_key = {
-        let shards = restarted.shards.read().expect("shards lock poisoned");
-        let shard = shards
-            .get(&1)
+    let target_block_key = restarted.shards.with_state(1, |state| {
+        let shard = state
             .expect("shard should exist after index replay");
         let address = shard
             .strings()
@@ -636,7 +633,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
             address.length(),
             Some(crate::engine::hashing::block_routing_bucket("target", start, end)),
         )
-    };
+    });
 
     let first_read = restarted.execute(ExecuteRequest {
         shard_id: 1,
@@ -822,7 +819,12 @@ fn write_invalidates_cached_string() {
             value: Some(b"new".to_vec())
         }
     );
-    assert!(cache.stats().invalidations >= 2);
+    // ZERO, where this asserted `>= 2`. Nothing in this sequence ever caches the string's logical
+    // key (`StringGet` does not fill it), so the two writes have nothing to invalidate; the old
+    // `>= 2` was satisfied only by two invalidations that removed nothing. That a write still
+    // removes an entry that IS cached is pinned where it can fail:
+    // `a_cached_string_is_still_invalidated_by_a_write`.
+    assert_eq!(cache.stats().invalidations, 0);
 }
 
 #[test]
@@ -2951,12 +2953,13 @@ fn the_shipped_dump_cap_still_lets_the_log_be_reclaimed() {
 /// for ever while every round still reports success. Nothing else here would notice: the cycle
 /// completes, the stages report applied, and only the disk fills.
 ///
-/// So this writes the same working set every round and requires the floor to reach the head each
-/// time. Twelve rounds and 6,000 writes: every round removes exactly what that round wrote, the
-/// floor advances to `last_sequence + 1`, and the log's on-disk size never moves off the
-/// preallocated segment.
+/// Each burst rewrites the same working set, then drains it through the shipped bounded dump
+/// passes. Collection must reach the head within that budget, free real bytes, retain at most
+/// one working set of records, and preserve every latest value through a fresh reopen.
 #[test]
 fn the_log_stays_bounded_under_continuous_writing() {
+    const KEYS: usize = 500;
+    const ROUNDS: u64 = 12;
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
         8 << 20,
@@ -2966,75 +2969,80 @@ fn the_log_stays_bounded_under_continuous_writing() {
     );
     engine.load_shard(1);
 
+    let cap = StorageManagerCycleRequest::default().max_dump_buckets_per_round;
+    assert!(cap > 0, "this fixture must exercise a bounded dump policy");
+    let max_passes = KEYS.div_ceil(cap);
     let mut bytes_seen: Vec<u64> = Vec::new();
-    for round in 1..=12u64 {
-        // The same 500 keys every round, so everything written is superseded and the whole log
-        // below the floor is reclaimable. A shard that cannot free THIS cannot free anything.
-        for index in 0..500 {
-            write_string(&engine, &format!("bound-{index:04}"), &[b'v'; 256]);
+    for round in 1..=ROUNDS {
+        for index in 0..KEYS {
+            write_string(&engine, &format!("bound-{index:04}"), &[round as u8; 256]);
         }
-        let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
-            shard_id: 1,
-            min_undumped_wal_records: 0,
-            min_undumped_wal_bytes: 0,
-            ..StorageManagerCycleRequest::default()
-        });
+        let bytes_before = engine.write_ahead_log_store().stats(1).persistent_bytes;
+        let mut removed = 0usize;
+        let mut last_floor = 0;
+        let mut drained = false;
+        for pass in 0..max_passes {
+            let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+                shard_id: 1,
+                min_undumped_wal_records: 0,
+                min_undumped_wal_bytes: 0,
+                ..StorageManagerCycleRequest::default()
+            });
+            assert!(report.completed && report.errors.is_empty(), "{report:?}");
+            if report.plan.selected_dump_buckets.len() > cap {
+                assert!(report.plan.reasons.iter().any(|reason| reason == "slot_dump_refresh_after_relocation"),
+                    "round {round} pass {pass}: dirty dump exceeded cap {cap}: {:?}", report.plan);
+                assert!(report.plan.dirty_buckets.is_empty());
+                let expected = report.plan.bucket_summaries.as_ref()
+                    .expect("a full relocation refresh must report its bucket inventory")
+                    .iter().map(|summary| summary.routing_bucket)
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(report.plan.selected_dump_buckets.len(), expected.len());
+                assert_eq!(report.plan.selected_dump_buckets.iter().copied()
+                    .collect::<std::collections::BTreeSet<_>>(), expected);
+            }
+            let wal = report.wal_reclaim_report.as_ref().expect("the pass must run WAL reclaim");
+            let floor = wal.plan.retain_from_wal_sequence;
+            assert!(floor >= last_floor, "round {round} pass {pass}: reclaim moved backwards");
+            last_floor = floor;
+            removed = removed.saturating_add(wal.wal_records_removed);
+            if floor == engine.write_ahead_log_store().stats(1).last_sequence.saturating_add(1) {
+                drained = true;
+                break;
+            }
+        }
         let stats = engine.write_ahead_log_store().stats(1);
-        let wal = report
-            .wal_reclaim_report
-            .as_ref()
-            .expect("the round must run WAL reclaim");
-        assert_eq!(
-            wal.plan.retain_from_wal_sequence,
-            stats.last_sequence.saturating_add(1),
-            "round {round}: the reclaim floor did not reach the head, so a bucket is starving \
-             the log: last_sequence={} retain_from={}",
-            stats.last_sequence,
-            wal.plan.retain_from_wal_sequence,
-        );
+        assert!(drained, "round {round}: floor {last_floor} did not reach {} in {max_passes} bounded passes",
+            stats.last_sequence.saturating_add(1));
         assert!(
-            wal.wal_records_removed > 0,
+            removed > 0,
             "round {round}: nothing was reclaimed, though 500 records were written into it"
         );
+        // A reservation-sized constant cannot pass this control, even if the settled encoded
+        // tail has the same length every burst.
+        assert!(stats.persistent_bytes < bytes_before,
+            "round {round}: retained log bytes did not fall: {bytes_before} -> {}", stats.persistent_bytes);
+        let retained = engine.write_ahead_log_store().record_count(1).unwrap();
+        assert!(retained <= KEYS + 1,
+            "round {round}: {retained} retained records exceed one working set plus the continuity tail");
         bytes_seen.push(stats.persistent_bytes);
     }
 
-    // The log warms up over the first rounds and then stops moving: measured
-    // [39898, 40602, 41602, 41605, 41605, ...], flat from round four to round twelve.
-    //
-    // This used to assert all twelve rounds were IDENTICAL, and they were -- at 262,144 every
-    // round, which is neither the log's size nor a quantity that could respond to anything.
-    // Under preallocation `persistent_bytes` reported the file's RESERVATION, a 256 KiB chunk
-    // boundary, so the bound this test exists to prove was being satisfied by a constant. A
-    // guard that holds a number which cannot move is not guarding.
-    //
-    // So the first assertion now is that the figure DOES move, which is what tells a live
-    // measurement from a constant, and only then that it settles and stays settled.
+    // Encoded sequence widths can change without accumulating records. Bound bytes across
+    // bursts as well as record counts, without requiring a particular encoding's warm-up.
     let first = bytes_seen[0];
-    let plateau = bytes_seen[bytes_seen.len() - 1];
-    assert_ne!(
-        first, plateau,
-        "the durable byte figure was the same in round 1 and round {} ({first}). That is what a \
-         reservation looks like -- a number fixed by the preallocation chunk rather than by the \
-         log -- and this test cannot bound a log through one: {bytes_seen:?}",
-        bytes_seen.len()
-    );
+    let maximum = *bytes_seen.iter().max().unwrap();
     assert!(
-        bytes_seen.windows(2).all(|pair| pair[1] >= pair[0]),
-        "the log did not settle monotonically, so neither the warm-up nor the plateau below \
-         describes it: {bytes_seen:?}"
+        maximum < first.saturating_mul(2),
+        "the log accumulated across bounded drain passes: {bytes_seen:?}"
     );
-    let tail = &bytes_seen[4..];
-    assert!(
-        tail.iter().all(|bytes| *bytes == plateau),
-        "the log was still growing after four rounds of rewriting the same 500 keys: \
-         {bytes_seen:?}"
-    );
-    assert!(
-        plateau < first.saturating_mul(2),
-        "the settled log ({plateau} bytes) is more than twice its first round ({first}), so the \
-         rewrites are accumulating rather than superseding: {bytes_seen:?}"
-    );
+    drop(engine);
+    let reader = TemporalEngine::with_local_dirs(8 << 20, dir.path().join("fresh-cache"),
+        dir.path().join("blocks"), dir.path().join("indexes"));
+    reader.load_shard(1);
+    for index in 0..KEYS {
+        assert_eq!(read_string(&reader, &format!("bound-{index:04}")), Some(vec![ROUNDS as u8; 256]));
+    }
 }
 
 /// A bucket remembers the log sequence of its OLDEST undumped write.
@@ -3950,17 +3958,15 @@ fn feature_append_packs_many_timestamp_values_into_one_block() {
     });
     assert!(response.status.ok);
 
-    let (first_address, second_address) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let series = shards
-            .get(&1)
+    let (first_address, second_address) = engine.shards.with_state(1, |state| {
+        let series = state
             .and_then(|shard| shard.features().get("packed-feature"))
             .expect("feature series should exist");
         (
             series.get(10).expect("first point").clone(),
             series.get(20).expect("second point").clone(),
         )
-    };
+    });
     assert_eq!(first_address, second_address);
     // The address carries no object id; the entry derives one from its terms.
     let packed_bytes = engine.block_store().read(&first_address).unwrap();
@@ -4169,14 +4175,12 @@ fn feature_append_chunks_and_persists_timestamped_kv_blocks() {
     });
     assert!(response.status.ok);
 
-    let addresses = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let series = shards
-            .get(&1)
+    let addresses = engine.shards.with_state(1, |state| {
+        let series = state
             .and_then(|shard| shard.features().get("chunked-feature"))
             .expect("feature series should exist");
         unique_timestamped_kv_block_addresses(series)
-    };
+    });
     assert!(
         addresses.len() > 1,
         "large timestamped KV batch should be split into block chunks"
@@ -4228,14 +4232,12 @@ fn feature_append_keeps_oversized_single_timestamped_value_readable() {
     });
     assert!(response.status.ok);
 
-    let addresses = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let series = shards
-            .get(&1)
+    let addresses = engine.shards.with_state(1, |state| {
+        let series = state
             .and_then(|shard| shard.features().get("oversized-single-feature"))
             .expect("feature series should exist");
         unique_timestamped_kv_block_addresses(series)
-    };
+    });
     assert_eq!(addresses.len(), 1);
     let bytes = engine.block_store().read(&addresses[0]).unwrap();
     assert!(bytes.len() > TIMESTAMPED_KV_BLOCK_TARGET_BYTES);
@@ -4321,15 +4323,13 @@ fn feature_recovery_reports_index_timestamp_missing_from_packed_block() {
     });
     assert!(response.status.ok);
 
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let series = shards
-            .get_mut(&1)
+    engine.shards.with_state_mut(1, |state| {
+        let series = state
             .and_then(|shard| shard.features_mut().get_mut("layout-feature"))
             .expect("feature series should exist");
         let address = series.get(10).expect("packed block").clone();
         series.set(30, address);
-    }
+    });
 
     let report = engine.storage_recovery_report(1);
     assert_eq!(
@@ -4370,16 +4370,14 @@ fn feature_recovery_reports_packed_timestamp_orphaned_from_index() {
     });
     assert!(response.status.ok);
 
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let series = shards
-            .get_mut(&1)
+    engine.shards.with_state_mut(1, |state| {
+        let series = state
             .and_then(|shard| shard.features_mut().get_mut("layout-feature"))
             .expect("feature series should exist");
         // `clear` is the trait's spelling, and it returns nothing where `remove` returned
         // the removed value -- which this site discarded anyway.
         series.clear(20);
-    }
+    });
 
     let report = engine.storage_recovery_report(1);
     assert_eq!(
@@ -4425,16 +4423,15 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_block() {
         )
         .expect("duplicate packed block append");
 
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("loaded shard");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("loaded shard");
         let series = shard
             .features_mut()
             .entry("layout-feature".into())
             .or_default();
         series.set(10, address.clone());
         series.set(20, address);
-    }
+    });
 
     let report = engine.storage_recovery_report(1);
     assert_eq!(
@@ -4476,15 +4473,14 @@ fn feature_recovery_reports_corrupt_packed_timestamped_block() {
         )
         .expect("corrupt packed block append");
 
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("loaded shard");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("loaded shard");
         shard
             .features_mut()
             .entry("corrupt-feature".into())
             .or_default()
             .set(10, address);
-    }
+    });
 
     let query = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -4509,23 +4505,16 @@ fn feature_recovery_reports_corrupt_packed_timestamped_block() {
     assert!(
         readiness.feature_block_layout.corrupt_packed_feature_blocks[0]
             .error
-            .contains("invalid packed feature page payload")
+            .contains("retired JSON shape")
     );
 }
 
 #[test]
-fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
+fn feature_recovery_reports_a_packed_timestamped_block_in_the_retired_json_shape() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
-    let block = PackedFeatureBlock {
-        version: 2,
-        points: vec![FeaturePoint {
-            timestamp_ms: 10,
-            value: b"ten".to_vec(),
-        }],
-    };
     let mut bytes = FEATURE_BLOCK_MAGIC.to_vec();
-    bytes.extend_from_slice(&serde_json::to_vec(&block).unwrap());
+    bytes.extend_from_slice(br#"{"version":1,"points":[]}"#);
     let address = engine
         .block_store()
         .append_with_block_metadata(
@@ -4539,15 +4528,14 @@ fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
         )
         .expect("unsupported packed block append");
 
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("loaded shard");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("loaded shard");
         shard
             .features_mut()
             .entry("versioned-feature".into())
             .or_default()
             .set(10, address);
-    }
+    });
 
     let readiness = engine.storage_production_readiness_report(1);
     assert!(!readiness.production_ready);
@@ -4555,7 +4543,7 @@ fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
     assert!(
         readiness.feature_block_layout.corrupt_packed_feature_blocks[0]
             .error
-            .contains("unsupported packed feature block version 2")
+            .contains("retired JSON shape")
     );
 }
 
@@ -4587,17 +4575,15 @@ fn feature_compaction_rewrites_shared_packed_block_once() {
     assert_eq!(report.rewritten_block_refs, 1);
     assert_eq!(report.after.live_block_refs, 1);
 
-    let (first_address, second_address) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let series = shards
-            .get(&1)
+    let (first_address, second_address) = engine.shards.with_state(1, |state| {
+        let series = state
             .and_then(|shard| shard.features().get("compact-packed-feature"))
             .expect("feature series should exist");
         (
             series.get(10).expect("first point").clone(),
             series.get(20).expect("second point").clone(),
         )
-    };
+    });
     assert_eq!(first_address, second_address);
 
     let query = engine.execute(ExecuteRequest {

@@ -253,15 +253,15 @@ fn each_tagged_word_reads_back_as_the_arm_it_was_set_to() {
         BlockAddress::Many(BlockLayoutHandle::from_stored(42)),
     ] {
         record.set_block_address(arm);
-        assert_eq!(arm, record.page_address(), "the address arm did not survive a set-then-get");
+        assert_eq!(arm, record.block_address(), "the address arm did not survive a set-then-get");
     }
 
     // A HANDLE OF ZERO AND AN ADDRESS OF ZERO ARE DIFFERENT ARMS. Both words are zero, so only the
     // tag separates them -- which is exactly the case a sentinel would collapse.
     record.set_block_address(BlockAddress::One(0));
-    let as_address = record.page_address();
+    let as_address = record.block_address();
     record.set_block_address(BlockAddress::Many(BlockLayoutHandle::from_stored(0)));
-    let as_handle = record.page_address();
+    let as_handle = record.block_address();
     assert_ne!(as_address, as_handle, "a zero address and a zero handle read the same");
 }
 
@@ -300,8 +300,8 @@ fn the_record_survives_its_own_codec_intact() {
             });
         assert_eq!(record, decoded, "the codec moved a field: {encoded}");
         assert_eq!(
-            record.page_address(),
-            decoded.page_address(),
+            record.block_address(),
+            decoded.block_address(),
             "the address arm did not survive the codec: {encoded}"
         );
     }
@@ -404,7 +404,7 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
         let record = ObjectRecord::from_object_rows(&address, model_id, deadline, dirty)
             .unwrap_or_else(|error| panic!("{what}: the inline arm refused a row it should hold: {error}"));
         assert!(
-            matches!(record.page_address(), BlockAddress::One(_)),
+            matches!(record.block_address(), BlockAddress::One(_)),
             "{what}: a log-resident block should take the inline arm"
         );
         let (back_address, back_model) = record
@@ -435,7 +435,7 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
             ObjectRecord::from_object_rows_with_layout(&address, model_id, deadline, dirty, handle)
                 .unwrap_or_else(|error| panic!("{what}: the layout arm refused: {error}"));
         assert!(
-            matches!(record.page_address(), BlockAddress::Many(_)),
+            matches!(record.block_address(), BlockAddress::Many(_)),
             "{what}: an identified block should take the layout arm"
         );
         assert_eq!(1, layout.len(), "{what}: one block should produce a one-block layout");
@@ -472,7 +472,7 @@ fn the_inline_arm_takes_ordinal_zero_and_refuses_a_nonzero_one_by_name() {
             panic!("the inline arm refused ordinal {ordinal:?}, which it must hold: {error}")
         });
         assert!(
-            matches!(record.page_address(), BlockAddress::One(_)),
+            matches!(record.block_address(), BlockAddress::One(_)),
             "ordinal {ordinal:?} did not take the inline arm"
         );
         let (back, ..) = record.into_object_rows(None).expect("unfold");
@@ -878,92 +878,93 @@ fn how_often_a_real_store_needs_the_layout_arm() {
         assert!(response.status.ok, "the fixture could not write: {:?}", response.status);
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    assert_eq!(KEYS, shard.strings().len(), "denominator: the fixture did not seed what it reports");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        assert_eq!(KEYS, shard.strings().len(), "denominator: the fixture did not seed what it reports");
 
-    // CLASSIFIED BY WHAT THE INLINE ARM ACTUALLY ACCEPTS, which is "ordinal absent OR ordinal
-    // zero" -- not by "ordinal absent", which is what an earlier draft of this counter asked and
-    // which reported 400 of 400 needing the layout arm while the converter was happily taking
-    // them inline. A census whose buckets disagree with the code it is costing is worse than no
-    // census, because it reads like a result.
-    let mut inline_ordinal_absent = 0usize;
-    let mut inline_ordinal_zero = 0usize;
-    let mut needs_layout = 0usize;
-    let mut with_generation = 0usize;
-    let mut largest_ordinal = 0u64;
-    for slot in shard.strings().values() {
-        let address = &slot.address();
-        match address.block_id() {
-            None => inline_ordinal_absent += 1,
-            Some(0) => inline_ordinal_zero += 1,
-            Some(id) => {
-                needs_layout += 1;
-                largest_ordinal = largest_ordinal.max(id);
+        // CLASSIFIED BY WHAT THE INLINE ARM ACTUALLY ACCEPTS, which is "ordinal absent OR ordinal
+        // zero" -- not by "ordinal absent", which is what an earlier draft of this counter asked and
+        // which reported 400 of 400 needing the layout arm while the converter was happily taking
+        // them inline. A census whose buckets disagree with the code it is costing is worse than no
+        // census, because it reads like a result.
+        let mut inline_ordinal_absent = 0usize;
+        let mut inline_ordinal_zero = 0usize;
+        let mut needs_layout = 0usize;
+        let mut with_generation = 0usize;
+        let mut largest_ordinal = 0u64;
+        for slot in shard.strings().values() {
+            let address = &slot.address();
+            match address.block_id() {
+                None => inline_ordinal_absent += 1,
+                Some(0) => inline_ordinal_zero += 1,
+                Some(id) => {
+                    needs_layout += 1;
+                    largest_ordinal = largest_ordinal.max(id);
+                }
+            }
+            if address.generation().is_some() {
+                with_generation += 1;
             }
         }
-        if address.generation().is_some() {
-            with_generation += 1;
-        }
-    }
-    let inline = inline_ordinal_absent + inline_ordinal_zero;
-    let total = inline + needs_layout;
-    assert_eq!(KEYS, total, "every address must land in exactly one arm");
-    assert!(total > 0, "non-vacuity: no addresses were examined");
-    println!(
-        "of {total} live string addresses written through the ordinary path: {inline} take the \
-         INLINE arm ({:.1}%) -- {inline_ordinal_absent} with no block ordinal and \
-         {inline_ordinal_zero} at ordinal zero -- and {needs_layout} need the LAYOUT arm ({:.1}%)",
-        100.0 * inline as f64 / total as f64,
-        100.0 * needs_layout as f64 / total as f64
-    );
-    println!(
-        "  {with_generation} carry a generation; the largest block ordinal seen is {largest_ordinal}"
-    );
+        let inline = inline_ordinal_absent + inline_ordinal_zero;
+        let total = inline + needs_layout;
+        assert_eq!(KEYS, total, "every address must land in exactly one arm");
+        assert!(total > 0, "non-vacuity: no addresses were examined");
+        println!(
+            "of {total} live string addresses written through the ordinary path: {inline} take the \
+             INLINE arm ({:.1}%) -- {inline_ordinal_absent} with no block ordinal and \
+             {inline_ordinal_zero} at ordinal zero -- and {needs_layout} need the LAYOUT arm ({:.1}%)",
+            100.0 * inline as f64 / total as f64,
+            100.0 * needs_layout as f64 / total as f64
+        );
+        println!(
+            "  {with_generation} carry a generation; the largest block ordinal seen is {largest_ordinal}"
+        );
 
-    // THE CLASSIFICATION IS CHECKED AGAINST THE CONVERTER, not trusted. Every address goes through
-    // the arm the count above put it in, and the arm it lands in is asserted -- so a counter that
-    // drifts from the converter again fails here rather than printing a wrong percentage.
-    let mut converted_inline = 0usize;
-    let mut converted_layout = 0usize;
-    for slot in shard.strings().values() {
-        let address = &slot.address();
-        match address.block_id() {
-            None | Some(0) => {
-                let record = ObjectRecord::from_object_rows(address, 1, None, true)
-                    .unwrap_or_else(|error| {
-                        panic!("the census put this address inline and the converter refused: {error}")
+        // THE CLASSIFICATION IS CHECKED AGAINST THE CONVERTER, not trusted. Every address goes through
+        // the arm the count above put it in, and the arm it lands in is asserted -- so a counter that
+        // drifts from the converter again fails here rather than printing a wrong percentage.
+        let mut converted_inline = 0usize;
+        let mut converted_layout = 0usize;
+        for slot in shard.strings().values() {
+            let address = &slot.address();
+            match address.block_id() {
+                None | Some(0) => {
+                    let record = ObjectRecord::from_object_rows(address, 1, None, true)
+                        .unwrap_or_else(|error| {
+                            panic!("the census put this address inline and the converter refused: {error}")
+                        });
+                    assert!(
+                        matches!(record.block_address(), BlockAddress::One(_)),
+                        "an address counted as inline did not take the inline arm"
+                    );
+                    let (back, ..) = record.into_object_rows(None).unwrap_or_else(|error| {
+                        panic!("a live address converted inline and would not come back: {error}")
                     });
-                assert!(
-                    matches!(record.page_address(), BlockAddress::One(_)),
-                    "an address counted as inline did not take the inline arm"
-                );
-                let (back, ..) = record.into_object_rows(None).unwrap_or_else(|error| {
-                    panic!("a live address converted inline and would not come back: {error}")
-                });
-                assert_eq!(*address, back, "a live address did not survive the inline arm");
-                converted_inline += 1;
-            }
-            Some(_) => {
-                let (record, layout) = ObjectRecord::from_object_rows_with_layout(
-                    address,
-                    1,
-                    None,
-                    true,
-                    BlockLayoutHandle::from_stored(converted_layout as u64),
-                )
-                .unwrap_or_else(|error| panic!("the layout arm refused a live address: {error}"));
-                let (back, ..) = record.into_object_rows(Some(&layout)).unwrap_or_else(|error| {
-                    panic!("a live address converted into a layout and would not come back: {error}")
-                });
-                assert_eq!(*address, back, "a live address did not survive the layout arm");
-                converted_layout += 1;
+                    assert_eq!(*address, back, "a live address did not survive the inline arm");
+                    converted_inline += 1;
+                }
+                Some(_) => {
+                    let (record, layout) = ObjectRecord::from_object_rows_with_layout(
+                        address,
+                        1,
+                        None,
+                        true,
+                        BlockLayoutHandle::from_stored(converted_layout as u64),
+                    )
+                    .unwrap_or_else(|error| panic!("the layout arm refused a live address: {error}"));
+                    let (back, ..) = record.into_object_rows(Some(&layout)).unwrap_or_else(|error| {
+                        panic!("a live address converted into a layout and would not come back: {error}")
+                    });
+                    assert_eq!(*address, back, "a live address did not survive the layout arm");
+                    converted_layout += 1;
+                }
             }
         }
-    }
-    assert_eq!(inline, converted_inline, "the inline count and the inline conversions disagree");
-    assert_eq!(needs_layout, converted_layout, "the layout count and the layout conversions disagree");
-    assert_eq!(total, converted_inline + converted_layout, "not every live address converted");
+        assert_eq!(inline, converted_inline, "the inline count and the inline conversions disagree");
+        assert_eq!(needs_layout, converted_layout, "the layout count and the layout conversions disagree");
+        assert_eq!(total, converted_inline + converted_layout, "not every live address converted");
+    })
 }
 
 /// A probe engine on an EXPLICIT routing range.
@@ -1134,13 +1135,14 @@ fn what_the_default_dump_cadence_actually_drains() {
         }
 
         let dirty_state = |engine: &TemporalEngine| -> (usize, u64, usize) {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
-            (
-                shard.dirty_objects.len(),
-                deep_heap_bytes(&shard.dirty_objects),
-                shard.bucket_index.bucket_map.values().count(),
-            )
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard is loaded");
+                (
+                    shard.dirty_objects.len(),
+                    deep_heap_bytes(&shard.dirty_objects),
+                    shard.bucket_index.bucket_map.values().count(),
+                )
+            })
         };
         let (dirty0, bytes0, buckets) = dirty_state(&engine);
         assert!(dirty0 > 0, "non-vacuity: nothing is dirty on the {arm} arm");
@@ -1451,7 +1453,7 @@ fn compacting_a_record_keeps_everything_that_is_not_the_address() {
     // --- GROUP TWO: what must TRACK, because it IS the address. ---
     assert_eq!(relocated, record.address(), "the address did not take");
     assert!(
-        matches!(record.page_address(), BlockAddress::One(_)),
+        matches!(record.block_address(), BlockAddress::One(_)),
         "the write-back left the address arm as a handle"
     );
     assert_eq!(128, record.block_size(), "the block size did not track the new address");
@@ -1483,7 +1485,7 @@ fn every_way_of_building_a_single_address_record_lands_in_the_inline_arm() {
 
         let built = ObjectRecord::from_object_rows(&entry, 1, None, false).expect("inline arm");
         assert!(
-            matches!(built.page_address(), BlockAddress::One(_)),
+            matches!(built.block_address(), BlockAddress::One(_)),
             "from_object_rows left a handle for ordinal {ordinal:?}"
         );
         assert_eq!(entry, built.address(), "address() did not return what was filed");
@@ -1491,7 +1493,7 @@ fn every_way_of_building_a_single_address_record_lands_in_the_inline_arm() {
         let mut written = ObjectRecord::default();
         written.set_address(&entry);
         assert!(
-            matches!(written.page_address(), BlockAddress::One(_)),
+            matches!(written.block_address(), BlockAddress::One(_)),
             "set_address left a handle for ordinal {ordinal:?}"
         );
         assert_eq!(entry, written.address(), "address() did not return what set_address wrote");
@@ -1588,26 +1590,27 @@ fn a_context_node_write_lands_in_the_hash_field_not_in_context_nodes() {
         response.status
     );
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let in_hashes = shard.bucket_index.hashes.len();
-    let in_context_nodes = shard.context_nodes().len();
-    println!(
-        "after one context-node write through the real command: `hashes` holds {in_hashes} \
-         object(s), `context_nodes` holds {in_context_nodes}"
-    );
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let in_hashes = shard.bucket_index.hashes.len();
+        let in_context_nodes = shard.context_nodes().len();
+        println!(
+            "after one context-node write through the real command: `hashes` holds {in_hashes} \
+             object(s), `context_nodes` holds {in_context_nodes}"
+        );
 
-    // NON-VACUITY: the write has to have landed SOMEWHERE, or "it did not land here" is empty.
-    assert!(
-        in_hashes > 0,
-        "the write filed nothing into `hashes`, so the live path is not what this refusal assumes \
-         -- re-take the refusal rather than trusting this test"
-    );
-    assert_eq!(
-        0, in_context_nodes,
-        "a context-node write filed into `context_nodes`, which the refusal says production never \
-         does. Either the write path moved back to this map, or the refusal is wrong. RE-TAKE it."
-    );
+        // NON-VACUITY: the write has to have landed SOMEWHERE, or "it did not land here" is empty.
+        assert!(
+            in_hashes > 0,
+            "the write filed nothing into `hashes`, so the live path is not what this refusal assumes \
+             -- re-take the refusal rather than trusting this test"
+        );
+        assert_eq!(
+            0, in_context_nodes,
+            "a context-node write filed into `context_nodes`, which the refusal says production never \
+             does. Either the write path moved back to this map, or the refusal is wrong. RE-TAKE it."
+        );
+    })
 }
 
 /// HOW MANY STRUCTURES HOLD AN ENTRY FOR ONE LIVE CONTROL-STATE OBJECT, NOW THAT ONE OF THEM IS
@@ -1658,23 +1661,24 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
     seed(&engine, 0, BASE);
 
     let weigh = |engine: &TemporalEngine| -> Vec<(&'static str, u64)> {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        vec![
-            ("control_state (the i64 series)", deep_heap_bytes(shard.control_state())),
-            ("control_state_blocks (THE RECORD)", deep_heap_bytes(shard.control_state_blocks())),
-            ("bucket_index.bucket_map", deep_heap_bytes(&shard.bucket_index.bucket_map)),
-            (
-                "bucket_index.object_block_lookup",
-                deep_heap_bytes(&shard.bucket_index.object_block_lookup),
-            ),
-            ("dirty_objects", deep_heap_bytes(&shard.dirty_objects)),
-            ("expires_at_ms", deep_heap_bytes(shard.expires_at_ms())),
-            ("expiry_by_deadline", deep_heap_bytes(&shard.expiry_by_deadline)),
-            ("strings", deep_heap_bytes(shard.strings())),
-            ("hashes", deep_heap_bytes(&shard.bucket_index.hashes)),
-            ("features", deep_heap_bytes(shard.features())),
-        ]
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            vec![
+                ("control_state (the i64 series)", deep_heap_bytes(shard.control_state())),
+                ("control_state_blocks (THE RECORD)", deep_heap_bytes(shard.control_state_blocks())),
+                ("bucket_index.bucket_map", deep_heap_bytes(&shard.bucket_index.bucket_map)),
+                (
+                    "bucket_index.object_block_lookup",
+                    deep_heap_bytes(&shard.bucket_index.object_block_lookup),
+                ),
+                ("dirty_objects", deep_heap_bytes(&shard.dirty_objects)),
+                ("expires_at_ms", deep_heap_bytes(shard.expires_at_ms())),
+                ("expiry_by_deadline", deep_heap_bytes(&shard.expiry_by_deadline)),
+                ("strings", deep_heap_bytes(shard.strings())),
+                ("hashes", deep_heap_bytes(&shard.bucket_index.hashes)),
+                ("features", deep_heap_bytes(shard.features())),
+            ]
+        })
     };
 
     let before = weigh(&engine);
@@ -1682,18 +1686,19 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
     let after = weigh(&engine);
 
     let (buckets, blocks, objects) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        (
-            shard.bucket_index.bucket_map.values().count(),
-            shard
-                .bucket_index
-                .bucket_map
-                .values()
-                .map(|bucket| bucket.block_index.len())
-                .sum::<usize>(),
-            shard.control_state_blocks().len(),
-        )
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            (
+                shard.bucket_index.bucket_map.values().count(),
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .values()
+                    .map(|bucket| bucket.block_index.len())
+                    .sum::<usize>(),
+                shard.control_state_blocks().len(),
+            )
+        })
     };
     assert_eq!(
         BASE + COHORT,

@@ -8,6 +8,25 @@
 use super::*;
 use std::sync::atomic::Ordering;
 
+/// The torn-write hook and the loop-interval override are process-wide, so two of these tests
+/// running together let one consume the other's injected fault. Every test here holds this.
+static SERIAL: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Held for a whole test. On drop it lifts the parked flusher again: the override is process-wide,
+/// and a flusher left parked starves every other test that appends without a barrier and reads
+/// the record back from disk.
+struct Serial(#[allow(dead_code)] std::sync::MutexGuard<'static, ()>);
+
+impl Drop for Serial {
+    fn drop(&mut self) {
+        LOOP_INTERVAL_MS_OVERRIDE.store(0, Ordering::SeqCst);
+    }
+}
+
+fn serial() -> Serial {
+    Serial(SERIAL.lock().unwrap_or_else(|poisoned| poisoned.into_inner()))
+}
+
 fn park_flusher() {
     LOOP_INTERVAL_MS_OVERRIDE.store(600_000, Ordering::SeqCst);
 }
@@ -38,6 +57,7 @@ fn keys(records: &[(u64, Command)]) -> Vec<String> {
 
 #[test]
 fn group_write_one_barrier_writes_every_buffered_record_in_one_call() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let store = LocalWriteAheadLogStore::new(dir.path());
     let mut last = 0;
@@ -62,6 +82,8 @@ fn group_write_one_barrier_writes_every_buffered_record_in_one_call() {
 
 #[test]
 fn group_write_a_record_that_was_never_acknowledged_is_not_on_disk() {
+    let _serial = serial();
+    park_flusher();
     let dir = tempfile::tempdir().unwrap();
     let store = LocalWriteAheadLogStore::new(dir.path());
     let acked = store.append_for_group_commit(1, set("acked", 64), vec![], vec![]).unwrap();
@@ -90,7 +112,7 @@ fn torn_batch_case(preallocate: bool, cut_in_record: bool) -> Option<Vec<String>
     }
     let one_record = before as i64; // the acked record has the same size as each batch record
     let cut = if cut_in_record { one_record + one_record / 2 } else { one_record };
-    TORN_BATCH_WRITE_BYTES.store(cut, Ordering::SeqCst);
+    set_torn_batch_write(cut);
     assert!(store.commit_barrier(1, last).is_err(), "a torn batch must not be acknowledged");
     // What a restart sees, read BEFORE anything else touches the store (any reader on the store
     // retries the buffered write).
@@ -119,6 +141,7 @@ fn torn_batch_case(preallocate: bool, cut_in_record: bool) -> Option<Vec<String>
 
 #[test]
 fn group_write_torn_batch_loses_no_acked_record_and_promotes_no_unacked_one() {
+    let _serial = serial();
     // Cut at a record boundary, in both layouts: the acked record, then only whole records of the
     // batch -- never a record that was not written.
     for preallocate in [false, true] {
@@ -134,6 +157,7 @@ fn group_write_torn_batch_loses_no_acked_record_and_promotes_no_unacked_one() {
 
 #[test]
 fn group_write_a_torn_frame_in_a_preallocated_reservation_is_never_replayed_as_a_record() {
+    let _serial = serial();
     // Preallocated layout, cut inside a record: the zeros of the reservation follow the partial
     // frame, so the scan can see a "complete" frame whose digest fails. Whether recovery refuses or
     // drops it is the existing tail logic's business; what this pins is that a torn record NEVER
@@ -145,6 +169,7 @@ fn group_write_a_torn_frame_in_a_preallocated_reservation_is_never_replayed_as_a
 
 #[test]
 fn group_write_a_failed_batch_is_retried_whole_and_never_duplicated() {
+    let _serial = serial();
     park_flusher();
     let dir = tempfile::tempdir().unwrap();
     let store = LocalWriteAheadLogStore::new(dir.path());
@@ -152,7 +177,7 @@ fn group_write_a_failed_batch_is_retried_whole_and_never_duplicated() {
     for name in ["r1", "r2", "r3"] {
         last = store.append_for_group_commit(1, set(name, 100), vec![], vec![]).unwrap().sequence;
     }
-    TORN_BATCH_WRITE_BYTES.store(150, Ordering::SeqCst);
+    set_torn_batch_write(150);
     assert!(store.commit_barrier(1, last).is_err());
     // The next barrier retries the same bytes over the same place: nothing was lost with the
     // failed write, and the torn bytes are overwritten rather than followed by a second copy.
@@ -164,25 +189,27 @@ fn group_write_a_failed_batch_is_retried_whole_and_never_duplicated() {
 
 #[test]
 fn group_write_a_failed_batch_does_not_let_a_later_writer_be_told_it_is_durable() {
+    let _serial = serial();
     park_flusher();
     let dir = tempfile::tempdir().unwrap();
     let store = LocalWriteAheadLogStore::new(dir.path());
     let first = store.append_for_group_commit(1, set("first", 100), vec![], vec![]).unwrap();
     let second = store.append_for_group_commit(1, set("second", 100), vec![], vec![]).unwrap();
-    TORN_BATCH_WRITE_BYTES.store(10, Ordering::SeqCst);
+    set_torn_batch_write(10);
     // The leader's write fails...
     assert!(store.commit_barrier(1, first.sequence).is_err());
     // ...and a follower whose record sat in that same batch must NOT find itself "covered".
-    TORN_BATCH_WRITE_BYTES.store(10, Ordering::SeqCst);
+    set_torn_batch_write(10);
     assert!(
         store.commit_barrier(1, second.sequence).is_err(),
         "a follower in a failed batch was acknowledged"
     );
-    TORN_BATCH_WRITE_BYTES.store(-1, Ordering::SeqCst);
+    set_torn_batch_write(-1);
 }
 
 #[test]
 fn group_write_readers_see_records_that_are_still_buffered() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let store = LocalWriteAheadLogStore::new(dir.path());
     for index in 0..5 {
@@ -202,6 +229,7 @@ fn group_write_readers_see_records_that_are_still_buffered() {
 
 #[test]
 fn group_write_concurrent_writers_share_writes_and_every_acked_record_is_durable() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     let store = LocalWriteAheadLogStore::new(dir.path());
     let threads = 8;
@@ -239,6 +267,7 @@ fn group_write_concurrent_writers_share_writes_and_every_acked_record_is_durable
 
 #[test]
 fn group_write_batches_that_cross_block_boundaries_and_rolls_read_back_whole() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     set_wal_segment_bytes_for_test(Some(256 * 1024));
     let store = LocalWriteAheadLogStore::new(dir.path());
@@ -269,6 +298,7 @@ fn group_write_batches_that_cross_block_boundaries_and_rolls_read_back_whole() {
 
 #[test]
 fn group_write_off_writes_once_per_record() {
+    let _serial = serial();
     let dir = tempfile::tempdir().unwrap();
     GROUP_WRITE_OVERRIDE.with(|v| v.set(Some(false)));
     let store = LocalWriteAheadLogStore::new(dir.path());
@@ -278,4 +308,88 @@ fn group_write_off_writes_once_per_record() {
     GROUP_WRITE_OVERRIDE.with(|v| v.set(None));
     assert_eq!(store.group_write_counts(), (0, 0), "the buffer must be bypassed when off");
     assert_eq!(read_back(dir.path()).len(), 4);
+}
+
+/// Hold this coordinator's adaptive window at `micros` for the test.
+fn adaptive_window_for_test(store: &LocalWriteAheadLogStore, micros: u64) {
+    store
+        .group_commit_coordinator(1)
+        .adaptive_delay_us_for_test
+        .store(micros, Ordering::SeqCst);
+}
+
+#[test]
+fn group_write_a_write_held_for_the_window_carries_the_records_that_arrive_meanwhile() {
+    let _serial = serial();
+    park_flusher();
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalWriteAheadLogStore::new(dir.path());
+    adaptive_window_for_test(&store, 400_000);
+    // Two records unflushed: a second writer is in sight, so the write is held for the window.
+    let first = store.append_for_group_commit(1, set("w0", 144), vec![], vec![]).unwrap();
+    store.append_for_group_commit(1, set("w1", 144), vec![], vec![]).unwrap();
+    let committer = {
+        let store = store.clone();
+        std::thread::spawn(move || store.commit_barrier(1, first.sequence).unwrap())
+    };
+    // Wait until the committer owns the write and is holding it.
+    let coordinator = store.group_commit_coordinator(1);
+    let started = std::time::Instant::now();
+    while !coordinator.state.lock().unwrap().inflight {
+        assert!(started.elapsed() < std::time::Duration::from_secs(5), "the write never started");
+        std::thread::yield_now();
+    }
+    // Two more records arrive while it is held. Without the window the write would already have
+    // gone out with the first two, and these would need a second write and a second sync.
+    store.append_for_group_commit(1, set("w2", 144), vec![], vec![]).unwrap();
+    let last = store.append_for_group_commit(1, set("w3", 144), vec![], vec![]).unwrap();
+    committer.join().unwrap();
+    assert_eq!(
+        store.group_write_counts(),
+        (1, 4),
+        "the held write must carry all four records in one write and one sync"
+    );
+    // The late writers are already covered: their barrier returns without a write of its own.
+    store.commit_barrier(1, last.sequence).unwrap();
+    assert_eq!(store.group_write_counts(), (1, 4));
+    assert_eq!(keys(&read_back(dir.path())), vec!["w0", "w1", "w2", "w3"]);
+}
+
+#[test]
+fn group_write_an_isolated_writer_is_not_held_for_the_window() {
+    let _serial = serial();
+    park_flusher();
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalWriteAheadLogStore::new(dir.path());
+    adaptive_window_for_test(&store, 5_000_000);
+    let only = store.append_for_group_commit(1, set("solo", 144), vec![], vec![]).unwrap();
+    let started = std::time::Instant::now();
+    store.commit_barrier(1, only.sequence).unwrap();
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "a lone commit waited out a five second window"
+    );
+    assert_eq!(store.group_write_counts(), (1, 1));
+}
+
+#[test]
+fn group_write_a_batch_opens_the_log_once_and_asks_its_length_once() {
+    let _serial = serial();
+    park_flusher();
+    let dir = tempfile::tempdir().unwrap();
+    let store = LocalWriteAheadLogStore::new(dir.path());
+    // Warm: the first append starts the piece and the lock file.
+    let warm = store.append_for_group_commit(1, set("warm", 144), vec![], vec![]).unwrap();
+    store.commit_barrier(1, warm.sequence).unwrap();
+    WAL_BARRIER_REOPENS.with(|opens| opens.set(0));
+    WAL_PATH_LEN_ASKS.with(|asks| asks.set(0));
+    let rec = store.append_for_group_commit(1, set("one", 144), vec![], vec![]).unwrap();
+    let asks_after_append = WAL_PATH_LEN_ASKS.with(|asks| asks.get());
+    store.commit_barrier(1, rec.sequence).unwrap();
+    let opens = WAL_BARRIER_REOPENS.with(|opens| opens.get());
+    assert_eq!(
+        asks_after_append, 0,
+        "a warm append asks no length at all: the lock is held for the store life and the record end is cached"
+    );
+    assert_eq!(opens, 0, "the barrier must sync the handle the write went through, not reopen the log");
 }

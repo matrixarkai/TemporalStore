@@ -31,7 +31,6 @@ struct RaftWalRecordRest {
     replica_role: RaftReplicaRole,
     joint_membership: Option<JointConsensusMembership>,
     latest_external_snapshot_ref: Option<RaftExternalSnapshotRef>,
-    installed_snapshot: Option<RaftSnapshot>,
     pipeline_state: RaftPeerPipelineRuntimeState,
     read_safety_state: RaftReadSafetyRuntimeState,
     membership_evidence: RaftMembershipRuntimeEvidence,
@@ -400,6 +399,147 @@ fn external_snapshot_ref_from_proto(message: v1::WalExternalSnapshotRef) -> Raft
     }
 }
 
+/// The one shape of an installed snapshot this build writes and reads. An absent field reads as 0,
+/// which is what a record carrying the retired text document decodes to, so it is refused.
+const INSTALLED_SNAPSHOT_FORMAT_VERSION: u32 = 1;
+
+/// An installed snapshot as its message. The image's bytes are copied once, here, and stay bytes.
+fn installed_snapshot_to_proto(snapshot: &RaftSnapshot) -> io::Result<v1::WalInstalledSnapshot> {
+    Ok(v1::WalInstalledSnapshot {
+        shard_id: snapshot.shard_id,
+        last_included_term: snapshot.last_included_term,
+        last_included_index: snapshot.last_included_index,
+        external_snapshot_ref: snapshot
+            .external_snapshot_ref
+            .as_ref()
+            .map(external_snapshot_ref_to_proto),
+        entries: snapshot
+            .entries
+            .iter()
+            .map(entry_to_proto)
+            .collect::<io::Result<Vec<_>>>()?,
+        state_image_externalized: snapshot.state_image_externalized,
+        format_version: INSTALLED_SNAPSHOT_FORMAT_VERSION,
+        state_image: snapshot.state_image.as_ref().map(|image| v1::WalStateImage {
+            index: image.index_bytes.clone(),
+            next_block_id: image.next_block_id,
+            slabs: image
+                .slabs
+                .iter()
+                .map(|slab| v1::WalStateImageSlab {
+                    block_slab_id: slab.block_slab_id,
+                    slab: slab.bytes.clone(),
+                    owner_shard_id: slab.owner_shard_id,
+                })
+                .collect(),
+            start_routing_bucket: image
+                .routing_range
+                .as_ref()
+                .map(|range| range.start_routing_bucket),
+            end_routing_bucket: image
+                .routing_range
+                .as_ref()
+                .map(|range| range.end_routing_bucket),
+        }),
+    })
+}
+
+/// An installed snapshot from its message, refusing any format but the current one.
+fn installed_snapshot_from_proto(snapshot: v1::WalInstalledSnapshot) -> io::Result<RaftSnapshot> {
+    if snapshot.format_version != INSTALLED_SNAPSHOT_FORMAT_VERSION {
+        return Err(io::Error::other(format!(
+            "installed snapshot is in format {}, this build reads format {}",
+            snapshot.format_version, INSTALLED_SNAPSHOT_FORMAT_VERSION
+        )));
+    }
+    let state_image = snapshot.state_image.map(|image| RaftSnapshotStateImage {
+        // Both ends or neither, as on the other decode: half a range is not a range.
+        routing_range: match (image.start_routing_bucket, image.end_routing_bucket) {
+            (Some(start_routing_bucket), Some(end_routing_bucket)) => {
+                Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
+                    start_routing_bucket,
+                    end_routing_bucket,
+                })
+            }
+            _ => None,
+        },
+        index_bytes: image.index,
+        next_block_id: image.next_block_id,
+        slabs: image
+            .slabs
+            .into_iter()
+            .map(|slab| RaftSnapshotStateImageSlab {
+                block_slab_id: slab.block_slab_id,
+                bytes: slab.slab,
+                owner_shard_id: slab.owner_shard_id,
+            })
+            .collect(),
+    });
+    Ok(RaftSnapshot {
+        shard_id: snapshot.shard_id,
+        last_included_term: snapshot.last_included_term,
+        last_included_index: snapshot.last_included_index,
+        external_snapshot_ref: snapshot
+            .external_snapshot_ref
+            .map(external_snapshot_ref_from_proto),
+        entries: snapshot
+            .entries
+            .into_iter()
+            .map(entry_from_proto)
+            .collect::<io::Result<Vec<_>>>()?,
+        state_image,
+        state_image_externalized: snapshot.state_image_externalized,
+    })
+}
+
+/// The container byte in front of a snapshot object: a protobuf message follows.
+///
+/// THE ONLY PLACE THAT DECIDES. An object that does not open with it -- the JSON the snapshot store
+/// used to hold, a torn upload, anything else -- is refused, never parsed as anything else.
+const SNAPSHOT_OBJECT_CONTAINER_PROTOBUF: u8 = 0x01;
+
+/// A snapshot as the object the snapshot store holds.
+pub fn encode_snapshot_object(snapshot: &RaftSnapshot) -> io::Result<Vec<u8>> {
+    let message = installed_snapshot_to_proto(snapshot)?;
+    let mut out = Vec::with_capacity(1 + message.encoded_len());
+    out.push(SNAPSHOT_OBJECT_CONTAINER_PROTOBUF);
+    message.encode(&mut out).map_err(io::Error::other)?;
+    Ok(out)
+}
+
+/// A snapshot from the object the snapshot store held.
+pub fn decode_snapshot_object(bytes: &[u8]) -> io::Result<RaftSnapshot> {
+    match bytes.split_first() {
+        Some((&SNAPSHOT_OBJECT_CONTAINER_PROTOBUF, body)) => installed_snapshot_from_proto(
+            v1::WalInstalledSnapshot::decode(body).map_err(io::Error::other)?,
+        ),
+        _ => Err(io::Error::other(
+            "a snapshot object does not open with the protobuf container byte",
+        )),
+    }
+}
+
+fn rpc_metadata_to_proto(rpc: &RaftRpcMetadata) -> v1::RaftRpcMetadata {
+    let RaftRpcMetadata {
+        auth_token,
+        deadline_ms,
+        request_id,
+    } = rpc;
+    v1::RaftRpcMetadata {
+        auth_token: auth_token.clone(),
+        deadline_ms: *deadline_ms,
+        request_id: request_id.clone(),
+    }
+}
+
+fn rpc_metadata_from_proto(message: v1::RaftRpcMetadata) -> RaftRpcMetadata {
+    RaftRpcMetadata {
+        auth_token: message.auth_token,
+        deadline_ms: message.deadline_ms,
+        request_id: message.request_id,
+    }
+}
+
 fn rest_to_proto(rest: &RaftWalRecordRest) -> v1::WalRecordRest {
     v1::WalRecordRest {
         replica_role: match rest.replica_role {
@@ -438,7 +578,6 @@ fn rest_from_proto(message: v1::WalRecordRest) -> io::Result<RaftWalRecordRest> 
         latest_external_snapshot_ref: message
             .latest_external_snapshot_ref
             .map(external_snapshot_ref_from_proto),
-        installed_snapshot: None,
         pipeline_state: message
             .pipeline_state
             .map(pipeline_state_from_proto)
@@ -562,6 +701,11 @@ pub(crate) fn command_encoding(command: &Command) -> io::Result<CommandEncoding<
             ttl_ms: *ttl_ms,
         },
         Command::HashSet { key, field, value } => CommandEncoding::HashSet { key, field, value },
+        // An explicitly present, empty SDK field is reserved for the Raft
+        // marker. No public SDK command can decode from an empty payload.
+        Command::LeaderEstablish => CommandEncoding::Owned(v1::WalCommand {
+            kind: Some(v1::wal_command::Kind::SdkCommand(Vec::new())),
+        }),
         other => CommandEncoding::Owned(v1::WalCommand {
             kind: Some(v1::wal_command::Kind::SdkCommand(
                 crate::shared_store::command_protobuf_bytes(other)?,
@@ -782,6 +926,7 @@ pub(crate) fn command_from_proto(kind: v1::wal_command::Kind) -> io::Result<Comm
             field: command.field,
             value: command.value,
         },
+        v1::wal_command::Kind::SdkCommand(bytes) if bytes.is_empty() => Command::LeaderEstablish,
         v1::wal_command::Kind::SdkCommand(bytes) => {
             crate::shared_store::command_from_protobuf_bytes(&bytes)?
         }
@@ -824,11 +969,19 @@ pub(super) const BINARY_RECORD_MAGIC: u8 = 0xA7;
 /// Encode one record as it should appear in a segment file: the magic, a little-endian length and
 /// the protobuf envelope. There is no other encoding of a record.
 pub(super) fn encode_record_line(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>> {
-    let payload = encode_envelope(envelope)?;
-    let mut out = Vec::with_capacity(payload.len() + 5);
+    let message = envelope_to_proto(envelope)?;
+    let payload_size = message.encoded_len();
+    let framed_len = payload_size
+        .checked_add(5)
+        .ok_or_else(|| io::Error::other("Raft WAL frame length overflow"))?;
+    let payload_len = u32::try_from(payload_size)
+        .map_err(|_| io::Error::other("Raft WAL payload exceeds the frame limit"))?;
+    let mut out = Vec::with_capacity(framed_len);
     out.push(BINARY_RECORD_MAGIC);
-    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&payload);
+    out.extend_from_slice(&payload_len.to_le_bytes());
+    message
+        .encode(&mut out)
+        .map_err(|error| io::Error::other(error.to_string()))?;
     Ok(out)
 }
 
@@ -878,10 +1031,7 @@ pub(super) fn encode_append_entries(
             .map(entry_to_proto)
             .collect::<io::Result<Vec<_>>>()?,
         leader_commit: request.leader_commit,
-        rpc: match &request.rpc {
-            Some(rpc) => serde_json::to_vec(rpc).map_err(io::Error::other)?,
-            None => Vec::new(),
-        },
+        rpc: request.rpc.as_ref().map(rpc_metadata_to_proto),
     };
     let mut out = Vec::with_capacity(message.encoded_len() + 1);
     out.push(BINARY_RECORD_MAGIC);
@@ -898,11 +1048,7 @@ pub(crate) fn is_binary_rpc(body: &[u8]) -> bool {
 pub(crate) fn decode_append_entries(body: &[u8]) -> io::Result<AppendEntriesRequest> {
     let message = v1::RaftAppendEntriesRequest::decode(&body[1..]).map_err(io::Error::other)?;
     Ok(AppendEntriesRequest {
-        rpc: if message.rpc.is_empty() {
-            None
-        } else {
-            serde_json::from_slice(&message.rpc).map_err(io::Error::other)?
-        },
+        rpc: message.rpc.map(rpc_metadata_from_proto),
         shard_id: message.shard_id,
         term: message.term,
         leader_id: message.leader_id,
@@ -918,45 +1064,19 @@ pub(crate) fn decode_append_entries(body: &[u8]) -> io::Result<AppendEntriesRequ
     })
 }
 
-/// Encode one envelope as a binary message.
-pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>> {
+fn envelope_to_proto(envelope: &RaftWalEnvelope) -> io::Result<v1::WalEnvelope> {
     let record = &envelope.record;
     // The snapshot gets first-class fields: its state image is slab and index BYTES, and in
     // the side blob those become text again -- re-inflating exactly what compaction bounds.
-    let installed_snapshot = match &record.installed_snapshot {
-        None => None,
-        Some(snapshot) => {
-            let mut sans_image = snapshot.clone();
-            let image = sans_image.state_image.take();
-            Some(v1::WalInstalledSnapshot {
-                snapshot_sans_image: serde_json::to_vec(&sans_image)
-                    .map_err(io::Error::other)?,
-                state_image: image.map(|image| v1::WalStateImage {
-                    index: image.index_bytes,
-                    next_block_id: image.next_block_id,
-                    slabs: image
-                        .slabs
-                        .into_iter()
-                        .map(|slab| v1::WalStateImageSlab {
-                            block_slab_id: slab.block_slab_id,
-                            slab: slab.bytes,
-                        })
-                        .collect(),
-                    start_routing_bucket: image
-                        .routing_range
-                        .map(|range| range.start_routing_bucket),
-                    end_routing_bucket: image
-                        .routing_range
-                        .map(|range| range.end_routing_bucket),
-                }),
-            })
-        }
-    };
+    let installed_snapshot = record
+        .installed_snapshot
+        .as_ref()
+        .map(installed_snapshot_to_proto)
+        .transpose()?;
     let rest = RaftWalRecordRest {
         replica_role: record.replica_role,
         joint_membership: record.joint_membership.clone(),
         latest_external_snapshot_ref: record.latest_external_snapshot_ref.clone(),
-        installed_snapshot: None,
         pipeline_state: record.pipeline_state.clone(),
         read_safety_state: record.read_safety_state.clone(),
         membership_evidence: record.membership_evidence.clone(),
@@ -972,7 +1092,7 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
         checksum_to_bytes(&record.storage_apply_fence.checksum);
     let (checksum, checksum_is_text) = checksum_to_bytes(&envelope.checksum);
 
-    let message = v1::WalEnvelope {
+    Ok(v1::WalEnvelope {
         sequence: envelope.sequence,
         checksum,
         checksum_is_text,
@@ -1016,8 +1136,12 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
             log_first_index: delta.log_first_index,
             log_last_index: delta.log_last_index,
         }),
-    };
-    Ok(message.encode_to_vec())
+    })
+}
+
+#[cfg(test)]
+fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>> {
+    Ok(envelope_to_proto(envelope)?.encode_to_vec())
 }
 
 /// Decode one binary message back into an envelope.
@@ -1035,37 +1159,10 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
         None => RaftWalRecordRest::default(),
     };
 
-    let installed_snapshot = match record.installed_snapshot {
-        Some(snapshot) => {
-            let mut decoded: RaftSnapshot =
-                serde_json::from_slice(&snapshot.snapshot_sans_image).map_err(io::Error::other)?;
-            decoded.state_image = snapshot.state_image.map(|image| RaftSnapshotStateImage {
-                // Both ends or neither, as on the other decode: half a range is not a range.
-                routing_range: match (image.start_routing_bucket, image.end_routing_bucket) {
-                    (Some(start_routing_bucket), Some(end_routing_bucket)) => {
-                        Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        })
-                    }
-                    _ => None,
-                },
-                index_bytes: image.index,
-                next_block_id: image.next_block_id,
-                slabs: image
-                    .slabs
-                    .into_iter()
-                    .map(|slab| RaftSnapshotStateImageSlab {
-                        block_slab_id: slab.block_slab_id,
-                        bytes: slab.slab,
-                    })
-                    .collect(),
-            });
-            Some(decoded)
-        }
-        // Records written before the native field carried the snapshot in the side blob.
-        None => rest.installed_snapshot,
-    };
+    let installed_snapshot = record
+        .installed_snapshot
+        .map(installed_snapshot_from_proto)
+        .transpose()?;
     Ok(RaftWalEnvelope {
         sequence: message.sequence,
         checksum: checksum_from_bytes(&message.checksum, message.checksum_is_text),
@@ -1126,14 +1223,13 @@ mod tests {
 
 /// THE RAFT WAL CARRIES EVERY COMMAND AS PROTOBUF.
 ///
-/// Three commands are modelled field by field. Every other one rides the `sdk_command` arm as its
-/// SDK protobuf encoding, through the same mapping the shared WAL publishes with, and a command that
-/// has no mapping is refused rather than written as JSON. No arm writes or reads JSON.
+/// The listed commands have native Raft representations. Other commands use the public
+/// protobuf mapping. Unmapped commands are refused.
 ///
-/// `command_encoding` is the only place that decides. The roster below states the three, and the
+/// `command_encoding` chooses the representation. The roster lists the native forms, and the
 /// test checks it from both ends: the source text that defines the arms, and the real encoder driven
 /// with real commands.
-const COMMANDS_THE_RAFT_WAL_MODELS: &[&str] = &["HashSet", "StringSet", "StringSetEx"];
+const COMMANDS_THE_RAFT_WAL_MODELS: &[&str] = &["HashSet", "LeaderEstablish", "StringSet", "StringSetEx"];
 
 #[test]
 fn every_command_the_raft_wal_carries_is_protobuf() {
@@ -1337,6 +1433,50 @@ fn every_command_the_raft_wal_carries_is_protobuf() {
         });
     }
 
+    #[test]
+    fn wal_frame_matches_the_envelope_encoding_for_tensor_sized_values() {
+        let mut value = vec![0; 9 * 1024 * 1024];
+        value[1] = 255;
+        value[9 * 1024 * 1024 - 1] = 128;
+        let envelope = envelope_with(Command::StringSet { key: "kv".into(), value });
+        let expected = encode_envelope(&envelope).unwrap();
+        let framed = encode_record_line(&envelope).unwrap();
+
+        assert_eq!(framed[0], BINARY_RECORD_MAGIC);
+        assert_eq!(
+            u32::from_le_bytes(framed[1..5].try_into().unwrap()) as usize,
+            expected.len(),
+        );
+        assert_eq!(&framed[5..], expected.as_slice());
+        assert_eq!(next_envelope(&framed), Some((framed.len(), envelope)));
+    }
+
+    #[test]
+    fn election_marker_survives_the_local_wal_and_peer_replication() {
+        let envelope = envelope_with(Command::LeaderEstablish);
+        let framed = encode_record_line(&envelope).unwrap();
+        let (consumed, decoded) = next_envelope(&framed).unwrap();
+        assert_eq!(consumed, framed.len());
+        assert_eq!(decoded, envelope);
+
+        let request = AppendEntriesRequest {
+            rpc: None,
+            shard_id: 1,
+            term: 3,
+            leader_id: 1,
+            target_id: 2,
+            prev_log_index: 41,
+            prev_log_term: 3,
+            entries: envelope.record.entries,
+            leader_commit: 42,
+        };
+        let encoded = encode_append_entries(&request).unwrap();
+        assert_eq!(decode_append_entries(&encoded).unwrap(), request);
+
+        // The marker has no public command representation.
+        assert!(crate::shared_store::command_protobuf_bytes(&Command::LeaderEstablish).is_err());
+    }
+
     /// A zero-TTL `StringSetEx` means "expires now", and nothing the log can carry says so: the
     /// modelled form and the SDK encoding both tell the two string writes apart by a non-zero TTL,
     /// so it would come back as a plain `StringSet` and quietly lose its expiry. It is refused.
@@ -1370,7 +1510,6 @@ fn every_command_the_raft_wal_carries_is_protobuf() {
             checksum: "v2".to_string(),
             byte_size: 103,
         }),
-            installed_snapshot: None,
             pipeline_state: RaftPeerPipelineRuntimeState {
             match_index: 101,
             next_index: 102,
@@ -1648,5 +1787,226 @@ fn every_command_the_raft_wal_carries_is_protobuf() {
         })
         .unwrap();
         assert!(!is_binary_rpc(&json));
+    }
+
+    /// The tracing metadata a caller attached arrives with the batch, field by field.
+    ///
+    /// `Some("")` and `Some(0)` are in the set on purpose: an `optional` field that is present and
+    /// empty is a different message from one that is absent, and a codec that drops the difference
+    /// would pass every case that uses a plain value.
+    #[test]
+    fn a_replicated_batch_carries_its_rpc_metadata() {
+        let batch = |rpc| AppendEntriesRequest {
+            rpc,
+            shard_id: 1,
+            term: 3,
+            leader_id: 1,
+            target_id: 2,
+            prev_log_index: 41,
+            prev_log_term: 3,
+            entries: Vec::new(),
+            leader_commit: 41,
+        };
+        let cases = vec![
+            None,
+            Some(RaftRpcMetadata {
+                auth_token: Some("token".into()),
+                deadline_ms: Some(1_700_000_000_123),
+                request_id: "req-1".into(),
+            }),
+            Some(RaftRpcMetadata { auth_token: None, deadline_ms: None, request_id: "req-2".into() }),
+            Some(RaftRpcMetadata {
+                auth_token: Some(String::new()),
+                deadline_ms: Some(0),
+                request_id: String::new(),
+            }),
+        ];
+        assert_eq!(cases.len(), 4, "four cases, or the loop below asserts nothing");
+        for rpc in cases {
+            let request = batch(rpc);
+            let encoded = encode_append_entries(&request).expect("encode");
+            assert_eq!(decode_append_entries(&encoded).expect("decode"), request);
+        }
+    }
+
+    fn a_snapshot_with_every_field_set() -> RaftSnapshot {
+        RaftSnapshot {
+            shard_id: 9,
+            last_included_term: 5,
+            last_included_index: 77,
+            external_snapshot_ref: Some(RaftExternalSnapshotRef {
+                uri: "s3://bucket/key".into(),
+                checksum: "abc123".into(),
+                byte_size: 4096,
+            }),
+            entries: vec![RaftLogEntry {
+                leader_time_ms: 11,
+                term: 5,
+                index: 76,
+                shard_id: 9,
+                command: Command::StringSet { key: "a".into(), value: vec![1, 2, 3] },
+            }],
+            state_image: Some(RaftSnapshotStateImage {
+                index_bytes: vec![7; 5],
+                next_block_id: 8,
+                slabs: vec![RaftSnapshotStateImageSlab {
+                    block_slab_id: 3, bytes: vec![9; 4], owner_shard_id: Some(0),
+                }],
+                routing_range: Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
+                    start_routing_bucket: 10,
+                    end_routing_bucket: 20,
+                }),
+            }),
+            state_image_externalized: true,
+        }
+    }
+
+    /// An installed snapshot comes back as written, every field of it, with and without an image.
+    #[test]
+    fn an_installed_snapshot_keeps_every_field() {
+        let full = a_snapshot_with_every_field_set();
+        let classic = RaftSnapshot {
+            external_snapshot_ref: None,
+            state_image: None,
+            state_image_externalized: false,
+            ..a_snapshot_with_every_field_set()
+        };
+        assert_ne!(full, classic, "the two snapshots must differ, or this proves nothing");
+        for snapshot in [full, classic] {
+            let mut envelope = envelope_with(Command::StringDelete { key: "k".into() });
+            envelope.record.installed_snapshot = Some(snapshot);
+            let encoded = encode_envelope(&envelope).expect("encode");
+            assert_eq!(decode_envelope(&encoded).expect("decode"), envelope);
+        }
+    }
+
+    /// A record that does not carry the current format is refused by name, never read as a
+    /// snapshot of shard 0 at index 0. The retired text document sat in tag 1, which a reader
+    /// skips, so without the version a record written that way would decode as a plausible empty
+    /// snapshot.
+    #[test]
+    fn an_installed_snapshot_without_the_current_format_is_refused() {
+        let mut envelope = envelope_with(Command::StringDelete { key: "k".into() });
+        envelope.record.installed_snapshot = Some(a_snapshot_with_every_field_set());
+        let encoded = encode_envelope(&envelope).expect("encode");
+        // THE CONTROL: the untouched bytes decode, so a refusal below is the version's doing.
+        assert!(decode_envelope(&encoded).is_ok());
+        for version in [0u32, 2] {
+            let mut message = v1::WalEnvelope::decode(encoded.as_slice()).expect("a valid envelope");
+            message
+                .record
+                .as_mut()
+                .and_then(|record| record.installed_snapshot.as_mut())
+                .expect("the snapshot is there")
+                .format_version = version;
+            let error = decode_envelope(&message.encode_to_vec())
+                .expect_err("a snapshot in another format must be refused");
+            assert!(
+                error.to_string().contains("installed snapshot is in format"),
+                "refused for the wrong reason: {error}"
+            );
+        }
+    }
+
+    /// NO JSON IN THE RAFT WAL RECORD CODEC, END TO END.
+    ///
+    /// The command codec has its own scan; this one covers everything else in the file that is not
+    /// a test: the envelope, the installed snapshot, the replicated batch and its metadata. Source
+    /// text, so the denominators come first -- a scan that read nothing would pass.
+    #[test]
+    fn the_raft_wal_record_codec_has_no_json() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(root.join("src/raft/wal_proto.rs"))
+            .expect("this guard reads src/raft/wal_proto.rs");
+        let production = text
+            .split("\n#[cfg(test)]\nmod tests {")
+            .next()
+            .expect("the file has a production half");
+        assert!(production.len() > 20_000, "the scan found almost nothing");
+        for name in [
+            "fn envelope_to_proto",
+            "fn encode_record_line",
+            "fn decode_envelope",
+            "fn encode_append_entries",
+            "fn decode_append_entries",
+        ] {
+            assert!(production.contains(name), "{name} is no longer in the production half");
+        }
+        let uncommented = |text: &str| -> String {
+            text.lines()
+                .filter(|line| !line.trim_start().starts_with("//"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        assert!(
+            !uncommented(production).contains("serde_json"),
+            "the Raft WAL record codec reaches for serde_json"
+        );
+        // THE SNAPSHOT OBJECT: the module that publishes and installs it holds no JSON either.
+        let snapshots = std::fs::read_to_string(root.join("src/raft/cluster_snapshot.rs"))
+            .expect("this guard reads src/raft/cluster_snapshot.rs");
+        assert!(snapshots.len() > 20_000, "the scan of cluster_snapshot.rs found almost nothing");
+        assert!(
+            snapshots.contains("encode_snapshot_object") && snapshots.contains("decode_snapshot_object"),
+            "cluster_snapshot.rs no longer goes through the snapshot object codec"
+        );
+        assert!(
+            !uncommented(&snapshots).contains("serde_json"),
+            "the cluster snapshot module reaches for serde_json"
+        );
+        // THE CONTROL: the same scan over text that does call it must see it.
+        assert!(
+            uncommented("fn a() { serde_json::to_vec(&x) }").contains("serde_json"),
+            "the control no longer sees serde_json, so this scan could pass over a JSON arm"
+        );
+    }
+
+    /// The object the snapshot store holds comes back as written, and nothing else is read.
+    ///
+    /// Every cut of the encoding is refused: a torn upload is never a smaller snapshot. The JSON
+    /// this object used to be is refused, and so is a version that is not the current one.
+    #[test]
+    fn a_snapshot_object_round_trips_and_refuses_anything_else() {
+        let full = a_snapshot_with_every_field_set();
+        let bytes = encode_snapshot_object(&full).expect("encode");
+        assert_eq!(bytes[0], SNAPSHOT_OBJECT_CONTAINER_PROTOBUF);
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).is_err(),
+            "the binary shape must not parse as JSON, or the container byte proves nothing"
+        );
+        assert_eq!(decode_snapshot_object(&bytes).expect("decode"), full);
+
+        // THE RETIRED SHAPE: the same snapshot as the JSON it used to be.
+        let json = serde_json::to_vec(&full).expect("json");
+        assert_eq!(json[0], b'{', "the control must really be a JSON document");
+        assert!(decode_snapshot_object(&json).is_err());
+        assert!(decode_snapshot_object(&[]).is_err());
+
+        // EVERY CUT, on the small snapshot so the loop is cheap and the cuts are many.
+        let small = RaftSnapshot {
+            state_image: None,
+            external_snapshot_ref: None,
+            state_image_externalized: false,
+            ..a_snapshot_with_every_field_set()
+        };
+        let small_bytes = encode_snapshot_object(&small).expect("encode");
+        assert!(small_bytes.len() > 20, "too few cuts for the loop to mean anything");
+        assert_eq!(decode_snapshot_object(&small_bytes).expect("decode"), small);
+        for cut in 0..small_bytes.len() {
+            assert!(
+                decode_snapshot_object(&small_bytes[..cut]).is_err(),
+                "a snapshot object cut at {cut} of {} bytes was read",
+                small_bytes.len()
+            );
+        }
+
+        // ANOTHER VERSION, with a valid body.
+        let mut message = v1::WalInstalledSnapshot::decode(&bytes[1..]).expect("a valid message");
+        for version in [0u32, 2] {
+            message.format_version = version;
+            let mut other = vec![SNAPSHOT_OBJECT_CONTAINER_PROTOBUF];
+            message.encode(&mut other).expect("encode");
+            assert!(decode_snapshot_object(&other).is_err(), "format {version} was read");
+        }
     }
 }

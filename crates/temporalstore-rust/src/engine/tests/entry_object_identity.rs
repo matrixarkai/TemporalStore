@@ -161,30 +161,31 @@ fn seed_routed_strings(engine: &TemporalEngine) {
 /// Every live block in shard 1, as the ids filed under each object key. The denominator for every
 /// row below.
 fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    // THE KEY A BLOCK IS FILED UNDER COMES FROM THE LOOKUP BESIDE IT. It is both the grouping
-    // key below and the argument the id is derived from, so there is exactly one source for it
-    // here where there used to be one source read twice off the block.
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    let mut by_key: BTreeMap<String, Vec<u64>> = BTreeMap::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.deleted() {
-                continue;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        // THE KEY A BLOCK IS FILED UNDER COMES FROM THE LOOKUP BESIDE IT. It is both the grouping
+        // key below and the argument the id is derived from, so there is exactly one source for it
+        // here where there used to be one source read twice off the block.
+        let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+        let mut by_key: BTreeMap<String, Vec<u64>> = BTreeMap::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.deleted() {
+                    continue;
+                }
+                let Some((_, named)) = keys.live_identity(bucket.routing_bucket, *handle) else {
+                    panic!(
+                        "a live block at handle {handle} is named by nothing beside it, so this                      denominator would be short by one"
+                    )
+                };
+                by_key
+                    .entry(named.to_string())
+                    .or_default()
+                    .push(block.object_id(1, named));
             }
-            let Some((_, named)) = keys.live_identity(bucket.routing_bucket, *handle) else {
-                panic!(
-                    "a live block at handle {handle} is named by nothing beside it, so this                      denominator would be short by one"
-                )
-            };
-            by_key
-                .entry(named.to_string())
-                .or_default()
-                .push(block.object_id(1, named));
         }
-    }
-    by_key
+        by_key
+    })
 }
 
 /// A free-standing entry at a FIXED address, whose object id is the one the engine would compute
@@ -474,7 +475,7 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
     let other_handle = crate::engine::state::block_index_handle(&other_object_key, &other);
     assert_ne!(
         handle, other_handle,
-        "two pages differing only in their object key hash to one handle {handle}. \
+        "two blocks differing only in their object key hash to one handle {handle}. \
          `block_index_handle`'s contract is to hash exactly the fields `block_index_written_key` \
          renders, and those handles are written to disk inside the lookup's refs"
     );
@@ -503,96 +504,97 @@ fn the_whole_object_read_path_asks_for_every_element_name_of_one_key() {
     load_operator_shard(&engine);
     seed_hash_containers(&engine);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
 
-    println!(
-        "\n=== bucket_index_element_name_block_addresses over {CONTAINER_KEYS} container keys ==="
-    );
-    let mut answered = 0usize;
-    for k in 0..CONTAINER_KEYS {
-        let object_key = format!("h{k}");
-        let pairs = crate::engine::bucket_store::bucket_index_element_name_block_addresses(
-            shard,
-            FIXTURE_KIND.as_str(),
-            &object_key,
-        );
-        // WHAT SEPARATES THE ELEMENTS OF THE ANSWER IS THE ADDRESS NOW, NOT A NAME.
-        //
-        // This collected the pairs' ELEMENT NAMES and asserted there were `MEMBERS_PER_KEY` distinct
-        // ones -- "the ELEMENT NAME is what separates the elements; if these collapsed too, the reader
-        // would have no way to tell one element of the answer from another". The pair's first slot
-        // is dead on both of `bucket_index_element_name_block_addresses`'s arms, so that set is now a
-        // single `None` for every key and the assertion could never pass again.
-        //
-        // THE CLAIM IS NOT ABANDONED, IT MOVED TO THE TERM THAT STILL CARRIES IT. The reader is
-        // handed a KEY and answers a block per element; what distinguishes those blocks is the
-        // ADDRESS each one is at, and that is counted here instead. It is a claim this can still
-        // get wrong -- a filing that collapsed two elements onto one block, or a reader that
-        // returned the same address twice, drops this count below the member count -- which is
-        // exactly the failure the element name set was watching for, observed through the term that
-        // still exists.
-        let separators: BTreeSet<String> = pairs
-            .iter()
-            .map(|(_, address)| format!("{address:?}"))
-            .collect();
-        // THE IDS THESE PAIRS RESOLVE TO. One per KEY now, not one per block -- which is why
-        // the loop below counts them rather than the element names: the element name set is what the
-        // reader actually answers with, and the id set is what an id-keyed reader would have.
-        let ids: BTreeSet<u64> = pairs
-            .iter()
-            .map(|_| stable_block_object_id(1, FIXTURE_KIND.as_str(), &object_key))
-            .collect();
         println!(
-            "  {object_key:<6} pairs={:<4} distinct addresses={:<4} distinct ids={:<4}",
-            pairs.len(),
-            separators.len(),
-            ids.len()
+            "\n=== bucket_index_element_name_block_addresses over {CONTAINER_KEYS} container keys ==="
         );
-        assert_eq!(
-            MEMBERS_PER_KEY,
-            pairs.len(),
-            "{object_key} answered with {} pairs, not the {MEMBERS_PER_KEY} element names the seed \
+        let mut answered = 0usize;
+        for k in 0..CONTAINER_KEYS {
+            let object_key = format!("h{k}");
+            let pairs = crate::engine::bucket_store::bucket_index_element_name_block_addresses(
+                shard,
+                FIXTURE_KIND.as_str(),
+                &object_key,
+            );
+            // WHAT SEPARATES THE ELEMENTS OF THE ANSWER IS THE ADDRESS NOW, NOT A NAME.
+            //
+            // This collected the pairs' ELEMENT NAMES and asserted there were `MEMBERS_PER_KEY` distinct
+            // ones -- "the ELEMENT NAME is what separates the elements; if these collapsed too, the reader
+            // would have no way to tell one element of the answer from another". The pair's first slot
+            // is dead on both of `bucket_index_element_name_block_addresses`'s arms, so that set is now a
+            // single `None` for every key and the assertion could never pass again.
+            //
+            // THE CLAIM IS NOT ABANDONED, IT MOVED TO THE TERM THAT STILL CARRIES IT. The reader is
+            // handed a KEY and answers a block per element; what distinguishes those blocks is the
+            // ADDRESS each one is at, and that is counted here instead. It is a claim this can still
+            // get wrong -- a filing that collapsed two elements onto one block, or a reader that
+            // returned the same address twice, drops this count below the member count -- which is
+            // exactly the failure the element name set was watching for, observed through the term that
+            // still exists.
+            let separators: BTreeSet<String> = pairs
+                .iter()
+                .map(|(_, address)| format!("{address:?}"))
+                .collect();
+            // THE IDS THESE PAIRS RESOLVE TO. One per KEY now, not one per block -- which is why
+            // the loop below counts them rather than the element names: the element name set is what the
+            // reader actually answers with, and the id set is what an id-keyed reader would have.
+            let ids: BTreeSet<u64> = pairs
+                .iter()
+                .map(|_| stable_block_object_id(1, FIXTURE_KIND.as_str(), &object_key))
+                .collect();
+            println!(
+                "  {object_key:<6} pairs={:<4} distinct addresses={:<4} distinct ids={:<4}",
+                pairs.len(),
+                separators.len(),
+                ids.len()
+            );
+            assert_eq!(
+                MEMBERS_PER_KEY,
+                pairs.len(),
+                "{object_key} answered with {} pairs, not the {MEMBERS_PER_KEY} element names the seed \
              wrote. An empty or short answer here reads exactly like a reader that resolved",
-            pairs.len()
-        );
-        // AND THE REASON THIS READER CANNOT BE HANDED AN ID, RESTATED THE OTHER WAY UP.
-        //
-        // It used to be that the id set was as LARGE as the answer and computable only from it.
-        // Since the element name left the identity the id set has collapsed to ONE, and the point
-        // stands more strongly: a single number cannot name which of {MEMBERS_PER_KEY} elements
-        // is wanted, so the reader still has to be given the key and answer with element names.
-        assert_eq!(
-            1,
-            ids.len(),
-            "{object_key}'s {} blocks resolve to {} distinct ids, not 1. Every block of one key is \
+                pairs.len()
+            );
+            // AND THE REASON THIS READER CANNOT BE HANDED AN ID, RESTATED THE OTHER WAY UP.
+            //
+            // It used to be that the id set was as LARGE as the answer and computable only from it.
+            // Since the element name left the identity the id set has collapsed to ONE, and the point
+            // stands more strongly: a single number cannot name which of {MEMBERS_PER_KEY} elements
+            // is wanted, so the reader still has to be given the key and answer with element names.
+            assert_eq!(
+                1,
+                ids.len(),
+                "{object_key}'s {} blocks resolve to {} distinct ids, not 1. Every block of one key is \
              an element of one object now",
-            pairs.len(),
-            ids.len()
-        );
-        assert_eq!(
-            MEMBERS_PER_KEY,
-            separators.len(),
-            "{object_key} answered {} distinct ADDRESSES for {} blocks. The address is what \
+                pairs.len(),
+                ids.len()
+            );
+            assert_eq!(
+                MEMBERS_PER_KEY,
+                separators.len(),
+                "{object_key} answered {} distinct ADDRESSES for {} blocks. The address is what \
              separates the elements of this answer now -- if these collapsed, the reader would \
              have no way to tell one element of the answer from another",
-            separators.len(),
-            pairs.len()
-        );
-        assert!(
-            separators.len() > ids.len(),
-            "{object_key}: {} addresses against {} ids. The whole reason this reader takes the KEY \
+                separators.len(),
+                pairs.len()
+            );
+            assert!(
+                separators.len() > ids.len(),
+                "{object_key}: {} addresses against {} ids. The whole reason this reader takes the KEY \
              and not an id is that the id is coarser than the answer",
-            separators.len(),
-            ids.len()
-        );
-        answered += 1;
-    }
-    assert_eq!(
-        CONTAINER_KEYS, answered,
-        "{answered} of {CONTAINER_KEYS} keys were driven through the read path; a loop that \
+                separators.len(),
+                ids.len()
+            );
+            answered += 1;
+        }
+        assert_eq!(
+            CONTAINER_KEYS, answered,
+            "{answered} of {CONTAINER_KEYS} keys were driven through the read path; a loop that \
          examined fewer proves less than it says"
-    );
+        );
+    });
 }
 
 // =================================================================================================

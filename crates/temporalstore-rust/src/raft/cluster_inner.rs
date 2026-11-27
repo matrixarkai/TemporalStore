@@ -237,7 +237,10 @@ impl RaftClusterInner {
                 .max(snapshot_floor.min(leader_commit_index));
             if let Some(snapshot) = leader_snapshot.clone() {
                 if node_last_log_or_snapshot_index(node) < snapshot.last_included_index {
-                    install_snapshot_state_for_role(node, snapshot);
+                    if let Err(error) = install_snapshot_state_for_role(node, snapshot) {
+                        tracing::error!(%error, "snapshot catch-up refused");
+                        continue;
+                    }
                 }
             }
             node.log = leader_log
@@ -750,6 +753,32 @@ impl RaftClusterInner {
         // an RPC, and re-learns the rest from AppendEntries on restart. Persist only our own
         // record. Unset -- the in-process test cluster -- keeps persisting every node.
         let local_only = self.local_node_id;
+        // A persist that finds nothing changed is the common one (a heartbeat, a read-index, a
+        // catch-up bookkeeping write). Decide that from the record WITHOUT its log and the log's
+        // length and ends, so it costs the same at any log length: building the whole record
+        // first copied every entry just to hash three numbers of them.
+        if coalesce {
+            if let (Some(local), Some(node)) =
+                (local_only, local_only.and_then(|id| self.nodes.get(&id)))
+            {
+                // A node holding an installed snapshot takes the ordinary path below: the record
+                // without its log still carries that image, and copying it here would be one more
+                // copy of the image per persist.
+                if node.installed_snapshot.is_none() {
+                if let Some((_, bare)) = self.wal_record_for_with(local, false) {
+                    let fingerprint = raft_durable_fingerprint_of(
+                        &bare,
+                        node.log.len(),
+                        node.log.first().map(|entry| (entry.index, entry.term)),
+                        node.log.last().map(|entry| (entry.index, entry.term)),
+                    );
+                    if self.last_durable_fingerprint.get(&local) == Some(&fingerprint) {
+                        return Ok(Vec::new());
+                    }
+                }
+                }
+            }
+        }
         // Build ONLY the record we are going to persist. Building every node's record and then
         // skipping all but one clones the whole log once per node and discards the rest, which
         // is O(log length) of pure waste on every persist.
@@ -853,6 +882,16 @@ impl RaftClusterInner {
         &self,
         node_id: RaftNodeId,
     ) -> Option<(RaftNodeId, RaftWalRecord)> {
+        self.wal_record_for_with(node_id, true)
+    }
+
+    /// The record of one node, with or without its log. Without it the record is a few hundred
+    /// bytes whatever the log holds.
+    fn wal_record_for_with(
+        &self,
+        node_id: RaftNodeId,
+        with_entries: bool,
+    ) -> Option<(RaftNodeId, RaftWalRecord)> {
         let membership = RaftMembership {
             shard_id: self.shard_id,
             voters: self.voting_node_ids(),
@@ -879,7 +918,7 @@ impl RaftClusterInner {
                         pipeline_state: node.pipeline_state.clone(),
                         read_safety_state: self.read_safety_state.clone(),
                         membership_evidence: self.membership_evidence.clone(),
-                        entries: node.log.clone(),
+                        entries: if with_entries { node.log.clone() } else { Vec::new() },
                     },
                 )
             })

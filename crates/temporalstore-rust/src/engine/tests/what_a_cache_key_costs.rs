@@ -198,7 +198,7 @@ fn what_a_cache_key_costs() {
     // ---- still fails if the representation is ever made compact, which is the point.
     assert!(
         block_total >= 3 * BLOCK_INFORMATION_BYTES,
-        "a page cache key now costs {block_total} B against {BLOCK_INFORMATION_BYTES} B of \
+        "a block cache key now costs {block_total} B against {BLOCK_INFORMATION_BYTES} B of \
          integers, under 3x. If the five numbers are carried AS numbers now then this arm has \
          served its purpose and should be deleted; check `size_of::<CacheKey>()` first, because a \
          smaller struct holding the same two text fields means the layout moved and not the \

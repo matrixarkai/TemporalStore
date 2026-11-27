@@ -3109,10 +3109,21 @@ pub struct CatalogDumpReclaimReport {
     /// dropped with `.ok()` and each field then read through `unwrap_or_default()`.
     #[serde(default)]
     pub index_log_sweep_failed: bool,
+    /// Records removed from the active WAL file; sealed-segment retirement is counted below.
     pub wal_records_removed: usize,
+    /// Active WAL file sizes, excluding the sealed segments counted separately below.
     pub wal_bytes_before: u64,
     pub wal_bytes_after: u64,
-    /// The write-ahead-log sweep returned an error and the three fields above are defaults.
+    /// Whole WAL segments retired without rewriting their records.
+    #[serde(default)]
+    pub wal_segments_dropped: usize,
+    #[serde(default)]
+    pub wal_segment_bytes_dropped: u64,
+    #[serde(default)]
+    pub wal_bytes_copied: u64,
+    #[serde(default)]
+    pub wal_rewrite_skipped: bool,
+    /// The write-ahead-log sweep returned an error and its fields are defaults.
     ///
     /// This is the field that makes the difference sayable. An errored sweep and an empty one
     /// both report `(0, 0, 0)`, so a zero release could mean the log had nothing to give, or
@@ -3365,12 +3376,14 @@ pub struct StorageManagerCycleRequest {
     pub dry_run: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_prepare: bool,
+    /// Publish dirty-slot dumps. Physical log retirement is controlled by `enable_block_reclaim`.
     #[serde(rename = "enable_wal_reclaim", default = "default_storage_manager_stage_enabled")]
     pub enable_wal_reclaim: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_evict: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_expire: bool,
+    /// Collect page-store garbage and published log prefixes, subject to retention fences.
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_block_reclaim: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
@@ -3398,27 +3411,13 @@ pub struct StorageManagerCycleRequest {
     pub warm_cache: bool,
     #[serde(default = "default_storage_manager_eviction_threshold")]
     pub eviction_memory_pressure_threshold: u64,
-    /// Buckets evicted per round. **Zero means no limit**, as it does on every other bound in
-    /// this request -- not "evict nothing", which is what the sampled selection used to read it
-    /// as while the exhaustive selection read it as "evict everything".
+    /// Buckets evicted per round. Zero selects no victims and performs no eviction work.
     #[serde(default = "default_eviction_batch_limit")]
     pub eviction_batch_limit: usize,
     #[serde(default)]
     pub eviction_dump_before_evict: bool,
-    /// Dump and release a shard's resident block lists once THAT SHARD'S OWN index passes this
-    /// many bytes. **Zero means no bound**, as it does on every other bound here.
-    ///
-    /// GATED ON ITSELF, NOT ON `enable_evict`, and that is still the point of it even now that
-    /// `enable_evict` defaults on. The stage flag carries a threshold, and the shipped threshold is
-    /// 0 -- "evicts whenever it runs" -- so a trigger that inherited the flag's state would have
-    /// inherited an always-open gate. This bound reads `bucket_index_resident_bytes` and nothing
-    /// else: per-shard, and the only term a release can reduce. On the periodic loop the higher of
-    /// the two bars wins, which is how a non-zero value here closes the gate the flag opens.
-    ///
-    /// Measured at 40,040 keys on the shipped routing range: the per-key index falls from 223.2 to
-    /// 26.6 B/key and the whole resident index from 326.3 to 130.6 B/key, with every read still
-    /// answering. The shard's own index figure was 1,430,016 B there, so a bound below that fires;
-    /// a deployment sizing this picks the resident index it is willing to hold per shard.
+    /// Resident bucket-index limit in bytes. Zero disables this limit.
+    /// Requires `enable_evict`; the lower nonzero memory limit controls the stage.
     #[serde(default = "default_index_resident_limit_bytes")]
     pub index_resident_limit_bytes: u64,
     // `eviction_delete_drop` WAS HERE AND IS RETIRED. A stored request that still carries it parses
@@ -3540,16 +3539,16 @@ pub const DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND: usize = 5;
 /// Buckets evicted per round once the cache is over its memory pressure threshold.
 pub const DEFAULT_EVICTION_BATCH_LIMIT: usize = 10;
 
-/// The per-shard resident-index bound `StorageManagerCycleRequest` ships, named rather than
-/// written twice.
-///
-/// It was a literal here and the periodic loop had no field for it at all, so the two pipelines
-/// could not be compared on it. Measured on the shipped `0..1023` routing range, the resident index
-/// runs about 39.4 B a key (`data_node::tests::evict_live::\
-/// what_a_default_eviction_threshold_has_to_clear`), so this bound is reached at roughly 1.7 M keys
-/// in one shard. That is the scale it is a bound at -- stated here because a byte figure on its own
-/// says nothing about when it fires.
-pub const DEFAULT_INDEX_RESIDENT_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
+/// No implicit resident-index limit. A configured nonzero limit enables pressure checks.
+pub const DEFAULT_INDEX_RESIDENT_LIMIT_BYTES: u64 = 0;
+
+pub(crate) fn configured_eviction_memory_limit(pressure_limit: u64, index_limit: u64) -> Option<u64> {
+    match (pressure_limit, index_limit) {
+        (0, 0) => None,
+        (0, limit) | (limit, 0) => Some(limit),
+        (left, right) => Some(left.min(right)),
+    }
+}
 /// Garbage share a slab must carry before GC will reclaim it, in basis points.
 ///
 /// Expected to be INERT today, and set anyway so the policy is stated rather than implied: our
@@ -3581,6 +3580,8 @@ pub const DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS: u64 = 5_000;
 /// this stage -- the reason to have it is that `0` admitted an unbounded round at all, and the two
 /// `skipped_by_budget_*` figures the stage reports could never be anything but 0 while it did.
 pub const DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND: usize = 500;
+/// Candidate slabs one periodic block-GC round examines before it yields.
+pub const DEFAULT_BLOCK_GC_MAX_SCAN_SLABS_PER_ROUND: usize = 500;
 
 /// The byte half of the same ceiling, and it is a SPENDING bound.
 ///

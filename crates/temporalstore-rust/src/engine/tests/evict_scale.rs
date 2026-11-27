@@ -44,11 +44,9 @@
 //! and calls `release_bucket_blocks` inside it, so the whole-store walk is an interval every
 //! serving read and write on the shard queues behind.
 //!
-//! WHAT THE ACTUATOR RELEASES AT THE SHIPPED SETTINGS: nothing. `eviction_dump_before_evict`
-//! ships false, a bucket written and not yet dumped is dirty, and a dirty bucket is refused --
-//! correctly, because the model maps carry no per-block dirty bit for a reload to restore. So a
-//! default-configured round pays the whole-store walk and the two index walks to release zero
-//! blocks. Turn the dump on and the same round releases its victims; both arms are measured, and
+//! WHAT THE ACTUATOR RELEASES AT THE SHIPPED SETTINGS: a bucket that holds only inline string
+//! pages, dirty or not, because the page state stays resident. A plain release of a dirty bucket
+//! is still refused -- the model maps carry no per-block dirty bit for a reload to restore -- and
 //! the refusal TERM is named rather than left as a count.
 //!
 //! WHETHER IT KEEPS UP. A round gives back at most `batch_limit` buckets however large the store
@@ -80,6 +78,7 @@ const GUARD_LARGE: usize = 8_000;
 
 /// The shipped batch limit (`DEFAULT_EVICTION_BATCH_LIMIT`).
 const BATCH: usize = 16;
+const FIXTURE_SHARD_ID: u64 = 1;
 
 fn evict_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
@@ -88,7 +87,7 @@ fn evict_engine(dir: &std::path::Path) -> TemporalEngine {
         dir.join("blocks"),
         dir.join("indexes"),
     );
-    engine.load_shard(1);
+    engine.load_shard(FIXTURE_SHARD_ID);
     engine.use_sampled_eviction_for_test();
     engine
 }
@@ -151,6 +150,7 @@ fn scale_key(ordinal: usize) -> String {
 fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
     const BATCH_SIZE: usize = 500;
     let mut index = from;
+    let mut next_batch_slab = None;
     while index < to {
         let end = (index + BATCH_SIZE).min(to);
         let mut commands = Vec::new();
@@ -163,7 +163,7 @@ fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
             cursor += 1;
         }
         let response = engine.batch_execute(crate::types::BatchExecuteRequest {
-            shard_id: 1,
+            shard_id: FIXTURE_SHARD_ID,
             commands,
         });
         assert!(
@@ -171,15 +171,33 @@ fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
             "seed write failed at {index}: {:?}",
             response.status
         );
+        let (first_slab, last_slab) = engine.shards.with_state(FIXTURE_SHARD_ID, |state| {
+            let shard = state.expect("fixture shard loaded");
+            let slab_of = |ordinal| {
+                shard
+                    .string_address(&scale_key(ordinal))
+                    .expect("seeded string has a block address")
+                    .block_slab_id()
+            };
+            (slab_of(index), slab_of(end - 1))
+        });
+        assert_eq!(first_slab, last_slab, "seed batch {index}..{end} crossed slabs");
+        if let Some(expected) = next_batch_slab {
+            assert_eq!(first_slab, expected, "seed batch {index}..{end} missed its new slab");
+        }
         let rolled = engine
             .block_store
-            .prepare_next_slab_with_target(1)
+            .prepare_next_slab_for_shard(FIXTURE_SHARD_ID, 1)
             .expect("rolling the block slab between seed batches");
         assert!(
             rolled.is_some(),
             "the roll after the batch ending at {end} did not happen, so this batch and the next \
              share a slab and the layout the slab-span guard depends on is not the one described"
         );
+        let rolled = rolled.unwrap();
+        assert_eq!(rolled.previous_block_slab_id, last_slab);
+        assert_ne!(rolled.new_block_slab_id, last_slab);
+        next_batch_slab = Some(rolled.new_block_slab_id);
         index = end;
     }
 }
@@ -190,13 +208,14 @@ fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
 /// silent, so the direction guard compares this map element by element against the same map taken
 /// before the round: a key that kept its entry but lost a block would pass a presence check.
 fn live_blocks_by_key(engine: &TemporalEngine) -> BTreeMap<String, usize> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut counts = BTreeMap::new();
-    for entry in crate::engine::collect_live_block_entries(shard) {
-        *counts.entry(entry.object_key.to_string()).or_insert(0) += 1;
-    }
-    counts
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let mut counts = BTreeMap::new();
+        for entry in crate::engine::collect_live_block_entries(shard) {
+            *counts.entry(entry.object_key.to_string()).or_insert(0) += 1;
+        }
+        counts
+    })
 }
 
 /// Objects each routing bucket still claims, by bucket.
@@ -206,42 +225,45 @@ fn live_blocks_by_key(engine: &TemporalEngine) -> BTreeMap<String, usize> {
 /// holds nothing. The model maps do not record it, so [`live_blocks_by_key`] cannot see it go; a
 /// release that dropped it would be silent everywhere else in this file.
 fn objects_by_bucket(engine: &TemporalEngine) -> BTreeMap<u32, usize> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.object_index.object_count()))
-        .collect()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.object_index.object_count()))
+            .collect()
+    })
 }
 
 /// Slab ids the shard's live blocks actually sit on, and how many blocks sit on each.
 fn live_blocks_by_slab(engine: &TemporalEngine) -> BTreeMap<u64, usize> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut by_slab = BTreeMap::new();
-    for entry in crate::engine::collect_live_block_entries(shard) {
-        *by_slab.entry(entry.address.block_slab_id()).or_insert(0) += 1;
-    }
-    by_slab
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let mut by_slab = BTreeMap::new();
+        for entry in crate::engine::collect_live_block_entries(shard) {
+            *by_slab.entry(entry.address.block_slab_id()).or_insert(0) += 1;
+        }
+        by_slab
+    })
 }
 
 /// The slab ids the named routing buckets hold resident blocks on.
 fn slabs_spanned_by(engine: &TemporalEngine, buckets: &BTreeSet<u32>) -> BTreeSet<u64> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut slabs = BTreeSet::new();
-    for routing_bucket in buckets {
-        if let Some(bucket) = shard.bucket_index.bucket_map.get(routing_bucket) {
-            for block in bucket.block_index.values() {
-                if !block.deleted() {
-                    slabs.insert(block.address.block_slab_id());
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let mut slabs = BTreeSet::new();
+        for routing_bucket in buckets {
+            if let Some(bucket) = shard.bucket_index.bucket_map.get(routing_bucket) {
+                for block in bucket.block_index.values() {
+                    if !block.deleted() {
+                        slabs.insert(block.address.block_slab_id());
+                    }
                 }
             }
         }
-    }
-    slabs
+        slabs
+    })
 }
 
 /// Everything one round of `apply_storage_eviction` cost and did, in counters rather than clocks.
@@ -282,13 +304,11 @@ struct RoundCost {
 /// Every counter is reset immediately before the call and read immediately after, which is what
 /// makes a process-wide counter mean one round; the suite runs `--test-threads=1`.
 fn one_round(engine: &TemporalEngine, records: usize, batch_limit: usize, dump: bool) -> RoundCost {
-    let buckets = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&1)
+    let buckets = engine.shards.with_state(1, |state| {
+        state
             .map(|shard| shard.bucket_index.bucket_map.len())
             .unwrap_or_default()
-    };
+    });
     crate::engine::reset_model_map_addresses_visited();
     crate::engine::reset_bucket_release_model_derivations();
     crate::engine::reset_bucket_scoped_model_entries();
@@ -325,6 +345,66 @@ fn one_round(engine: &TemporalEngine, records: usize, batch_limit: usize, dump: 
         report.skipped_reason
     );
     cost
+}
+
+/// A plain release of the round's own candidates, with every counter around it, for the claims
+/// about a release that refuses. The actuator keeps the inline pages of a string bucket resident,
+/// so a dirty string bucket is released by a round at the shipped setting; the plain release is
+/// the path that still refuses a dirty bucket.
+fn plain_release_round(engine: &TemporalEngine, records: usize) -> RoundCost {
+    let cache_report = engine.storage_cache_inspection_report(1);
+    let cache_by_bucket = cache_report
+        .bucket_summaries
+        .iter()
+        .map(|summary| (summary.routing_bucket, summary.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let candidates = engine
+        .sampled_eviction_victims(1, BATCH, &cache_by_bucket)
+        .iter()
+        .map(|victim| victim.routing_bucket)
+        .collect::<Vec<_>>();
+    crate::engine::reset_model_map_addresses_visited();
+    crate::engine::reset_bucket_release_model_derivations();
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let buckets = shard.bucket_index.bucket_map.len();
+        let outcome = release_bucket_blocks(shard, &candidates);
+        RoundCost {
+            records,
+            buckets,
+            victims: candidates.len(),
+            model_visits: crate::engine::model_map_addresses_visited(),
+            model_emitted: 0,
+            resident_visits: 0,
+            live_scan: 0,
+            recency_cloned: 0,
+            released_buckets: outcome.released_buckets.len(),
+            released_blocks: outcome.released_blocks,
+            refused: outcome.refused_buckets,
+            derivations: crate::engine::bucket_release_model_derivations(),
+            index_bytes_before: 0,
+            index_bytes_after: 0,
+            round_nanos: 0,
+        }
+    })
+}
+
+/// THE CONTROL FOR EVERY "THE ROUND WALKS NOTHING" CLAIM IN THIS FILE.
+///
+/// The verify-time comparison is the one place that still derives what a reload would rebuild, so
+/// it is the walk that proves the visit counter can see one on the fixture at hand: it visits
+/// every live address, which is the number the planted markers make recoverable. Without a
+/// control that is known to walk, a counter that was never installed reads zero and satisfies
+/// every claim below perfectly.
+fn verify_walk_visits(engine: &TemporalEngine, buckets: &[u32]) -> u64 {
+    crate::engine::reset_model_map_addresses_visited();
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let _ = crate::engine::storage_bucket_internals::verify_release_matches_model_maps(
+            shard, buckets,
+        );
+        crate::engine::model_map_addresses_visited()
+    })
 }
 
 fn ratio(small: u64, large: u64) -> f64 {
@@ -372,21 +452,28 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
     let by_slab = live_blocks_by_slab(&engine);
     // The ids, not only the count: clause 3 below needs the set a SCAN-ordered selection would
     // reach, and `bucket_map` is ordered, so its leading entries are exactly that set.
-    let all_buckets: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&1)
+    let all_buckets: Vec<u32> = engine.shards.with_state(1, |state| {
+        state
             .map(|shard| shard.bucket_index.bucket_map.keys().copied().collect())
             .unwrap_or_default()
-    };
+    });
     let buckets = all_buckets.len();
+    // The slabs of every bucket BEFORE the round: the round releases its victims' blocks, so the
+    // victims' slabs can only be read from before it.
+    let slabs_before: BTreeMap<u32, BTreeSet<u64>> = all_buckets
+        .iter()
+        .map(|bucket| (*bucket, slabs_spanned_by(&engine, &BTreeSet::from([*bucket]))))
+        .collect();
     let report = engine.apply_storage_eviction(1, 0, BATCH, false, false);
     let victims = report
         .selected_victims
         .iter()
         .map(|victim| victim.routing_bucket)
         .collect::<BTreeSet<_>>();
-    let victim_slabs = slabs_spanned_by(&engine, &victims);
+    let victim_slabs: BTreeSet<u64> = victims
+        .iter()
+        .flat_map(|bucket| slabs_before[bucket].iter().copied())
+        .collect();
 
     println!(
         "  fixture: {GUARD_LARGE} records -> {buckets} buckets, live blocks by slab {by_slab:?}, \
@@ -431,7 +518,10 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
         .take(BATCH)
         .copied()
         .collect::<BTreeSet<u32>>();
-    let scan_order_slabs = slabs_spanned_by(&engine, &scan_order);
+    let scan_order_slabs: BTreeSet<u64> = scan_order
+        .iter()
+        .flat_map(|bucket| slabs_before[bucket].iter().copied())
+        .collect();
     println!(
         "  clause 3: victims {victims:?} on slabs {victim_slabs:?}; a scan-ordered selection \
          would take {scan_order:?} on slabs {scan_order_slabs:?}"
@@ -482,7 +572,7 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
 /// it releases nothing, and the reason is a single named term rather than an absence.
 ///
 /// `eviction_dump_before_evict` ships FALSE. A bucket that has been written and not dumped is
-/// dirty, `release_bucket_blocks` refuses a dirty bucket, and it is right to -- the model maps
+/// dirty, a plain `release_bucket_blocks` refuses a dirty bucket, and it is right to -- the model maps
 /// carry no per-block dirty bit, so a reload could not restore what a release of a dirty bucket
 /// dropped. Turn the dump on, the round dumps its victims and clears their dirty state first, and
 /// the same actuator releases them.
@@ -511,9 +601,9 @@ fn the_release_actuator_is_refused_at_the_shipped_setting_and_releases_with_the_
             .iter()
             .map(|victim| victim.routing_bucket)
             .collect::<Vec<_>>();
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        let outcome = release_bucket_blocks(shard, &candidates);
+        let outcome = engine.shards.with_state_mut(1, |state| {
+            release_bucket_blocks(state.expect("shard 1 loaded"), &candidates)
+        });
         assert_eq!(
             outcome.released_buckets.len() + outcome.refused_buckets,
             candidates.len(),
@@ -568,15 +658,15 @@ fn the_release_actuator_is_refused_at_the_shipped_setting_and_releases_with_the_
         shipped.victims,
         dumped.victims
     );
-    assert_eq!(
-        shipped.released_blocks, 0,
-        "the shipped setting released {} blocks; this test exists to record that it releases \
-         none, and a number here means the refusal it is built on has changed",
+    assert!(
+        shipped.released_blocks > 0,
+        "the shipped setting released {} blocks; dirty string buckets keep their inline pages \
+         resident and are released, so zero means the actuator stopped keeping them",
         shipped.released_blocks
     );
     assert_eq!(
-        shipped.refused, shipped.victims,
-        "at the shipped setting every victim must be refused, got {} refused of {} victims",
+        shipped.refused, 0,
+        "at the shipped setting no string victim is refused, got {} refused of {} victims",
         shipped.refused, shipped.victims
     );
     assert!(
@@ -592,9 +682,9 @@ fn the_release_actuator_is_refused_at_the_shipped_setting_and_releases_with_the_
         dumped.index_bytes_before,
         dumped.index_bytes_after
     );
-    assert_eq!(
-        shipped.index_bytes_after, shipped.index_bytes_before,
-        "the shipped setting changed the resident index ({} -> {}) while releasing nothing",
+    assert!(
+        shipped.index_bytes_after < shipped.index_bytes_before,
+        "the shipped setting released blocks but the resident index did not shrink ({} -> {})",
         shipped.index_bytes_before,
         shipped.index_bytes_after
     );
@@ -776,11 +866,10 @@ fn an_eviction_rounds_bookkeeping_tracks_the_store_while_its_choosing_does_not()
         large.buckets
     );
     assert!(
-        small_releasing.model_visits > 0 && large_releasing.model_visits > 0,
-        "a RELEASING round visited no model-map addresses at either size ({} and {}), which is \
-         what this counter reads when it is not installed at all",
-        small_releasing.model_visits,
-        large_releasing.model_visits
+        small_releasing.released_blocks > 0 && large_releasing.released_blocks > 0,
+        "a RELEASING round released nothing ({} and {} blocks), so zero visits would be vacuous",
+        small_releasing.released_blocks,
+        large_releasing.released_blocks
     );
     // THE CHANGE, on the arm that ships. Stated here rather than only in the test that owns it,
     // because this is the table an operator reads and a whole-store row that quietly became zero
@@ -814,34 +903,14 @@ fn an_eviction_rounds_bookkeeping_tracks_the_store_while_its_choosing_does_not()
         large.recency_cloned
     );
 
-    // The model-map derivation remains whole-store. Resident-size reads can initialize their
-    // cache once, but must not repeat a census on both sides of this refusing round.
-    let visits_ratio = ratio(small_releasing.model_visits, large_releasing.model_visits);
-    assert!(
-        visits_ratio >= corpus * 0.9,
-        "model-map visits on a RELEASING round grew {visits_ratio:.2}x over a {corpus:.2}x corpus \
-         ({} -> {}); this guard records that the release's pass over the model maps is \
-         proportional to the STORE and not to the {BATCH} buckets it is asking about",
-        small_releasing.model_visits,
-        large_releasing.model_visits
-    );
-
-    // THE ATTRIBUTION, AS AN EXACT IDENTITY RATHER THAN A RESIDUAL.
-    //
-    // The release still derives model identities once. The resident-size counter charges only
-    // actual cold-census node visits; resident_size_cache separately guards warm reads at zero.
+    // THE RELEASE WALKS NOTHING: entries visited is zero at both sizes, so it is flat.
     for arm in [&small_releasing, &large_releasing] {
         assert_eq!(
-            arm.model_visits, arm.records as u64,
-            "a RELEASING round over {} records visited {} model-map addresses; one whole-store \
-             pass is {} exactly, so anything else means a pass was added or one stopped happening",
-            arm.records, arm.model_visits, arm.records
-        );
-        assert_eq!(
-            arm.derivations, 1,
-            "a RELEASING round over {} records ran {} whole-store derivation(s); the batch shares \
-             exactly one",
-            arm.records, arm.derivations
+            (arm.model_visits, arm.derivations),
+            (0, 0),
+            "a RELEASING round over {} records visited {} model-map addresses in {} \
+             derivation(s); it must walk nothing",
+            arm.records, arm.model_visits, arm.derivations
         );
     }
     for arm in [&small, &large] {
@@ -851,38 +920,14 @@ fn an_eviction_rounds_bookkeeping_tracks_the_store_while_its_choosing_does_not()
             arm.resident_visits, arm.buckets
         );
     }
-
-    // PER VICTIM, which is the number an operator feels: the cost of one unit of relief.
-    let small_per_victim = small_releasing.model_visits / small_releasing.victims.max(1) as u64;
-    let large_per_victim = large_releasing.model_visits / large_releasing.victims.max(1) as u64;
-    println!(
-        "  RELEASING round, model-map addresses visited PER VICTIM: {small_per_victim} at \
-         {GUARD_SMALL} records, {large_per_victim} at {GUARD_LARGE} -- {:.2}x",
-        ratio(small_per_victim, large_per_victim)
-    );
-    assert!(
-        large_per_victim > small_per_victim,
-        "the per-victim cost did not grow ({small_per_victim} -> {large_per_victim}); with a \
-         fixed batch against a growing store it has to, and a flat reading means the batch moved"
-    );
 }
 
-/// A ROUND VISITS THE WHOLE STORE EVEN WHEN IT IS ASKED FOR ONE VICTIM.
+/// ONE VICTIM OR SIXTEEN, A RELEASING ROUND VISITS NO MODEL-MAP ADDRESS.
 ///
-/// The batch-size half of the same claim, and the one that separates "the round is expensive
-/// because it takes sixteen buckets" from "the round is expensive because the store is large".
-/// One victim and sixteen victims on the SAME corpus cost the same visits.
-///
-/// RUN ON A RELEASING ROUND, AND WITH A VACUITY FLOOR THAT IT DID NOT HAVE. As written, both arms
-/// ran at the shipped `dump_before_evict` false, where the release now reaches no derivation at
-/// all -- so both arms read ZERO visits and the equality between them held for the wrong reason.
-/// A guard that compares two numbers and is satisfied by both being zero is the shape that let
-/// the defect this file is about survive, so the arms moved to the regime where the pass still
-/// happens and the floor below asserts it happened. The claim is unchanged and #1930's m8 mutant
-/// -- a sampler that ignores its batch limit and takes every bucket -- is still the thing it
-/// catches.
+/// The control is the arms' own victim counts (they really asked for different amounts of work),
+/// and the walk that still exists, the verify comparison, is exercised by the tests above.
 #[test]
-fn the_whole_store_pass_does_not_shrink_when_the_batch_does() {
+fn a_releasing_round_walks_nothing_whether_it_takes_one_victim_or_many() {
     fn arm(batch_limit: usize) -> RoundCost {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = evict_engine(dir.path());
@@ -892,39 +937,21 @@ fn the_whole_store_pass_does_not_shrink_when_the_batch_does() {
 
     let one = arm(1);
     let many = arm(BATCH);
-    println!(
-        "  batch 1: {} victims, {} model-map visits | batch {BATCH}: {} victims, {} visits",
-        one.victims, one.model_visits, many.victims, many.model_visits
-    );
-
-    // CONTROL: the two arms really did ask for different amounts of work.
     assert!(
         many.victims > one.victims,
         "both arms chose the same number of victims ({} and {}), so this compares nothing",
         one.victims,
         many.victims
     );
-    // VACUITY FLOOR: both arms reached the pass at all. Without this the equality below is
-    // satisfied by 0 == 0, which is what a round that never derives reads.
+    assert!(one.released_blocks > 0 && many.released_blocks > 0, "nothing released: vacuous");
     assert_eq!(
-        (one.derivations, many.derivations),
-        (1, 1),
-        "the arms ran {} and {} whole-store derivation(s); this test is about the size of a pass \
-         that happens",
+        (one.model_visits, many.model_visits, one.derivations, many.derivations),
+        (0, 0, 0, 0),
+        "a round visited model-map addresses ({} and {}) or derived ({} and {})",
+        one.model_visits,
+        many.model_visits,
         one.derivations,
         many.derivations
-    );
-    assert_eq!(
-        one.model_visits, GUARD_SMALL as u64,
-        "the one-victim arm visited {} model-map addresses over a {GUARD_SMALL}-record store; one \
-         whole-store pass is {GUARD_SMALL} exactly",
-        one.model_visits
-    );
-    assert_eq!(
-        one.model_visits, many.model_visits,
-        "a round for {} victim(s) visited {} model-map addresses and a round for {} victims \
-         visited {}; if these differ the pass is proportional to the batch after all",
-        one.victims, one.model_visits, many.victims, many.model_visits
     );
 }
 
@@ -1039,9 +1066,8 @@ fn what_an_eviction_round_costs_on_a_large_store_in_both_victim_regimes() {
         //
         // Both are wall clock on a box that sits between load 4 and 30, so they are the weakest
         // rows in this file and nothing is asserted about them. The counters above are the claim.
-        let (hold_ns, walk_ns) = {
-            let mut shards = engine.shards.write().expect("shards lock poisoned");
-            let Some(shard) = shards.get_mut(&1) else {
+        let (hold_ns, walk_ns) = engine.shards.with_state_mut(1, |state| {
+            let Some(shard) = state else {
                 panic!("shard 1 loaded");
             };
             let started = std::time::Instant::now();
@@ -1059,7 +1085,7 @@ fn what_an_eviction_round_costs_on_a_large_store_in_both_victim_regimes() {
                 "the proxy walk emitted nothing, so it did not run the traversal it stands in for"
             );
             (hold_ns, walk_ns)
-        };
+        });
         let release = release.stop().allocs;
 
         Arm {
@@ -1298,13 +1324,11 @@ fn an_eviction_round_cannot_keep_up_with_the_store_it_is_draining() {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = evict_engine(dir.path());
         seed_with_a_slab_roll(&engine, records);
-        let buckets = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            shards
-                .get(&1)
+        let buckets = engine.shards.with_state(1, |state| {
+            state
                 .map(|shard| shard.bucket_index.bucket_map.len())
                 .unwrap_or_default()
-        };
+        });
 
         let mut blocks_released = 0usize;
         let mut model_visits = 0u64;
@@ -1523,9 +1547,9 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
         live_blocks.saturating_sub(GUARD_SMALL as u64)
     );
     assert_eq!(
-        releasing.derivations, 1,
-        "a releasing round ran {} whole-store derivation(s); the arm that proves the counter is \
-         alive has to be an arm where the walk actually happens",
+        releasing.derivations, 0,
+        "a releasing round ran {} whole-store derivation(s); the release is local and derives \
+         nothing",
         releasing.derivations
     );
     assert!(
@@ -1535,11 +1559,17 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
         releasing.released_blocks
     );
     assert_eq!(
-        releasing.model_visits, live_blocks,
-        "the round visited {} model-map addresses against {live_blocks} live blocks. The identity \
-         is EXACT and deliberately not a tolerance: one pass over the maps, so a second pass \
-         added later shows up as a whole extra store rather than inside a margin",
+        releasing.model_visits, 0,
+        "the releasing round visited {} model-map addresses; the release must walk nothing",
         releasing.model_visits
+    );
+    // THE CONTROL: the verify walk on this very fixture visits every live block, planted markers
+    // included, so the zero above cannot be a counter that was never installed.
+    let verified = verify_walk_visits(&engine, &[]);
+    assert_eq!(
+        verified, live_blocks,
+        "the verify walk visited {verified} addresses against {live_blocks} live blocks; the \
+         identity is exact, one pass over the maps"
     );
 }
 
@@ -1547,7 +1577,7 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
 ///
 /// Two corpus sizes a factor of four apart, and BOTH ARMS at each size with the control named:
 ///
-///   * REFUSING (`eviction_dump_before_evict` false, which is what ships) -- every candidate is
+///   * REFUSING (a plain release of the round's dirty candidates) -- every candidate is
 ///     refused on `bucket_dirty`, a term that reads the candidate's own state, so no candidate
 ///     reaches the model-map comparison. Visits and derivations are asserted EQUAL to zero at
 ///     both sizes.
@@ -1560,23 +1590,24 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
 #[test]
 fn a_round_that_refuses_every_candidate_no_longer_walks_the_model_maps() {
     /// One size, both arms, on two engines seeded identically.
-    fn at(records: usize) -> (RoundCost, RoundCost, u64) {
+    fn at(records: usize) -> (RoundCost, RoundCost, u64, u64) {
         let refusing = {
             let dir = tempfile::tempdir().expect("tempdir");
             let engine = evict_engine(dir.path());
             seed_with_a_slab_roll(&engine, records);
-            one_round(&engine, records, BATCH, false)
+            plain_release_round(&engine, records)
         };
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = evict_engine(dir.path());
         seed_with_a_slab_roll(&engine, records);
         let live_blocks = live_blocks_total(&engine);
         let releasing = one_round(&engine, records, BATCH, true);
-        (refusing, releasing, live_blocks)
+        let verified = verify_walk_visits(&engine, &[]);
+        (refusing, releasing, live_blocks, verified)
     }
 
-    let (small_refusing, small_releasing, small_live) = at(GUARD_SMALL);
-    let (large_refusing, large_releasing, large_live) = at(GUARD_LARGE);
+    let (small_refusing, small_releasing, small_live, small_verified) = at(GUARD_SMALL);
+    let (large_refusing, large_releasing, large_live, large_verified) = at(GUARD_LARGE);
 
     println!(
         "\n  corpus {:.2}x ({GUARD_SMALL} -> {GUARD_LARGE} records)\n",
@@ -1654,9 +1685,9 @@ fn a_round_that_refuses_every_candidate_no_longer_walks_the_model_maps() {
         );
     }
 
-    for (records, cost, live) in [
-        (GUARD_SMALL, &small_releasing, small_live),
-        (GUARD_LARGE, &large_releasing, large_live),
+    for (records, cost, live, verified) in [
+        (GUARD_SMALL, &small_releasing, small_live, small_verified),
+        (GUARD_LARGE, &large_releasing, large_live, large_verified),
     ] {
         assert!(
             cost.released_blocks > 0,
@@ -1665,167 +1696,60 @@ fn a_round_that_refuses_every_candidate_no_longer_walks_the_model_maps() {
             cost.released_blocks
         );
         assert_eq!(
-            cost.derivations, 1,
-            "{records} records: the CONTROL arm ran {} derivation(s), not the one pass the whole \
-             batch shares",
-            cost.derivations
+            (cost.derivations, cost.model_visits),
+            (0, 0),
+            "{records} records: the releasing arm ran {} derivation(s) and visited {} addresses; \
+             a release walks nothing",
+            cost.derivations,
+            cost.model_visits
         );
         assert_eq!(
-            cost.model_visits, live,
-            "{records} records: the CONTROL arm visited {} addresses against {live} live blocks. \
-             Exact identity, not a tolerance",
-            cost.model_visits
+            verified, live,
+            "{records} records: the verify walk visited {verified} addresses against {live} live \
+             blocks. Exact identity, and the control that the counter can see a walk",
         );
     }
 
     assert!(
-        large_releasing.model_visits > small_releasing.model_visits,
-        "the CONTROL arm visited {} addresses on a {GUARD_SMALL}-record store and {} on a \
-         {GUARD_LARGE}-record one. If the surviving walk does not grow with the store then the \
-         counter is dead, and a dead counter satisfies the REFUSING arm's zeros for free",
-        small_releasing.model_visits,
-        large_releasing.model_visits
-    );
-    assert!(
-        large_refusing.model_visits < large_releasing.model_visits,
-        "both arms report {} visits at {GUARD_LARGE} records, so the dump setting made no \
-         difference to the walk and one of these two arms is not measuring what it says",
-        large_refusing.model_visits
+        large_verified > small_verified,
+        "the verify walk visited {small_verified} addresses on a {GUARD_SMALL}-record store and \
+         {large_verified} on a {GUARD_LARGE}-record one; if it does not grow with the store the \
+         counter is dead, and a dead counter satisfies the zeros above for free",
     );
 }
 
-/// THE REFUTATION, GUARDED. The pass that DOES run is still proportional to the store.
-///
-/// What the change above removes is a pass that nobody was going to read. It does not make
-/// releasing N buckets cost N: when a candidate survives its own terms, the derivation still runs
-/// `accept` on every live address in the shard, because the model maps are keyed by object, the
-/// routing bucket is a field of the ADDRESS, and nothing in the tree indexes the other way --
-/// `object_block_lookup` is derived from the very block index being checked, so it answers WITH
-/// it rather than ABOUT it.
-///
-/// BOTH BATCH REGIMES, with the control arm asserted by name, exactly as #1930 framed them:
-///
-///   * a FIXED batch takes the same sixteen victims however large the store is, so the per-victim
-///     cost tracks the corpus;
-///   * a PROPORTIONAL batch takes victims in proportion, so the per-victim cost is flat -- the
-///     same code, reading as a healthy system.
-///
-/// Both are asserted, so neither can be chosen by accident, and the test fails if the two regimes
-/// report the same per-victim growth.
+/// THE FLATNESS CLAIM, in both batch regimes. A releasing round visits no model-map address and
+/// runs no derivation, at either store size, whether the batch is fixed or proportional to the
+/// store. Entries visited is flat (zero) from the small store to the large one; the verify walk
+/// is the control that grows with the store.
 #[test]
-fn the_surviving_release_pass_is_still_whole_store_in_both_batch_regimes() {
-    /// Per-victim visits for a RELEASING round, at one size and one batch rule.
-    fn per_victim(records: usize, batch_limit: usize) -> (u64, usize, f64) {
+fn a_releasing_round_walks_nothing_in_both_batch_regimes() {
+    fn cost_of(records: usize, batch_limit: usize) -> RoundCost {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = evict_engine(dir.path());
         seed_with_a_slab_roll(&engine, records);
         let cost = one_round(&engine, records, batch_limit, true);
         assert!(
-            cost.victims > 0,
-            "{records} records, batch {batch_limit}: no victims, so per-victim is a division by \
-             zero rather than a measurement"
+            cost.victims > 0 && cost.released_blocks > 0,
+            "{records} records, batch {batch_limit}: nothing was released, so zero visits is vacuous"
         );
+        cost
+    }
+    for (records, batch) in [
+        (GUARD_SMALL, BATCH),
+        (GUARD_LARGE, BATCH),
+        (GUARD_SMALL, GUARD_SMALL / 100),
+        (GUARD_LARGE, GUARD_LARGE / 100),
+    ] {
+        let cost = cost_of(records, batch);
         assert_eq!(
-            cost.derivations, 1,
-            "{records} records, batch {batch_limit}: {} derivation(s); this arm is about the \
-             pass that DOES run",
+            (cost.model_visits, cost.derivations),
+            (0, 0),
+            "{records} records, batch {batch}: visited {} addresses in {} derivation(s)",
+            cost.model_visits,
             cost.derivations
         );
-        let victims = cost.victims;
-        (
-            cost.model_visits,
-            victims,
-            cost.model_visits as f64 / victims as f64,
-        )
     }
-
-    /// The proportional rule: one victim per hundred records, so the batch is a fixed share of
-    /// the store rather than a constant.
-    fn proportional_batch(records: usize) -> usize {
-        records / 100
-    }
-
-    let corpus = GUARD_LARGE as f64 / GUARD_SMALL as f64;
-    let (fixed_small_visits, fixed_small_victims, fixed_small) = per_victim(GUARD_SMALL, BATCH);
-    let (fixed_large_visits, fixed_large_victims, fixed_large) = per_victim(GUARD_LARGE, BATCH);
-    let (prop_small_visits, prop_small_victims, prop_small) =
-        per_victim(GUARD_SMALL, proportional_batch(GUARD_SMALL));
-    let (prop_large_visits, prop_large_victims, prop_large) =
-        per_victim(GUARD_LARGE, proportional_batch(GUARD_LARGE));
-
-    let fixed_growth = fixed_large / fixed_small;
-    let prop_growth = prop_large / prop_small;
-
-    println!("\n  corpus {corpus:.2}x, RELEASING rounds only (dump on)\n");
-    println!(
-        "{:<28}{:>12}{:>13}{:>12}",
-        "", GUARD_SMALL, GUARD_LARGE, "ratio"
-    );
-    println!(
-        "{:<28}{:>12}{:>13}{:>11.2}x",
-        "FIXED batch: victims",
-        fixed_small_victims,
-        fixed_large_victims,
-        fixed_large_victims as f64 / fixed_small_victims as f64
-    );
-    println!(
-        "{:<28}{:>12}{:>13}{:>11.2}x",
-        "FIXED batch: visits",
-        fixed_small_visits,
-        fixed_large_visits,
-        ratio(fixed_small_visits, fixed_large_visits)
-    );
-    println!(
-        "{:<28}{:>12.0}{:>13.0}{:>11.2}x",
-        "FIXED batch: per victim", fixed_small, fixed_large, fixed_growth
-    );
-    println!(
-        "{:<28}{:>12}{:>13}{:>11.2}x",
-        "PROPORTIONAL: victims",
-        prop_small_victims,
-        prop_large_victims,
-        prop_large_victims as f64 / prop_small_victims as f64
-    );
-    println!(
-        "{:<28}{:>12}{:>13}{:>11.2}x",
-        "PROPORTIONAL: visits",
-        prop_small_visits,
-        prop_large_visits,
-        ratio(prop_small_visits, prop_large_visits)
-    );
-    println!(
-        "{:<28}{:>12.0}{:>13.0}{:>11.2}x",
-        "PROPORTIONAL: per victim", prop_small, prop_large, prop_growth
-    );
-
-    assert_eq!(
-        fixed_small_victims, fixed_large_victims,
-        "the FIXED arm's own control: its victim count moved from {fixed_small_victims} to \
-         {fixed_large_victims}, so it is not the fixed-batch regime and its per-victim growth \
-         means nothing"
-    );
-    assert!(
-        prop_large_victims > prop_small_victims,
-        "the PROPORTIONAL arm's own control: its victim count did NOT move ({prop_small_victims} \
-         -> {prop_large_victims}), so it is the fixed regime under another name"
-    );
-    assert!(
-        fixed_growth > corpus * 0.8,
-        "the surviving pass's per-victim cost grew {fixed_growth:.2}x over a {corpus:.2}x corpus \
-         under a fixed batch. This test exists to REFUTE a claim, not to support one: if this \
-         number has become flat then the walk was made proportional to the batch and the \
-         refutation in this file is stale"
-    );
-    assert!(
-        prop_growth < 1.5,
-        "the same pass read {prop_growth:.2}x per victim under a PROPORTIONAL batch; the point \
-         of printing both is that the same code reads healthy in one regime and not the other"
-    );
-    assert!(
-        fixed_growth > prop_growth * 2.0,
-        "the two regimes reported the same per-victim growth ({fixed_growth:.2}x and \
-         {prop_growth:.2}x), so the arms are not distinguishing anything"
-    );
 }
 
 /// DIRECTION. A mixed batch releases exactly the clean buckets and leaves every other one WHOLE.
@@ -1851,9 +1775,8 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
     seed_with_a_slab_roll(&engine, GUARD_SMALL);
 
     // Sixteen routing buckets that actually hold resident blocks, in a stable order.
-    let candidates: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let candidates: Vec<u32> = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         shard
             .bucket_index
             .bucket_map
@@ -1862,7 +1785,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
             .map(|(routing_bucket, _)| *routing_bucket)
             .take(BATCH)
             .collect()
-    };
+    });
     assert_eq!(
         candidates.len(),
         BATCH,
@@ -1879,9 +1802,8 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
 
     // THE ORACLE, and the before-state, read directly off the shard and independently of what the
     // release is about to do. The terms are the release's own residency and per-block terms.
-    let (oracle_released, oracle_dirty, blocks_before, objects_before) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let (oracle_released, oracle_dirty, blocks_before, objects_before) = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         let mut released = Vec::new();
         let mut dirty = Vec::new();
         let mut blocks = BTreeMap::new();
@@ -1914,17 +1836,16 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
             }
         }
         (released, dirty, blocks, objects)
-    };
+    });
 
     let live_blocks_before = live_blocks_by_key(&engine);
 
     crate::engine::reset_model_map_addresses_visited();
     crate::engine::reset_bucket_release_model_derivations();
-    let outcome = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
+    let outcome = engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         release_bucket_blocks(shard, &candidates)
-    };
+    });
     let derivations = crate::engine::bucket_release_model_derivations();
     let live_blocks_after = live_blocks_by_key(&engine);
 
@@ -1981,14 +1902,12 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
         oracle_dirty.len()
     );
     assert_eq!(
-        derivations, 1,
-        "the mixed batch ran {derivations} whole-store derivation(s); one candidate survives its \
-         own terms here, so the memoized pass must run exactly once for the whole batch"
+        derivations, 0,
+        "the mixed batch ran {derivations} whole-store derivation(s); the release is local"
     );
 
-    {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         for routing_bucket in &oracle_dirty {
             let bucket = shard
                 .bucket_index
@@ -2032,7 +1951,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
                 bucket.object_index.object_count()
             );
         }
-    }
+    });
 
     assert_eq!(
         live_blocks_after.len(),

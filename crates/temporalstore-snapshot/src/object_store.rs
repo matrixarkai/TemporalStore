@@ -5,11 +5,11 @@ use async_trait::async_trait;
 use bytes::Bytes;
 use serde::Serialize;
 use std::collections::HashSet;
-use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use matrixobject_client::{ClientError, S3Client, TcpTransport, Transport};
+pub use matrixobject_client::AppendResolutions;
 use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 
@@ -31,6 +31,13 @@ pub enum ObjectStoreError {
     /// hard abort, never a retryable transient error.
     #[error("object store condition failed for {key}: {detail}")]
     ConditionFailed { key: String, detail: String },
+    /// A write was sent and neither its success nor its absence could be established.
+    ///
+    /// The write may or may not be in the object. A caller must NOT repeat it blindly -- for an
+    /// append that would store the bytes twice -- and must settle it by reading the object
+    /// first.
+    #[error("object store outcome unknown for {key}: {detail}")]
+    OutcomeUnknown { key: String, detail: String },
 }
 
 #[derive(Debug, Clone, Default, Eq, PartialEq, Serialize)]
@@ -154,96 +161,57 @@ pub trait ObjectStore: Send + Sync {
     fn uri(&self, key: &str) -> String;
 }
 
-/// Networked object store speaking S3 over HTTP to a matrixobject `object_server`.
+/// Networked object store speaking S3 to a MatrixObject door.
 ///
-/// # WHY S3, AND WHAT THIS REPLACED
+/// A thin adapter. Everything about talking to the door lives once, in
+/// `matrixobject_client::S3Client`: the request framing, the append with its offset condition,
+/// the settlement of an append whose outcome is unknown by its attempt id (never by comparing
+/// bytes), the length cache, the keep-alive sockets and the wire accounting. This type maps
+/// that client's answers onto [`ObjectStore`] and nothing else.
 ///
-/// This type is named for HTTP and spoke neither HTTP nor S3. `put`, `get`, `get_many` and
-/// `put_many` framed a protocol of their own -- an 18-byte header beginning `MORP1` and a
-/// one-byte opcode -- over a raw socket, while `list`, `list_after` and `delete` posted JSON
-/// to `/v1/object/*`. **Nothing shipped served either one.** The only implementation of the
-/// binary protocol in this repository was a loopback mock inside a test module, and no server
-/// anywhere answers `/v1/object/list`. So `TS_SHARED_STORE_URI=matrixobject://host:port` could
-/// only ever point at a test fixture: a networked shared-store write failed on the append the
-/// binary protocol had no opcode for, and would have failed on list and delete next.
-///
-/// matrixobject ships a server that does exist: `object_server`, an S3 front door written on
-/// the standard library and on by default. It answers `PutObject`, `GetObject` with `Range`,
-/// `DeleteObject` and `ListObjectsV2`, and -- since it learned `x-amz-write-offset-bytes` -- an
-/// append. This speaks S3 to that, and the two protocols nobody served are gone.
-///
-/// # CONNECTIONS ARE REUSED
-///
-/// Requests go on a pooled keep-alive socket. This began as one connection per request with
-/// `Connection: close`, because pooling means framing every reply correctly and that was worth
-/// doing deliberately rather than inheriting -- and it turned out to be small, because the door
-/// frames bodies with `Content-Length` and refuses `Transfer-Encoding` outright, so there is no
-/// chunked decoder to write. What a handshake per request costs is invisible on loopback and a
-/// round trip each over a network, twice per shared-store record.
+/// The door is a [`Transport`]: a socket to a gateway (`new`), or the gateway's own request
+/// handling served in this process (`in_process`). Both run the same client code, so the two
+/// ways of reaching a cluster cannot disagree about a request, only about how it travels.
 #[derive(Debug, Clone)]
 pub struct MatrixObjectHttpStore {
-    addr: String,
+    client: S3Client<Arc<dyn Transport>>,
     uri: String,
-    bucket: String,
-    /// Object lengths this client last observed, so an append can skip asking.
+    /// One lock per object key, held around an append across its awaits.
     ///
-    /// # WHY A CACHE IS SAFE HERE, WHEN A CACHED OFFSET NORMALLY WOULD NOT BE
-    ///
-    /// An append sends the offset it believes is the end, and the server appends THERE or
-    /// refuses -- the offset is a condition, not a destination. So a stale entry here cannot
-    /// place bytes anywhere wrong; the worst it can do is earn a 412, which the append path
-    /// already re-reads and retries. That is what makes this an optimisation rather than a
-    /// correctness risk: being wrong costs a round trip, not an object.
-    ///
-    /// Shared through the `Arc` every caller holds this store behind, so appends from one
-    /// process cooperate instead of each paying its own HEAD.
-    known_lengths: Arc<Mutex<std::collections::HashMap<String, u64>>>,
-    /// How many HTTP requests this store has issued.
-    ///
-    /// The shared path's cost over a network is REQUESTS, not just bytes: the byte envelope
-    /// has been measured down to where its only remaining lever is a batch header, while an
-    /// append that asks for the object's length before writing it spends two round trips per
-    /// record. Counting them makes that visible and keeps it that way -- a wall-clock figure
-    /// on a shared box cannot tell a round trip from a busy neighbour, and this can.
-    requests: Arc<std::sync::atomic::AtomicU64>,
-    /// Bytes this store has put ON the wire and taken OFF it, headers included.
-    ///
-    /// Read amplification on the shared path has only ever been measured in process, where
-    /// the figure is page fetches against bytes returned. Over a network the quantity that
-    /// matters is different and was not measured at all: what a request costs INCLUDING its
-    /// head. An S3 GET carries a request line, a Host, a Range and a reply head, and at WAL
-    /// record sizes that envelope is not a rounding error -- so it is counted at the wire
-    /// rather than inferred from the payload.
-    wire_sent: Arc<std::sync::atomic::AtomicU64>,
-    wire_received: Arc<std::sync::atomic::AtomicU64>,
-    /// Idle sockets kept for reuse.
-    ///
-    /// Every request used to open its own connection and send `Connection: close`, so the
-    /// shared path paid a TCP handshake per request -- two per record, since an entry writes
-    /// a WAL frame and an offset-index frame. On loopback that is cheap; over a real network
-    /// it is a round trip each, before any byte of the request is read.
-    ///
-    /// Bounded, because an unbounded pool is a file-descriptor leak wearing a cache's clothes.
-    connections: Arc<Mutex<Vec<TcpStream>>>,
-    /// How many sockets this store has OPENED.
-    ///
-    /// The byte counters cannot see what connection reuse buys, because a handshake moves no
-    /// HTTP bytes -- reuse took the wire figure from 2.619 to 2.572, which is the
-    /// `Connection: close` header no longer being sent and nothing else. What it actually
-    /// saved is a TCP round trip per request, invisible on loopback and a full RTT over a
-    /// network. This counts it, so the saving is a number rather than an argument.
-    connections_opened: Arc<std::sync::atomic::AtomicU64>,
+    /// The client serialises appends of one object itself, but it does so by blocking a thread.
+    /// Tasks of this process that append to the same object wait here instead, yielding, so a
+    /// burst of appends to one log cannot occupy every blocking thread.
+    append_locks: Arc<Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
-
-/// Idle sockets kept per store. Small on purpose: this client issues requests from one task
-/// at a time per object, so a deep pool would hold descriptors open to no benefit.
-const MAX_IDLE_CONNECTIONS: usize = 8;
 
 /// Bucket a URI that names none will use.
 ///
 /// `matrixobject://host:port` carries no bucket and every caller so far runs one store per
 /// endpoint; `matrixobject://host:port/name` names one explicitly.
 pub const DEFAULT_HTTP_BUCKET: &str = "temporalstore";
+
+impl From<ClientError> for ObjectStoreError {
+    fn from(error: ClientError) -> Self {
+        match error {
+            ClientError::NotFound(key) => ObjectStoreError::NotFound(key),
+            ClientError::InvalidRange(detail)
+            | ClientError::InvalidKey(detail)
+            | ClientError::InvalidBucket(detail) => ObjectStoreError::InvalidKey(detail),
+            ClientError::ConditionFailed { key, detail } => {
+                ObjectStoreError::ConditionFailed { key, detail }
+            }
+            ClientError::OutcomeUnknown { key, detail }
+            | ClientError::ConditionalWriteUnknown { key, detail } => {
+                ObjectStoreError::OutcomeUnknown { key, detail }
+            }
+            ClientError::Http(detail) | ClientError::Transport(detail) => {
+                ObjectStoreError::Http(detail)
+            }
+            // `ClientError` is non-exhaustive: an error this adapter does not know is a store failure.
+            other => ObjectStoreError::Http(other.to_string()),
+        }
+    }
+}
 
 impl MatrixObjectHttpStore {
     pub fn new(uri: &str) -> Result<Self, ObjectStoreError> {
@@ -269,22 +237,35 @@ impl MatrixObjectHttpStore {
         if authority.is_empty() {
             return Err(ObjectStoreError::InvalidKey(trimmed.to_string()));
         }
-        Ok(Self {
-            addr: authority.to_string(),
-            uri: trimmed.trim_end_matches('/').to_string(),
-            bucket: bucket.to_string(),
-            known_lengths: Arc::default(),
-            requests: Arc::default(),
-            wire_sent: Arc::default(),
-            wire_received: Arc::default(),
-            connections: Arc::default(),
-            connections_opened: Arc::default(),
-        })
+        Ok(Self::over(
+            Arc::new(TcpTransport::new(authority)),
+            bucket,
+            trimmed.trim_end_matches('/').to_string(),
+        ))
+    }
+
+    /// A store whose requests are answered by `door`, typically the gateway's request handling
+    /// served in this process.
+    pub fn in_process(door: Arc<dyn Transport>, bucket: &str) -> Self {
+        let bucket = if bucket.trim().is_empty() {
+            DEFAULT_HTTP_BUCKET
+        } else {
+            bucket.trim()
+        };
+        Self::over(door, bucket, format!("matrixobject://in-process/{bucket}"))
+    }
+
+    fn over(door: Arc<dyn Transport>, bucket: &str, uri: String) -> Self {
+        Self {
+            client: S3Client::new(door, bucket),
+            uri,
+            append_locks: Arc::default(),
+        }
     }
 
     /// Which bucket this endpoint's objects live in.
     pub fn bucket(&self) -> &str {
-        &self.bucket
+        self.client.bucket()
     }
 
     /// Synchronous single-object GET for callers outside an async runtime -- the networked
@@ -292,250 +273,72 @@ impl MatrixObjectHttpStore {
     /// by address without bridging into an executor, mirroring how the shared-filesystem lazy
     /// source reads the file directly.
     pub fn get_blocking(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
-        let response = self.send("GET", &self.object_target(key), &[], &[])?;
-        match response.status {
-            200 => Ok(Bytes::from(response.body)),
-            404 => Err(ObjectStoreError::NotFound(key.to_string())),
-            status => Err(response.failure(status, key)),
-        }
-    }
-
-    fn object_target(&self, key: &str) -> String {
-        format!("/{}/{}", self.bucket, encode_key(key))
+        Ok(Bytes::from(self.client.get(key)?))
     }
 
     /// How many HTTP requests this store has issued since it was built.
-    ///
-    /// Counted at the single place requests are sent, so nothing can route around it.
     pub fn requests_issued(&self) -> u64 {
-        self.requests.load(std::sync::atomic::Ordering::Relaxed)
+        self.client.requests_issued()
     }
 
-    /// Bytes written to the socket, request heads included.
+    /// Bytes written to the socket, request heads included. Zero for a door in this process.
     pub fn wire_bytes_sent(&self) -> u64 {
-        self.wire_sent.load(std::sync::atomic::Ordering::Relaxed)
+        self.client.transport().wire_stats().bytes_sent
     }
 
     /// Bytes read from the socket, response heads included.
     pub fn wire_bytes_received(&self) -> u64 {
-        self.wire_received.load(std::sync::atomic::Ordering::Relaxed)
+        self.client.transport().wire_stats().bytes_received
     }
 
-    /// How many TCP connections this store has opened.
-    ///
-    /// With reuse this should be far below `requests_issued`; equal to it means every request
-    /// is paying a handshake, which is what this client used to do.
+    /// How many TCP connections this store has opened. With reuse this is far below
+    /// `requests_issued`.
     pub fn connections_opened(&self) -> u64 {
-        self.connections_opened
-            .load(std::sync::atomic::Ordering::Relaxed)
+        self.client.transport().wire_stats().connections_opened
     }
 
-    /// Open a socket and count it. The single door through which this store connects, so a
-    /// handshake cannot happen without being counted.
-    fn open_connection(&self) -> Result<TcpStream, ObjectStoreError> {
-        self.connections_opened
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        connect(&self.addr)
+    /// How many landed, absent and ambiguous answers the door has given to a resolve of an
+    /// append whose outcome was unknown. A caller that must observe a particular answer reads it here.
+    pub fn append_resolutions(&self) -> AppendResolutions {
+        self.client.append_resolutions()
     }
 
-    fn take_connection(&self) -> Option<TcpStream> {
-        self.connections
-            .lock()
-            .expect("matrixobject connections poisoned")
-            .pop()
-    }
-
-    fn return_connection(&self, stream: TcpStream) {
-        let mut pool = self
-            .connections
-            .lock()
-            .expect("matrixobject connections poisoned");
-        if pool.len() < MAX_IDLE_CONNECTIONS {
-            pool.push(stream);
+    /// The lock that serialises appends to `key` among the tasks of this process.
+    fn append_lock(&self, key: &str) -> Arc<tokio::sync::Mutex<()>> {
+        let mut locks = self.append_locks.lock().expect("matrixobject append locks poisoned");
+        // Bound the table: drop locks nobody holds or waits on once it has grown.
+        if locks.len() >= 1024 {
+            locks.retain(|_, lock| Arc::strong_count(lock) > 1);
         }
-    }
-
-    fn send(
-        &self,
-        method: &str,
-        target: &str,
-        extra: &[(&str, String)],
-        body: &[u8],
-    ) -> Result<HttpResponse, ObjectStoreError> {
-        self.requests
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-
-        // A POOLED SOCKET MAY HAVE DIED WHILE IT SAT IDLE, and nothing tells the holder: the
-        // server can close an idle keep-alive connection whenever it likes. So a failure on a
-        // reused socket is not an error to report -- it is retried once on a fresh one, and
-        // only a failure on a CONNECTION THIS CALL OPENED is real. Without that distinction a
-        // perfectly healthy store reports io errors in proportion to how long it was idle.
-        // Yields the response directly rather than a nested `Result`: `?` inside the arms
-        // keeps the error type unambiguous, where `Ok(..)` in each arm left it for inference
-        // to guess between every `From` impl on the error.
-        let response = {
-            match self.take_connection() {
-                Some(mut pooled) => {
-                    match http_exchange(&mut pooled, &self.addr, method, target, extra, body) {
-                        Ok(response) => {
-                            if response.reusable {
-                                self.return_connection(pooled);
-                            }
-                            response
-                        }
-                        // A POOLED SOCKET MAY HAVE DIED WHILE IT SAT IDLE, and nothing tells
-                        // the holder: a server may close an idle keep-alive connection
-                        // whenever it likes. So a failure on a REUSED socket is retried once
-                        // on a fresh one, and only a failure on a connection this call opened
-                        // is real. Without that distinction a healthy store reports io errors
-                        // in proportion to how long it was idle.
-                        Err(_) => {
-                            let mut fresh = self.open_connection()?;
-                            let response =
-                                http_exchange(&mut fresh, &self.addr, method, target, extra, body)?;
-                            if response.reusable {
-                                self.return_connection(fresh);
-                            }
-                            response
-                        }
-                    }
-                }
-                None => {
-                    let mut fresh = self.open_connection()?;
-                    let response =
-                        http_exchange(&mut fresh, &self.addr, method, target, extra, body)?;
-                    if response.reusable {
-                        self.return_connection(fresh);
-                    }
-                    response
-                }
-            }
-        };
-        // COUNTED FROM WHAT THE TRANSPORT ACTUALLY MOVED, not from the payload: the head is
-        // most of a small request and all of a HEAD reply, and a figure that leaves it out
-        // would report the shared path as cheaper than it is.
-        self.wire_sent
-            .fetch_add(response.request_len as u64, std::sync::atomic::Ordering::Relaxed);
-        self.wire_received
-            .fetch_add(response.raw_len as u64, std::sync::atomic::Ordering::Relaxed);
-        Ok(response)
-    }
-
-    /// The object's current length, or zero when it does not exist yet.
-    ///
-    /// An append to a key nothing has written is how an append-only object is created, so a
-    /// missing key is a length here and not an error.
-    fn cached_length(&self, key: &str) -> Option<u64> {
-        self.known_lengths
-            .lock()
-            .expect("matrixobject known lengths poisoned")
-            .get(key)
-            .copied()
-    }
-
-    fn remember_length(&self, key: &str, length: u64) {
-        self.known_lengths
-            .lock()
-            .expect("matrixobject known lengths poisoned")
-            .insert(key.to_string(), length);
-    }
-
-    /// Drop a remembered length, because something other than an append changed the object.
-    ///
-    /// A `put` replaces it and a `delete` removes it, and either leaves a remembered end
-    /// describing an object that no longer has one. Forgetting costs the next append a HEAD;
-    /// not forgetting costs it a refusal and a retry, which is slower and noisier.
-    fn forget_length(&self, key: &str) {
-        self.known_lengths
-            .lock()
-            .expect("matrixobject known lengths poisoned")
-            .remove(key);
-    }
-
-    fn object_length_blocking(&self, key: &str) -> Result<u64, ObjectStoreError> {
-        let response = self.send("HEAD", &self.object_target(key), &[], &[])?;
-        match response.status {
-            200 => Ok(response
-                .header("x-amz-object-size")
-                .or_else(|| response.header("content-length"))
-                .and_then(|value| value.trim().parse::<u64>().ok())
-                .unwrap_or(0)),
-            404 => Ok(0),
-            status => Err(response.failure(status, key)),
-        }
-    }
-
-    /// `ListObjectsV2`, following continuation tokens.
-    ///
-    /// Paged rather than assumed to fit: the door answers a bounded number of keys and says so
-    /// with `IsTruncated`, and a caller reading only the first page would silently see a prefix
-    /// of its own log.
-    fn list_v2_blocking(
-        &self,
-        prefix: &str,
-        after: Option<&str>,
-    ) -> Result<Vec<String>, ObjectStoreError> {
-        let mut keys: Vec<String> = Vec::new();
-        let mut token: Option<String> = None;
-        loop {
-            let mut target = format!("/{}?list-type=2", self.bucket);
-            if !prefix.is_empty() {
-                target.push_str("&prefix=");
-                target.push_str(&encode_query(prefix));
-            }
-            if let Some(after) = after {
-                target.push_str("&start-after=");
-                target.push_str(&encode_query(after));
-            }
-            if let Some(token) = &token {
-                target.push_str("&continuation-token=");
-                target.push_str(&encode_query(token));
-            }
-            let response = self.send("GET", &target, &[], &[])?;
-            if response.status != 200 {
-                return Err(response.failure(response.status, prefix));
-            }
-            let body = String::from_utf8_lossy(&response.body);
-            keys.extend(xml_values(&body, "Key"));
-            let truncated = xml_values(&body, "IsTruncated")
-                .first()
-                .is_some_and(|value| value.trim() == "true");
-            if !truncated {
-                break;
-            }
-            match xml_values(&body, "NextContinuationToken")
-                .into_iter()
-                .find(|value| !value.is_empty())
-            {
-                Some(next) => token = Some(next),
-                // Truncated with nothing to continue from: stop rather than loop for ever, and
-                // say the listing is short instead of pretending it is whole.
-                None => {
-                    return Err(ObjectStoreError::Http(format!(
-                        "the listing of {prefix:?} is truncated and gave no continuation token, \
-                         so it cannot be read to the end"
-                    )))
-                }
-            }
-        }
-        keys.sort();
-        keys.dedup();
-        Ok(keys)
+        locks.entry(key.to_string()).or_default().clone()
     }
 }
 
 #[async_trait]
 impl ObjectStore for MatrixObjectHttpStore {
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: Option<Bytes>,
+        new: Bytes,
+    ) -> Result<(), ObjectStoreError> {
+        let lock = self.append_lock(key);
+        let _serialised = lock.lock().await;
+        let client = self.client.clone();
+        let owned_key = key.to_string();
+        tokio::task::spawn_blocking(move || {
+            client.compare_and_swap(&owned_key, expected.as_deref(), new.as_ref())
+        })
+        .await
+        .map_err(|error| ObjectStoreError::OutcomeUnknown {
+            key: key.to_string(),
+            detail: format!("the conditional write task did not finish: {error}"),
+        })??;
+        Ok(())
+    }
+
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
-        let response = self.send("PUT", &self.object_target(key), &[], bytes.as_ref())?;
-        match response.status {
-            200 | 201 | 204 => {
-                // A put REPLACES, so any remembered end is now wrong.
-                self.remember_length(key, bytes.len() as u64);
-                Ok(())
-            }
-            status => Err(response.failure(status, key)),
-        }
+        Ok(self.client.put(key, bytes.as_ref())?)
     }
 
     async fn append_blob(
@@ -543,104 +346,33 @@ impl ObjectStore for MatrixObjectHttpStore {
         key: &str,
         bytes: Bytes,
     ) -> Result<AppendBlobReceipt, ObjectStoreError> {
-        // THE OFFSET IS A CONDITION, AND LOSING ON IT IS NORMAL UNDER CONCURRENCY.
-        //
-        // Appending takes two round trips -- learn the end, then write at it -- and those are
-        // not one atomic step, so two writers against the same object can read the same end
-        // and one of them loses with a 412. The server is right to refuse: it appends where it
-        // was told or not at all, because a write that silently landed elsewhere would leave
-        // the caller's own offsets describing bytes that are not there.
-        //
-        // So the loser re-reads the end and tries again, which is what S3 prescribes for a
-        // rejected write offset. That is safe for exactly one reason: **the receipt reports
-        // where the bytes LANDED, not where this call first intended to put them.** The WAL's
-        // offset index is built from the receipt, so a retried append records its true
-        // position and a reader finds its bytes. Reporting the originally intended offset
-        // after retrying somewhere else is the thing that would corrupt it.
-        //
-        // Bounded, and the bound is reported rather than looped past: a writer that keeps
-        // losing is contention worth seeing, not something to spin on for ever.
-        const APPEND_ATTEMPTS: usize = 8;
-        let bytes_written = bytes.len() as u64;
-        let mut last_conflict: Option<ObjectStoreError> = None;
-
-        for attempt in 0..APPEND_ATTEMPTS {
-            // ONE ROUND TRIP INSTEAD OF TWO, when this client already knows the end.
-            //
-            // An append used to HEAD and then PUT every time, so the shared path paid two
-            // requests per record. A successful append already reports the object's new
-            // length, which is the next append's offset -- so the HEAD is only needed when
-            // this client has not seen the object yet, or when a remembered length has just
-            // been proved wrong. The first attempt may use the cache; a retry never does,
-            // because a retry exists precisely because the end moved.
-            let start_offset = match self.cached_length(key) {
-                Some(length) if attempt == 0 => length,
-                _ => self.object_length_blocking(key)?,
-            };
-            let response = self.send(
-                "PUT",
-                &self.object_target(key),
-                &[("x-amz-write-offset-bytes", start_offset.to_string())],
-                bytes.as_ref(),
-            )?;
-            match response.status {
-                200 | 201 | 204 => {
-                    // The server reports what the object is NOW. Deriving it from
-                    // start + written would paper over a server that appended somewhere else,
-                    // which is the one thing the receipt exists to rule out.
-                    let object_length = response
-                        .header("x-amz-object-size")
-                        .and_then(|value| value.trim().parse::<u64>().ok())
-                        .ok_or_else(|| {
-                            ObjectStoreError::Http(format!(
-                                "{key}: the append gave no usable x-amz-object-size, so where                                  the bytes landed is unknown"
-                            ))
-                        })?;
-                    let end_offset = start_offset.saturating_add(bytes_written);
-                    if object_length != end_offset {
-                        return Err(ObjectStoreError::Http(format!(
-                            "{key}: appended {bytes_written} bytes at {start_offset}, so the                              object should be {end_offset} bytes and the server reports                              {object_length}"
-                        )));
-                    }
-                    self.remember_length(key, object_length);
-                    return Ok(AppendBlobReceipt {
-                        key: key.to_string(),
-                        start_offset,
-                        end_offset,
-                        bytes_written,
-                        object_length,
-                        // NOT KNOWABLE OVER THE WIRE, and reported as absent rather than
-                        // guessed -- exactly as `FileObjectStore` reports them. These describe
-                        // where a chunk-backed store physically put the bytes, and an S3 door
-                        // says nothing about that.
-                        physical_slab_count: 0,
-                        first_physical_offset: None,
-                    });
-                }
-                // The end moved -- either someone else appended, or a remembered length was
-                // stale. Forget it so the retry asks, and try again.
-                412 => {
-                    self.forget_length(key);
-                    last_conflict = Some(response.failure(412, key));
-                }
-                status => return Err(response.failure(status, key)),
-            }
-        }
-
-        Err(last_conflict.unwrap_or_else(|| {
-            ObjectStoreError::Http(format!(
-                "{key}: gave up appending after {APPEND_ATTEMPTS} attempts"
-            ))
-        }))
+        // ONE APPEND PER OBJECT AT A TIME WITHIN THIS PROCESS: see `append_locks`.
+        let lock = self.append_lock(key);
+        let _serialised = lock.lock().await;
+        // The client's append is blocking (it may settle an unknown outcome with further
+        // requests), so it runs on a blocking thread and never stalls the executor.
+        let client = self.client.clone();
+        let owned_key = key.to_string();
+        let receipt = tokio::task::spawn_blocking(move || client.append(&owned_key, bytes.as_ref()))
+            .await
+            .map_err(|error| {
+                ObjectStoreError::Http(format!("{key}: the append task did not finish: {error}"))
+            })??;
+        Ok(AppendBlobReceipt {
+            key: key.to_string(),
+            start_offset: receipt.start_offset,
+            end_offset: receipt.end_offset,
+            bytes_written: receipt.bytes_written,
+            object_length: receipt.object_length,
+            // NOT KNOWABLE OVER THE WIRE, and reported as absent rather than guessed --
+            // exactly as `FileObjectStore` reports them.
+            physical_slab_count: 0,
+            first_physical_offset: None,
+        })
     }
 
     async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
-        let response = self.send("GET", &self.object_target(key), &[], &[])?;
-        match response.status {
-            200 => Ok(Bytes::from(response.body)),
-            404 => Err(ObjectStoreError::NotFound(key.to_string())),
-            status => Err(response.failure(status, key)),
-        }
+        self.get_blocking(key)
     }
 
     async fn get_range(
@@ -649,48 +381,7 @@ impl ObjectStore for MatrixObjectHttpStore {
         offset: u64,
         length: u64,
     ) -> Result<Bytes, ObjectStoreError> {
-        if length == 0 {
-            return Ok(Bytes::new());
-        }
-        // OVERRIDDEN RATHER THAN LEFT TO THE TRAIT, whose default fetches the whole object and
-        // slices it. A reader of a shared log asks for one record out of a log that grows
-        // without bound.
-        let last = offset
-            .checked_add(length)
-            .and_then(|end| end.checked_sub(1))
-            .ok_or_else(|| ObjectStoreError::InvalidKey(format!("{key}: range overflow")))?;
-        let response = self.send(
-            "GET",
-            &self.object_target(key),
-            &[("range", format!("bytes={offset}-{last}"))],
-            &[],
-        )?;
-        match response.status {
-            // 200 means the server ignored the range and sent the whole object, which is a
-            // legal answer to any range request -- so slice it here rather than trust the body.
-            200 => {
-                let start = usize::try_from(offset).map_err(|_| {
-                    ObjectStoreError::InvalidKey(format!("{key}: range offset too large"))
-                })?;
-                let len = usize::try_from(length).map_err(|_| {
-                    ObjectStoreError::InvalidKey(format!("{key}: range length too large"))
-                })?;
-                let end = start
-                    .checked_add(len)
-                    .ok_or_else(|| ObjectStoreError::InvalidKey(format!("{key}: range overflow")))?;
-                if end > response.body.len() {
-                    return Err(ObjectStoreError::InvalidKey(format!(
-                        "{key}: range {offset}..{} exceeds object length {}",
-                        offset.saturating_add(length),
-                        response.body.len()
-                    )));
-                }
-                Ok(Bytes::from(response.body).slice(start..end))
-            }
-            206 => Ok(Bytes::from(response.body)),
-            404 => Err(ObjectStoreError::NotFound(key.to_string())),
-            status => Err(response.failure(status, key)),
-        }
+        Ok(Bytes::from(self.client.get_range(key, offset, length)?))
     }
 
     async fn get_range_from(
@@ -698,44 +389,7 @@ impl ObjectStore for MatrixObjectHttpStore {
         key: &str,
         offset: u64,
     ) -> Result<Option<Bytes>, ObjectStoreError> {
-        // AN OPEN-ENDED RANGE, so one request returns the tail whatever the object's length is.
-        let response = self.send(
-            "GET",
-            &self.object_target(key),
-            &[("range", format!("bytes={offset}-"))],
-            &[],
-        )?;
-        match response.status {
-            206 => Ok(Some(Bytes::from(response.body))),
-            // THE SERVER IGNORED THE RANGE and sent the whole object, which is a legal answer to
-            // any range request: slice it here rather than trust the body to be the tail.
-            200 => {
-                let start = usize::try_from(offset).map_err(|_| {
-                    ObjectStoreError::InvalidKey(format!("{key}: range offset too large"))
-                })?;
-                if start > response.body.len() {
-                    return Ok(None);
-                }
-                Ok(Some(Bytes::from(response.body).slice(start..)))
-            }
-            // UNSATISFIABLE says the offset is at or past the end, and `Content-Range: bytes */len`
-            // says where the end is: AT it is an empty tail, PAST it is an object that is no
-            // longer the one being followed. A reply that does not say is treated as the second,
-            // because starting over is the safe reading.
-            416 => {
-                let length = response
-                    .header("content-range")
-                    .and_then(|value| value.trim().strip_prefix("bytes */"))
-                    .and_then(|length| length.trim().parse::<u64>().ok());
-                if length == Some(offset) {
-                    Ok(Some(Bytes::new()))
-                } else {
-                    Ok(None)
-                }
-            }
-            404 => Err(ObjectStoreError::NotFound(key.to_string())),
-            status => Err(response.failure(status, key)),
-        }
+        Ok(self.client.get_range_from(key, offset)?.map(Bytes::from))
     }
 
     async fn get_many(&self, keys: &[String]) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
@@ -754,25 +408,17 @@ impl ObjectStore for MatrixObjectHttpStore {
     }
 
     async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
-        self.list_v2_blocking(prefix, None)
+        Ok(self.client.list(prefix, None)?)
     }
 
     async fn list_after(&self, prefix: &str, after: &str) -> Result<Vec<String>, ObjectStoreError> {
         // `start-after` is served by the door, so the filtering happens there instead of every
         // key crossing the wire to be dropped here.
-        self.list_v2_blocking(prefix, Some(after))
+        Ok(self.client.list(prefix, Some(after))?)
     }
 
     async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
-        let response = self.send("DELETE", &self.object_target(key), &[], &[])?;
-        match response.status {
-            // A delete of something already gone is a success, as S3 has it.
-            200 | 202 | 204 | 404 => {
-                self.forget_length(key);
-                Ok(())
-            }
-            status => Err(response.failure(status, key)),
-        }
+        Ok(self.client.delete(key)?)
     }
 
     fn uri(&self, key: &str) -> String {
@@ -780,227 +426,6 @@ impl ObjectStore for MatrixObjectHttpStore {
     }
 }
 
-/// One HTTP response, kept whole so a caller can read a header and the body.
-struct HttpResponse {
-    status: u16,
-    headers: Vec<(String, String)>,
-    body: Vec<u8>,
-    /// Bytes read off the socket for this exchange, head included.
-    raw_len: usize,
-    /// Bytes written to the socket for it, head included.
-    request_len: usize,
-    /// Whether this socket may be kept for another request.
-    reusable: bool,
-}
-
-impl HttpResponse {
-    fn header(&self, name: &str) -> Option<&str> {
-        self.headers
-            .iter()
-            .find(|(header, _)| header.eq_ignore_ascii_case(name))
-            .map(|(_, value)| value.as_str())
-    }
-
-    /// The error a non-success status becomes, carrying the server's own words.
-    ///
-    /// The body is an S3 `<Error>` document and is included: a bare status turns a refused
-    /// append into "something went wrong" when the server said exactly what was wrong.
-    fn failure(&self, status: u16, what: &str) -> ObjectStoreError {
-        if status == 404 {
-            return ObjectStoreError::NotFound(what.to_string());
-        }
-        let text = String::from_utf8_lossy(&self.body);
-        let detail = text.trim();
-        if detail.is_empty() {
-            ObjectStoreError::Http(format!("{what}: the store answered {status}"))
-        } else {
-            ObjectStoreError::Http(format!("{what}: the store answered {status} -- {detail}"))
-        }
-    }
-}
-
-fn connect(addr: &str) -> Result<TcpStream, ObjectStoreError> {
-    let socket_addr = addr
-        .to_socket_addrs()?
-        .next()
-        .ok_or_else(|| ObjectStoreError::Http(format!("cannot resolve {addr}")))?;
-    let stream = TcpStream::connect_timeout(&socket_addr, Duration::from_millis(500))?;
-    stream.set_read_timeout(Some(Duration::from_secs(30)))?;
-    stream.set_write_timeout(Some(Duration::from_secs(30)))?;
-    stream.set_nodelay(true)?;
-    Ok(stream)
-}
-
-/// One request and its reply on a socket that may be used again.
-///
-/// # WHY THIS CAN READ THE BODY BY LENGTH AND NOTHING ELSE
-///
-/// The door frames every reply with `Content-Length` and refuses `Transfer-Encoding` of any
-/// kind with a 501 -- so there is no chunked decoder to get right, which is the thing that
-/// makes keep-alive worth doing here rather than an open-ended risk. Reading to end-of-stream
-/// is what is no longer possible: the socket stays open, so a read-to-end would block until
-/// the server gave up on it.
-///
-/// A HEAD REPLY CARRIES `Content-Length` AND NO BODY. The door suppresses the body while
-/// keeping the header, exactly as HTTP requires, so a reader that believed the header on a
-/// HEAD would wait for bytes that are never coming and time out. The method decides, not the
-/// header.
-fn http_exchange(
-    stream: &mut TcpStream,
-    addr: &str,
-    method: &str,
-    target: &str,
-    extra: &[(&str, String)],
-    body: &[u8],
-) -> Result<HttpResponse, ObjectStoreError> {
-    let mut head = format!("{method} {target} HTTP/1.1\r\nHost: {addr}\r\n");
-    for (name, value) in extra {
-        head.push_str(name);
-        head.push_str(": ");
-        head.push_str(value);
-        head.push_str("\r\n");
-    }
-    head.push_str(&format!("Content-Length: {}\r\n\r\n", body.len()));
-    stream.write_all(head.as_bytes())?;
-    if !body.is_empty() {
-        stream.write_all(body)?;
-    }
-    stream.flush()?;
-
-    // Read until the head is complete, keeping whatever body bytes arrived with it.
-    let marker = b"\r\n\r\n";
-    let mut raw: Vec<u8> = Vec::with_capacity(512);
-    let mut chunk = [0u8; 4096];
-    let header_end = loop {
-        if let Some(at) = raw
-            .windows(marker.len())
-            .position(|window| window == marker)
-        {
-            break at;
-        }
-        let read = stream.read(&mut chunk)?;
-        if read == 0 {
-            return Err(ObjectStoreError::Http(
-                "the store closed the connection before finishing its response head".to_string(),
-            ));
-        }
-        raw.extend_from_slice(&chunk[..read]);
-    };
-
-    let head_text = String::from_utf8_lossy(&raw[..header_end]).into_owned();
-    let mut lines = head_text.lines();
-    let status = lines
-        .next()
-        .and_then(|line| line.split_whitespace().nth(1))
-        .and_then(|code| code.parse::<u16>().ok())
-        .ok_or_else(|| ObjectStoreError::Http("unparseable status line".to_string()))?;
-    let headers: Vec<(String, String)> = lines
-        .filter_map(|line| line.split_once(':'))
-        .map(|(name, value)| (name.trim().to_string(), value.trim().to_string()))
-        .collect();
-
-    let header_of = |want: &str| {
-        headers
-            .iter()
-            .find(|(name, _)| name.eq_ignore_ascii_case(want))
-            .map(|(_, value)| value.as_str())
-    };
-
-    // A HEAD has no body however long it says it is; 204 and 304 never carry one either.
-    let expected = if method.eq_ignore_ascii_case("HEAD") || status == 204 || status == 304 {
-        0
-    } else {
-        header_of("content-length")
-            .and_then(|value| value.trim().parse::<usize>().ok())
-            .ok_or_else(|| {
-                ObjectStoreError::Http(format!(
-                    "the store gave no Content-Length on a {status} reply, and this client reads \
-                     bodies by length because the door frames them that way"
-                ))
-            })?
-    };
-
-    let body_start = header_end + marker.len();
-    while raw.len() - body_start < expected {
-        let read = stream.read(&mut chunk)?;
-        if read == 0 {
-            return Err(ObjectStoreError::Http(format!(
-                "the store closed the connection with {} of {expected} body bytes delivered",
-                raw.len() - body_start
-            )));
-        }
-        raw.extend_from_slice(&chunk[..read]);
-    }
-
-    // KEEP THE SOCKET ONLY IF THE SERVER SAID SO, and only if the body was read to the byte:
-    // a socket with unread bytes on it would hand them to the next request as its reply head.
-    let reusable = !header_of("connection").is_some_and(|value| value.eq_ignore_ascii_case("close"))
-        && raw.len() - body_start == expected;
-
-    Ok(HttpResponse {
-        status,
-        headers,
-        body: raw[body_start..body_start + expected].to_vec(),
-        raw_len: raw.len(),
-        request_len: head.len() + body.len(),
-        reusable,
-    })
-}
-
-/// Percent-encode an object key for a request target, LEAVING `/` ALONE.
-///
-/// A key with slashes in it is one object whose name contains them, exactly as S3 has it: the
-/// door takes everything after the bucket as the key. Encoding them would address a different
-/// object, and the bug would show only on keys that happen to contain one.
-fn encode_key(key: &str) -> String {
-    let mut out = String::with_capacity(key.len());
-    for byte in key.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' | b'/' | b':' => {
-                out.push(byte as char)
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
-
-/// Percent-encode a query value, where `/` goes too: it is data here, not structure.
-fn encode_query(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(byte as char)
-            }
-            _ => out.push_str(&format!("%{byte:02X}")),
-        }
-    }
-    out
-}
-
-/// Every `<tag>` value in an S3 listing, with the five XML entities put back.
-fn xml_values(body: &str, tag: &str) -> Vec<String> {
-    let open = format!("<{tag}>");
-    let close = format!("</{tag}>");
-    let mut out = Vec::new();
-    let mut rest = body;
-    while let Some(start) = rest.find(&open) {
-        let after = &rest[start + open.len()..];
-        let Some(end) = after.find(&close) else { break };
-        out.push(
-            after[..end]
-                .replace("&lt;", "<")
-                .replace("&gt;", ">")
-                .replace("&quot;", "\"")
-                .replace("&apos;", "'")
-                // LAST, so a literal `&amp;lt;` does not come back as `<`.
-                .replace("&amp;", "&"),
-        );
-        rest = &after[end + close.len()..];
-    }
-    out
-}
 /// Where an append-mode write ended, as the file itself reports it.
 ///
 /// On unix the position after a write to a file opened for append is the end of that write,
@@ -1295,6 +720,280 @@ async fn collect_files(
     Ok(())
 }
 
+// ---- How a node reaches MatrixObject over the network ----------------------------------
+
+/// The two ways a TemporalStore node can reach a MatrixObject cluster.
+///
+/// `Gateway` speaks S3 to a gateway (`MatrixObjectHttpStore`). `Direct` talks to the metadata
+/// group and the chunk servers itself, with no gateway in between. Both are meant to give the
+/// same TemporalStore behaviour and the same durable bytes; the mode only chooses the path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatrixObjectMode {
+    Gateway,
+    Direct,
+}
+
+/// A networked MatrixObject configuration that cannot be used as written.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum MatrixObjectModeError {
+    #[error("TS_MATRIXOBJECT_MODE={0:?} is not a mode; use \"gateway\" or \"direct\"")]
+    UnknownMode(String),
+    #[error("gateway mode needs TS_SHARED_STORE_URI=matrixobject://host:port")]
+    GatewayNeedsUri,
+    #[error("direct mode needs TS_MATRIXOBJECT_META, the metadata group's endpoints")]
+    DirectNeedsMeta,
+}
+
+/// Pick the mode from the three settings that name it, or refuse. Pure, so every outcome is
+/// testable without touching the process environment. An empty or blank value is unset.
+///
+/// * `mode`: `TS_MATRIXOBJECT_MODE`.
+/// * `gateway_uri`: `TS_SHARED_STORE_URI`, which counts only when it names `matrixobject://`.
+/// * `direct_meta`: `TS_MATRIXOBJECT_META`.
+///
+/// Direct is the default: with no mode, a metadata group decides for direct whether or not a
+/// gateway is also configured, and a gateway is used only when it is the only thing configured
+/// (a node cannot reach a cluster directly without knowing its metadata group). An explicit mode
+/// wins and needs only its own setting.
+///
+/// `Ok(None)` means no networked MatrixObject is configured at all.
+pub fn resolve_matrixobject_mode(
+    mode: Option<&str>,
+    gateway_uri: Option<&str>,
+    direct_meta: Option<&str>,
+) -> Result<Option<MatrixObjectMode>, MatrixObjectModeError> {
+    fn set(value: Option<&str>) -> Option<&str> {
+        value.map(str::trim).filter(|value| !value.is_empty())
+    }
+    let gateway = set(gateway_uri).filter(|uri| uri.starts_with("matrixobject://"));
+    let direct = set(direct_meta);
+    match set(mode).map(str::to_ascii_lowercase).as_deref() {
+        Some("gateway") => match gateway {
+            None => Err(MatrixObjectModeError::GatewayNeedsUri),
+            Some(_) => Ok(Some(MatrixObjectMode::Gateway)),
+        },
+        Some("direct") => match direct {
+            None => Err(MatrixObjectModeError::DirectNeedsMeta),
+            Some(_) => Ok(Some(MatrixObjectMode::Direct)),
+        },
+        Some(other) => Err(MatrixObjectModeError::UnknownMode(other.to_string())),
+        None => match (direct, gateway) {
+            (Some(_), _) => Ok(Some(MatrixObjectMode::Direct)),
+            (None, Some(_)) => Ok(Some(MatrixObjectMode::Gateway)),
+            (None, None) => Ok(None),
+        },
+    }
+}
+
+/// A synchronous whole-object read, for the callers that cannot be async (the lazy slab
+/// source is consulted from inside a block store's read path).
+pub trait BlockingObjectRead: Send + Sync {
+    fn get_blocking(&self, key: &str) -> Result<Bytes, ObjectStoreError>;
+}
+
+impl BlockingObjectRead for MatrixObjectHttpStore {
+    fn get_blocking(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        MatrixObjectHttpStore::get_blocking(self, key)
+    }
+}
+
+/// The networked MatrixObject store a node holds, whichever way it reaches the cluster.
+///
+/// Only `Gateway` exists today; `Direct` joins it when the SDK client does. The enum is here
+/// first so everything that holds a networked store holds this, and adding the second path is
+/// then a change to this file and not to every caller.
+///
+/// Every `ObjectStore` method is forwarded, the defaulted ones included: a wrapper that omits
+/// `append_blob` or `compare_and_swap` compiles and then refuses at run time. The guard test
+/// in `shared_store` reads the trait and checks this impl for each method.
+#[derive(Debug, Clone)]
+pub enum NetworkedMatrixObject {
+    Gateway(MatrixObjectHttpStore),
+    /// The same store, its requests answered in process by the cluster client.
+    Direct(MatrixObjectHttpStore),
+}
+
+impl NetworkedMatrixObject {
+    /// Connect in the given mode. `target` is the gateway URI for `Gateway`.
+    pub fn connect(mode: MatrixObjectMode, target: &str) -> Result<Self, ObjectStoreError> {
+        match mode {
+            MatrixObjectMode::Gateway => Ok(Self::Gateway(MatrixObjectHttpStore::new(target)?)),
+            MatrixObjectMode::Direct => Err(ObjectStoreError::Io(std::io::Error::new(
+                std::io::ErrorKind::Unsupported,
+                "direct MatrixObject mode is connected by `matrixobject_direct::DirectConfig` in temporalstore-rust, not by this crate",
+            ))),
+        }
+    }
+
+    /// The direct way in: a store whose requests `door` answers in this process.
+    pub fn direct(door: Arc<dyn Transport>, bucket: &str) -> Self {
+        Self::Direct(MatrixObjectHttpStore::in_process(door, bucket))
+    }
+
+    pub fn mode(&self) -> MatrixObjectMode {
+        match self {
+            Self::Gateway(_) => MatrixObjectMode::Gateway,
+            Self::Direct(_) => MatrixObjectMode::Direct,
+        }
+    }
+
+    pub fn bucket(&self) -> &str {
+        match self {
+            Self::Gateway(store) => store.bucket(),
+            Self::Direct(store) => store.bucket(),
+        }
+    }
+
+    pub fn requests_issued(&self) -> u64 {
+        match self {
+            Self::Gateway(store) => store.requests_issued(),
+            Self::Direct(store) => store.requests_issued(),
+        }
+    }
+
+    pub fn wire_bytes_sent(&self) -> u64 {
+        match self {
+            Self::Gateway(store) => store.wire_bytes_sent(),
+            Self::Direct(store) => store.wire_bytes_sent(),
+        }
+    }
+
+    pub fn wire_bytes_received(&self) -> u64 {
+        match self {
+            Self::Gateway(store) => store.wire_bytes_received(),
+            Self::Direct(store) => store.wire_bytes_received(),
+        }
+    }
+
+    pub fn connections_opened(&self) -> u64 {
+        match self {
+            Self::Gateway(store) => store.connections_opened(),
+            Self::Direct(store) => store.connections_opened(),
+        }
+    }
+
+    pub fn append_resolutions(&self) -> AppendResolutions {
+        match self {
+            Self::Gateway(store) => store.append_resolutions(),
+            Self::Direct(store) => store.append_resolutions(),
+        }
+    }
+}
+
+impl BlockingObjectRead for NetworkedMatrixObject {
+    fn get_blocking(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => BlockingObjectRead::get_blocking(store, key),
+            Self::Direct(store) => BlockingObjectRead::get_blocking(store, key),
+        }
+    }
+}
+
+#[async_trait]
+impl ObjectStore for NetworkedMatrixObject {
+    async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.put(key, bytes).await,
+            Self::Direct(store) => store.put(key, bytes).await,
+        }
+    }
+
+    async fn append_blob(
+        &self,
+        key: &str,
+        bytes: Bytes,
+    ) -> Result<AppendBlobReceipt, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.append_blob(key, bytes).await,
+            Self::Direct(store) => store.append_blob(key, bytes).await,
+        }
+    }
+
+    async fn put_many(&self, objects: &[(String, Bytes)]) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.put_many(objects).await,
+            Self::Direct(store) => store.put_many(objects).await,
+        }
+    }
+
+    async fn compare_and_swap(
+        &self,
+        key: &str,
+        expected: Option<Bytes>,
+        new: Bytes,
+    ) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.compare_and_swap(key, expected, new).await,
+            Self::Direct(store) => store.compare_and_swap(key, expected, new).await,
+        }
+    }
+
+    async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.get(key).await,
+            Self::Direct(store) => store.get(key).await,
+        }
+    }
+
+    async fn get_range(
+        &self,
+        key: &str,
+        offset: u64,
+        length: u64,
+    ) -> Result<Bytes, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.get_range(key, offset, length).await,
+            Self::Direct(store) => store.get_range(key, offset, length).await,
+        }
+    }
+
+    async fn get_range_from(
+        &self,
+        key: &str,
+        offset: u64,
+    ) -> Result<Option<Bytes>, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.get_range_from(key, offset).await,
+            Self::Direct(store) => store.get_range_from(key, offset).await,
+        }
+    }
+
+    async fn get_many(&self, keys: &[String]) -> Result<Vec<(String, Bytes)>, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.get_many(keys).await,
+            Self::Direct(store) => store.get_many(keys).await,
+        }
+    }
+
+    async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.list(prefix).await,
+            Self::Direct(store) => store.list(prefix).await,
+        }
+    }
+
+    async fn list_after(&self, prefix: &str, after: &str) -> Result<Vec<String>, ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.list_after(prefix, after).await,
+            Self::Direct(store) => store.list_after(prefix, after).await,
+        }
+    }
+
+    async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+        match self {
+            Self::Gateway(store) => store.delete(key).await,
+            Self::Direct(store) => store.delete(key).await,
+        }
+    }
+
+    fn uri(&self, key: &str) -> String {
+        match self {
+            Self::Gateway(store) => store.uri(key),
+            Self::Direct(store) => store.uri(key),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1435,5 +1134,565 @@ mod tests {
             store.get("shards/1/wal/0001.json").await.unwrap(),
             Bytes::from_static(b"durable")
         );
+    }
+
+    // ---- An append whose outcome is unknown is settled by reading, never repeated blind ----
+    //
+    // A scripted one-object S3 server. It commits a PUT and THEN misbehaves (drops the socket,
+    // answers 503), which is the case a real gateway produces when a consensus deadline passes
+    // after the manifest was committed.
+
+    #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+    enum Fault {
+        None,
+        /// Commit the append, then close the socket without answering.
+        CommitThenDrop,
+        /// Commit the append, then answer 503.
+        CommitThen503,
+        /// Answer 503 and commit nothing.
+        Refuse503,
+    }
+
+    #[derive(Debug)]
+    struct ScriptedState {
+        data: Vec<u8>,
+        existing: bool,
+        puts: usize,
+        fault_on_first_put: Fault,
+        /// Every resolve answers 503 (the gateway cannot decide).
+        reads_fail: bool,
+        /// The attempt ids of the appends this object committed.
+        committed_attempts: Vec<String>,
+        /// Every attempt id a PUT arrived with, committed or not.
+        put_attempts: Vec<String>,
+    }
+
+    /// What the scripted one-object door answers, as raw HTTP bytes, or `None` to drop the
+    /// connection without answering. Shared by the socket server and the in-process door, so
+    /// both ways in are served by the same script.
+    fn scripted_respond(
+        shared: &Mutex<ScriptedState>,
+        method: &str,
+        target: &str,
+        header: &dyn Fn(&str) -> Option<String>,
+        body: &[u8],
+    ) -> Option<Vec<u8>> {
+        let reply = |status: &str, extra: &str, body: &[u8], with_body: bool| {
+            let mut out = format!(
+                "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n{extra}\r\n",
+                body.len()
+            )
+            .into_bytes();
+            if with_body {
+                out.extend_from_slice(body);
+            }
+            out
+        };
+        let mut state = shared.lock().unwrap();
+        let answer: Option<Vec<u8>> = match method {
+            "HEAD" if !state.existing => Some(reply("404 Not Found", "", b"", false)),
+            "HEAD" => Some(reply(
+                "200 OK",
+                &format!("x-amz-object-size: {}\r\n", state.data.len()),
+                &vec![0u8; state.data.len()],
+                false,
+            )),
+            "POST" if target.contains("append-resolve") => {
+                let attempt = target
+                    .split(['?', '&'])
+                    .find_map(|part| part.strip_prefix("attempt="))
+                    .unwrap_or_default()
+                    .to_string();
+                if state.reads_fail {
+                    Some(reply("503 Service Unavailable", "", b"undecided", true))
+                } else if state.committed_attempts.contains(&attempt) {
+                    Some(reply("200 OK", "x-append-resolution: landed\r\n", b"landed\n", true))
+                } else {
+                    Some(reply("200 OK", "x-append-resolution: absent\r\n", b"absent\n", true))
+                }
+            }
+            "GET" => {
+                if !state.existing {
+                    Some(reply("404 Not Found", "", b"", true))
+                } else if let Some(range) = header("range") {
+                    let spec = range.trim_start_matches("bytes=");
+                    let (first, last) = spec.split_once('-').unwrap();
+                    let first: usize = first.parse().unwrap();
+                    if first >= state.data.len() {
+                        Some(reply(
+                            "416 Range Not Satisfiable",
+                            &format!("Content-Range: bytes */{}\r\n", state.data.len()),
+                            b"",
+                            true,
+                        ))
+                    } else {
+                        let last = last
+                            .parse::<usize>()
+                            .unwrap_or(usize::MAX)
+                            .min(state.data.len() - 1);
+                        Some(reply("206 Partial Content", "", &state.data[first..=last], true))
+                    }
+                } else {
+                    Some(reply("200 OK", "", &state.data.clone(), true))
+                }
+            }
+            "PUT"
+                if header("x-amz-write-offset-bytes").is_none()
+                    && (header("if-none-match").is_some() || header("if-match").is_some()) =>
+            {
+                Some(reply("412 Precondition Failed", "", b"conditional write refused", true))
+            }
+            "PUT" => {
+                state.puts += 1;
+                let attempt_id = header("x-amz-attempt-id").expect("an append carries its attempt id");
+                assert_eq!(attempt_id.len(), 32, "{attempt_id}");
+                assert!(attempt_id.chars().all(|c| c.is_ascii_hexdigit()), "{attempt_id}");
+                state.put_attempts.push(attempt_id.clone());
+                let fault = if state.puts == 1 { state.fault_on_first_put } else { Fault::None };
+                let offset: usize = header("x-amz-write-offset-bytes")
+                    .and_then(|value| value.parse().ok())
+                    .expect("an append carries its offset");
+                if offset != state.data.len() {
+                    Some(reply("412 Precondition Failed", "", b"offset", true))
+                } else if fault == Fault::Refuse503 {
+                    Some(reply("503 Service Unavailable", "", b"try later", true))
+                } else {
+                    state.data.extend_from_slice(body);
+                    state.committed_attempts.push(attempt_id);
+                    state.existing = true;
+                    match fault {
+                        Fault::CommitThenDrop => None,
+                        Fault::CommitThen503 => Some(reply(
+                            "503 Service Unavailable",
+                            "",
+                            b"the publication is unconfirmed",
+                            true,
+                        )),
+                        _ => Some(reply(
+                            "200 OK",
+                            &format!("x-amz-object-size: {}\r\n", state.data.len()),
+                            b"",
+                            false,
+                        )),
+                    }
+                }
+            }
+            _ => Some(reply("405 Method Not Allowed", "", b"", true)),
+        };
+        drop(state);
+        answer
+    }
+
+    fn scripted_server(
+        fault_on_first_put: Fault,
+        reads_fail: bool,
+    ) -> (String, Arc<Mutex<ScriptedState>>) {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        let state = Arc::new(Mutex::new(ScriptedState {
+            data: Vec::new(),
+            existing: false,
+            puts: 0,
+            fault_on_first_put,
+            reads_fail,
+            committed_attempts: Vec::new(),
+            put_attempts: Vec::new(),
+        }));
+        let shared = state.clone();
+        std::thread::spawn(move || {
+            for stream in listener.incoming() {
+                let Ok(mut stream) = stream else { continue };
+                let mut raw = Vec::new();
+                let mut chunk = [0u8; 4096];
+                let head_end = loop {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break None;
+                    }
+                    raw.extend_from_slice(&chunk[..n]);
+                    if let Some(at) = raw.windows(4).position(|w| w == b"\r\n\r\n") {
+                        break Some(at + 4);
+                    }
+                };
+                let Some(head_end) = head_end else { continue };
+                let head = String::from_utf8_lossy(&raw[..head_end]).to_string();
+                let mut lines = head.lines();
+                let request_line = lines.next().unwrap_or_default().to_string();
+                let method = request_line.split(' ').next().unwrap_or_default().to_string();
+                let target = request_line.split(' ').nth(1).unwrap_or_default().to_string();
+                let header = |name: &str| -> Option<String> {
+                    head.lines().find_map(|line| {
+                        let (key, value) = line.split_once(':')?;
+                        key.eq_ignore_ascii_case(name).then(|| value.trim().to_string())
+                    })
+                };
+                let content_length: usize = header("content-length")
+                    .and_then(|value| value.parse().ok())
+                    .unwrap_or(0);
+                while raw.len() < head_end + content_length {
+                    let n = stream.read(&mut chunk).unwrap_or(0);
+                    if n == 0 {
+                        break;
+                    }
+                    raw.extend_from_slice(&chunk[..n]);
+                }
+                let body = raw[head_end..].to_vec();
+                let answer = scripted_respond(&shared, &method, &target, &header, &body);
+                if let Some(answer) = answer {
+                    let _ = stream.write_all(&answer);
+                }
+            }
+        });
+        (format!("matrixobject://{addr}"), state)
+    }
+
+    #[tokio::test]
+    async fn an_append_committed_before_the_socket_dropped_is_reported_landed_not_repeated() {
+        let (uri, state) = scripted_server(Fault::CommitThenDrop, false);
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let receipt = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect("the bytes are in the object, so the append succeeded");
+        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 10));
+        assert_eq!(receipt.object_length, 10);
+        let state = state.lock().unwrap();
+        assert_eq!(state.data, b"record-one", "stored exactly once");
+        assert_eq!(state.puts, 1, "nothing was sent a second time");
+    }
+
+    #[tokio::test]
+    async fn an_append_committed_before_a_503_is_reported_landed_not_repeated() {
+        let (uri, state) = scripted_server(Fault::CommitThen503, false);
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let receipt = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect("a 503 after the commit must be settled by reading");
+        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 10));
+        let state = state.lock().unwrap();
+        assert_eq!(state.data, b"record-one", "stored exactly once");
+    }
+
+    #[tokio::test]
+    async fn an_append_refused_with_a_503_and_not_committed_is_retried_once_it_is_known_absent() {
+        let (uri, state) = scripted_server(Fault::Refuse503, false);
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let receipt = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect("nothing was committed, so the retry is safe and lands");
+        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 10));
+        let state = state.lock().unwrap();
+        assert_eq!(state.data, b"record-one");
+        assert_eq!(state.puts, 2);
+    }
+
+    #[tokio::test]
+    async fn an_append_that_cannot_be_read_back_reports_an_unknown_outcome_and_is_not_repeated() {
+        let (uri, state) = scripted_server(Fault::CommitThenDrop, true);
+        let store = MatrixObjectHttpStore::new(&uri).unwrap();
+        let error = store
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect_err("whether it landed cannot be established");
+        assert!(
+            matches!(error, ObjectStoreError::OutcomeUnknown { .. }),
+            "got {error:?}"
+        );
+        let state = state.lock().unwrap();
+        assert_eq!(state.puts, 1, "an append of unknown outcome is never sent again");
+        assert_eq!(state.data, b"record-one");
+    }
+
+    // ---- A door that cannot answer ----
+
+    /// A transport that never answers: the door fell over.
+    #[derive(Debug)]
+    struct DeadDoor;
+
+    impl Transport for DeadDoor {
+        fn send(
+            &self,
+            _method: &str,
+            _target: &str,
+            _headers: &[(&str, String)],
+            _body: &[u8],
+        ) -> Result<matrixobject_client::Reply, matrixobject_client::TransportError> {
+            Err(matrixobject_client::TransportError("the door fell over".to_string()))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_door_that_cannot_answer_is_a_transport_failure_with_its_own_words_and_not_a_503() {
+        let store = NetworkedMatrixObject::direct(Arc::new(DeadDoor), "temporalstore");
+        let error = store.get("wal").await.expect_err("the door did not answer");
+        let text = error.to_string();
+        assert!(text.contains("the door fell over"), "the door's own failure is reported: {text}");
+        assert!(!text.contains("503"), "a door that fails to answer is not an answered 503: {text}");
+        assert_eq!(store.requests_issued(), 1);
+    }
+
+    // ---- The networked store and its mode ----
+
+    #[test]
+    fn direct_is_the_default_and_an_explicit_mode_wins() {
+        let gw = Some("matrixobject://host:9000");
+        let meta = Some("m1:7000,m2:7000");
+        let r = resolve_matrixobject_mode;
+        // Nothing set: no networked store, which is today's behaviour byte for byte.
+        assert_eq!(r(None, None, None), Ok(None));
+        assert_eq!(r(Some(" "), Some(""), Some("  ")), Ok(None));
+        // A URI of another scheme is not a gateway.
+        assert_eq!(r(None, Some("s3://bucket"), None), Ok(None));
+        // One side set picks that side.
+        assert_eq!(r(None, gw, None), Ok(Some(MatrixObjectMode::Gateway)));
+        assert_eq!(r(None, None, meta), Ok(Some(MatrixObjectMode::Direct)));
+        // Both set and no mode: direct is the default.
+        assert_eq!(r(None, gw, meta), Ok(Some(MatrixObjectMode::Direct)));
+        // An explicit mode must have what it needs, and wins over the other setting.
+        assert_eq!(r(Some("Gateway"), gw, None), Ok(Some(MatrixObjectMode::Gateway)));
+        assert_eq!(r(Some("direct"), None, meta), Ok(Some(MatrixObjectMode::Direct)));
+        assert_eq!(r(Some("gateway"), None, meta), Err(MatrixObjectModeError::GatewayNeedsUri));
+        assert_eq!(r(Some("direct"), gw, None), Err(MatrixObjectModeError::DirectNeedsMeta));
+        assert_eq!(r(Some("gateway"), gw, meta), Ok(Some(MatrixObjectMode::Gateway)));
+        assert_eq!(r(Some("direct"), gw, meta), Ok(Some(MatrixObjectMode::Direct)));
+        // A mode name's case does not matter.
+        assert_eq!(r(Some("DIRECT"), gw, meta), Ok(Some(MatrixObjectMode::Direct)));
+        assert!(matches!(
+            r(Some("both"), gw, None),
+            Err(MatrixObjectModeError::UnknownMode(_))
+        ));
+    }
+
+    #[test]
+    fn direct_mode_is_refused_loudly_until_the_client_is_built_in() {
+        let error = NetworkedMatrixObject::connect(MatrixObjectMode::Direct, "m1:7000")
+            .expect_err("no direct client yet");
+        assert!(error.to_string().contains("matrixobject_direct::DirectConfig"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn the_networked_store_forwards_every_method_to_the_gateway_store() {
+        let (uri, state) = scripted_server(Fault::None, false);
+        let store = NetworkedMatrixObject::connect(MatrixObjectMode::Gateway, &uri).unwrap();
+        assert_eq!(store.mode(), MatrixObjectMode::Gateway);
+        // The defaulted methods: an append and a ranged tail read reach the server and answer
+        // as the inner store would, rather than falling back to the trait's refusing default.
+        let receipt = store.append_blob("wal", Bytes::from_static(b"abcdef")).await.unwrap();
+        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 6));
+        assert_eq!(store.get_range_from("wal", 2).await.unwrap().unwrap().as_ref(), b"cdef");
+        assert_eq!(store.get_range("wal", 1, 3).await.unwrap().as_ref(), b"bcd");
+        assert_eq!(BlockingObjectRead::get_blocking(&store, "wal").unwrap().as_ref(), b"abcdef");
+        assert_eq!(state.lock().unwrap().data, b"abcdef");
+        // The conditional fixture refuses both requests. The wrapper must send its
+        // request and preserve the inner failure instead of using the trait default.
+        let inner = MatrixObjectHttpStore::new(&uri).unwrap();
+        let before = store.requests_issued();
+        let direct = inner.compare_and_swap("k", None, Bytes::from_static(b"x")).await;
+        let wrapped = store.compare_and_swap("k", None, Bytes::from_static(b"x")).await;
+        assert!(matches!(&direct, Err(ObjectStoreError::ConditionFailed { key, .. }) if key == "k"));
+        assert!(matches!(&wrapped, Err(ObjectStoreError::ConditionFailed { key, .. }) if key == "k"));
+        assert_eq!(format!("{direct:?}"), format!("{wrapped:?}"));
+        assert_eq!(inner.requests_issued(), 1);
+        assert_eq!(store.requests_issued(), before + 1);
+        let state = state.lock().unwrap();
+        assert_eq!(state.puts, 1, "conditional refusals changed append accounting");
+        assert_eq!(state.data, b"abcdef", "a refused condition changed the object");
+    }
+
+    /// The scripted door, reached in process: the same answers, no socket.
+    #[derive(Debug)]
+    struct ScriptedDoor(Arc<Mutex<ScriptedState>>);
+
+    impl Transport for ScriptedDoor {
+        fn send(
+            &self,
+            method: &str,
+            target: &str,
+            headers: &[(&str, String)],
+            body: &[u8],
+        ) -> Result<matrixobject_client::Reply, matrixobject_client::TransportError> {
+            let header = |name: &str| -> Option<String> {
+                headers
+                    .iter()
+                    .find(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, value)| value.clone())
+            };
+            let raw = scripted_respond(&self.0, method, target, &header, body).ok_or_else(|| {
+                matrixobject_client::TransportError("the door dropped the request".to_string())
+            })?;
+            let head_end = raw.windows(4).position(|w| w == b"\r\n\r\n").expect("a reply head") + 4;
+            let head = String::from_utf8_lossy(&raw[..head_end]).to_string();
+            let mut lines = head.lines();
+            let status = lines
+                .next()
+                .and_then(|line| line.split_whitespace().nth(1))
+                .and_then(|code| code.parse().ok())
+                .expect("a status line");
+            let headers = lines
+                .filter_map(|line| line.split_once(':'))
+                .map(|(k, v)| (k.trim().to_string(), v.trim().to_string()))
+                .collect();
+            Ok(matrixobject_client::Reply { status, headers, body: raw[head_end..].to_vec() })
+        }
+    }
+
+    fn scripted_direct(
+        fault_on_first_put: Fault,
+        reads_fail: bool,
+    ) -> (NetworkedMatrixObject, Arc<Mutex<ScriptedState>>) {
+        let state = Arc::new(Mutex::new(ScriptedState {
+            data: Vec::new(),
+            existing: false,
+            puts: 0,
+            fault_on_first_put,
+            reads_fail,
+            committed_attempts: Vec::new(),
+            put_attempts: Vec::new(),
+        }));
+        let store = NetworkedMatrixObject::direct(Arc::new(ScriptedDoor(state.clone())), "temporalstore");
+        (store, state)
+    }
+
+    fn scripted_gateway(
+        fault_on_first_put: Fault,
+        reads_fail: bool,
+    ) -> (NetworkedMatrixObject, Arc<Mutex<ScriptedState>>) {
+        let (uri, state) = scripted_server(fault_on_first_put, reads_fail);
+        (NetworkedMatrixObject::connect(MatrixObjectMode::Gateway, &uri).unwrap(), state)
+    }
+
+    /// One sequence of writes, run through any store, reporting everything a caller can see.
+    async fn drive<S: ObjectStore>(store: &S) -> Vec<String> {
+        let mut seen = Vec::new();
+        seen.push(format!("absent get: {:?}", store.get("wal").await.map_err(|e| e.to_string())));
+        for record in [&b"alpha"[..], b"", b"bravo-bravo", b"c"] {
+            let receipt = store.append_blob("wal", Bytes::copy_from_slice(record)).await;
+            seen.push(match receipt {
+                Ok(r) => format!(
+                    "append {} -> start {} end {} written {} length {} slabs {} first {:?}",
+                    record.len(),
+                    r.start_offset,
+                    r.end_offset,
+                    r.bytes_written,
+                    r.object_length,
+                    r.physical_slab_count,
+                    r.first_physical_offset
+                ),
+                Err(e) => format!("append {} -> error {e}", record.len()),
+            });
+        }
+        seen.push(format!("get {:?}", store.get("wal").await.unwrap()));
+        seen.push(format!("range 3..8 {:?}", store.get_range("wal", 3, 5).await.unwrap()));
+        seen.push(format!("range 0..0 {:?}", store.get_range("wal", 0, 0).await.unwrap()));
+        seen.push(format!("range_from 5 {:?}", store.get_range_from("wal", 5).await.unwrap()));
+        seen.push(format!("range_from end {:?}", store.get_range_from("wal", 17).await.unwrap()));
+        seen.push(format!("range_from past {:?}", store.get_range_from("wal", 18).await.unwrap()));
+        seen
+    }
+
+    #[tokio::test]
+    async fn identical_bytes_in_both_modes() {
+        let (gateway, gateway_state) = scripted_gateway(Fault::None, false);
+        let (direct, direct_state) = scripted_direct(Fault::None, false);
+        assert_eq!(direct.mode(), MatrixObjectMode::Direct);
+        let through_gateway = drive(&gateway).await;
+        let through_direct = drive(&direct).await;
+        // What the caller saw: receipts, reads, ranges, tails.
+        assert_eq!(through_gateway, through_direct);
+        // What is durably in the object: the bytes themselves.
+        assert_eq!(gateway_state.lock().unwrap().data, direct_state.lock().unwrap().data);
+        assert_eq!(direct_state.lock().unwrap().data, b"alphabravo-bravoc");
+        // The control: the drive wrote and read something, so two empty lists would not pass.
+        assert!(through_gateway.len() >= 10, "{through_gateway:?}");
+        // The direct way sent nothing over a wire; the gateway way did.
+        assert_eq!(direct.wire_bytes_sent(), 0);
+        assert!(gateway.wire_bytes_sent() > 0);
+    }
+
+    /// The same fault in each way in leaves the same bytes and the same answer.
+    #[tokio::test]
+    async fn an_append_that_committed_before_a_failure_leaves_the_same_bytes_in_both_modes() {
+        for fault in [Fault::CommitThen503, Fault::CommitThenDrop, Fault::Refuse503] {
+            let (gateway, gateway_state) = scripted_gateway(fault, false);
+            let (direct, direct_state) = scripted_direct(fault, false);
+            let a = gateway.append_blob("wal", Bytes::from_static(b"record-one")).await.unwrap();
+            let b = direct.append_blob("wal", Bytes::from_static(b"record-one")).await.unwrap();
+            assert_eq!(
+                (a.start_offset, a.end_offset, a.object_length),
+                (b.start_offset, b.end_offset, b.object_length),
+                "{fault:?}"
+            );
+            assert_eq!(gateway_state.lock().unwrap().data, direct_state.lock().unwrap().data, "{fault:?}");
+            assert_eq!(direct_state.lock().unwrap().data, b"record-one", "stored exactly once ({fault:?})");
+            assert_eq!(
+                gateway_state.lock().unwrap().puts,
+                direct_state.lock().unwrap().puts,
+                "the same number of requests reached the door ({fault:?})"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_append_that_cannot_be_read_back_is_unknown_in_both_modes_and_is_not_repeated() {
+        let (gateway, gateway_state) = scripted_gateway(Fault::CommitThenDrop, true);
+        let (direct, direct_state) = scripted_direct(Fault::CommitThenDrop, true);
+        for (store, state) in [(&gateway, &gateway_state), (&direct, &direct_state)] {
+            let error = store
+                .append_blob("wal", Bytes::from_static(b"record-one"))
+                .await
+                .expect_err("whether it landed cannot be established");
+            assert!(matches!(error, ObjectStoreError::OutcomeUnknown { .. }), "got {error:?}");
+            assert_eq!(state.lock().unwrap().puts, 1, "never sent again");
+        }
+    }
+
+    /// A long run of sequential appends must not wedge or diverge in either mode: each lands at
+    /// the end the last one left, every receipt agrees with the other mode's, and the bytes match.
+    #[tokio::test]
+    async fn three_thousand_sequential_appends_agree_in_both_modes() {
+        const APPENDS: usize = 3000;
+        const SIZE: usize = 1024;
+        let (gateway, gateway_state) = scripted_gateway(Fault::None, false);
+        let (direct, direct_state) = scripted_direct(Fault::None, false);
+        for index in 0..APPENDS {
+            let record = vec![(index % 251) as u8; SIZE];
+            let a = gateway
+                .append_blob("wal", Bytes::from(record.clone()))
+                .await
+                .unwrap_or_else(|e| panic!("gateway append {index}: {e}"));
+            let b = direct
+                .append_blob("wal", Bytes::from(record))
+                .await
+                .unwrap_or_else(|e| panic!("direct append {index}: {e}"));
+            assert_eq!(
+                (a.start_offset, a.end_offset, a.object_length),
+                (b.start_offset, b.end_offset, b.object_length),
+                "receipts diverged at append {index}"
+            );
+            assert_eq!(a.start_offset, (index * SIZE) as u64, "append {index} landed off the end");
+        }
+        assert_eq!(direct_state.lock().unwrap().data.len(), APPENDS * SIZE);
+        assert!(
+            gateway_state.lock().unwrap().data == direct_state.lock().unwrap().data,
+            "the stored bytes differ"
+        );
+        // One request per append once the length is known: neither way pays a HEAD each time.
+        assert_eq!(direct.requests_issued() as usize, APPENDS + 1);
+        assert_eq!(gateway.requests_issued() as usize, APPENDS + 1);
+    }
+
+    /// A door that fails to answer is a transport failure, settled by reading and not repeated.
+    #[tokio::test]
+    async fn a_door_that_fails_to_answer_is_settled_by_reading_the_object() {
+        let (direct, state) = scripted_direct(Fault::CommitThenDrop, false);
+        let receipt = direct
+            .append_blob("wal", Bytes::from_static(b"record-one"))
+            .await
+            .expect("the bytes are in the object, so the append succeeded");
+        assert_eq!((receipt.start_offset, receipt.end_offset), (0, 10));
+        assert_eq!(state.lock().unwrap().puts, 1, "nothing was sent a second time");
     }
 }

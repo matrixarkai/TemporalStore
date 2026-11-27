@@ -229,7 +229,7 @@ fn a_fan_in_answers_what_an_independent_fold_answers() {
             (WindowReduceScore::Time, Box::new(|f| Some(f.last_ms as f64))),
             (
                 WindowReduceScore::Ratio { numerator: "shown".to_string(), denominator: "low".to_string() },
-                Box::new(|f| (f.lanes[2] != 0).then(|| f.lanes[0] as f64 / f.lanes[2] as f64)),
+                Box::new(|f| Some(if f.lanes[2] == 0 { 0.0 } else { (f.lanes[0] / f.lanes[2]) as f64 })),
             ),
         ];
         for (score, pick) in cases {

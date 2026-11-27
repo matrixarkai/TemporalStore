@@ -5,7 +5,7 @@
 //!
 //! # THE STATE THIS IS ABOUT
 //!
-//! Under `TS_CONTAINER_ONE_ENTRY_A_PAGE` a removal still appends a tombstone page, and that page
+//! Under `TS_CONTAINER_ONE_ENTRY_A_PAGE` a removal still appends a tombstone block, and that block
 //! still names the element in its payload -- step six established both. Then
 //! `mark_bucket_index_block_deleted_recording` goes looking for the entry to tombstone **by
 //! element name**, and a block-named entry has none. Nothing is selected, nothing is filed, and the
@@ -99,28 +99,29 @@ fn write(engine: &TemporalEngine, command: Command) {
 /// Every block address THE INDEX NAMES for this object, live entries and tombstoned alike, with the
 /// two counted separately so the shape of the index is visible and not merely its size.
 fn addresses_the_index_names(engine: &TemporalEngine) -> (Vec<ElementEntry>, usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut addresses = Vec::new();
-    let mut live = 0usize;
-    let mut tombstoned = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || &**named.at(bucket.routing_bucket, *handle) != KEY
-            {
-                continue;
+    engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.expect("shard 1 is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut addresses = Vec::new();
+        let mut live = 0usize;
+        let mut tombstoned = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || &**named.at(bucket.routing_bucket, *handle) != KEY
+                {
+                    continue;
+                }
+                if block.deleted() {
+                    tombstoned += 1;
+                } else {
+                    live += 1;
+                }
+                addresses.push(block.address.clone());
             }
-            if block.deleted() {
-                tombstoned += 1;
-            } else {
-                live += 1;
-            }
-            addresses.push(block.address.clone());
         }
-    }
-    (addresses, live, tombstoned)
+        (addresses, live, tombstoned)
+    })
 }
 
 /// The live element names the BLOCKS THE INDEX NAMES state, read off the bytes directly.

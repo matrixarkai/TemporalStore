@@ -94,69 +94,70 @@ fn where_each_kinds_refs_end_up() {
         }
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
 
-    let mut in_slot: std::collections::BTreeMap<&'static str, usize> =
-        std::collections::BTreeMap::new();
-    for (kind, table) in &shard.bucket_index.objects {
-        for slot in table.values() {
-            if let Some(refs) = slot.refs() {
-                *in_slot.entry(kind.as_str()).or_insert(0) += refs.len();
+        let mut in_slot: std::collections::BTreeMap<&'static str, usize> =
+            std::collections::BTreeMap::new();
+        for (kind, table) in &shard.bucket_index.objects {
+            for slot in table.values() {
+                if let Some(refs) = slot.refs() {
+                    *in_slot.entry(kind.as_str()).or_insert(0) += refs.len();
+                }
             }
         }
-    }
-    let mut in_lookup: std::collections::BTreeMap<&'static str, usize> =
-        std::collections::BTreeMap::new();
-    for (model_id, _object_key, refs) in shard.bucket_index.object_block_lookup.iter() {
-        let kind = StoredModelKind::from_stored_name(model_id)
-            .unwrap_or_else(|| panic!("the lookup holds an undeclared spelling: {model_id:?}"));
-        *in_lookup.entry(kind.as_str()).or_insert(0) += refs.len();
-    }
+        let mut in_lookup: std::collections::BTreeMap<&'static str, usize> =
+            std::collections::BTreeMap::new();
+        for (model_id, _object_key, refs) in shard.bucket_index.object_block_lookup.iter() {
+            let kind = StoredModelKind::from_stored_name(model_id)
+                .unwrap_or_else(|| panic!("the lookup holds an undeclared spelling: {model_id:?}"));
+            *in_lookup.entry(kind.as_str()).or_insert(0) += refs.len();
+        }
 
-    let mut kinds: Vec<&'static str> = in_slot.keys().chain(in_lookup.keys()).copied().collect();
-    kinds.sort_unstable();
-    kinds.dedup();
-    println!();
-    println!("  {:<22} {:>12} {:>12}", "KIND", "in the slot", "in the lookup");
-    for kind in &kinds {
-        println!(
-            "  {kind:<22} {:>12} {:>12}",
-            in_slot.get(kind).copied().unwrap_or(0),
-            in_lookup.get(kind).copied().unwrap_or(0)
+        let mut kinds: Vec<&'static str> = in_slot.keys().chain(in_lookup.keys()).copied().collect();
+        kinds.sort_unstable();
+        kinds.dedup();
+        println!();
+        println!("  {:<22} {:>12} {:>12}", "KIND", "in the slot", "in the lookup");
+        for kind in &kinds {
+            println!(
+                "  {kind:<22} {:>12} {:>12}",
+                in_slot.get(kind).copied().unwrap_or(0),
+                in_lookup.get(kind).copied().unwrap_or(0)
+            );
+        }
+        println!();
+        println!("  refs served from a slot:   {:?}", in_slot.keys().collect::<Vec<_>>());
+        println!("  refs served from the lookup: {:?}", in_lookup.keys().collect::<Vec<_>>());
+        println!();
+
+        assert!(
+            !in_slot.is_empty(),
+            "NOT ONE ref reached a slot, so the fold saved nothing on this corpus. Both homes read \
+             correctly, so nothing else in the suite would notice -- check that \
+             `CoreIndex::adopt_refs_into_slot` is still called by the door that installs a row."
         );
-    }
-    println!();
-    println!("  refs served from a slot:   {:?}", in_slot.keys().collect::<Vec<_>>());
-    println!("  refs served from the lookup: {:?}", in_lookup.keys().collect::<Vec<_>>());
-    println!();
-
-    assert!(
-        !in_slot.is_empty(),
-        "NOT ONE ref reached a slot, so the fold saved nothing on this corpus. Both homes read \
-         correctly, so nothing else in the suite would notice -- check that \
-         `CoreIndex::adopt_refs_into_slot` is still called by the door that installs a row."
-    );
-    assert!(
-        !in_lookup.is_empty(),
-        "no ref is in the lookup, which would make the slot column above look better than it is: \
-         the four kinds whose rows live in `RecordedMap` have nowhere to fold into and MUST still \
-         be served from the lookup. An empty lookup here means those kinds were not exercised."
-    );
-    // AND THE SINGLE-BLOCK STRING CASE SPECIFICALLY, because it is the one the published figure is
-    // measured on and the one the adoption exists for. Each `s{i}` above is written ONCE.
-    assert_eq!(
-        0,
-        in_lookup.get("string").copied().unwrap_or(0),
-        "a string's refs are still in the lookup after a single write. That is exactly the case \
-         `adopt_refs_into_slot` exists for -- the block is filed before the row is installed -- so \
-         the fold would measure no saving on the corpus the published asymptote uses"
-    );
-    assert!(
-        in_slot.get("string").copied().unwrap_or(0) >= 4,
-        "each of the four string keys should name at least one block from its slot, got {:?}",
-        in_slot.get("string")
-    );
+        assert!(
+            !in_lookup.is_empty(),
+            "no ref is in the lookup, which would make the slot column above look better than it is: \
+             the four kinds whose rows live in `RecordedMap` have nowhere to fold into and MUST still \
+             be served from the lookup. An empty lookup here means those kinds were not exercised."
+        );
+        // AND THE SINGLE-BLOCK STRING CASE SPECIFICALLY, because it is the one the published figure is
+        // measured on and the one the adoption exists for. Each `s{i}` above is written ONCE.
+        assert_eq!(
+            0,
+            in_lookup.get("string").copied().unwrap_or(0),
+            "a string's refs are still in the lookup after a single write. That is exactly the case \
+             `adopt_refs_into_slot` exists for -- the block is filed before the row is installed -- so \
+             the fold would measure no saving on the corpus the published asymptote uses"
+        );
+        assert!(
+            in_slot.get("string").copied().unwrap_or(0) >= 4,
+            "each of the four string keys should name at least one block from its slot, got {:?}",
+            in_slot.get("string")
+        );
+    });
 }
 
 /// THE ENCODER'S IDENTITY SOURCE IS A FIELD OF `CoreIndex`, AND IT REFUSES WITHOUT ONE.
@@ -182,7 +183,7 @@ fn where_each_kinds_refs_end_up() {
 ///
 /// rust-internal: measures this crate's own encoder, no product behaviour
 #[test]
-fn the_index_encoder_refuses_a_page_whose_refs_are_not_in_its_own_field() {
+fn the_index_encoder_refuses_a_block_whose_refs_are_not_in_its_own_field() {
     use crate::engine::state::{
         block_index_handle, BlockIndex, BlockSlabLiveIndex, BucketNode, CoreIndex,
     };
@@ -254,7 +255,7 @@ fn the_index_encoder_refuses_a_page_whose_refs_are_not_in_its_own_field() {
 /// someone reorders the write path such that the row comes first -- at which point the adoption
 /// becomes dead code and should be removed deliberately rather than left to rot.
 #[test]
-fn whether_a_slot_row_exists_when_its_page_is_filed() {
+fn whether_a_slot_row_exists_when_its_block_is_filed() {
     use crate::engine::state::FILING_ROW_CENSUS;
     use crate::types::{Command, ExecuteRequest};
 

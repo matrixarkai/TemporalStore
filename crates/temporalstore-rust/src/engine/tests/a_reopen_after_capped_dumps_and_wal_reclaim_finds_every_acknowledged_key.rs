@@ -125,6 +125,7 @@ fn served(engine: &TemporalEngine) -> std::collections::BTreeMap<String, Vec<u8>
             command: Command::StringGet { key: key.clone() },
         });
         if !response.status.ok {
+            eprintln!("read {key} failed: {:?}", response.status);
             continue;
         }
         if let CommandResponse::Bytes { value: Some(bytes) } = response.response {
@@ -159,8 +160,9 @@ fn drive(write: fn(&TemporalEngine, std::ops::Range<usize>, usize)) {
     assert_eq!(
         got.len(),
         KEYS,
-        "the reopened store serves {} of {KEYS} acknowledged keys",
-        got.len()
+        "the reopened store serves {} of {KEYS} acknowledged keys; missing: {:?}",
+        got.len(),
+        (0..KEYS).map(key_at).filter(|key| !got.contains_key(key)).collect::<Vec<_>>()
     );
     for item in 0..KEYS {
         assert_eq!(

@@ -269,10 +269,11 @@ fn a_plain_read_is_served_while_another_reader_holds_the_shard_table() {
     // Run one plain read on its own thread while THIS thread holds the shard-table read guard.
     // Returns the response if it arrived within `wait`, and always lets the thread finish.
     fn read_under_held_guard(engine: &Arc<TemporalEngine>, wait: Duration) -> Option<ExecuteResponse> {
-        let guard = engine.shards.read().expect("engine lock poisoned");
         let (tx, rx) = mpsc::channel();
         let reader = Arc::clone(engine);
+        let (start, ready) = mpsc::channel();
         let worker = std::thread::spawn(move || {
+            ready.recv().unwrap();
             let response = reader.execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::StringGet {
@@ -281,8 +282,11 @@ fn a_plain_read_is_served_while_another_reader_holds_the_shard_table() {
             });
             let _ = tx.send(response);
         });
-        let arrived = rx.recv_timeout(wait).ok();
-        drop(guard);
+        let arrived = engine.shards.with_state(1, |state| {
+            assert!(state.is_some());
+            start.send(()).unwrap();
+            rx.recv_timeout(wait).ok()
+        });
         worker.join().expect("reader thread panicked");
         arrived
     }

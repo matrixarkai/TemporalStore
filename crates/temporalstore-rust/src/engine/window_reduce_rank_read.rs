@@ -55,9 +55,23 @@ fn newest_header(
     series: &ObjectSlot,
     key: &str,
     routing_bucket: Option<u32>,
-    page_keys: &mut PageKeys,
+    block_keys: &mut BlockKeys,
 ) -> Result<Option<CellHeader>, String> {
-    let Some((newest_ms, newest_address)) = series.range(..).next_back() else {
+    newest_header_of(cache, block_store, shard_id, series.range(..).next_back(), key, routing_bucket, block_keys)
+}
+
+/// [`newest_header`] over the newest sample already found, so a caller that holds a copy of the
+/// series entry rather than the series can ask it too.
+fn newest_header_of(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    newest: Option<(u64, &ElementEntry)>,
+    key: &str,
+    routing_bucket: Option<u32>,
+    block_keys: &mut BlockKeys,
+) -> Result<Option<CellHeader>, String> {
+    let Some((newest_ms, newest_address)) = newest else {
         return Ok(None);
     };
     match read_feature_value_with(
@@ -68,7 +82,7 @@ fn newest_header(
         newest_address,
         BlockIdentity::of(shard_id, "feature", key, None),
         routing_bucket,
-        page_keys,
+        block_keys,
         |bytes| split_value(bytes).map(|(header, _)| header),
     ) {
         Some(Ok(header)) => Ok(Some(header)),
@@ -91,7 +105,7 @@ fn decode_named(
     shard_id: ShardId,
     key: &str,
     routing_bucket: Option<u32>,
-    page_keys: &mut PageKeys,
+    block_keys: &mut BlockKeys,
     named: Vec<(u64, &ElementEntry)>,
     header: &CellHeader,
 ) -> Result<Decoded, String> {
@@ -105,7 +119,7 @@ fn decode_named(
             address,
             BlockIdentity::of(shard_id, "feature", key, None),
             routing_bucket,
-            page_keys,
+            block_keys,
             |bytes| -> Result<FlatCells, String> {
                 let (own, packed) = split_value(bytes)?;
                 if own != *header {
@@ -136,7 +150,7 @@ fn decode_newest_rows(
     shard_id: ShardId,
     key: &str,
     routing_bucket: Option<u32>,
-    page_keys: &mut PageKeys,
+    block_keys: &mut BlockKeys,
     named: Vec<(u64, &ElementEntry)>,
     header: &CellHeader,
     rows: usize,
@@ -153,7 +167,7 @@ fn decode_newest_rows(
             address,
             BlockIdentity::of(shard_id, "feature", key, None),
             routing_bucket,
-            page_keys,
+            block_keys,
             |bytes| -> Result<FlatCells, String> {
                 let (own, packed) = split_value(bytes)?;
                 if own != *header {
@@ -189,16 +203,16 @@ fn decode_window(
     shard_id: ShardId,
     key: &str,
     routing_bucket: Option<u32>,
-    page_keys: &mut PageKeys,
+    block_keys: &mut BlockKeys,
     named: Vec<(u64, &ElementEntry)>,
     header: &CellHeader,
     window: &WindowReduceWindow,
 ) -> Result<(Decoded, Vec<usize>), String> {
     match window {
         WindowReduceWindow::NewestRows { n } => {
-            decode_newest_rows(cache, block_store, shard_id, key, routing_bucket, page_keys, named, header, *n)
+            decode_newest_rows(cache, block_store, shard_id, key, routing_bucket, block_keys, named, header, *n)
         }
-        _ => decode_named(cache, block_store, shard_id, key, routing_bucket, page_keys, named, header)
+        _ => decode_named(cache, block_store, shard_id, key, routing_bucket, block_keys, named, header)
             .map(|samples| (samples, Vec::new())),
     }
 }
@@ -216,6 +230,32 @@ fn views<'a>(samples: &'a Decoded, skips: &[usize]) -> Vec<CutView<'a>> {
         .collect()
 }
 
+/// What a ranked read takes from the series: the newest sample's entry, for the header, and the
+/// entries the window names. Copied out, so the shard can be released before any block is read.
+#[derive(Default)]
+pub(super) struct RankSnapshot {
+    newest: Option<(u64, ElementEntry)>,
+    named: Vec<(u64, ElementEntry)>,
+}
+
+impl RankSnapshot {
+    /// Every entry the read will open, for pinning the slabs and log locations they name.
+    pub(super) fn entries(&self) -> impl Iterator<Item = &ElementEntry> {
+        self.newest.iter().map(|(_, entry)| entry).chain(self.named.iter().map(|(_, entry)| entry))
+    }
+}
+
+/// Takes what [`serve_snapshot`] needs from `series`.
+pub(super) fn snapshot(series: &ObjectSlot, spec: &WindowReduceRankSpec, now_ms: u64) -> RankSnapshot {
+    RankSnapshot {
+        newest: series.range(..).next_back().map(|(at, entry)| (at, entry.clone())),
+        named: named_samples(series, spec, now_ms)
+            .into_iter()
+            .map(|(at, entry)| (at, entry.clone()))
+            .collect(),
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn serve(
     cache: &MultiLayerCache,
@@ -231,11 +271,39 @@ pub(super) fn serve(
     let Some(series) = shard.features().get(key) else {
         return RankedCells::default();
     };
+    serve_snapshot(
+        cache,
+        block_store,
+        shard_id,
+        key,
+        spec,
+        start_routing_bucket,
+        end_routing_bucket,
+        now_ms,
+        snapshot(series, spec, now_ms),
+    )
+}
+
+/// The ranked read over entries already taken from the series: every block read happens here, so
+/// a caller can run it with no lock on the shard.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn serve_snapshot(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    key: &str,
+    spec: &WindowReduceRankSpec,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    now_ms: u64,
+    held: RankSnapshot,
+) -> RankedCells {
     let routing_bucket = Some(block_routing_bucket(key, start_routing_bucket, end_routing_bucket));
-    let mut page_keys = PageKeys::new();
+    let mut block_keys = BlockKeys::new();
 
     // The header the names are resolved against: the key's newest sample's.
-    let header = match newest_header(cache, block_store, shard_id, series, key, routing_bucket, &mut page_keys) {
+    let newest = held.newest.as_ref().map(|(at, entry)| (*at, entry));
+    let header = match newest_header_of(cache, block_store, shard_id, newest, key, routing_bucket, &mut block_keys) {
         Ok(Some(header)) => header,
         Ok(None) => return RankedCells::default(),
         Err(why) => return refused(why),
@@ -245,14 +313,14 @@ pub(super) fn serve(
         Err(why) => return refused(why),
     };
 
-    let named = named_samples(series, spec, now_ms);
+    let named: Vec<(u64, &ElementEntry)> = held.named.iter().map(|(at, entry)| (*at, entry)).collect();
     let (samples, skips) = match decode_window(
         cache,
         block_store,
         shard_id,
         key,
         routing_bucket,
-        &mut page_keys,
+        &mut block_keys,
         named,
         &header,
         &spec.window,
@@ -278,6 +346,20 @@ fn settle_header(a: CellHeader, b: &CellHeader) -> Result<CellHeader, String> {
     }
 }
 
+/// What a ranked read over several keys takes from the shard: one snapshot per key, in order. A
+/// key the shard does not hold has an empty one.
+pub(super) fn snapshot_many(shard: &ShardState, keys: &[String], spec: &WindowReduceRankSpec, now_ms: u64) -> Vec<RankSnapshot> {
+    keys.iter()
+        .map(|key| {
+            shard
+                .features()
+                .get(key.as_str())
+                .map(|series| snapshot(series, spec, now_ms))
+                .unwrap_or_default()
+        })
+        .collect()
+}
+
 /// A ranked read over the samples of every key in `keys`, which the caller has already held to
 /// the key bound and refused duplicates in. Keys the shard does not hold (or whose window is
 /// empty) contribute nothing.
@@ -297,18 +379,49 @@ pub(super) fn serve_many(
     if let Err(why) = validate_keys(keys) {
         return refused(why);
     }
-    let mut page_keys = PageKeys::new();
+    serve_many_snapshots(
+        cache,
+        block_store,
+        shard_id,
+        keys,
+        spec,
+        start_routing_bucket,
+        end_routing_bucket,
+        now_ms,
+        snapshot_many(shard, keys, spec, now_ms),
+    )
+}
 
-    // Which keys the shard holds, each one's newest header, and the one header they settle on.
-    let mut held: Vec<Option<(&ObjectSlot, Option<u32>)>> = Vec::with_capacity(keys.len());
+/// [`serve_many`] over entries already taken from the shard, one snapshot per key in order: every
+/// block read happens here, so a caller can run it with no lock on the shard.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn serve_many_snapshots(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    keys: &[String],
+    spec: &WindowReduceRankSpec,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    now_ms: u64,
+    snapshots: Vec<RankSnapshot>,
+) -> RankedCells {
+    if let Err(why) = validate_keys(keys) {
+        return refused(why);
+    }
+    let mut block_keys = BlockKeys::new();
+
+    // Which keys hold a sample, each one's newest header, and the one header they settle on.
+    let mut held: Vec<Option<(&RankSnapshot, Option<u32>)>> = Vec::with_capacity(keys.len());
     let mut header: Option<CellHeader> = None;
-    for (position, key) in keys.iter().enumerate() {
-        let Some(series) = shard.features().get(key.as_str()) else {
+    for (position, (key, snapshot)) in keys.iter().zip(&snapshots).enumerate() {
+        let newest = snapshot.newest.as_ref().map(|(at, entry)| (*at, entry));
+        if newest.is_none() {
             held.push(None);
             continue;
-        };
+        }
         let routing_bucket = Some(block_routing_bucket(key, start_routing_bucket, end_routing_bucket));
-        match newest_header(cache, block_store, shard_id, series, key, routing_bucket, &mut page_keys) {
+        match newest_header_of(cache, block_store, shard_id, newest, key, routing_bucket, &mut block_keys) {
             Ok(Some(own)) => {
                 header = match header.take() {
                     None => Some(own),
@@ -317,7 +430,7 @@ pub(super) fn serve_many(
                         Err(why) => return refused(format!("key {position}: {why}")),
                     },
                 };
-                held.push(Some((series, routing_bucket)));
+                held.push(Some((snapshot, routing_bucket)));
             }
             Ok(None) => held.push(None),
             Err(why) => return refused(format!("key {position}: {why}")),
@@ -338,13 +451,13 @@ pub(super) fn serve_many(
     // A rows window names the samples it reaches only by reading them, so its samples are counted
     // after each key is read rather than from the list the walk hands back.
     let rows_window = matches!(spec.window, WindowReduceWindow::NewestRows { .. });
-    for (position, (key, series)) in keys.iter().zip(&held).enumerate() {
-        let Some((series, routing_bucket)) = series else {
+    for (position, (key, taken)) in keys.iter().zip(&held).enumerate() {
+        let Some((snapshot, routing_bucket)) = taken else {
             decoded.push(Vec::new());
             skipped.push(Vec::new());
             continue;
         };
-        let named = named_samples(series, spec, now_ms);
+        let named: Vec<(u64, &ElementEntry)> = snapshot.named.iter().map(|(at, entry)| (*at, entry)).collect();
         if !rows_window {
             sample_count += named.len();
             if let Err(why) = validate_chosen(sample_count, cell_count) {
@@ -357,7 +470,7 @@ pub(super) fn serve_many(
             shard_id,
             key,
             *routing_bucket,
-            &mut page_keys,
+            &mut block_keys,
             named,
             &header,
             &spec.window,

@@ -438,7 +438,7 @@ bytes in them: 110 slots holding 376 B in total cost more than 60 slots holding
 one at these sizes. A view with many narrow features is therefore the expensive
 shape, which is the opposite of the intuition a byte-count model gives.
 
-And the floor itself is the largest single component: **1,026.6 us to answer a
+And the floor itself is the largest single contributor: **1,026.6 us to answer a
 ten-command batch that returns nothing at all**, about 63% of the wide-row
 read's p50 and 58% of the narrow one's. Reducing per-call and per-field
 overhead is worth more than any payload encoding at this batch width.

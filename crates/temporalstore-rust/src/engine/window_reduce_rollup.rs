@@ -47,8 +47,8 @@
 //! An optional per-group cap, applied to each rolled sample. Cells are grouped by the value of a
 //! named label (every cell is one group when none is named), scored by the same [`WindowReduceScore`]
 //! vocabulary the ranked read uses (resolved by the same [`Scorer`]), and the best `keep` of each
-//! group survive. Higher scores are better; ties break by member ascending; a cell whose score is
-//! undefined (a zero denominator) ranks after every scored cell. The count of cells dropped is
+//! group survive. Higher scores are better; ties break by member ascending; a cell whose score
+//! cannot be formed ranks after every scored cell (a zero denominator scores 0, so it is not one). The count of cells dropped is
 //! reported. [`cap_cells`] applies a cap to one sample on its own.
 //!
 //! The cap runs after the buckets are folded, never before: a member dropped early would lose the
@@ -438,6 +438,18 @@ pub(crate) fn resolve_tiers(spec: &PlanSpec, newest_ms: u64) -> Vec<(u64, u64)> 
 /// it. `None` when it is at or past every cutoff (not rolled).
 fn bucket_width(tiers: &[(u64, u64)], ts: u64) -> Option<u64> {
     tiers.iter().rev().find(|(cutoff, _)| ts < *cutoff).map(|(_, width)| *width)
+}
+
+/// The tiers of a request as `(cutoff, bucket_ms)`, finest first, resolved against the newest stamp
+/// the series holds.
+pub(crate) fn bucket_tiers(spec: &RollupSpec, newest_ms: u64) -> Vec<(u64, u64)> {
+    with_view(spec, |view| resolve(view, newest_ms).as_slice().to_vec())
+}
+
+/// The start of the bucket the sample stamped `ts` belongs to under `tiers`: `None` at or past every
+/// cutoff (not rolled).
+pub(crate) fn bucket_start_of(tiers: &[(u64, u64)], ts: u64) -> Option<u64> {
+    bucket_width(tiers, ts).map(|width| ts - ts % width)
 }
 
 /// How many of the oldest samples a truncation removes from a series holding `total`.

@@ -3,6 +3,7 @@
 
 //! Prometheus metrics rendering for TemporalEngine, split from engine.rs.
 use super::*;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 /// TS_METRICS_MAX_BUCKET_SERIES: how many routing buckets may emit per-bucket series on one
 /// shard. `TS_METRICS_MAX_SLOT_SERIES` is the previous spelling and is still read.
@@ -22,28 +23,410 @@ fn max_bucket_series_per_shard() -> usize {
 /// holds the engine read guard for a walk of the whole shard.
 const SCRAPE_BUCKET_SUMMARY_MAX_AGE: std::time::Duration = std::time::Duration::from_secs(10);
 
+#[cfg(test)]
+mod scrape_cache_lifecycle_tests {
+    use super::*;
+    use std::sync::mpsc;
+    use std::thread;
+    use std::time::Duration;
+
+    const WAIT: Duration = Duration::from_secs(5);
+    const FRESH: Duration = Duration::from_secs(3600);
+
+    fn fixture() -> (tempfile::TempDir, TemporalEngine) {
+        let root = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20,
+            root.path().join("cache"),
+            root.path().join("blocks"),
+            root.path().join("indexes"),
+        );
+        (root, engine)
+    }
+
+    fn put(engine: &TemporalEngine, shard_id: ShardId, key: &str) {
+        assert!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id,
+                    command: Command::StringSet {
+                        key: key.into(),
+                        value: b"exact".to_vec()
+                    },
+                })
+                .status
+                .ok
+        );
+    }
+
+    fn blocks(rows: &[BucketStorageSummary]) -> u64 {
+        rows.iter().map(|row| row.block_ref_count).sum()
+    }
+
+    struct PausedListing {
+        entered: mpsc::Receiver<()>,
+        release: Option<mpsc::Sender<()>>,
+    }
+
+    impl PausedListing {
+        fn resume(&mut self) {
+            if let Some(sender) = self.release.take() {
+                let _ = sender.send(());
+            }
+        }
+    }
+
+    impl Drop for PausedListing {
+        fn drop(&mut self) {
+            self.resume();
+        }
+    }
+
+    fn pause_listing(
+        engine: TemporalEngine,
+        shard_id: ShardId,
+    ) -> (
+        PausedListing,
+        thread::JoinHandle<Arc<Vec<BucketStorageSummary>>>,
+    ) {
+        let (entered, waiting) = mpsc::channel();
+        let (release, resume) = mpsc::channel();
+        let parked = PausedListing {
+            entered: waiting,
+            release: Some(release),
+        };
+        let worker = thread::spawn(move || {
+            storage_reporting::on_next_listing_released(move || {
+                entered.send(()).unwrap();
+                resume.recv().unwrap();
+            });
+            engine.scrape_bucket_storage_summaries(shard_id, FRESH)
+        });
+        (parked, worker)
+    }
+
+    #[test]
+    fn unload_releases_the_cached_listing_without_a_later_scrape() {
+        let (_root, engine) = fixture();
+        engine.load_shard(1);
+        put(&engine, 1, "old");
+        let rows = engine.scrape_bucket_storage_summaries(1, FRESH);
+        assert_eq!(blocks(&rows), 1);
+        let listing = Arc::downgrade(&rows);
+        drop(rows);
+        assert!(
+            listing.upgrade().is_some(),
+            "fixture must have populated the cache"
+        );
+        assert!(
+            engine
+                .unload_shard_with(UnloadShardRequest { shard_id: 1 })
+                .status
+                .ok
+        );
+        assert!(engine.scrape_bucket_summaries.lock().unwrap().is_empty());
+        assert!(
+            listing.upgrade().is_none(),
+            "unload retained the old vector without a later scrape"
+        );
+    }
+
+    #[test]
+    fn owner_replacement_detaches_old_cache_without_removing_the_new_entry() {
+        let (_root, engine) = fixture();
+        engine.load_shard(1);
+        put(&engine, 1, "old");
+        let old_owner = engine.shards.handle(1).unwrap();
+        let rows = engine.scrape_bucket_storage_summaries(1, FRESH);
+        let old_listing = Arc::downgrade(&rows);
+        drop(rows);
+        let state = engine.shards.with_state(1, |state| state.unwrap().clone());
+        engine.install_shard_state(1, state);
+        assert!(old_listing.upgrade().is_none());
+        assert!(engine.scrape_bucket_summaries.lock().unwrap().is_empty());
+        assert!(!old_owner.same_incarnation(&engine.shards.handle(1).unwrap()));
+        let replacement = engine.scrape_bucket_storage_summaries(1, FRESH);
+        assert_eq!(blocks(&replacement), 1);
+        assert!(engine.detach_scrape_bucket_summaries(&old_owner).is_none());
+        assert!(Arc::ptr_eq(
+            &replacement,
+            &engine.scrape_bucket_storage_summaries(1, FRESH)
+        ));
+    }
+
+    fn stale_refresh_control(replace_owner: bool) {
+        let (_root, engine) = fixture();
+        engine.load_shard(1);
+        put(&engine, 1, "old");
+        let original_owner = engine.shards.handle(1).unwrap();
+        let (mut pause, old_refresh) = pause_listing(engine.clone(), 1);
+        pause
+            .entered
+            .recv_timeout(WAIT)
+            .expect("actual listing did not reach the post-owner pause");
+        let old_entry = Arc::downgrade(
+            engine
+                .scrape_bucket_summaries
+                .lock()
+                .unwrap()
+                .get(&1)
+                .unwrap(),
+        );
+        let lifecycle_engine = engine.clone();
+        let (done, completed) = mpsc::channel();
+        let lifecycle = thread::spawn(move || {
+            if replace_owner {
+                assert!(
+                    lifecycle_engine
+                        .unload_shard_with(UnloadShardRequest { shard_id: 1 })
+                        .status
+                        .ok
+                );
+                lifecycle_engine.load_shard(1);
+            } else {
+                assert!(
+                    lifecycle_engine
+                        .reload_shard_with(LoadShardRequest {
+                            shard_id: 1,
+                            load_version: 7,
+                            local_node_id: None,
+                            shard_uri: String::new(),
+                            start_routing_bucket: 0,
+                            end_routing_bucket: u32::MAX,
+                            readonly: false,
+                            table_name: String::new(),
+                        })
+                        .status
+                        .ok
+                );
+            }
+            put(&lifecycle_engine, 1, "new");
+            done.send(()).unwrap();
+        });
+        let progressed = completed.recv_timeout(WAIT);
+        if progressed.is_err() {
+            pause.resume();
+        }
+        lifecycle.join().unwrap();
+        progressed.expect("lifecycle waited for a parked scrape refresh");
+        let current_owner = engine.shards.handle(1).unwrap();
+        assert_eq!(
+            original_owner.same_incarnation(&current_owner),
+            !replace_owner
+        );
+        assert!(old_entry
+            .upgrade()
+            .unwrap()
+            .invalidated
+            .load(Ordering::Acquire));
+        assert!(engine.scrape_bucket_summaries.lock().unwrap().is_empty());
+        let current_engine = engine.clone();
+        let (done, completed) = mpsc::channel();
+        let fresh = thread::spawn(move || {
+            let rows = current_engine.scrape_bucket_storage_summaries(1, FRESH);
+            done.send(rows).unwrap();
+        });
+        let current = completed.recv_timeout(WAIT);
+        if current.is_err() {
+            pause.resume();
+        }
+        fresh.join().unwrap();
+        let current = current.expect("replacement cache waited for an obsolete refresh");
+        assert_eq!(blocks(&current), 2);
+        let replacement_entry = engine
+            .scrape_bucket_summaries
+            .lock()
+            .unwrap()
+            .get(&1)
+            .unwrap()
+            .clone();
+        pause.resume();
+        assert!(
+            old_refresh.join().unwrap().is_empty(),
+            "retired refresh returned stale summaries"
+        );
+        assert!(old_entry.upgrade().is_none());
+        assert!(Arc::ptr_eq(
+            engine
+                .scrape_bucket_summaries
+                .lock()
+                .unwrap()
+                .get(&1)
+                .unwrap(),
+            &replacement_entry
+        ));
+        assert!(Arc::ptr_eq(
+            &current,
+            &engine.scrape_bucket_storage_summaries(1, FRESH)
+        ));
+    }
+
+    #[test]
+    fn stale_refresh_cannot_publish_after_unload_and_same_id_replacement() {
+        stale_refresh_control(true);
+    }
+
+    #[test]
+    fn metadata_reload_invalidates_an_in_flight_scrape_on_the_same_owner() {
+        stale_refresh_control(false);
+    }
+
+    #[test]
+    fn a_parked_refresh_does_not_block_another_shards_scrape_or_write() {
+        let (_root, engine) = fixture();
+        for id in [1, 2] {
+            engine.load_shard(id);
+            put(&engine, id, "old");
+        }
+        let (mut pause, first) = pause_listing(engine.clone(), 1);
+        pause
+            .entered
+            .recv_timeout(WAIT)
+            .expect("first listing did not pause");
+        let peer_engine = engine.clone();
+        let (done, completed) = mpsc::channel();
+        let peer = thread::spawn(move || {
+            put(&peer_engine, 2, "new");
+            done.send(peer_engine.scrape_bucket_storage_summaries(2, FRESH))
+                .unwrap();
+        });
+        let result = completed.recv_timeout(WAIT);
+        pause.resume();
+        peer.join().unwrap();
+        assert_eq!(blocks(&first.join().unwrap()), 1);
+        assert_eq!(
+            blocks(&result.expect("unrelated shard waited for the parked refresh")),
+            2
+        );
+    }
+}
+
+pub(super) struct ScrapeBucketEntry {
+    owner: shard_guard::ShardHandle,
+    invalidated: AtomicBool,
+    summaries: std::sync::Mutex<Option<(std::time::Instant, Arc<Vec<BucketStorageSummary>>)>>,
+}
+
+impl std::fmt::Debug for ScrapeBucketEntry {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ScrapeBucketEntry")
+            .field("shard_id", &self.owner.shard_id())
+            .field("invalidated", &self.invalidated.load(Ordering::Acquire))
+            .finish_non_exhaustive()
+    }
+}
+
 impl TemporalEngine {
     /// The shard's per-bucket summaries for a scrape: the previous scrape's listing when it is
     /// younger than `max_age`, a fresh listing otherwise.
     ///
-    /// The listing runs with the cache mutex held, so scrapes that arrive together share it.
+    /// Refreshes share an incarnation-local mutex, never the cache directory lock.
     pub(super) fn scrape_bucket_storage_summaries(
         &self,
         shard_id: ShardId,
         max_age: std::time::Duration,
     ) -> Arc<Vec<BucketStorageSummary>> {
-        let mut cache = self
+        let Some(owner) = self.shards.handle(shard_id) else {
+            return Arc::new(Vec::new());
+        };
+        let found = self.shards.with_handle_state(&owner, |state| {
+            state.map(|_| {
+                self.scrape_bucket_summaries
+                    .lock()
+                    .expect("scrape summary directory poisoned")
+                    .get(&shard_id)
+                    .filter(|entry| entry.owner.same_incarnation(&owner))
+                    .cloned()
+            })
+        });
+        let entry = match found {
+            None => return Arc::new(Vec::new()),
+            Some(Some(entry)) => entry,
+            Some(None) => {
+                let candidate = Arc::new(ScrapeBucketEntry {
+                    owner: owner.clone(),
+                    invalidated: AtomicBool::new(false),
+                    summaries: std::sync::Mutex::new(None),
+                });
+                let captured = self.shards.with_handle_state(&owner, |state| {
+                    state?;
+                    let mut entries = self
+                        .scrape_bucket_summaries
+                        .lock()
+                        .expect("scrape summary directory poisoned");
+                    if let Some(entry) = entries
+                        .get(&shard_id)
+                        .filter(|entry| entry.owner.same_incarnation(&owner))
+                    {
+                        return Some((entry.clone(), None));
+                    }
+                    let previous = entries.insert(shard_id, candidate.clone());
+                    Some((candidate.clone(), previous))
+                });
+                let Some((entry, retired)) = captured else {
+                    return Arc::new(Vec::new());
+                };
+                drop(retired);
+                entry
+            }
+        };
+        // No owner or directory guard is held while waiting for the refresh.
+        let mut cache = entry
+            .summaries
+            .lock()
+            .expect("scrape summary refresh poisoned");
+        let fresh = self.shards.with_handle_state(&owner, |state| {
+            state
+                .filter(|_| !entry.invalidated.load(Ordering::Acquire))
+                .map(|_| {
+                    cache
+                        .as_ref()
+                        .filter(|(taken, _)| taken.elapsed() < max_age)
+                        .map(|(_, summaries)| summaries.clone())
+                })
+        });
+        match fresh {
+            None => return Arc::new(Vec::new()),
+            Some(Some(summaries)) => return summaries,
+            Some(None) => {}
+        }
+        // The existing builder releases its owner before summary/manifest work.
+        let summaries = Arc::new(self.bucket_storage_summaries(shard_id));
+        let published = self.shards.with_handle_state(&owner, |state| {
+            state
+                .filter(|_| !entry.invalidated.load(Ordering::Acquire))
+                .map(|_| cache.replace((std::time::Instant::now(), summaries.clone())))
+        });
+        drop(cache);
+        match published {
+            Some(previous) => {
+                drop(previous);
+                summaries
+            }
+            None => Arc::new(Vec::new()),
+        }
+    }
+
+    pub(super) fn detach_scrape_bucket_summaries(
+        &self,
+        owner: &shard_guard::ShardHandle,
+    ) -> Option<Arc<ScrapeBucketEntry>> {
+        let mut entries = self
             .scrape_bucket_summaries
             .lock()
-            .expect("scrape summary cache poisoned");
-        if let Some((taken, summaries)) = cache.get(&shard_id) {
-            if taken.elapsed() < max_age {
-                return Arc::clone(summaries);
-            }
+            .expect("scrape summary directory poisoned");
+        if entries
+            .get(&owner.shard_id())
+            .is_some_and(|entry| entry.owner.same_incarnation(owner))
+        {
+            entries[&owner.shard_id()]
+                .invalidated
+                .store(true, Ordering::Release);
+            entries.remove(&owner.shard_id())
+        } else {
+            None
         }
-        let summaries = Arc::new(self.bucket_storage_summaries(shard_id));
-        cache.insert(shard_id, (std::time::Instant::now(), Arc::clone(&summaries)));
-        summaries
     }
 
     pub fn prometheus_metrics(&self) -> String {

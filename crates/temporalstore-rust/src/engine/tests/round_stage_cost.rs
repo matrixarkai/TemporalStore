@@ -668,7 +668,7 @@ fn every_stage_this_round_measures_had_work_to_do() {
 
     assert!(
         measured.slabs > 1,
-        "the store is {} slab(s), so compaction and page reclaim have no choice to make and their \
+        "the store is {} slab(s), so compaction and block reclaim have no choice to make and their \
          figures measure the fixture rather than the round",
         measured.slabs
     );

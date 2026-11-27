@@ -134,8 +134,52 @@ fn lane(name: &str) -> WindowReduceScore {
     WindowReduceScore::Lane { lane: name.to_string() }
 }
 
+/// One rollup as a caller makes it: the server folds one bucket a call, so this calls again until a
+/// call folds none, and answers the receipt summed over the calls (the samples before are the first
+/// call's, the samples after the last call's).
 fn rollup_response(engine: &TemporalEngine, key: &str, spec: WindowReduceRollupSpec) -> ExecuteResponse {
-    exec(engine, Command::WindowReduceRollup { key: key.to_string(), spec })
+    let mut total: Option<[u64; 7]> = None;
+    loop {
+        let response = exec(engine, Command::WindowReduceRollup { key: key.to_string(), spec: spec.clone() });
+        if !response.status.ok {
+            return response;
+        }
+        let CommandResponse::WindowReduceRollupReceipt {
+            samples_before,
+            samples_after,
+            cells_before,
+            cells_after,
+            cells_dropped,
+            buckets_folded,
+            buckets_remaining,
+        } = response.response
+        else {
+            panic!("a rollup answers a receipt")
+        };
+        let sum = total.get_or_insert([samples_before, 0, 0, 0, 0, 0, 0]);
+        sum[1] = samples_after;
+        sum[2] += cells_before;
+        sum[3] += cells_after;
+        sum[4] += cells_dropped;
+        sum[5] += buckets_folded;
+        sum[6] = buckets_remaining;
+        if buckets_folded == 0 {
+            let [samples_before, samples_after, cells_before, cells_after, cells_dropped, buckets_folded, buckets_remaining] =
+                total.unwrap();
+            return ExecuteResponse {
+                status: Status::ok(),
+                response: CommandResponse::WindowReduceRollupReceipt {
+                    samples_before,
+                    samples_after,
+                    cells_before,
+                    cells_after,
+                    cells_dropped,
+                    buckets_folded,
+                    buckets_remaining,
+                },
+            };
+        }
+    }
 }
 
 /// (samples before, samples after, cells before, cells after, cells dropped)
@@ -148,6 +192,7 @@ fn receipt(response: &ExecuteResponse) -> [u64; 5] {
             cells_before,
             cells_after,
             cells_dropped,
+            ..
         } => [*samples_before, *samples_after, *cells_before, *cells_after, *cells_dropped],
         other => panic!("a rollup answers a receipt, got {other:?}"),
     }
@@ -408,12 +453,11 @@ fn an_absent_key_and_an_expired_key_roll_nothing_up() {
 
     seed(&engine, &key);
     assert_eq!(receipt(&rollup_response(&engine, &key, roll(0, 100, None)))[..2], [12, 12], "CONTROL: a cutoff of 0 rolls nothing");
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
         let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
         crate::engine::set_expiry(shard, key.clone(), past);
-    }
+    });
     assert_eq!(receipt(&rollup_response(&engine, &key, roll(10_000, 100, None))), [0; 5]);
 }
 
@@ -459,8 +503,9 @@ fn a_rollup_is_a_write_the_log_can_carry_in_every_score_spelling() {
 ///
 /// Rolled into the hour that starts at 0, with slots item 1 and 2 in slot 1 and item 3 in slot 2:
 ///   item 1: 60 shown, 3 clicks, peak 9     item 2: 10 shown, 5 clicks, peak 2     item 3: 100, 1, 3
-/// Capped to one item per slot by clicks / impressions: slot 1 holds item 1 at 3/60 = 0.05 and
-/// item 2 at 5/10 = 0.5, so item 2 stays and item 1 goes. Slot 2 has only item 3.
+/// Capped to one item per slot by impressions / clicks (a whole number, the impressions it took
+/// to earn a click): slot 1 holds item 1 at 60/3 = 20 and item 2 at 10/5 = 2, so item 1 stays and
+/// item 2 goes. Slot 2 has only item 3.
 #[test]
 fn a_worked_example_of_a_rollup() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -492,19 +537,20 @@ fn a_worked_example_of_a_rollup() {
         ]
     );
 
-    // The cap, on the same hour: one item per slot by click rate. The hour is already rolled, so
-    // only the cap acts on it.
+    // The cap, on the same hour: one item per slot by impressions per click. The hour is already rolled and a
+    // settled bucket is not folded again, so the cap, which acts when a bucket is folded, takes
+    // nothing from it.
     let capped = roll(
         hour,
         hour,
         Some(WindowReduceCapSpec {
             group_by: Some("slot".to_string()),
-            score: WindowReduceScore::Ratio { numerator: "clicks".to_string(), denominator: "impressions".to_string() },
+            score: WindowReduceScore::Ratio { numerator: "impressions".to_string(), denominator: "clicks".to_string() },
             keep: 1, protect_newest_ppm: 0, trigger_over: 0,
         }),
     );
-    assert_eq!(receipt(&rollup_response(&engine, &key, capped)), [2, 2, 3, 2, 1]);
-    assert_eq!(decoded(&engine, &key)[0].1, vec![cell(2, 1, [10, 5, 2, 3]), cell(3, 2, [100, 1, 3, 1])]);
+    assert_eq!(receipt(&rollup_response(&engine, &key, capped)), [2, 2, 0, 0, 0]);
+    assert_eq!(decoded(&engine, &key)[0].1.len(), 3, "the settled hour kept every cell");
 }
 
 // ------------------------------------------------------------------------------------------
@@ -564,7 +610,10 @@ fn a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same() {
     assert_eq!(stamps(&engine, &key), TIER_STAMPS.to_vec());
     let below: u64 = seeded.iter().filter(|(ts, _)| *ts < 1100).map(|(_, cells)| cells.len() as u64).sum();
     let kept: u64 = decoded(&engine, &key).iter().filter(|(ts, _)| *ts < 1100).map(|(_, cells)| cells.len() as u64).sum();
-    assert_eq!(landed, [12, 7, below, kept, 0]);
+    // The sample stamped at its own bucket start is settled and is not folded, so its cells are in
+    // neither count: the receipt counts the buckets that were folded.
+    let settled_cells = 4;
+    assert_eq!(landed, [12, 7, below - settled_cells, kept - settled_cells, 0]);
     assert!(kept < below, "DENOMINATOR: members repeat inside a bucket, so cells were folded");
     // The samples at or after the cutoff are the bytes that were written.
     assert_eq!(&decoded(&engine, &key)[5..], &seeded[10..]);

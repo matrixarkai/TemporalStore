@@ -20,7 +20,7 @@ kind `cell_retry` keep their original spelling because they are written to disk.
   to a millisecond (accepted and documented). Two observations in one millisecond share a sample and merge.
 * An entity is a 64 bit id (field 1), or text or bytes through the additive fields.
 * Lane values are 64 bit. Readers that declare them 32 bit see the low 32 bits.
-* A table name selects a declared **profile** (below). An unknown table answers `NO_SUCH_TABLE`.
+* A table name selects a declared **profile** (below). An unknown table answers `NO_DATA`.
 
 ## Profile
 
@@ -28,7 +28,7 @@ A deployment declares, once, per table name: the key spec (namespace, entity typ
 dimension carries `channel` and which carries `kind` (an unbound one must be zero on the wire), the
 label name that carries `label`, how a label is derived when a request leaves it out (`FromRequest`,
 or `FromMember { shift, bits }`), the lanes with their reducers, the table shape (pair: two
-lanes; list: up to 16), whether a duplicate member at one timestamp merges or is refused, and the
+lanes; list: up to 32), whether a duplicate member at one timestamp merges or is refused, and the
 oldest and newest accepted timestamps. The profile is immutable for the life of the process; the
 header written with the first write of a key family still guards every later write.
 
@@ -52,7 +52,7 @@ header written with the first write of a key family still guards every later wri
 
 Enum values: operations ADD 0, BATCH_QUERY 1, REMOVE 2, RESTORE 3, DELETE 4. Status codes OK 0,
 ERROR 1, STORAGE_ERROR 2, OUT_OF_MEMORY 3, NO_DATA 4, QUOTA_EXHAUSTED 5, REQUEST_ILLEGAL 6,
-NO_SUCH_TABLE 7, INVALID_ARGUMENT 8, DUPLICATE_REFUSED 9. Rank modes FIRST_LANE 0, SECOND_LANE 1,
+NO_SUCH_TABLE 7 (declared, never answered), INVALID_ARGUMENT 8, DUPLICATE_REFUSED 9. Rank modes FIRST_LANE 0, SECOND_LANE 1,
 RATIO 2, MEMBER 3, RECENT 4, NAMED_LANE 5, MATCH_LANE 6, WEIGHTED 7, MEMBERS_ONLY 8, WILSON 9,
 DECAYED_LANE 10 (new).
 Window kinds TRAILING_FROM_NOW 0, TRAILING_FROM_NEWEST 1, NEWEST_ROWS 2, FROM_START 3,
@@ -65,8 +65,8 @@ one key; cells with the same member merge lane by lane under the profile's reduc
 request is validated before anything is written: a refusal writes nothing. A list shorter than the
 profile's lanes is padded with zeros; a longer one is refused. The shorthand fields 2 and 3 fill a
 pair when neither pair nor list is present. A cell with no `has_label` takes its label from the
-profile's rule. `skip_existing` is carried but refused for now, with a message pointing at the retry token that makes a
-retried add safe; no write mode implements it. `group_on_server` is accepted and always on.
+profile's rule. `skip_existing` is carried and ignored: an add always merges (a retried add is made safe by the
+retry token). `group_on_server` is accepted and always on.
 
 **Retry token.** A non-zero `retry_token` (add request, field 16) rides on the append of every key of the
 request; zero means none. A key remembers its last 16 tokens: the same token again answers the counts of
@@ -80,7 +80,9 @@ checked only.
 status. Bounded by the number of queries.
 
 **Windows.** `TRAILING_FROM_NOW` is `[now - span, now]`. `TRAILING_FROM_NEWEST` is the trailing span
-ending at the newest stored sample of the key. `FROM_START` is `[start, start + span)`.
+ending at the newest stored sample of the key. `FROM_START` is `[start, start + span)`; for the two
+reads that select cells by member or by lane value (`MEMBERS_ONLY`, `MATCH_LANE`) it is
+`[start, start + span]`, the stamp at the very end included (a span of 0 is the instant at the start).
 `NEWEST_ROWS` counts stored (timestamp, member) rows, not samples: `span` is the number of rows, the
 newest `span` cells the key holds, taken whole sample by whole sample from the newest back. The
 sample that crosses `span` keeps only the cells it needs, its largest members (the newest rows in
@@ -91,10 +93,14 @@ window applies to each key of a merged read. It takes the request clock for no p
 no anchor.
 
 **Rank modes.** FIRST_LANE and SECOND_LANE order members by their reduced lane 0 or 1; NAMED_LANE by
-the lane at `sort_lane` (zero when absent); RATIO by lane 0 over lane 1; MEMBER by member;
+the lane at `sort_lane` (zero when absent); RATIO by lane 0 over lane 1 as a whole number (the fraction is dropped, so every ratio below 1 scores 0 and
+those members tie), 0 when lane 1 is 0; MEMBER by member;
 WEIGHTED by the sum of the lanes at `weighted_lanes` times `weights` (indexes and weights not
-negative, same length, pair tables only index 0 and 1); WILSON by the lower bound for lane 0
-successes of lane 1 trials at `wilson_z` (1.96 when absent). Results are ordered best first; equal
+negative, same length, pair tables only index 0 and 1); WILSON by the lower bound of the Wilson
+interval of the smaller of lanes 0 and 1 out of the larger (so which of them holds the successes does
+not matter) at `wilson_z` (1.96 when absent or not above 0), times 10,000 and cut to a whole number,
+0 when the larger is 0. Every member is ranked: none is dropped for a score that cannot be formed.
+Results are ordered best first; equal
 scores order by member. MEMBERS_ONLY returns the listed members and ignores `limit`. RECENT and
 MATCH_LANE return stored cells newest first, not reduced per member (see **Stored cells** below).
 
@@ -117,6 +123,15 @@ rows, and a quota only chooses which of the top `limit` ranked members stay. `qu
 also the count of members that fit no still-unmet lane (`others`). One count and no lane asks for
 `others` alone. Counts are not negative, a lane is named once, there are at most 16 lanes, and the
 reserved total (every lane count plus `others`) is within the top-k cap of 1000.
+
+On a stored-cell read (`RECENT`, `MATCH_LANE`) the quota is the walk of stored cells, newest sample first,
+cells of a sample by member, none reduced. A lane is short until it holds its count of distinct members; a
+walked cell with a non-zero value in a short lane is returned when its member is new to that lane, and a
+cell that fits no short lane is returned while fewer than `others` of them have been. The walk ends when no
+lane is short, even when `others` is not met, and `limit` bounds the cells walked (a cell walked and not
+returned counts), not the rows returned; the same member can come back in several rows when it fits no
+lane. A quota of `others` alone is refused there (it would end the walk at the first cell), and the end of
+a `FROM_START` window is included.
 
 > **Known double count.** Because the first count is read both as `others` and as the first lane's
 > count, a valid request whose counts add up to 500 reserves 1000 members, and one that adds up to 501
@@ -142,9 +157,11 @@ none reduced, the newest sample first (cells of one sample by member, smaller fi
 written in three samples is three rows, each with that sample's labels, lane values and stamp
 (`timestamp_us`). `limit` bounds the rows (1 to 1000, as for every read); the window, the label
 predicate and the member set apply to each cell. `MATCH_LANE` keeps the cells whose lane at
-`match_lane` (the first when absent) holds `match_value` (0 when absent); a lane the table does not
-declare, or a negative value, is refused. A quota is refused on these modes: it chooses among reduced
-members. Over `more_entities` the rows of all keys interleave by stamp, the later entity first when
+`match_lane` (the first when absent) holds `match_value` (0 when absent, any signed number). A lane the
+table does not declare holds nothing, so no cell matches and the answer is empty. `NAMED_LANE` on a
+list table with a `sort_lane` past the last lane scores every member 0 (members come back in member
+order); a negative `sort_lane` is refused. A quota on these modes walks the stored cells (see **Quota**).
+Over `more_entities` the rows of all keys interleave by stamp, the later entity first when
 two samples share one. The command is the ranked read with the score `Recent`.
 
 **Several entities.** `more_entities` (at most 63, 64 bit ids, none repeated, none equal to `entity`)
@@ -157,10 +174,14 @@ The keys must live on one shard. A table whose entity is not a 64 bit id refuses
 order, one answer each. A query with `more_entities` has no place in a batch and is refused, naming its
 position; so is any query that would be refused alone.
 
-**Answers.** A read of an absent key is an empty answer with status OK. A pair table answers `pair`,
+**Answers.** `first_us` and `last_us` are the oldest and the newest sample the window selected, before
+the top-k kept any of it (0 and 0 when it selected none); `MEMBERS_ONLY` and `MATCH_LANE` reads, which look
+only for particular cells, report a narrower span: `MEMBERS_ONLY` the oldest and the newest sample that
+held one of its members, `MATCH_LANE` the span of the rows it returns. A read of an absent key is an empty
+answer with status OK. A pair table answers `pair`,
 a list table `list`; `timestamp_us` is the newest sample holding the member.
 
-**Errors.** Refusals answer INVALID_ARGUMENT, an unknown table NO_SUCH_TABLE, a duplicate refused
+**Errors.** Refusals answer INVALID_ARGUMENT, an unknown table NO_DATA, a duplicate refused
 under a no-merge profile DUPLICATE_REFUSED, an exhausted quota QUOTA_EXHAUSTED, anything else ERROR.
 
 **Sample info.** `want_sample_info` (selector field 19) true asks the answer to say which samples the
@@ -172,15 +193,13 @@ edge of a `NEWEST_ROWS` window counts only the cells the window holds. The list 
 `want_sample_info` of false means "not asked", with or without its presence flag, and the answer then
 carries no `sample_info` at all.
 
-**Options no read honours.** `limit_members` (field 12) is in the wire shape, and no read implements
-it: a read cannot cap the members it considers. A selector that sets `limit_members` to anything but
-0 is refused with INVALID_ARGUMENT and a message naming the field (`limit` caps the rows returned). A
-`limit_members` of 0 means "not asked", with or without its presence flag, and reads as if absent.
+**Member count (`limit_members`).** `limit_members` (field 12, with `has_limit_members`) is the row
+count of a stored-cell (`RECENT`) read that names no `limit` (`limit` of 0 or less): when it is flagged
+and positive it is the `limit`. A `limit` that is set wins, and every other read mode ignores the
+field. The bound on rows (1 to 1000) applies to the count.
 
 ## Where this deliberately differs from the narrower shape
 
-* Unknown table answers NO_SUCH_TABLE (the narrower shape declares the code and answers NO_DATA).
-* `skip_existing` is refused with a clear message; the narrower server never read it.
 * A custom weighted rank works; the narrower server dereferenced an unset pointer.
 * Rank results are ordered; the narrower server returned an unordered selection.
 * A batch reports a status per answer, not only the last.
@@ -195,7 +214,7 @@ it: a read cannot cap the members it considers. A selector that sets `limit_memb
 
 Observations per request, entries per request (existing 1024 cells), queries per batch (64),
 members in a member list (1024 each side), quota lanes (16) and quota total (within the top-k cap of
-1000), weighted lanes (8), lanes (16), table name bytes (64), top-k (1000), more entities (63, so 64
+1000), weighted lanes (8), lanes (32), table name bytes (64), top-k (1000), more entities (63, so 64
 keys in a merged read), half-life (1 ms to ten years), rows of a `NEWEST_ROWS` window (262,144, and
 within 512 samples). Each is refused one past the limit and accepted at it.
 
@@ -236,8 +255,10 @@ names a predicate may use are read from the key's own header.
 A cell is removed when its sample is inside the window, its member passes the member set (`include`
 names the members to take, `exclude` the members to spare, a member in both is spared) and every
 predicate (`=`, `!=`, `>`, `>=`, `<`, `<=` over a label, a lane or `member`, at most 8, ANDed) holds on
-it. A request that restricts nothing is refused with a message that says it would empty the key; a
-`DELETE` never deletes the key itself (`FeatureDelete` does). A sample left with no cell is removed,
+it. A `REMOVE` that restricts nothing is refused with a message that says it would empty the key. A
+`DELETE` that restricts nothing (a table with no label, and no member named) deletes the whole key in
+one log record, reading no sample, and its receipt counts samples but not cells; a `DELETE` of a key
+that holds no sample answers NO_DATA. A sample left with no cell is removed,
 so a removal can leave a key that holds no sample; it still reads as an empty answer and takes a
 write.
 

@@ -16,8 +16,9 @@
 //! * every named predicate over a label, a lane or `member` holds on the cell as its sample
 //!   stores it (the ranked read's own predicates, compiled by the same code).
 //!
-//! A request in which all three parts are open would empty the key and is refused: deleting the
-//! key is the command for that, and a removal that lost its arguments must not look like one.
+//! A request in which all three parts are open takes every cell, so it is the deletion of the key
+//! ([`removes_the_whole_key`]): one record, no sample read. (The wire `REMOVE` refuses it, so a
+//! removal that lost its arguments cannot look like a deletion; the wire `DELETE` sends it.)
 //!
 //! # WHAT COMES BACK
 //!
@@ -35,7 +36,7 @@
 
 use super::window_reduce_rank::{compile_predicates, Predicate};
 use super::window_reduce_rank_options::CompiledMembers;
-use super::cell_set::{within, Cell, CellHeader, CellRef};
+use super::cell_set::{within, Cell, CellHeader, CellRef, FlatCells};
 use crate::types::WindowReduceRemoveSpec;
 
 /// Samples a removal may read: the ones stamped inside its window.
@@ -54,15 +55,14 @@ pub(crate) fn validate_spec(spec: &WindowReduceRemoveSpec) -> Result<(), String>
         }
     }
     // Compiling the member set is what bounds and checks it, and is the one place that does.
-    let members = CompiledMembers::compile(&spec.members)?;
-    if spec.start_ms.is_none() && spec.end_ms.is_none() && members.is_open() && spec.filters.is_empty() {
-        return Err(
-            "a removal names no window, member or predicate, so it would empty the key: \
-             delete the key to do that"
-                .to_string(),
-        );
-    }
+    CompiledMembers::compile(&spec.members)?;
     Ok(())
+}
+
+/// Whether `spec` leaves the window, the members and the predicates all open: such a removal takes
+/// every cell of every sample, so it is the deletion of the key, in one record, with no sample read.
+pub(crate) fn removes_the_whole_key(spec: &WindowReduceRemoveSpec) -> bool {
+    spec.start_ms.is_none() && spec.end_ms.is_none() && spec.members.is_open() && spec.filters.is_empty()
 }
 
 /// A spec resolved against a header.
@@ -89,7 +89,25 @@ impl Selection {
         (self.from_ms, self.to_ms)
     }
 
+    /// Which cells of a flat sample stay, and how many go. The cells are read in place: a
+    /// removal over a sample of any size allocates one mask, not a value per cell.
+    pub(crate) fn keep_mask(&self, cells: &FlatCells) -> (Vec<bool>, usize) {
+        let mut removed = 0usize;
+        let keep = (0..cells.len())
+            .map(|at| {
+                let view = cells.cell(at);
+                let take = self.members.allows(view.member) && self.predicates.iter().all(|predicate| predicate.holds(&view));
+                if take {
+                    removed += 1;
+                }
+                !take
+            })
+            .collect();
+        (keep, removed)
+    }
+
     /// Whether the cell is removed, given that its sample is inside the window.
+    #[allow(dead_code)]
     fn takes(&self, cell: &Cell) -> bool {
         let view = CellRef { member: cell.member.view(), labels: &cell.labels, lanes: &cell.lanes };
         self.members.allows(view.member) && self.predicates.iter().all(|predicate| predicate.holds(&view))
@@ -97,6 +115,7 @@ impl Selection {
 }
 
 /// What a removal did to one sample of the window.
+#[allow(dead_code)]
 #[derive(Debug, PartialEq)]
 pub(crate) struct Outcome {
     pub(crate) timestamp_ms: u64,
@@ -109,6 +128,7 @@ pub(crate) struct Outcome {
 /// The removal of `selection` from `samples` (ascending by stamp, each cell list as stored). A
 /// sample outside the window passes through untouched and is not reported. Returns one outcome
 /// per sample INSIDE the window, in the order given.
+#[allow(dead_code)]
 pub(crate) fn remove_cells(selection: &Selection, samples: Vec<(u64, Vec<Cell>)>) -> Vec<Outcome> {
     let (from, to) = selection.window();
     samples

@@ -473,8 +473,8 @@ pub struct CellMergeSummary {
 
 /// Which cells of one key a removal takes out. A cell goes when its sample is stamped inside the
 /// time window AND its member passes `members` AND every predicate in `filters` holds on it; a
-/// field left open restricts nothing. At least one of the three must restrict something, so a
-/// request that would empty the key is refused (delete the key to do that).
+/// field left open restricts nothing. A request that leaves all three open takes every cell, which
+/// is the deletion of the key: one record, no sample read.
 ///
 /// * `start_ms`, `end_ms`: the samples stamped in `[start_ms, end_ms]`, both inclusive; an absent
 ///   end is open on that side, and `start_ms` after `end_ms` is refused.
@@ -522,6 +522,10 @@ pub struct WindowReduceRollupSummary {
     pub cells_after: u64,
     /// Cells the cap removed.
     pub cells_dropped: u64,
+    /// Buckets folded, summed over the calls a rollup made.
+    pub buckets_folded: u64,
+    /// Unsettled buckets left when the rollup stopped: 0 for a completed one.
+    pub buckets_remaining: u64,
 }
 
 /// A member as a read returns it.
@@ -552,6 +556,18 @@ pub struct RankedCells {
     pub lane_columns: Vec<String>,
     /// Samples the window selected.
     pub samples: usize,
+    /// The stamps of the oldest and the newest sample the window selected: the span of what the
+    /// read scanned, before the top-k kept any of it. 0 and 0 when it selected none.
+    #[serde(default)]
+    pub window_first_ms: u64,
+    #[serde(default)]
+    pub window_last_ms: u64,
+    /// The stamps of the oldest and the newest sample that held a cell the read selected (it passed
+    /// the member set and the predicates), before the top-k kept any of it. 0 and 0 when none did.
+    #[serde(default)]
+    pub matched_first_ms: u64,
+    #[serde(default)]
+    pub matched_last_ms: u64,
     /// Keys that held at least one sample in the window: 1 for a read of one key that had
     /// some, and for a read over several keys how many of them did. A read that names keys the
     /// serving shard does not hold counts them here as absent, so a caller who named N keys and
@@ -3367,13 +3383,18 @@ pub enum CommandResponse {
     WindowReduceRanking {
         ranked: RankedCells,
     },
-    /// What a rollup did: samples and cells before and after, and the cells the cap removed.
+    /// What one rollup call did: samples over the whole series before and after; the cells of the
+    /// bucket folded before and after; the cells the cap removed; the buckets folded (1, or 0 when
+    /// none was unsettled) and the unsettled buckets still below the cutoff. A caller calls again
+    /// until a call folds none.
     WindowReduceRollupReceipt {
         samples_before: u64,
         samples_after: u64,
         cells_before: u64,
         cells_after: u64,
         cells_dropped: u64,
+        buckets_folded: u64,
+        buckets_remaining: u64,
     },
     /// What a removal did: the samples of the key before and after, the cells in the window
     /// before, and the cells removed. A key the shard does not hold answers zeros.

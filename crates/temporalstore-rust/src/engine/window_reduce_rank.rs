@@ -18,8 +18,10 @@
 //! * REDUCE folds one member's surviving cells lane by lane with the reduction the header declares
 //!   for that lane ([`read_reducer`]: the write-side merge verb, as the read-side window reduction) through the shared window
 //!   reducers, in sample order. Labels are the newest surviving cell's.
-//! * SCORE turns the reduced lanes into the ordering value: [`WindowReduceScore`]. A member whose score is
-//!   undefined (a zero denominator, no trials) is counted in `unscored` and not ranked.
+//! * SCORE turns the reduced lanes into the ordering value: [`WindowReduceScore`]. Every member is
+//!   ranked: a ratio whose denominator is 0 scores 0, and a Wilson score of lanes that are both 0
+//!   scores 0 (`unscored` stays 0 for those; only a score that cannot be formed at all, such as a
+//!   non-finite weighted sum, leaves a member out and is counted there).
 //!   The one score that is not a function of the reduced lanes is `Decay`: it reads the value each of
 //!   the member's samples stores for a lane and halves it for every half-life between that sample
 //!   and the NEWEST sample of the window (so it does not read the clock, and a key read later or
@@ -43,7 +45,7 @@
 //! The module is pure: it reads decoded [`Cell`]s and a clock value and touches no engine state.
 
 use std::cmp::{Ordering, Reverse};
-use std::collections::BinaryHeap;
+use std::collections::{BTreeSet, BinaryHeap};
 
 use super::window_reduce_rank_options::{
     last_bounds, validate_options, Anchor, CompiledMembers, CompiledQuota, RankOptions,
@@ -52,7 +54,7 @@ use super::cell_set::{validate_top_k, within, Cell, CellHeader, CellRef, FlatCel
 #[cfg(test)]
 use super::cell_set::Member;
 use super::product_model::filter_op_holds;
-use super::window_aggregate::{ratio, weighted_sum, wilson_lower_bound, DecayedSumAcc, Reduced, Reducer};
+use super::window_aggregate::{weighted_sum, DecayedSumAcc, Reduced, Reducer};
 use crate::types::{
     CellMemberId, WindowReduceRankSpec, WindowReduceSampleInfo, WindowReduceScore, WindowReduceWindow, FeatureFilter,
     FeatureFilterOp, RankedCellRow, RankedCells,
@@ -175,7 +177,13 @@ impl Predicate {
             Target::Label(i) => i128::from(cell.labels[i]),
             Target::Lane(i) => i128::from(cell.lanes[i]),
         };
-        filter_op_holds(&self.op, lhs, i128::from(self.value))
+        // A lane is signed, so the 64 bits a predicate carries are read as signed for it; a label
+        // and a member are unsigned.
+        let rhs = match self.target {
+            Target::Lane(_) => i128::from(self.value as i64),
+            _ => i128::from(self.value),
+        };
+        filter_op_holds(&self.op, lhs, rhs)
     }
 }
 
@@ -288,11 +296,12 @@ pub(crate) fn validate_spec(spec: &WindowReduceRankSpec) -> Result<(), String> {
     validate_score(&spec.score)
 }
 
-/// A `Recent` read answers stored cells, and a quota chooses among reduced members: the two
-/// cannot be asked together.
+/// A `Recent` read answers stored cells, and a quota on it walks those cells (see
+/// [`Plan::run_recent_quota`]): it needs a lane to count, because a quota of `others` alone would
+/// end the walk at the first cell.
 fn check_recent(score: &WindowReduceScore, quota: &crate::types::WindowReduceQuota) -> Result<(), String> {
-    if matches!(score, WindowReduceScore::Recent) && !quota.is_none() {
-        return Err("a recent read returns stored cells and takes no quota".to_string());
+    if matches!(score, WindowReduceScore::Recent) && !quota.is_none() && quota.lanes.is_empty() {
+        return Err("a quota on a stored-cell read needs at least one lane to count".to_string());
     }
     Ok(())
 }
@@ -475,20 +484,48 @@ impl Plan {
     }
 }
 
+/// The ratio score: the quotient of the two lanes as a whole number (the fraction is dropped, so
+/// every ratio below 1 scores 0 and members tie on it), and 0 when the denominator is 0. A member
+/// whose denominator is 0 is ranked at 0, not dropped.
+pub(crate) fn whole_ratio(numerator: i64, denominator: i64) -> i128 {
+    if denominator == 0 {
+        0
+    } else {
+        i128::from(numerator) / i128::from(denominator)
+    }
+}
+
+/// The Wilson score: the lower bound of the interval for the smaller of the two lanes out of the
+/// larger (so which of them holds the successes does not matter), at `z` deviations, scaled by
+/// 10,000 and cut to a whole number. 0 when the larger lane is 0 or the arithmetic leaves the
+/// finite numbers; a member is always ranked.
+pub(crate) fn wilson_score(first: i64, second: i64, z: f64) -> i128 {
+    let (low, high) = (first.min(second), first.max(second));
+    if high == 0 {
+        return 0;
+    }
+    let high = high as f64;
+    let ratio = low as f64 / high;
+    let z2 = z * z;
+    let score = (ratio + z2 / (2.0 * high) - (z / (2.0 * high)) * (4.0 * high * (1.0 - ratio) * ratio + z2).sqrt())
+        / (1.0 + z2 / high)
+        * 10_000.0;
+    if !score.is_finite() {
+        0
+    } else if score >= i64::MAX as f64 {
+        i128::from(i64::MAX)
+    } else {
+        i128::from(score as i64)
+    }
+}
+
 impl Scorer {
     /// The ordering value of one member's `lanes`. `None`: the score is undefined for it.
     pub(crate) fn score(&self, member: MemberRef<'_>, last_ms: u64, lanes: &[i64]) -> Result<Option<Key>, String> {
         Ok(match self {
             Scorer::Lane(i) => Some(Key::Int(i128::from(lanes[*i]))),
-            Scorer::Ratio(n, d) => ratio(lanes[*n], lanes[*d]).map(Key::Float),
-            Scorer::Wilson(s, t, z) => {
-                let (successes, trials) = (lanes[*s], lanes[*t]);
-                if successes < 0 || trials < 0 {
-                    None
-                } else {
-                    wilson_lower_bound(successes as u64, trials as u64, *z).map(Key::Float)
-                }
-            }
+            Scorer::Ratio(n, d) => Some(Key::Int(whole_ratio(lanes[*n], lanes[*d]))),
+            Scorer::Wilson(s, t, z) => Some(Key::Int(wilson_score(lanes[*s], lanes[*t], *z))),
             Scorer::Member => match member {
                 MemberRef::U64(v) => Some(Key::Int(i128::from(v))),
                 MemberRef::Bytes(_) => {
@@ -700,6 +737,9 @@ impl Plan {
     /// first (it is the one a reduction would combine last). The walk stops at `top_k`, so the work
     /// is bounded by the window and by the rows asked for.
     fn run_recent<'a, V: SampleRead<'a>>(&self, chosen: &[V]) -> Result<RankedCells, String> {
+        if let Some(quota) = &self.quota {
+            return self.run_recent_quota(chosen, quota);
+        }
         let mut rows = Vec::with_capacity(self.top_k.min(chosen.iter().map(|s| s.cell_count()).sum::<usize>()));
         'newest: for sample in chosen.iter().rev() {
             let mut at = 0usize;
@@ -722,11 +762,87 @@ impl Plan {
             label_columns: self.label_names.clone(),
             lane_columns: self.lane_names.clone(),
             samples: chosen.len(),
+            window_first_ms: chosen.first().map_or(0, |s| s.stamp()),
+            window_last_ms: chosen.last().map_or(0, |s| s.stamp()),
+            matched_first_ms: rows.iter().map(|r| r.last_ms).min().unwrap_or(0),
+            matched_last_ms: rows.iter().map(|r| r.last_ms).max().unwrap_or(0),
             keys: 0,
             unscored: 0,
             rows,
             refused: String::new(),
             sample_info: self.sample_summary(chosen),
+        })
+    }
+
+    /// The stored-cell read with a quota: the cells of `chosen` that pass the member set and every
+    /// predicate, newest sample first, none reduced, walked until every lane of the quota is full or
+    /// `top_k` cells have been walked.
+    ///
+    /// A lane is SHORT until it holds its count of distinct members. A walked cell that has a
+    /// non-zero value in a short lane is returned when its member is new to that lane (it then counts
+    /// toward every short lane it fits), and a cell that fits no short lane is returned while fewer
+    /// than `others` of them have been. The walk ends when no lane is short, even when `others` is not
+    /// met, and a cell that is walked and not returned still counts toward `top_k`. So `top_k` bounds
+    /// the cells looked at, not the rows returned, and the same member can come back in several rows
+    /// when it fits no lane.
+    fn run_recent_quota<'a, V: SampleRead<'a>>(&self, chosen: &[V], quota: &CompiledQuota) -> Result<RankedCells, String> {
+        struct Short<'m> {
+            lane: usize,
+            count: usize,
+            seen: BTreeSet<MemberRef<'m>>,
+        }
+        let mut short: Vec<Short<'a>> =
+            quota.lanes().iter().map(|&(lane, count)| Short { lane, count, seen: BTreeSet::new() }).collect();
+        let mut others_left = quota.others();
+        let (mut walked, mut rows) = (0usize, Vec::new());
+        'newest: for sample in chosen.iter().rev() {
+            let mut at = 0usize;
+            while self.settle(sample, &mut at)?.is_some() {
+                let cell = sample.cell(at);
+                walked += 1;
+                let (mut fits, mut new_member) = (false, false);
+                let mut i = 0;
+                while i < short.len() {
+                    if cell.lanes[short[i].lane] != 0 {
+                        fits = true;
+                        if short[i].seen.insert(cell.member) {
+                            new_member = true;
+                            if short[i].seen.len() >= short[i].count {
+                                short.swap_remove(i);
+                                continue;
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+                let others = !new_member && !fits && others_left > 0;
+                if others {
+                    others_left -= 1;
+                }
+                if new_member || others {
+                    rows.push(RankedCellRow {
+                        member: member_id(cell.member),
+                        score: sample.stamp() as f64,
+                        last_ms: sample.stamp(),
+                        labels: self.labels_out.iter().map(|&i| cell.labels[i]).collect(),
+                        lanes: self.lanes_out.iter().map(|&i| cell.lanes[i]).collect(),
+                    });
+                }
+                if short.is_empty() || walked >= self.top_k {
+                    break 'newest;
+                }
+                at += 1;
+            }
+        }
+        Ok(RankedCells {
+            label_columns: self.label_names.clone(),
+            lane_columns: self.lane_names.clone(),
+            samples: chosen.len(),
+            window_first_ms: chosen.first().map_or(0, |s| s.stamp()),
+            window_last_ms: chosen.last().map_or(0, |s| s.stamp()),
+            sample_info: self.sample_summary(chosen),
+            rows,
+            ..RankedCells::default()
         })
     }
 
@@ -755,6 +871,7 @@ impl Plan {
         let mut reduced = vec![0i64; self.lane_count];
         let mut top = TopK::new(self.top_k, self.lane_count, self.label_count);
         let mut unscored = 0u64;
+        let (mut matched_first, mut matched_last) = (u64::MAX, 0u64);
         let as_of_ms = chosen.last().map_or(0, |sample| sample.stamp());
 
         for (i, sample) in chosen.iter().enumerate() {
@@ -780,6 +897,8 @@ impl Plan {
                 }
             }
             let &(last_ms, newest) = occurrences.last().ok_or("a member has no occurrence")?;
+            matched_first = matched_first.min(occurrences[0].0);
+            matched_last = matched_last.max(last_ms);
             match self.score(member, last_ms, &reduced, &occurrences, as_of_ms)? {
                 Some(key) => top.offer(key, member, last_ms, &newest.labels, &reduced),
                 None => unscored += 1,
@@ -808,6 +927,10 @@ impl Plan {
             label_columns: self.label_names.clone(),
             lane_columns: self.lane_names.clone(),
             samples: chosen.len(),
+            window_first_ms: chosen.first().map_or(0, |s| s.stamp()),
+            window_last_ms: chosen.last().map_or(0, |s| s.stamp()),
+            matched_first_ms: if matched_first == u64::MAX { 0 } else { matched_first },
+            matched_last_ms: matched_last,
             // The caller knows how many series `chosen` came from.
             keys: 0,
             unscored,
@@ -815,6 +938,50 @@ impl Plan {
             refused: String::new(),
             sample_info: self.sample_summary(chosen),
         })
+    }
+}
+
+#[cfg(test)]
+mod signed_lane_predicate_tests {
+    use super::*;
+    use super::super::cell_set::{DimSpec, DimType, EntityType, KeySpec, LaneReducer, LaneSpec};
+
+    fn header() -> CellHeader {
+        CellHeader {
+            version: super::super::cell_set::HEADER_VERSION,
+            key: KeySpec {
+                namespace: "ns".to_string(),
+                entity: EntityType::U64,
+                dimensions: vec![DimSpec { name: "channel".to_string(), ty: DimType::U16, required: true }],
+            },
+            labels: vec!["slot".to_string()],
+            lanes: vec![LaneSpec { name: "v".to_string(), reducer: LaneReducer::Sum }],
+        }
+    }
+
+    fn holds(filter: FeatureFilter, lane: i64, slot: u64) -> bool {
+        let predicates = compile_predicates(&header(), &[filter]).expect("the names are declared");
+        let (labels, lanes) = ([slot], [lane]);
+        predicates[0].holds(&CellRef { member: MemberRef::U64(1), labels: &labels, lanes: &lanes })
+    }
+
+    fn on(field: &str, op: FeatureFilterOp, value: u64) -> FeatureFilter {
+        FeatureFilter { field: field.to_string(), op, value }
+    }
+
+    #[test]
+    fn a_lane_predicate_reads_its_value_as_signed_and_a_label_predicate_as_unsigned() {
+        // A lane is signed: the 64 bits of -1 equal a lane holding -1, and -1 is below 0 and 5.
+        assert!(holds(on("v", FeatureFilterOp::Equal, (-1i64) as u64), -1, 0));
+        assert!(!holds(on("v", FeatureFilterOp::Equal, (-1i64) as u64), 1, 0));
+        assert!(holds(on("v", FeatureFilterOp::LessThan, 0), -1, 0));
+        assert!(holds(on("v", FeatureFilterOp::GreaterThan, (-5i64) as u64), -1, 0));
+        assert!(!holds(on("v", FeatureFilterOp::GreaterThan, (-5i64) as u64), -9, 0));
+        // A label is unsigned: the largest label equals the largest value, and is above every other.
+        assert!(holds(on("slot", FeatureFilterOp::Equal, u64::MAX), 0, u64::MAX));
+        assert!(holds(on("slot", FeatureFilterOp::GreaterThan, 5), 0, u64::MAX));
+        // The test no cell passes: a member is never below 0.
+        assert!(!holds(on("member", FeatureFilterOp::LessThan, 0), 0, 0));
     }
 }
 

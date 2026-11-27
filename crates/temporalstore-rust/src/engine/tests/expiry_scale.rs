@@ -71,30 +71,33 @@ fn sweep_once(engine: &TemporalEngine, shard_id: ShardId) -> ShardExpirySweepRep
 /// (deadlines held, of those how many are already due) -- the denominator for every claim below.
 fn deadline_census(engine: &TemporalEngine, shard_id: ShardId) -> (usize, usize) {
     let now = now_ms();
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&shard_id).expect("shard is loaded");
-    let held = shard.expires_at_ms().len();
-    let due = shard
-        .expires_at_ms()
-        .values()
-        .filter(|expires_at| **expires_at <= now)
-        .count();
-    (held, due)
+    engine.shards.with_state(shard_id, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let held = shard.expires_at_ms().len();
+        let due = shard
+            .expires_at_ms()
+            .values()
+            .filter(|expires_at| **expires_at <= now)
+            .count();
+        (held, due)
+    })
 }
 
 fn disagreements(engine: &TemporalEngine, shard_id: ShardId) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&shard_id).expect("shard is loaded");
-    crate::engine::expiry_index_disagreements(shard)
+    engine.shards.with_state(shard_id, |shard| {
+        let shard = shard.expect("shard is loaded");
+        crate::engine::expiry_index_disagreements(shard)
+    })
 }
 
 /// Is the deadline-ordered view empty right now? True immediately after any deserializing load,
 /// because the field is `#[serde(skip)]`. That emptiness is the thing `ensure_expiry_order` has
 /// to repair, so the tests below assert it BEFORE claiming the repair happened.
 fn deadline_index_len(engine: &TemporalEngine, shard_id: ShardId) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&shard_id).expect("shard is loaded");
-    shard.expiry_by_deadline.len()
+    engine.shards.with_state(shard_id, |shard| {
+        let shard = shard.expect("shard is loaded");
+        shard.expiry_by_deadline.len()
+    })
 }
 
 fn write_keys(engine: &TemporalEngine, shard_id: ShardId, keys: Vec<(String, u64)>) {
@@ -320,6 +323,7 @@ fn the_deadline_index_is_rebuilt_on_load_manifest_install_and_wal_replay() {
         assert_eq!(held, LIVE_KEYS + DUE_KEYS, "the fixture did not land");
         engine.unload_shard(1);
 
+        drop(engine);
         let engine = make_engine();
         engine.load_shard(1);
         // The view is not in the persisted format, so it is built when the state is installed
@@ -382,6 +386,7 @@ fn the_deadline_index_is_rebuilt_on_load_manifest_install_and_wal_replay() {
         let removed = std::fs::remove_file(index_dir.join("shard-1.index.json")).is_ok();
         assert!(removed, "the base index should exist to be removed");
 
+        drop(engine);
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
@@ -929,6 +934,7 @@ fn an_expired_key_stays_expired_across_load_manifest_install_and_wal_replay() {
             .expect("the base index should exist before the round")
             .len();
 
+        drop(engine);
         let engine = make_engine();
         engine.load_shard(1);
         sweep_after(&engine);
@@ -945,6 +951,7 @@ fn an_expired_key_stays_expired_across_load_manifest_install_and_wal_replay() {
         );
 
         // No unload: a crash-shaped reload onto the stale base.
+        drop(engine);
         let engine = make_engine();
         engine.load_shard(1);
         assert_recovered(&engine, "LOAD (stale base + WAL tail)");
@@ -1102,6 +1109,10 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
         .filter_map(|blob| blob.get("key").and_then(|value| value.as_str()))
         .map(str::to_string)
         .collect();
+    assert_eq!(
+        named, logged_keys,
+        "the checkpoint must cover the logged deletion set, not absent related records"
+    );
     assert!(
         !named.is_empty(),
         "the expiry delta named no keys at all. `delta_record_covered_keys` reads the covered set \
@@ -1158,6 +1169,218 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
          tombstones reached. The record that moves the anchor has to be the record that describes \
          the deletions, or a fold applies one without the other"
     );
+}
+
+#[test]
+fn logged_expiry_is_admitted_before_a_newer_write_and_stale_append_defers() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    const SHARD: ShardId = 1;
+    const REPLACED: &str = "expiry-replaced";
+    const REMOVED: &str = "expiry-removed";
+    const UNRELATED: &str = "expiry-unrelated-write";
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &blocks, &indexes);
+    let _group = crate::index_log::group_write_in_test(true);
+    engine.load_shard(SHARD);
+    write_keys(&engine, SHARD, vec![(REPLACED.into(), 3_600_000), (REMOVED.into(), 3_600_000)]);
+    engine.flush_shard_index(SHARD);
+    let base_path = engine.index_path(SHARD);
+    let base_bytes = std::fs::read(&base_path).unwrap();
+    let base = decode_index_bytes(&base_bytes).unwrap();
+    let base_cut = base.applied_wal_sequence.unwrap();
+    assert!(base.string_address(REPLACED).is_some() && base.string_address(REMOVED).is_some());
+    let deadline = now_ms().saturating_sub(1);
+    engine.shards.with_state_mut(SHARD, |shard| {
+        let shard = shard.unwrap();
+        crate::engine::set_expiry(shard, REPLACED.to_string(), deadline);
+        crate::engine::set_expiry(shard, REMOVED.to_string(), deadline);
+    });
+    assert_eq!(deadline_census(&engine, SHARD), (2, 2));
+
+    let (cut, latest, replacement) = std::thread::scope(|scope| {
+        let (captured, wait) = mpsc::channel();
+        let (resume, release) = mpsc::channel();
+        let round = scope.spawn(|| {
+            let _group = crate::index_log::group_write_in_test(true);
+            crate::engine::recovery_sweep_compact::pause_after_expiry_capture_for_test(captured, release);
+            sweep_once(&engine, SHARD)
+        });
+        wait.recv_timeout(Duration::from_secs(10)).expect("sweep reached the detached boundary");
+        let cut = engine.wal_store.cached_last_sequence(SHARD);
+        assert_eq!(cut, base_cut + 1, "one real deletion WAL frame was admitted");
+        let stale_keys = engine.shards.with_state(SHARD, |shard| {
+            let state = shard.unwrap();
+            assert!(state.string_address(REPLACED).is_none() && state.string_address(REMOVED).is_none());
+            crate::engine::capture_key_states(state, &[REPLACED.to_string(), REMOVED.to_string()])
+        });
+        let value = b"written after the expiry capture".to_vec();
+        for key in [REPLACED, UNRELATED] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: SHARD,
+                command: Command::StringSet { key: key.to_string(), value: value.clone() },
+            });
+            assert!(response.status.ok, "competing write failed: {:?}", response.status);
+        }
+        let latest = engine.wal_store.cached_last_sequence(SHARD);
+        assert_eq!(latest, cut + 2);
+        let stale = engine.index_log_store.append_expiry_delta(
+            SHARD, Vec::new(), stale_keys, cut, false, Some(&engine.wal_store),
+        );
+        assert!(matches!(stale, Err(crate::index_log::IndexLogError::Io(error))
+            if error.kind() == std::io::ErrorKind::Interrupted),
+            "a late capture cannot append tombstones after newer writes");
+        let replacement = engine.shards.with_state(SHARD, |shard| {
+            shard.unwrap().string_address(REPLACED).unwrap()
+        });
+        resume.send(()).unwrap();
+        assert_eq!(round.join().unwrap().expired_records_removed, 2);
+        (cut, latest, replacement)
+    });
+
+    let records = engine.index_log_store.read_delta_records(SHARD, 0).unwrap();
+    assert_eq!(
+        records.iter().filter_map(|record| record.applied_wal_sequence)
+            .filter(|anchor| *anchor > base_cut).collect::<Vec<_>>(),
+        vec![cut, cut + 1, latest],
+        "the expiry record must precede both later writes, with no duplicate stale append",
+    );
+    let expiry = records.iter().find(|record| record.applied_wal_sequence == Some(cut)).unwrap();
+    assert!(expiry.items.is_empty());
+    assert_eq!(expiry.key_states.len(), 2);
+    assert_eq!(std::fs::read(&base_path).unwrap(), base_bytes);
+    drop(engine);
+
+    let reopened = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("reopen-cache"), &blocks, &indexes,
+    );
+    let folded = reopened.load_index_checked(SHARD, false).unwrap().unwrap();
+    assert_eq!(folded.applied_wal_sequence, Some(latest));
+    assert_eq!(folded.string_address(REPLACED), Some(replacement));
+    assert!(folded.string_address(REMOVED).is_none());
+    assert!(folded.string_address(UNRELATED).is_some());
+    reopened.load_shard(SHARD);
+    for (key, expected) in [
+        (REPLACED, Some(b"written after the expiry capture".to_vec())),
+        (UNRELATED, Some(b"written after the expiry capture".to_vec())),
+        (REMOVED, None),
+    ] {
+        let response = reopened.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringGet { key: key.to_string() },
+        });
+        assert!(response.status.ok, "read after reopen: {:?}", response.status);
+        assert_eq!(response.response, CommandResponse::Bytes { value: expected });
+    }
+}
+
+#[test]
+fn failed_expiry_index_admission_retains_the_wal_replay_cut() {
+    expiry_recovery_after_index_failure(true);
+}
+
+#[test]
+fn accepted_expiry_index_frame_survives_a_failed_batch_write_and_retries_once() {
+    expiry_recovery_after_index_failure(false);
+}
+
+fn expiry_recovery_after_index_failure(fail_admission: bool) {
+    const SHARD: ShardId = 1;
+    const EXPIRED: &str = "failed-index-expiry";
+    const UNRELATED: &str = "write-after-index-failure";
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &blocks, &indexes);
+    let _group = crate::index_log::group_write_in_test(true);
+    let _flusher = crate::index_log::flusher_in_test(false);
+    engine.load_shard(SHARD);
+    write_keys(&engine, SHARD, vec![(EXPIRED.into(), 3_600_000)]);
+    engine.flush_shard_index(SHARD);
+    let base_path = engine.index_path(SHARD);
+    let base_bytes = std::fs::read(&base_path).unwrap();
+    let base = decode_index_bytes(&base_bytes).unwrap();
+    let base_cut = base.applied_wal_sequence.unwrap();
+    assert!(base.string_address(EXPIRED).is_some());
+    engine.shards.with_state_mut(SHARD, |shard| {
+        crate::engine::set_expiry(shard.unwrap(), EXPIRED.to_string(), now_ms().saturating_sub(1));
+    });
+    assert_eq!(deadline_census(&engine, SHARD), (1, 1));
+    if fail_admission {
+        crate::index_log::fail_next_expiry_delta_prepare_for_test();
+    }
+    let sweep = engine.sweep_expired_records_with_request(ShardExpirySweepRequest {
+        shard_id: SHARD, load_cold_buckets: true,
+        max_hot_buckets_per_round: HOT_LIMIT, max_cold_buckets_per_round: COLD_LIMIT,
+        ..ShardExpirySweepRequest::default()
+    });
+    if fail_admission {
+        let error = sweep.expect_err("expiry encoding failed before queue admission");
+        assert_eq!(error.code, "expire_index_admission_failed");
+        assert!(error.message.contains("injected expiry delta preparation error"));
+    } else {
+        assert_eq!(sweep.unwrap().expired_records_removed, 1);
+        crate::index_log::fail_next_pending_index_write_for_test();
+        let before_retry = engine.index_log_store.read_delta_records(SHARD, 0).unwrap();
+        assert!(before_retry.iter().all(|r| r.applied_wal_sequence.unwrap_or(0) <= base_cut),
+            "the injected write failure kept the admitted expiry frame off disk");
+    }
+    let expiry_cut = engine.wal_store.cached_last_sequence(SHARD);
+    assert_eq!(expiry_cut, base_cut + 1);
+    assert!(engine.shards.with_state(SHARD, |shard| shard.unwrap().string_address(EXPIRED).is_none()));
+    let value = b"unrelated write survives expiry Index failure".to_vec();
+    let write = engine.execute(ExecuteRequest {
+        shard_id: SHARD,
+        command: Command::StringSet { key: UNRELATED.to_string(), value: value.clone() },
+    });
+    assert!(write.status.ok, "new WAL write failed: {:?}", write.status);
+    let new_cut = engine.wal_store.cached_last_sequence(SHARD);
+    assert_eq!(new_cut, expiry_cut + 1);
+
+    let read_anchors = || engine.index_log_store.read_delta_records(SHARD, 0).unwrap()
+        .iter().filter_map(|row| row.applied_wal_sequence).filter(|cut| *cut > base_cut)
+        .collect::<Vec<_>>();
+    if fail_admission {
+        assert!(read_anchors().is_empty(), "failed expiry admission must fence the later anchor");
+        assert_eq!(engine.shards.with_state(SHARD, |shard| shard.unwrap().checkpoint_wal_sequence()), None);
+        engine.flush_shard_index(SHARD);
+    } else {
+        assert_eq!(read_anchors(), vec![expiry_cut, new_cut], "retry must finish the older retained frame first");
+        assert_eq!(read_anchors(), vec![expiry_cut, new_cut], "a second drain must be idempotent");
+    }
+    assert_eq!(std::fs::read(&base_path).unwrap(), base_bytes);
+    let (wal, _) = engine.wal_store.scan_decoded(SHARD, 0, u64::MAX, u64::MAX).unwrap();
+    let deletion_count = wal.iter().flat_map(|(_, frame)| &frame.outcomes)
+        .filter(|row| row.object_key == EXPIRED && row.deleted).count();
+    assert_eq!(deletion_count, 1, "Index failure or retry must not append another WAL tombstone");
+    drop(engine);
+
+    let checked = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("checked-cache"), &blocks, &indexes,
+    );
+    let folded = checked.load_index_checked(SHARD, false).unwrap().unwrap();
+    let expected_cut = if fail_admission { base_cut } else { new_cut };
+    assert_eq!(folded.applied_wal_sequence, Some(expected_cut));
+    assert_eq!(folded.string_address(EXPIRED).is_some(), fail_admission);
+    assert_eq!(folded.string_address(UNRELATED).is_some(), !fail_admission);
+    drop(checked);
+    assert_eq!(std::fs::read(&base_path).unwrap(), base_bytes);
+
+    let reopened = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("reopen-cache"), &blocks, &indexes,
+    );
+    reopened.load_shard(SHARD);
+    for (key, expected) in [(EXPIRED, None), (UNRELATED, Some(value))] {
+        let get = reopened.execute(ExecuteRequest {
+            shard_id: SHARD, command: Command::StringGet { key: key.to_string() },
+        });
+        assert!(get.status.ok, "reopen read failed: {:?}", get.status);
+        assert_eq!(get.response, CommandResponse::Bytes { value: expected });
+    }
+    assert_eq!(sweep_once(&reopened, SHARD).expired_records_removed, 0);
 }
 
 /// THE FOLD ITSELF, not the record it reads: a delta-fold recovery applies the expiry
@@ -1833,6 +2056,15 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     // `index_log_sequence` here measured floor 9 (retain_from 10) against a load replaying from 1.
     observe(&engine, "manifest orderings diverged");
 
+    let prune = engine.bucket_dump_manifest_prune_plan(1);
+    let recovery_ids = engine.list_bucket_dump_manifests(1).into_iter()
+        .filter(|manifest| manifest.wal_sequence == highest_anchor)
+        .map(|manifest| manifest.manifest_id).collect::<Vec<_>>();
+    assert!(recovery_ids.iter().any(|id| prune.retained_manifest_ids.contains(id)),
+        "pruning must preserve the actual recovery anchor: {prune:?}");
+    engine.apply_bucket_dump_manifest_prune(1);
+    observe(&engine, "inverted ordering after pruning");
+
     // ...and then the rest of the cycle the expiry round was in the middle of, so the states the
     // original run covered are still covered, now with the divergent manifest on disk.
     cycle(&engine);
@@ -1840,9 +2072,7 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     cycle(&engine);
     observe(&engine, "settled");
 
-    // Current reclaim publication refreshes the base before authorizing collection. Restore
-    // the earlier durable base explicitly so the cold-load probe must use the newer manifest,
-    // rather than relying on the normal cycle to leave that older ordering on disk.
+    // Restore the earlier durable base so the cold-load probe must still use the retained dump.
     std::fs::write(engine.index_path(1), seeded_index).expect("restore the earlier base image");
     observe(&engine, "earlier base with settled manifest");
 
@@ -1901,14 +2131,16 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
         replayed_from, NO_LOAD_RECORDED,
         "the final load recorded no replay watermark"
     );
-    let shards = reader.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("the shard loaded");
-    let live_back = (0..PRE_KEYS)
-        .filter(|index| shard.strings().contains_key(pre_key(*index).as_str()))
-        .count();
-    let expired_back = (0..DUE_KEYS)
-        .filter(|index| shard.strings().contains_key(due_key(*index).as_str()))
-        .count();
+    let (live_back, expired_back) = reader.shards.with_state(1, |shard| {
+        let shard = shard.expect("the shard loaded");
+        let live_back = (0..PRE_KEYS)
+            .filter(|index| shard.strings().contains_key(pre_key(*index).as_str()))
+            .count();
+        let expired_back = (0..DUE_KEYS)
+            .filter(|index| shard.strings().contains_key(due_key(*index).as_str()))
+            .count();
+        (live_back, expired_back)
+    });
     println!("  fresh default load replayed from {replayed_from}");
     assert_eq!(
         live_back, PRE_KEYS,
@@ -1952,22 +2184,25 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
 #[test]
 fn a_deadline_set_with_options_is_visible_to_the_sweep() {
     fn deadline_is_recorded(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&shard_id).expect("shard is loaded");
-        shard.expires_at_ms().contains_key(key)
+        engine.shards.with_state(shard_id, |shard| {
+            let shard = shard.expect("shard is loaded");
+            shard.expires_at_ms().contains_key(key)
+        })
     }
     fn deadline_is_in_the_mirror(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&shard_id).expect("shard is loaded");
-        shard
-            .expiry_by_deadline
-            .keys()
-            .any(|(_, mirrored)| &**mirrored == key)
+        engine.shards.with_state(shard_id, |shard| {
+            let shard = shard.expect("shard is loaded");
+            shard
+                .expiry_by_deadline
+                .keys()
+                .any(|(_, mirrored)| &**mirrored == key)
+        })
     }
     fn record_is_gone(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&shard_id).expect("shard is loaded");
-        !shard.control_state().contains_key(key) && !shard.expires_at_ms().contains_key(key)
+        engine.shards.with_state(shard_id, |shard| {
+            let shard = shard.expect("shard is loaded");
+            !shard.control_state().contains_key(key) && !shard.expires_at_ms().contains_key(key)
+        })
     }
 
     let engine = TemporalEngine::default();
@@ -2196,9 +2431,10 @@ fn a_with_options_deadline_costs_the_due_set_not_the_keyspace() {
 #[test]
 fn a_with_options_deadline_survives_recovery() {
     fn deadline_for(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> Option<u64> {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&shard_id).expect("shard is loaded");
-        shard.expires_at_ms().get(key).copied()
+        engine.shards.with_state(shard_id, |shard| {
+            let shard = shard.expect("shard is loaded");
+            shard.expires_at_ms().get(key).copied()
+        })
     }
     /// Did replay INSTALL this record's outcome? That is the premise of the whole test -- a
     /// record with outcomes is installed rather than re-executed -- so the block the write
@@ -2207,9 +2443,10 @@ fn a_with_options_deadline_survives_recovery() {
     /// and reading it here would make this test fail for a reason that has nothing to do with
     /// deadlines.
     fn outcome_was_installed(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&shard_id).expect("shard is loaded");
-        shard.control_state_blocks().contains_key(key)
+        engine.shards.with_state(shard_id, |shard| {
+            let shard = shard.expect("shard is loaded");
+            shard.control_state_blocks().contains_key(key)
+        })
     }
 
     // Long enough that nothing under test expires during the round trip.
@@ -2412,12 +2649,13 @@ fn a_lapsed_deadline_hides_a_seen_set_and_a_token_bucket_from_their_own_reads() 
         );
     }
     fn deadline_has_lapsed(engine: &TemporalEngine, key: &str) -> bool {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard
-            .expires_at_ms()
-            .get(key)
-            .is_some_and(|expires_at| *expires_at <= now_ms())
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard is loaded");
+            shard
+                .expires_at_ms()
+                .get(key)
+                .is_some_and(|expires_at| *expires_at <= now_ms())
+        })
     }
 
     let engine = TemporalEngine::default();
@@ -2634,12 +2872,13 @@ fn a_lapsed_deadline_hides_a_context_node_from_every_context_read() {
         );
     }
     fn deadline_has_lapsed(engine: &TemporalEngine, key: &str) -> bool {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard
-            .expires_at_ms()
-            .get(key)
-            .is_some_and(|expires_at| *expires_at <= now_ms())
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard is loaded");
+            shard
+                .expires_at_ms()
+                .get(key)
+                .is_some_and(|expires_at| *expires_at <= now_ms())
+        })
     }
 
     let engine = TemporalEngine::default();
@@ -2858,9 +3097,8 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
 
     // What the LIVE shard now holds. If it does not match what was asked for, the recovery
     // assertions below are about the wrong thing entirely.
-    let (live_armed, live_moved, live_wal_sequence) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
+    let (live_armed, live_moved, live_wal_sequence) = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
         assert!(
             shard.expires_at_ms().contains_key(armed_key),
             "DENOMINATOR: the LIVE shard has no deadline for {armed_key} after CommonExpire, so \
@@ -2876,7 +3114,7 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
             shard.expires_at_ms().get(moved_key).copied(),
             shard.applied_wal_sequence.unwrap_or(0),
         )
-    };
+    });
     assert_ne!(
         live_moved, base_moved,
         "DENOMINATOR: the re-arm left {moved_key} on the SAME millisecond the base already \
@@ -3329,13 +3567,12 @@ fn a_committed_read_resolves_its_deadline_against_the_leader_clock() {
     let deadline = local_now.saturating_add(60_000);
     let leader_past_deadline = local_now.saturating_add(120_000);
 
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
         crate::engine::set_expiry(shard, "skew:string".to_string(), deadline);
         crate::engine::set_expiry(shard, "skew:hash".to_string(), deadline);
         crate::engine::set_expiry(shard, "ttl:string".to_string(), deadline);
-    }
+    });
 
     // The entry point production uses: `execute_raft_apply_batch_at` installs exactly this
     // clock per entry, and a committed `StringGet` was measured arriving here 228 times.
@@ -3674,13 +3911,12 @@ fn cache_pass_fixture(
         }
     }
     let now = now_ms();
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
         for key in due {
             crate::engine::set_expiry(shard, key.clone(), now.saturating_sub(1_000));
         }
-    }
+    });
     (dir, engine)
 }
 
@@ -4289,8 +4525,26 @@ fn expiry_cache_pass_arms(objects: usize) -> (ExpiryCachePassArm, ExpiryCachePas
     let sweep = &crate::engine::CACHE_SWEEP_COUNTS;
     let expired_keys = cache_pass_due(objects);
 
+    // Hash point reads use physical blocks, not logical response copies. Seed the supported
+    // logical selectors explicitly so both invalidators still exercise every swept namespace.
+    let seed_selectors = |engine: &TemporalEngine| {
+        for key in cache_pass_marked(objects) {
+            for namespace in crate::engine::SWEPT_RECORD_NAMESPACES {
+                for selector in ["first", "second", "third"] {
+                    engine.cache.put(CacheKey {
+                        shard_id: 1,
+                        namespace: (*namespace).into(),
+                        record_key: key.as_str().into(),
+                        selector: selector.into(),
+                    }, vec![1; 16]).unwrap();
+                }
+            }
+        }
+    };
+
     let per_key = {
         let (_dir, engine) = cache_pass_fixture(objects, true, &expired_keys);
+        seed_selectors(&engine);
         let before = cache_pass_listing(&engine);
         sweep.reset();
         sweep.set_armed(true);
@@ -4313,6 +4567,7 @@ fn expiry_cache_pass_arms(objects: usize) -> (ExpiryCachePassArm, ExpiryCachePas
 
     let batched = {
         let (_dir, engine) = cache_pass_fixture(objects, true, &expired_keys);
+        seed_selectors(&engine);
         let before = cache_pass_listing(&engine);
         sweep.reset();
         sweep.set_armed(true);
@@ -4637,15 +4892,15 @@ fn a_key_the_expiry_round_has_removed_is_never_still_answered_out_of_the_cache()
         std::thread::spawn(move || {
             while !stop.load(Ordering::Relaxed) {
                 // Which keys the SHARD has already let go of, read under the shard lock.
-                let gone = {
-                    let shards = engine.shards.read().expect("engine lock poisoned");
-                    match shards.get(&1) {
-                        Some(shard) => (0..OBJECTS)
+                let Some(gone) = engine.shards.with_state(1, |shard| {
+                    shard.map(|shard| {
+                        (0..OBJECTS)
                             .map(cache_pass_key)
                             .filter(|key| !shard.strings().contains_key(key.as_str()))
-                            .collect::<Vec<_>>(),
-                        None => break,
-                    }
+                            .collect::<Vec<_>>()
+                    })
+                }) else {
+                    break;
                 };
                 for key in gone {
                     if stop.load(Ordering::Relaxed) {
@@ -4830,29 +5085,30 @@ fn a_loaded_shard_arrives_with_its_deadline_index_built() {
     assert_eq!(disagreements(&engine, 1), 0);
 
     // The cost, matched: the same deadlines, built the old way and the new way.
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).unwrap();
-    let pairs: Vec<((u64, Arc<str>), ())> = shard
-        .expires_at_ms()
-        .iter()
-        .map(|(key, at)| ((*at, Arc::from(&**key)), ()))
-        .collect();
-    let started = std::time::Instant::now();
-    let mut one_by_one = BTreeMap::new();
-    one_by_one.extend(pairs.clone());
-    let old_us = started.elapsed().as_micros();
-    let started = std::time::Instant::now();
-    let bulk: BTreeMap<(u64, Arc<str>), ()> = pairs.into_iter().collect();
-    let new_us = started.elapsed().as_micros();
-    assert_eq!(one_by_one.len(), bulk.len());
-    shard.expiry_by_deadline.clear();
-    let started = std::time::Instant::now();
-    crate::engine::ensure_expiry_order(shard);
-    let ensure_us = started.elapsed().as_micros();
-    println!(
-        "  {KEYS} deadlines: insert-by-insert {old_us} us, collected {new_us} us, ensure_expiry_order {ensure_us} us"
-    );
-    assert_eq!(shard.expiry_by_deadline.len(), KEYS);
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.unwrap();
+        let pairs: Vec<((u64, Arc<str>), ())> = shard
+            .expires_at_ms()
+            .iter()
+            .map(|(key, at)| ((*at, Arc::from(&**key)), ()))
+            .collect();
+        let started = std::time::Instant::now();
+        let mut one_by_one = BTreeMap::new();
+        one_by_one.extend(pairs.clone());
+        let old_us = started.elapsed().as_micros();
+        let started = std::time::Instant::now();
+        let bulk: BTreeMap<(u64, Arc<str>), ()> = pairs.into_iter().collect();
+        let new_us = started.elapsed().as_micros();
+        assert_eq!(one_by_one.len(), bulk.len());
+        shard.expiry_by_deadline.clear();
+        let started = std::time::Instant::now();
+        crate::engine::ensure_expiry_order(shard);
+        let ensure_us = started.elapsed().as_micros();
+        println!(
+            "  {KEYS} deadlines: insert-by-insert {old_us} us, collected {new_us} us, ensure_expiry_order {ensure_us} us"
+        );
+        assert_eq!(shard.expiry_by_deadline.len(), KEYS);
+    })
 }
 
 /// A run of due keys the window refuses must not hide an accepted one behind it.
@@ -4868,27 +5124,25 @@ fn a_long_run_of_due_cold_keys_does_not_starve_a_due_hot_key() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     write_keys(&engine, 1, vec![("hot-due".to_string(), 1u64)]);
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).unwrap();
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.unwrap();
         for index in 0..COLD {
             crate::engine::set_expiry(shard, format!("cold-{index:04}"), 1);
         }
-    }
+    });
     std::thread::sleep(std::time::Duration::from_millis(20));
     let (held, due) = deadline_census(&engine, 1);
     assert_eq!((held, due), (COLD + 1, COLD + 1), "the fixture did not land");
 
     // CONTROL: the walk is still bounded. A budget of 4 gives a cap of 64 keys, which ends inside
     // the 200-key cold run, so the accepted key is not reached; a budget of 64 (cap 1,024) is.
-    {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).unwrap();
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.unwrap();
         let now = now_ms();
         let only_hot = |key: &str| key == "hot-due";
         assert!(crate::engine::due_window(shard, now, 1, 4, only_hot).is_empty());
         assert_eq!(crate::engine::due_window(shard, now, 1, 64, only_hot).len(), 1);
-    }
+    });
 
     let mut removed = 0;
     for _ in 0..5 {
@@ -4909,4 +5163,79 @@ fn a_long_run_of_due_cold_keys_does_not_starve_a_due_hot_key() {
     );
     let (held, _) = deadline_census(&engine, 1);
     assert_eq!(held, COLD, "only the cold keys should remain");
+}
+
+/// A DUE ROUND VISITS ITS CAP, HOWEVER LARGE THE DUE BACKLOG, AND THE NEXT ROUND RESUMES.
+///
+/// Entries visited per round is counted through `keep`, which `due_window` calls once per entry it
+/// examines. At three backlog sizes (1,000, 8,000 and 64,000 due keys) a round with the shipped
+/// hot limit examines exactly that limit and selects exactly that limit, so the count is the
+/// documented cap and is flat across the backlog. After a round's keys are removed the next round
+/// starts at the following deadline and again examines exactly the cap: the backlog drains from
+/// the front, which is the resume point.
+///
+/// THE CONTROL is the unbounded call (limit 0, no scan budget) on the same shard: it examines
+/// the whole backlog, so a counter that read zero because it was not wired, or a bound that was
+/// ignored, cannot pass the flat assertion by accident.
+#[test]
+fn a_due_round_examines_its_cap_however_large_the_backlog_and_the_next_round_resumes() {
+    fn examined(
+        shard: &ShardState,
+        now: u64,
+        limit: usize,
+        scan_budget: usize,
+    ) -> (usize, Vec<(String, u64)>) {
+        let visits = std::cell::Cell::new(0usize);
+        let selected = crate::engine::due_window(shard, now, limit, scan_budget, |_| {
+            visits.set(visits.get() + 1);
+            true
+        });
+        (visits.get(), selected)
+    }
+
+    let mut per_size = Vec::new();
+    for backlog in [1_000usize, 8_000, 64_000] {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        engine.shards.with_state_mut(1, |shard| {
+            let shard = shard.unwrap();
+            for index in 0..backlog {
+                crate::engine::set_expiry(shard, format!("due-{index:06}"), 1);
+            }
+            let now = now_ms();
+
+            // CONTROL: unbounded examines the whole backlog.
+            let (whole, _) = examined(shard, now, 0, 0);
+            assert_eq!(whole, backlog, "the control walk did not see the whole backlog");
+
+            // THE CLAIM, first round.
+            let (first_visits, first) = examined(shard, now, HOT_LIMIT, 64);
+            assert_eq!(
+                (first_visits, first.len()),
+                (HOT_LIMIT, HOT_LIMIT),
+                "{backlog} due keys: a round examined {first_visits} and selected {}, not the cap \
+                 {HOT_LIMIT}",
+                first.len()
+            );
+
+            // RESUME: remove what the round took; the next round starts at the following deadline.
+            let taken: Vec<String> = first.iter().map(|(key, _)| key.clone()).collect();
+            for key in &taken {
+                assert!(crate::engine::clear_expiry(shard, key));
+            }
+            let (second_visits, second) = examined(shard, now, HOT_LIMIT, 64);
+            assert_eq!(second_visits, HOT_LIMIT, "{backlog} due keys: the resumed round examined {second_visits}");
+            assert!(
+                second.iter().all(|(key, _)| !taken.contains(key)),
+                "the resumed round re-selected a key the previous round took"
+            );
+            per_size.push((backlog, first_visits, whole));
+        });
+    }
+
+    // FLAT: the examined count is identical at every size while the control grows 64x.
+    assert!(
+        per_size.windows(2).all(|pair| pair[0].1 == pair[1].1 && pair[1].2 > pair[0].2),
+        "entries examined per round must be flat while the whole-backlog control grows: {per_size:?}"
+    );
 }

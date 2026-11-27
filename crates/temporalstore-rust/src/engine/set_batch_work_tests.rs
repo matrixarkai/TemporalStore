@@ -41,16 +41,17 @@ fn counts() -> (u64, u64) {
 }
 
 fn assert_dirty(engine: &TemporalEngine, key: &str) {
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    let refs = shard.bucket_index.block_refs_for("set", key, None).unwrap();
-    assert!(!refs.is_empty());
-    assert!(refs.iter().all(|at| shard
-        .bucket_index
-        .bucket_map
-        .get(&at.routing_bucket)
-        .and_then(|bucket| bucket.block_index.get(&at.block_ref_key))
-        .is_some_and(|block| block.dirty())));
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.unwrap();
+        let refs = shard.bucket_index.block_refs_for("set", key, None).unwrap();
+        assert!(!refs.is_empty());
+        assert!(refs.iter().all(|at| shard
+            .bucket_index
+            .bucket_map
+            .get(&at.routing_bucket)
+            .and_then(|bucket| bucket.block_index.get(&at.block_ref_key))
+            .is_some_and(|block| block.dirty())));
+    });
 }
 
 #[test]
@@ -82,9 +83,8 @@ fn fresh_set_batches_do_not_scan_preexisting_refs_per_member() {
             "the set writer already filed its blocks"
         );
         assert_eq!(
-            dirty,
-            (existing + 128) as u64,
-            "propagate once per touched object"
+            dirty, 0,
+            "the object was already marked by the earlier batch, so its blocks are not visited again"
         );
         assert_dirty(&engine, "order");
         println!("existing={existing} async={async_storage} supersede_visits={supersede} dirty_visits={dirty}");
@@ -103,7 +103,7 @@ fn single_set_append_does_not_refile_the_whole_object() {
         command: append(128, 1).pop().unwrap(),
     });
     assert!(response.status.ok);
-    assert_eq!(counts(), (0, 129));
+    assert_eq!(counts(), (0, 0), "a repeat mark of a marked object visits no block");
     assert_eq!(bucket_block_upserts() - before, 0);
     assert_dirty(&engine, "order");
 }
@@ -153,17 +153,16 @@ fn set_rewrites_and_readds_keep_one_live_copy_after_recovery() {
         );
         write(&engine, append(5, 1));
         assert_dirty(&engine, "order");
-        let shards = engine.shards.read().unwrap();
-        assert_eq!(
-            shards
-                .get(&1)
-                .unwrap()
-                .bucket_index
-                .block_refs_for("set", "order", None)
-                .unwrap()
-                .len(),
-            32
-        );
+        engine.shards.with_state(1, |owner| {
+            assert_eq!(
+                owner.unwrap()
+                    .bucket_index
+                    .block_refs_for("set", "order", None)
+                    .unwrap()
+                    .len(),
+                32
+            );
+        });
     }
     let recovered = open(dir.path());
     let response = recovered.execute(ExecuteRequest {
@@ -272,7 +271,30 @@ fn fresh_hash_batches_do_not_scan_preexisting_refs_per_field() {
         write(&engine, hash(0, 2_048));
         reset();
         write(&engine, hash(2_048, 128));
-        assert_eq!(counts(), (0, 2_176));
+        assert_eq!(counts(), (0, 0), "already-dirty blocks need no second walk");
+        let block_marks = || {
+            engine.shards.with_state(1, |owner| {
+                let shard = owner.expect("shard 1");
+                shard
+                    .bucket_index
+                    .block_refs_for("hash", "catalog", None)
+                    .unwrap()
+                    .iter()
+                    .map(|at| {
+                        shard
+                            .bucket_index
+                            .bucket_map
+                            .get(&at.routing_bucket)
+                            .unwrap()
+                            .block_index
+                            .get(&at.block_ref_key)
+                            .unwrap()
+                            .dirty()
+                    })
+                    .collect::<Vec<_>>()
+            })
+        };
+        assert!(block_marks().iter().all(|dirty| *dirty));
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::HashLen {
@@ -281,5 +303,96 @@ fn fresh_hash_batches_do_not_scan_preexisting_refs_per_field() {
         });
         assert!(response.status.ok);
         assert_eq!(response.response, CommandResponse::Integer { value: 2_176 });
+        engine.unload_shard(1);
+        engine.load_shard(1);
+        assert!(block_marks().iter().all(|dirty| !dirty));
+        reset();
+        write(&engine, hash(2_176, 128));
+        assert_eq!(
+            counts(),
+            (0, 2_304),
+            "a clean hash still needs its first walk"
+        );
+        assert!(block_marks().iter().all(|dirty| *dirty));
+    }
+}
+
+/// A write into a collection visits the collection's blocks once per dump cycle, not once per
+/// write: the first write after a load marks the object and pushes, every later write finds it
+/// marked. Held at two sizes so a cost that grew with the elements held could not pass.
+#[test]
+fn a_repeat_write_to_a_marked_collection_visits_no_block_at_any_size() {
+    for existing in [64usize, 4_096] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path());
+        write(&engine, append(0, existing));
+        engine.unload_shard(1);
+        engine.load_shard(1);
+        reset();
+        for (n, command) in append(existing, 50).into_iter().enumerate() {
+            let response = engine.execute(ExecuteRequest { shard_id: 1, command });
+            assert!(response.status.ok);
+            let visits = counts().1;
+            if n == 0 {
+                assert_eq!(
+                    visits as usize,
+                    existing + 1,
+                    "the first write after a load marks the object and visits its {existing} blocks and the one it filed"
+                );
+            } else {
+                assert_eq!(visits as usize, existing + 1, "write {n} visited more blocks");
+            }
+        }
+        assert_dirty(&engine, "order");
+    }
+}
+
+/// A new member of a sorted set is a block just appended, so filing it needs no look at the blocks
+/// the object already has. It was filed as an unknown write, which walked every ref of the object
+/// (a bucket and block lookup per member held) to find a block to supersede that a fresh append
+/// cannot have. Held at two sizes so a cost that grew with the members could not pass.
+#[test]
+fn a_new_sorted_set_member_is_filed_without_scanning_the_objects_refs_at_any_size() {
+    for existing in [64usize, 2_048] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path());
+        for chunk in (0..existing).collect::<Vec<_>>().chunks(256) {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ZSetAddMany {
+                    key: "z".into(),
+                    members: chunk
+                        .iter()
+                        .map(|n| crate::types::ZSetScoredMember {
+                            member: format!("member-{n:06}").into_bytes(),
+                            score: *n as f64,
+                        })
+                        .collect(),
+                },
+            });
+            assert!(response.status.ok, "{:?}", response.status);
+        }
+        reset();
+        for i in 0..50usize {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ZSetAdd {
+                    key: "z".into(),
+                    member: format!("new-{i:06}").into_bytes(),
+                    score: i as f64,
+                },
+            });
+            assert!(response.status.ok, "{:?}", response.status);
+        }
+        let (supersede, _) = counts();
+        assert_eq!(
+            supersede, 0,
+            "size {existing}: filing 50 new members scanned the object's refs {supersede} time(s)"
+        );
+        let card = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ZSetCard { key: "z".into() },
+        });
+        assert_eq!(card.response, CommandResponse::Integer { value: (existing + 50) as i64 });
     }
 }

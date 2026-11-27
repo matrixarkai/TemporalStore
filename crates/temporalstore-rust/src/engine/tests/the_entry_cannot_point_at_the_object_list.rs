@@ -233,29 +233,30 @@ fn blocks_and_index_rows(
         .iter()
         .map(|key| stable_block_object_id(1, kind, key))
         .collect();
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut blocks = 0usize;
-    let mut rows: BTreeSet<u64> = BTreeSet::new();
-    for (_routing_bucket, _handle, object_key, block) in
-        super::blocks_with_identity(&shard.bucket_index)
-    {
-        if block.deleted() || block.model_id().as_str() != kind {
-            continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let mut blocks = 0usize;
+        let mut rows: BTreeSet<u64> = BTreeSet::new();
+        for (_routing_bucket, _handle, object_key, block) in
+            super::blocks_with_identity(&shard.bucket_index)
+        {
+            if block.deleted() || block.model_id().as_str() != kind {
+                continue;
+            }
+            if !keys.contains(&*object_key) {
+                continue;
+            }
+            blocks += 1;
         }
-        if !keys.contains(&*object_key) {
-            continue;
-        }
-        blocks += 1;
-    }
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for object_id in &bucket.object_index {
-            if wanted.contains(object_id) {
-                rows.insert(*object_id);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for object_id in &bucket.object_index {
+                if wanted.contains(object_id) {
+                    rows.insert(*object_id);
+                }
             }
         }
-    }
-    (blocks, rows.len())
+        (blocks, rows.len())
+    })
 }
 
 fn percentile(sorted: &[usize], p: f64) -> usize {
@@ -266,17 +267,18 @@ fn percentile(sorted: &[usize], p: f64) -> usize {
 
 /// The blocks one `(kind, key)` holds, counted off the bucket index.
 fn blocks_of_key(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut held = 0usize;
-    for (_routing_bucket, _handle, object_key, block) in
-        super::blocks_with_identity(&shard.bucket_index)
-    {
-        if !block.deleted() && block.model_id().as_str() == kind && &*object_key == key {
-            held += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let mut held = 0usize;
+        for (_routing_bucket, _handle, object_key, block) in
+            super::blocks_with_identity(&shard.bucket_index)
+        {
+            if !block.deleted() && block.model_id().as_str() == kind && &*object_key == key {
+                held += 1;
+            }
         }
-    }
-    held
+        held
+    })
 }
 
 // =================================================================================================
@@ -501,60 +503,61 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
     load_on(&engine);
     seed_hash_containers(&engine);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
 
-    let ordinal_names = super::BlockObjects::of(&shard.bucket_index);
-    let mut rows_seen = 0usize;
-    let mut blocks_seen = 0usize;
-    let mut id_already_answered = 0usize;
-    // Every row of every object list, and what an ordinal into it would resolve TO.
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for _id in &bucket.object_index {
-            // The item type of this iterator IS `&u64`. Binding it as one is the assertion: if the
-            // list ever starts holding a name, this stops compiling and this module is what says
-            // the refutation needs revisiting.
-            let _: &u64 = _id;
-            rows_seen += 1;
-        }
-        for (handle, block) in &bucket.block_index {
-            // Only the kind this fixture seeded, so an incidental block of another kind cannot
-            // decide the assertion below.
-            if block.deleted() || block.model_id().as_str() != "hash" {
-                continue;
+        let ordinal_names = super::BlockObjects::of(&shard.bucket_index);
+        let mut rows_seen = 0usize;
+        let mut blocks_seen = 0usize;
+        let mut id_already_answered = 0usize;
+        // Every row of every object list, and what an ordinal into it would resolve TO.
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for _id in &bucket.object_index {
+                // The item type of this iterator IS `&u64`. Binding it as one is the assertion: if the
+                // list ever starts holding a name, this stops compiling and this module is what says
+                // the refutation needs revisiting.
+                let _: &u64 = _id;
+                rows_seen += 1;
             }
-            blocks_seen += 1;
-            let object_key = ordinal_names.at(bucket.routing_bucket, *handle);
-            // What the entry can answer WITHOUT an ordinal, from the address alone.
-            let from_address = block.object_id(1, object_key);
-            let recomputed = stable_block_object_id(1, block.model_id().as_str(), object_key);
-            if from_address == recomputed {
-                id_already_answered += 1;
+            for (handle, block) in &bucket.block_index {
+                // Only the kind this fixture seeded, so an incidental block of another kind cannot
+                // decide the assertion below.
+                if block.deleted() || block.model_id().as_str() != "hash" {
+                    continue;
+                }
+                blocks_seen += 1;
+                let object_key = ordinal_names.at(bucket.routing_bucket, *handle);
+                // What the entry can answer WITHOUT an ordinal, from the address alone.
+                let from_address = block.object_id(1, object_key);
+                let recomputed = stable_block_object_id(1, block.model_id().as_str(), object_key);
+                if from_address == recomputed {
+                    id_already_answered += 1;
+                }
             }
         }
-    }
 
-    println!("\n=== what an ordinal into the object list would resolve to ===");
-    println!("  object-index rows walked : {rows_seen}");
-    println!("  live blocks walked        : {blocks_seen}");
-    println!("  blocks whose id the entry already answers from its address: {id_already_answered}");
+        println!("\n=== what an ordinal into the object list would resolve to ===");
+        println!("  object-index rows walked : {rows_seen}");
+        println!("  live blocks walked        : {blocks_seen}");
+        println!("  blocks whose id the entry already answers from its address: {id_already_answered}");
 
-    assert!(
-        blocks_seen > 0 && rows_seen > 0,
-        "DENOMINATOR: {blocks_seen} blocks and {rows_seen} rows walked. A store that filed nothing \
-         would satisfy every assertion below while observing nothing"
-    );
-    assert_eq!(
-        id_already_answered, blocks_seen,
-        "only {id_already_answered} of {blocks_seen} pages answer their own object id from the \
-         address. The refutation's first reason is that an ordinal buys a second route to \
-         something already free; if the address has stopped answering, that reason weakens"
-    );
-    println!(
-        "  VERDICT: the list is {rows_seen} rows of u64 id. The id is ALREADY free from the \
-         address on {id_already_answered}/{blocks_seen} blocks, and the NAME is not in the list at \
-         all -- so the ordinal serves no reader of `object_key`."
-    );
+        assert!(
+            blocks_seen > 0 && rows_seen > 0,
+            "DENOMINATOR: {blocks_seen} blocks and {rows_seen} rows walked. A store that filed nothing \
+             would satisfy every assertion below while observing nothing"
+        );
+        assert_eq!(
+            id_already_answered, blocks_seen,
+            "only {id_already_answered} of {blocks_seen} blocks answer their own object id from the \
+             address. The refutation's first reason is that an ordinal buys a second route to \
+             something already free; if the address has stopped answering, that reason weakens"
+        );
+        println!(
+            "  VERDICT: the list is {rows_seen} rows of u64 id. The id is ALREADY free from the \
+             address on {id_already_answered}/{blocks_seen} blocks, and the NAME is not in the list at \
+             all -- so the ordinal serves no reader of `object_key`."
+        );
+    })
 }
 
 // =================================================================================================
@@ -994,15 +997,16 @@ fn the_join_a_name_reader_would_pay_is_a_walk_now_and_was_logarithmic_as_a_sorte
     let mut run_lengths: Vec<usize> = Vec::new();
     let mut slot_counts: Vec<usize> = Vec::new();
     {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
-        for bucket in shard.bucket_index.bucket_map.values() {
-            let len = bucket.object_index.object_count();
-            if len > 0 {
-                run_lengths.push(len);
-                slot_counts.push(bucket.object_index.slot_count());
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            for bucket in shard.bucket_index.bucket_map.values() {
+                let len = bucket.object_index.object_count();
+                if len > 0 {
+                    run_lengths.push(len);
+                    slot_counts.push(bucket.object_index.slot_count());
+                }
             }
-        }
+        })
     }
     assert!(
         !run_lengths.is_empty(),
@@ -1014,19 +1018,20 @@ fn the_join_a_name_reader_would_pay_is_a_walk_now_and_was_logarithmic_as_a_sorte
     // One membership question per bucket, charged through the product's own door.
     reset_object_index_entries_examined();
     let probed = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
-        let mut asked = 0usize;
-        for bucket in shard.bucket_index.bucket_map.values() {
-            if let Some(first) = bucket.object_index.iter().next().copied() {
-                assert!(
-                    bucket.object_index.contains(&first),
-                    "a bucket's own first id is not in its own list"
-                );
-                asked += 1;
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            let mut asked = 0usize;
+            for bucket in shard.bucket_index.bucket_map.values() {
+                if let Some(first) = bucket.object_index.iter().next().copied() {
+                    assert!(
+                        bucket.object_index.contains(&first),
+                        "a bucket's own first id is not in its own list"
+                    );
+                    asked += 1;
+                }
             }
-        }
-        asked
+            asked
+        })
     };
     let examined = object_index_entries_examined();
 

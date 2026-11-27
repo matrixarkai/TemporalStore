@@ -107,55 +107,57 @@ fn add(engine: &TemporalEngine, member: Vec<u8>) {
 /// This object's live entries: how many, the distinct physical blocks
 /// they resolve to, and the written key of each.
 fn entry_census(engine: &TemporalEngine) -> (usize, std::collections::BTreeSet<(u64, u64, u64)>, Vec<String>) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut live = 0usize;
-    // THE `named` TERM IS GONE FROM THIS CENSUS, AND THE CLAIM IT CARRIED IS NOW STRUCTURAL.
-    //
-    // It counted entries whose `element_name` was `Some`, and the arms below asserted it was zero --
-    // "no live entry of any kind is filed under an element name". `BlockIndex` has no `element_name`
-    // field, so the count could only ever be zero and an assertion on it could only ever pass:
-    // nothing it observes could disagree, which is the definition of the vacuity this campaign
-    // keeps deleting rather than leaving as apparent coverage.
-    //
-    // WHAT ENFORCES THE CLAIM INSTEAD, so it is not merely dropped: `engine_storage_state.rs` pins
-    // `size_of::<BlockIndex>() == 40` with `!= 39 && != 41` beside it AND asserts the field sum
-    // equals the width -- zero slack. Re-adding a name to the entry costs eight bytes at minimum
-    // and sixteen for an `Option<Arc<str>>`, so it fails const-evaluation at the pin rather than
-    // being caught by a counter here. The `written` keys this census still collects are the
-    // second guard: `block_index_written_key` renders the stored spelling, and a name on an entry
-    // would show up in it.
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut blocks = std::collections::BTreeSet::new();
-    let mut written = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            let object_key = named.at(bucket.routing_bucket, *handle);
-            if block.deleted() || block.model_id().as_str() != "set" || &**object_key != KEY {
-                continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let mut live = 0usize;
+        // THE `named` TERM IS GONE FROM THIS CENSUS, AND THE CLAIM IT CARRIED IS NOW STRUCTURAL.
+        //
+        // It counted entries whose `element_name` was `Some`, and the arms below asserted it was zero --
+        // "no live entry of any kind is filed under an element name". `BlockIndex` has no `element_name`
+        // field, so the count could only ever be zero and an assertion on it could only ever pass:
+        // nothing it observes could disagree, which is the definition of the vacuity this campaign
+        // keeps deleting rather than leaving as apparent coverage.
+        //
+        // WHAT ENFORCES THE CLAIM INSTEAD, so it is not merely dropped: `engine_storage_state.rs` pins
+        // `size_of::<BlockIndex>() == 40` with `!= 39 && != 41` beside it AND asserts the field sum
+        // equals the width -- zero slack. Re-adding a name to the entry costs eight bytes at minimum
+        // and sixteen for an `Option<Arc<str>>`, so it fails const-evaluation at the pin rather than
+        // being caught by a counter here. The `written` keys this census still collects are the
+        // second guard: `block_index_written_key` renders the stored spelling, and a name on an entry
+        // would show up in it.
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut blocks = std::collections::BTreeSet::new();
+        let mut written = Vec::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                let object_key = named.at(bucket.routing_bucket, *handle);
+                if block.deleted() || block.model_id().as_str() != "set" || &**object_key != KEY {
+                    continue;
+                }
+                live += 1;
+                blocks.insert((
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                ));
+                written.push(crate::engine::state::block_index_written_key(object_key, block));
             }
-            live += 1;
-            blocks.insert((
-                block.address.block_slab_id(),
-                block.address.offset(),
-                block.address.length(),
-            ));
-            written.push(crate::engine::state::block_index_written_key(object_key, block));
         }
-    }
-    written.sort();
-    (live, blocks, written)
+        written.sort();
+        (live, blocks, written)
+    })
 }
 
 /// What the durable model map holds -- the authority for existence, independent of any entry.
 fn durable_members(engine: &TemporalEngine) -> std::collections::BTreeSet<Vec<u8>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    shard
-        .bucket_index.sets
-        .get(KEY)
-        .map(|members| members.iter().map(|(member, _)| member.clone()).collect())
-        .unwrap_or_default()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        shard
+            .bucket_index.sets
+            .get(KEY)
+            .map(|members| members.iter().map(|(member, _)| member.clone()).collect())
+            .unwrap_or_default()
+    })
 }
 
 /// What a client gets.
@@ -175,10 +177,11 @@ fn listed_members(engine: &TemporalEngine) -> std::collections::BTreeSet<Vec<u8>
 
 /// Re-derive the whole index from the model maps, which is what a load and a compaction do.
 fn rederive(engine: &TemporalEngine) {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 loaded");
-    let (start, end) = shard.routing_range();
-    crate::engine::storage_bucket_internals::rebuild_bucket_first_index(1, shard, start, end);
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let (start, end) = shard.routing_range();
+        crate::engine::storage_bucket_internals::rebuild_bucket_first_index(1, shard, start, end);
+    });
 }
 
 /// THE WRITE PATH AND THE PROJECTION MUST FILE THE SAME ENTRY FOR THE SAME BLOCK.
@@ -314,7 +317,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     );
     assert_eq!(
         blocks, dpages,
-        "the two routes disagree about WHICH pages are live, so comparing their written keys is \
+        "the two routes disagree about WHICH blocks are live, so comparing their written keys is \
          comparing different populations"
     );
     assert_eq!(
@@ -424,9 +427,8 @@ fn an_element_name_less_kind_rewritten_still_resolves_to_one_block() {
         assert!(response.status.ok, "write failed: {response:?}");
     }
 
-    let (live, blocks) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let (live, blocks) = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut live = 0usize;
         let mut blocks = std::collections::BTreeSet::new();
@@ -447,7 +449,7 @@ fn an_element_name_less_kind_rewritten_still_resolves_to_one_block() {
             }
         }
         (live, blocks)
-    };
+    });
     println!(
         "  a string rewritten 3 times: {live} live entr(ies), \
          {} distinct block(s)",
@@ -494,26 +496,27 @@ fn remove(engine: &TemporalEngine, member: Vec<u8>) {
 /// no longer sits on the entry, which files `None`; reading the entry here would make every arm
 /// below compare `None` against `None`.
 fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut out = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.deleted()
-                && block.model_id().as_str() == "set"
-                && &**named.at(bucket.routing_bucket, *handle) == KEY
-            {
-                out.push(
-                    bucket
-                        .tombstone_element_at(&block.address)
-                        .map(|row| row.element_name.to_string()),
-                );
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut out = Vec::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.deleted()
+                    && block.model_id().as_str() == "set"
+                    && &**named.at(bucket.routing_bucket, *handle) == KEY
+                {
+                    out.push(
+                        bucket
+                            .tombstone_element_at(&block.address)
+                            .map(|row| row.element_name.to_string()),
+                    );
+                }
             }
         }
-    }
-    out.sort();
-    out
+        out.sort();
+        out
+    })
 }
 
 /// A REMOVAL MUST SURVIVE A RE-ADD OF A DIFFERENT MEMBER, ACROSS A STORE BOUNDARY.
@@ -955,18 +958,19 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
 /// test here, so taking the before-and-after block from it would compare two values derived from
 /// the same accessor -- a shape that has already passed over broken code in this campaign.
 fn member_block(engine: &TemporalEngine, member: &[u8]) -> (u64, u64, u64) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let address = shard
-        .bucket_index.sets
-        .get(KEY)
-        .and_then(|members| members.get(member))
-        .expect("the durable map holds this member");
-    (
-        address.block_slab_id(),
-        address.offset(),
-        address.length(),
-    )
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let address = shard
+            .bucket_index.sets
+            .get(KEY)
+            .and_then(|members| members.get(member))
+            .expect("the durable map holds this member");
+        (
+            address.block_slab_id(),
+            address.offset(),
+            address.length(),
+        )
+    })
 }
 
 /// The distinct physical blocks the DURABLE MAP says this object's members are on.
@@ -975,24 +979,25 @@ fn member_block(engine: &TemporalEngine, member: &[u8]) -> (u64, u64, u64) {
 /// entries being measured, so it cannot witness an entry over an empty block; this is derived from
 /// the members instead.
 fn occupied_blocks(engine: &TemporalEngine) -> std::collections::BTreeSet<(u64, u64, u64)> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    shard
-        .bucket_index.sets
-        .get(KEY)
-        .map(|members| {
-            members
-                .iter()
-                .map(|(_, address)| {
-                    (
-                        address.block_slab_id(),
-                        address.offset(),
-                        address.length(),
-                    )
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        shard
+            .bucket_index.sets
+            .get(KEY)
+            .map(|members| {
+                members
+                    .iter()
+                    .map(|(_, address)| {
+                        (
+                            address.block_slab_id(),
+                            address.offset(),
+                            address.length(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
 }
 
 /// A RE-ADD CLEARS ITS OWN TOMBSTONE AND NOT A SIBLING'S, WITH TWO REMOVALS OUTSTANDING.

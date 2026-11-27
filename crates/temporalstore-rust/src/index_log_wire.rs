@@ -203,6 +203,14 @@ pub struct ProtoIndexLog {
     /// Opaque per-key state, one JSON document each.
     #[prost(bytes = "vec", repeated, tag = "23")]
     pub key_states: Vec<Vec<u8>>,
+    /// A relocation record's OLD placements, one per item, in item order. Empty for every other
+    /// record, and prost writes nothing for an empty repeated field, so every record written before
+    /// this tag decodes as "not a relocation" and the wire version does not move.
+    #[prost(message, repeated, tag = "24")]
+    pub relocated_from: Vec<ProtoIndexItem>,
+    /// The container element each relocated block belongs to, one per `relocated_from`.
+    #[prost(string, repeated, tag = "25")]
+    pub relocated_elements: Vec<String>,
 }
 
 fn kind_to_number(kind: IndexItemKind) -> u32 {
@@ -416,6 +424,8 @@ impl ProtoIndexLog {
             upsert: record.upsert,
             shared_object_key: record.shared_object_key.clone(),
             key_states,
+            relocated_from: record.relocated_from.iter().map(ProtoIndexItem::from_item).collect(),
+            relocated_elements: record.relocated_elements.clone(),
             ..ProtoIndexLog::default()
         })
     }
@@ -429,6 +439,10 @@ impl ProtoIndexLog {
         for state in &self.key_states {
             key_states.push(serde_json::from_slice(state).map_err(|error| error.to_string())?);
         }
+        let mut relocated_from = Vec::with_capacity(self.relocated_from.len());
+        for item in self.relocated_from {
+            relocated_from.push(item.into_item()?);
+        }
         Ok(IndexDeltaRecord {
             shard_id: self.shard_id as ShardId,
             sequence: self.sequence,
@@ -438,6 +452,8 @@ impl ProtoIndexLog {
             key_states,
             upsert: self.upsert,
             shared_object_key: self.shared_object_key,
+            relocated_from,
+            relocated_elements: self.relocated_elements,
         })
     }
 }
