@@ -665,3 +665,5 @@ mod every_maintenance_step_queues_behind_a_command;
 mod a_scalar_reporter_visits_at_most_its_cap_at_every_scale;
 #[path = "tests/shard_lock_holds_are_attributed_by_call_site.rs"]
 mod shard_lock_holds_are_attributed_by_call_site;
+#[path = "tests/a_block_reading_read_takes_the_shared_lock.rs"]
+mod a_block_reading_read_takes_the_shared_lock;
