@@ -16,7 +16,7 @@ pub(super) struct State {
 }
 
 impl State {
-    fn enter(self: Arc<Self>) -> Permit {
+    pub(super) fn enter(self: Arc<Self>) -> Permit {
         let mut active = self.active.lock().expect("point read admission poisoned");
         while *active >= MAX_IN_FLIGHT {
             active = self
@@ -36,7 +36,7 @@ pub(super) struct Counts {
 }
 
 impl Counts {
-    fn complete(&self, bytes: u64) {
+    pub(super) fn complete(&self, bytes: u64) {
         let mut counts = self.completed.lock().expect("point read counts poisoned");
         counts.0 = counts.0.saturating_add(1);
         counts.1 = counts.1.saturating_add(bytes);
@@ -50,7 +50,7 @@ impl Counts {
     }
 }
 
-struct Permit {
+pub(super) struct Permit {
     state: Arc<State>,
 }
 

@@ -201,6 +201,17 @@ mod point_readers;
 #[path = "wal/point_reads.rs"]
 mod point_reads;
 
+#[cfg(unix)]
+mod restore_reads;
+
+#[cfg(all(test, unix))]
+pub(crate) fn with_restore_batch_hook_for_test<R>(
+    hook: impl FnMut(ShardId, bool, &[(u64, u64)]) + 'static,
+    run: impl FnOnce() -> R,
+) -> R {
+    restore_reads::with_hook_for_test(Box::new(hook), run)
+}
+
 /// Read one complete physical record, including any continuation envelope and footer slots.
 fn read_raw_record<R: std::io::BufRead>(reader: &mut R) -> std::io::Result<Option<packed_frames::ReadRecord>> {
     packed_frames::read(reader)
@@ -3934,6 +3945,19 @@ impl LocalWriteAheadLogStore {
             out.push(raw.map(|record| record.bytes));
         }
         Ok(out)
+    }
+
+    /// Writable-restore batch admission. Observers decline without adopting ownership.
+    pub(crate) fn read_restore_frames_at_log_ids(
+        &self,
+        shard_id: ShardId,
+        requests: &[(u64, u64)],
+        writable_intent: bool,
+    ) -> Result<Option<Vec<Option<Vec<u8>>>>, WriteAheadLogError> {
+        #[cfg(unix)]
+        { restore_reads::read(self, shard_id, requests, writable_intent) }
+        #[cfg(not(unix))]
+        { let _ = (shard_id, requests, writable_intent); Ok(None) }
     }
 
     /// Select one carried block when the compressed record has a directory. Older encodings

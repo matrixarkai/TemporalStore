@@ -10980,6 +10980,10 @@ fn object_manager_stats(
 #[path = "engine/engine_regression_tests.rs"]
 mod tests;
 
+#[cfg(all(test, unix))]
+#[path = "engine/restore_batch_caller_tests.rs"]
+mod restore_batch_caller_tests;
+
 #[cfg(test)]
 mod hash_execute_filed_tests;
 

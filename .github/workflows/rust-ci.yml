@@ -126,6 +126,45 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: cargo test (admitted restore batch reads, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          passed_tests=0
+          for t in \
+            wal::restore_reads::tests::paused_restore_read_allows_real_append_and_keeps_future_tail_absent \
+            wal::restore_reads::tests::cold_restore_owns_and_initializes_checked_end_without_reading_reserved_tail \
+            wal::restore_reads::tests::cold_torn_tail_is_reconciled_before_the_payload_session_is_published \
+            wal::restore_reads::tests::admitted_restore_survives_gc_and_releases_real_retention_afterward \
+            wal::restore_reads::tests::pinned_active_descriptor_survives_a_real_prefix_rewrite \
+            wal::restore_reads::tests::cold_observer_declines_ownership_without_losing_the_existing_locked_read \
+            wal::restore_reads::tests::already_planned_gc_refuses_restore_admission_before_descriptor_capture \
+            wal::restore_reads::tests::truncated_captured_extent_and_wrong_sequence_are_not_returned_as_valid_frames \
+            wal::restore_reads::tests::empty_zero_sequence_and_oversized_requests_decline_without_invented_floor \
+            wal::restore_reads::tests::observer_intent_declines_before_owner_or_lease_creation \
+            wal::restore_reads::tests::a_real_frame_crc_byte_flip_is_rejected_by_the_admitted_payload_reader \
+            engine::restore_batch_caller_tests::cold_engine_rehydration_admits_every_model_and_replays_the_real_suffix \
+            engine::restore_batch_caller_tests::loaded_manifest_rehydration_admits_every_model_and_replays_the_real_suffix \
+            engine::restore_batch_caller_tests::readonly_cold_load_does_not_adopt_the_intended_writers_lifetime_flock
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/restore-batch-read.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/restore-batch-read.log || true)
+            one=$(grep -Fxc 'running 1 test' /tmp/restore-batch-read.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/restore-batch-read.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/restore-batch-read.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/restore-batch-read.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/restore-batch-read.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 14 ] || { echo '::error::expected fourteen restore ownership, caller and integrity tests to execute and pass'; exit 1; }
+
       # Direct mode over the shared client SDK is part of the default build, so the default job
       # builds it and runs its tests: the gateway-versus-direct fixtures and the direct door.
       - name: Direct mode over the shared client SDK (default build)
