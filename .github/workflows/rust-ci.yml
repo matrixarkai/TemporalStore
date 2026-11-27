@@ -126,6 +126,48 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: cargo test (owner-local eviction recency and identity, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          passed_tests=0
+          for t in \
+            engine::shard_state_registry::tests::coherent_mutation_visits_owners_in_key_order \
+            engine::shard_state_registry::tests::retired_stamp_storage_is_reclaimed_with_the_last_captured_handle \
+            engine::shard_state_registry::tests::retired_waiter_and_cleanup_cannot_rebind_to_a_replacement \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::a_captured_recency_owner_cannot_mutate_its_replacement \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::a_fast_hot_read_is_folded_before_sampled_victim_ranking \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::a_parked_peer_stamp_mutex_does_not_block_target_read_or_eviction \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::declined_pressure_and_bound_gates_do_not_fold_either_owner \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::late_fast_plan_stamps_only_its_captured_incarnation \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::pending_repeated_stamps_keep_the_maximum_before_and_after_fold \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::pressured_eviction_and_resident_bound_leave_parked_peer_stamps_pending \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::repeated_same_key_stamps_preserve_the_later_owner_recency \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::unload_reload_discards_old_owner_stamps_without_losing_new_reads \
+            engine::tests::shard_carried_identity::a_shard_state_that_never_entered_the_engine_carries_no_shard_id \
+            engine::tests::shard_carried_identity::every_served_shard_carries_the_id_its_owner_routes_it_under \
+            engine::tests::shard_carried_identity::the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blocks \
+            engine::tests::shard_carried_identity::the_only_production_site_that_installs_a_shard_stamps_the_id_it_inserts_under \
+            engine::tests::shard_carried_identity::the_shard_id_field_changes_no_serialized_byte
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee /tmp/owner-eviction-recency.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/owner-eviction-recency.log || true)
+            one=$(grep -Fxc 'running 1 test' /tmp/owner-eviction-recency.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/owner-eviction-recency.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/owner-eviction-recency.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/owner-eviction-recency.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/owner-eviction-recency.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 17 ] || { echo '::error::expected all 17 owner recency and identity tests to execute and pass'; exit 1; }
+
       # Direct mode over the shared client SDK is part of the default build, so the default job
       # builds it and runs its tests: the gateway-versus-direct fixtures and the direct door.
       - name: Direct mode over the shared client SDK (default build)
@@ -323,19 +365,17 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-gate-records.log
           done
 
-      # Library and integration failures block merging. Keep --no-fail-fast so a
-      # failing target does not prevent the remaining targets from being tested.
-      # Restore these two source-only naming censuses after reconciling their
-      # fixture/type allowlists. Expiry blocks CI until the exclusions are removed.
-      - name: Check temporary source-census exclusions
+      - name: Raft cache write admission checks
         run: |
-          python3 - <<'PY'
-          import datetime
-          deadline = datetime.date(2026, 11, 27)
-          if datetime.datetime.now(datetime.timezone.utc).date() >= deadline:
-              raise SystemExit("Source-census exclusions expired; restore both naming checks")
-          print("::warning::Two source-only naming checks are excluded until 2026-11-27 UTC; runtime correctness tests remain required")
-          PY
+          set -o pipefail
+          for t in \
+            raft::tests::part2::quorum_refusal_before_append_is_retryable_without_writing \
+            raft::tests::part2::a_local_follower_cannot_propose_through_the_remote_leaders_shadow \
+            raft::tests::part2::deployed_quorum_recovery_defers_an_unreachable_uncompacted_peer; do
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/raft-cache-admission.log
+            grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/raft-cache-admission.log
+          done
 
       # The delta records of concurrent writers reach the index log as one write per batch.
       # `cargo test` EXITS 0 WHEN THE FILTER MATCHES NOTHING, so each name is run alone and the
@@ -359,15 +399,40 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-group-write.log
           done
 
+      - name: Replicated cache WAL placement check
+        run: |
+          set -o pipefail
+          cargo test --release -p temporalstore-rust --lib \
+            engine::log_backed_string_tests::replicated_insert_only_strings_reload_before_and_after_materialization \
+            -- --exact --test-threads=1 2>&1 | tee /tmp/cache-wal-placement.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/cache-wal-placement.log
+
+      - name: Eviction WAL sync attribution check
+        run: |
+          set -o pipefail
+          cargo test --release -p temporalstore-rust --lib \
+            engine::storage_lifecycle_methods::eviction_round_scale::where_a_delete_drop_rounds_shard_guard_hold_actually_goes \
+            -- --exact --test-threads=1 2>&1 | tee /tmp/eviction-wal-sync.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/eviction-wal-sync.log
+
+      - name: Source naming checks
+        run: |
+          set -o pipefail
+          for t in \
+            engine::tests::no_signature_names_the_series::no_production_signature_names_the_series_representation \
+            engine::tests::page_and_block_name_one_tier::no_page_named_identity_type_field_or_size_constant_exists_in_this_crate; do
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/source-naming.log
+            grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/source-naming.log
+          done
+
       - name: cargo test (lib + integration, single-threaded, release)
         timeout-minutes: 45
         # Reports every failure but does not block the merge: about a hundred tests in unrelated
         # areas fail on main today and are being triaged. Every dedicated guard below stays a hard gate.
         continue-on-error: true
         run: |
-          cargo test --release -p temporalstore-rust --lib --tests --no-fail-fast -- --test-threads=1 \
-            --skip engine::tests::no_signature_names_the_series::no_production_signature_names_the_series_representation \
-            --skip engine::tests::page_and_block_name_one_tier::no_page_named_identity_type_field_or_size_constant_exists_in_this_crate
+          cargo test --release -p temporalstore-rust --lib --tests --no-fail-fast -- --test-threads=1
 
       # Keep dedicated guards with explicit test-count checks. When sender
       # attribution broke, the three-node chaos
@@ -462,11 +527,18 @@ jobs:
           # One invocation per guard, because `cargo test` takes a single positional filter and a
           # second one is silently an error rather than a second filter.
           for t in \
+              engine::maintenance_log::tests::deleting_or_expiring_an_event_series_removes_its_persisted_timeline \
+              engine::tests::a_detail_read_carries_its_own_bound::a_detail_read_with_no_count_is_bounded_by_the_configured_cap \
+              engine::tests::a_detail_read_carries_its_own_bound::a_count_larger_than_the_cap_is_still_capped \
+              engine::tests::a_detail_read_carries_its_own_bound::a_named_count_under_the_cap_is_honoured \
               wal::registration_records::tests::mutations_match_an_independent_slot_model \
               wal::registration_records::tests::uniform_expectations_stay_inline_and_conflicts_release_their_storage \
               engine::block_in_wal::physical::registration_summary_tests::summaries_combine_domains_and_follow_replacement_retirement_and_clear \
               engine::block_in_wal::physical::registration_summary_tests::summary_queries_complete_while_both_locator_registries_are_locked \
               engine::storage_lifecycle_methods::planning_order_tests::claim_ranks_match_manifest_augmented_summaries \
+              engine::tests::expiry_command_boundaries::a_ttl_that_collects_an_expired_key_maintains_the_block_index \
+              engine::tests::part2::a_capped_dump_still_reclaims \
+              engine::tests::reclaim_dump::a_container_tombstone_retains_its_wal_record_after_restart \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::execution_plan_uses_dirty_metadata_without_block_summaries \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::empty_quarantine_purge_skips_every_loaded_shards_live_address_walk \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::nonempty_quarantine_still_walks_liveness_and_keeps_the_grace_window \
@@ -574,6 +646,10 @@ jobs:
             engine::tests::a_set_door_asks_one_member_not_the_set::the_door_never_lists_the_set \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_answers_what_the_sorted_listing_answered \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_reads_a_prefix_and_never_lists \
+            wal::tests::a_record_walk_skips_a_valid_footer_at_a_reclaimed_boundary_without_padding \
+            engine::tests::a_list_write_records_its_block_once::each_list_write_leaves_one_list_outcome_in_its_record \
+            engine::tests::a_list_write_records_its_block_once::the_list_reads_back_the_same_from_a_replayed_log_and_from_an_unload_and_a_load \
+            engine::tests::a_removal_retires_its_vacated_block_by_naming_it::removals_never_walk_the_object_and_leave_what_a_model_leaves_across_a_restart \
             engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_pop_takes_the_first_or_last_members_in_order_and_leaves_the_rest \
             engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_range_of_the_first_members_answers_what_the_full_sort_answered \
             engine::tests::a_list_position_and_removal_answer_what_a_walk_answered::positions_and_removals_answer_what_a_walk_answered_with_and_without_a_hole \
@@ -1118,6 +1194,69 @@ jobs:
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
+      - name: cargo test (aged purge and idle quarantine, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          passed_tests=0
+          for t in \
+            data_node::tests::part3::aged_quarantine_purges_and_preserves_twenty_thousand_values \
+            data_node::tests::part3::the_footprint_columns_stay_bounded_on_an_idle_shard
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/purge-named-gate.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/purge-named-gate.log || true)
+            one=$(grep -Ec '^running 1 test$' /tmp/purge-named-gate.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/purge-named-gate.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/purge-named-gate.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/purge-named-gate.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/purge-named-gate.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 2 ] || { echo '::error::expected both purge tests to execute and pass'; exit 1; }
+
+      - name: cargo test (captured owner dump completion, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          passed_tests=0
+          for t in \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::create_only_keeps_claims_and_current_normal_completion_clears_them \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::unrelated_write_and_newer_publication_do_not_stall_selected_owner_completion \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::public_unload_reload_and_write_cannot_inherit_a_parked_normal_completion \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::a_newer_write_keeps_its_real_claims_after_the_older_normal_dump \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::replacement_between_entry_handle_and_checkpoint_capture_keeps_new_owner_pending \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::bulk_frozen_image_retains_uncovered_work_and_reopens_acknowledged_tail \
+            engine::checkpoint_publication::tests::captured_owner_check_requires_own_success_and_allows_later_publications \
+            engine::checkpoint_publication::tests::captured_owner_check_keeps_old_success_but_never_borrows_newer_success \
+            engine::checkpoint_publication::tests::forget_closes_a_completed_token_before_same_id_reuse \
+            engine::checkpoint_publication::tests::close_invalidates_a_completed_token_before_drain_and_detachment \
+            engine::checkpoint_publication::tests::captured_owner_check_progresses_while_global_membership_is_locked \
+            engine::checkpoint_publication::tests::captured_owner_check_refuses_revision_wraparound
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee /tmp/dump-owner-completion.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/dump-owner-completion.log || true)
+            one=$(grep -Fxc 'running 1 test' /tmp/dump-owner-completion.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/dump-owner-completion.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/dump-owner-completion.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/dump-owner-completion.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/dump-owner-completion.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 12 ] || { echo '::error::expected twelve completion tests to execute and pass'; exit 1; }
+
       - name: cargo test (loop ordering and quarantine grace guards, hard gate)
         timeout-minutes: 20
         run: |
@@ -1510,9 +1649,10 @@ jobs:
           set -o pipefail
           for t in \
             snapshot_store::tests::list_snapshots_finds_a_manifest_filed_under_the_binary_suffix \
-            snapshot_store::tests::a_manifest_decodes_from_both_shapes_and_the_encoding_does_not_change_it \
+            snapshot_store::tests::a_manifest_round_trips_and_keeps_its_order \
+            snapshot_store::tests::a_document_that_is_not_the_binary_shape_is_refused \
             snapshot_store::tests::an_unknown_compression_tag_is_refused_rather_than_defaulted \
-            snapshot_store::tests::a_manifest_is_written_binary_and_a_planted_json_one_is_still_read \
+            snapshot_store::tests::a_manifest_is_written_binary_and_every_reader_reads_it \
             snapshot_store::tests::a_staged_manifest_is_still_excluded_under_either_suffix ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-snapshot --lib "$t" \
@@ -1638,6 +1778,7 @@ jobs:
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::a_sequence_query_answers_the_rows_that_were_added \
             engine::tests::a_resident_map_read_takes_the_shared_lock::each_resident_map_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_resident_map_read_takes_the_shared_lock::the_fast_reads_answer_what_the_maps_hold \
+            engine::tests::a_block_key_spells_its_numbers_without_the_formatter::the_selector_is_the_formatters_spelling_at_every_digit_boundary \
             engine::tests::a_rewritten_context_node_replaces_its_block::a_rewritten_node_holds_one_block_entry \
             engine::tests::a_rewritten_context_node_replaces_its_block::a_rewritten_node_reads_back_after_a_restart \
             engine::tests::a_sequence_read_takes_the_shared_lock::a_sequence_read_answers_while_the_shared_lock_is_held \

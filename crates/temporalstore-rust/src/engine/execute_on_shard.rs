@@ -2003,19 +2003,10 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            // THE LENGTH IS TAKEN FROM THE CACHE'S SHARED BYTES, NOT FROM A COPY OF THEM. A string
-            // block is the whole value, so its length is the value's.
             CommandResponse::Integer {
-                value: read_bucket_index_value_shared(
-                    cache,
-                    block_store,
-                    shard_id,
-                    shard,
-                    "string",
-                    &key,
-                    None,
-                )
-                .map_or(0, |bytes| bytes.len() as i64),
+                value: bucket_store::read_bucket_index_string_length(
+                    cache, block_store, shard_id, shard, &key,
+                ),
             }
         }
         Command::StringGetRange { key, start, end } => {
@@ -3041,38 +3032,6 @@ pub(crate) fn execute_on_shard(
                 None,
                 false,
             );
-            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
-            // not the take itself. Re-running a take would recompute against a different clock;
-            // installing the resulting bucket cannot.
-            let mut bucket_state = Vec::with_capacity(16);
-            bucket_state.extend_from_slice(&next.0.to_le_bytes());
-            bucket_state.extend_from_slice(&next.1.to_le_bytes());
-            stage_meta_outcome(
-                shard_id,
-                "bucket",
-                &key,
-                start_routing_bucket,
-                end_routing_bucket,
-                Some(bucket_state),
-                None,
-                false,
-            );
-            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
-            // not the take itself. Re-running a take would recompute against a different clock;
-            // installing the resulting bucket cannot.
-            let mut bucket_state = Vec::with_capacity(16);
-            bucket_state.extend_from_slice(&next.0.to_le_bytes());
-            bucket_state.extend_from_slice(&next.1.to_le_bytes());
-            stage_meta_outcome(
-                shard_id,
-                "bucket",
-                &key,
-                start_routing_bucket,
-                end_routing_bucket,
-                Some(bucket_state),
-                None,
-                false,
-            );
             store_for_write(&mut shard.buckets, &key, next);
             mutated = true;
             CommandResponse::Members {
@@ -3429,15 +3388,8 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
-                upsert_bucket_index_block(
-                    shard,
-                    shard_id,
-                    "list",
-                    &key,
-                    Some(element_name.clone()),
-                    address.clone(),
-                    true,
-                );
+                // THE INSTALL BELOW FILES THIS BLOCK, and records its outcome once. Filing it here as
+                // well wrote the same outcome into the log record twice.
                 super::recorded_map::install_element::<super::recorded_map::ListKind>(
                     shard,
                     shard_id,
@@ -3585,15 +3537,8 @@ pub(crate) fn execute_on_shard(
                         async_storage,
                         block_ordinal,
                     ) {
-                        upsert_bucket_index_block(
-                            shard,
-                            shard_id,
-                            "list",
-                            &key,
-                            Some(element_name.clone()),
-                            address.clone(),
-                            true,
-                        );
+                        // THE INSTALL BELOW FILES THIS BLOCK, and records its outcome once. Filing it here
+                        // as well wrote the same outcome into the log record twice.
                         super::recorded_map::install_element::<super::recorded_map::ListKind>(
                             shard,
                             shard_id,
@@ -5301,13 +5246,20 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
+            // BOUNDED THE WAY ITS SIBLING IS. `FeatureDetail` beside this computes
+            // `count.unwrap_or(feature_max_size).min(feature_max_size)`, so a caller that names no
+            // count gets the configured cap and one that names a larger number still gets the cap.
+            // This arm took `usize::MAX`, so a detail read with no count returned EVERY bucket in
+            // the window -- on a key that has been counting for a week at minute precision that is
+            // ten thousand points materialized into one response when the caller omitted a count.
+            let limit = count.unwrap_or(feature_max_size).min(feature_max_size);
             let points = shard
                 .control_state()
                 .get(&key[..])
                 .map(|series| {
                     series
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                        .take(count.unwrap_or(usize::MAX))
+                        .take(limit)
                         .map(|(timestamp_ms, amount)| FeaturePoint {
                             timestamp_ms: *timestamp_ms,
                             value: amount.to_string().into_bytes(),
@@ -7886,3 +7838,7 @@ pub(crate) fn list_element_name(seq: i64, buf: &mut [u8; 16]) -> &str {
     }
     std::str::from_utf8(buf).expect("hex digits are ascii")
 }
+
+#[cfg(test)]
+#[path = "token_bucket_outcome_tests.rs"]
+mod token_bucket_outcome_tests;

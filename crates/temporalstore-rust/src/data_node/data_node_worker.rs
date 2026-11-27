@@ -163,6 +163,9 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
             DataNodeTaskOutput::Execute(response)
         }
         TaskRequest::CheckedExecute(request) => {
+            let _generation = inner.shard_generation_lock(request.shard_id)
+                .read()
+                .expect("shard generation lock poisoned");
             if let Err(status) = validate_foreground_write_allowed_inner(
                 inner,
                 request.shard_id,
@@ -283,7 +286,33 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
                     "data node storage manager canceled before prepare",
                 );
             }
-            let report = inner.engine.run_storage_manager_cycle(request.clone());
+            // Evict-only jobs apply residency changes to the serving engine.
+            // Cache-budget deletions run through the shard's consensus runtime.
+            let evict_only = request.enable_evict
+                && !request.enable_prepare
+                && !request.enable_wal_reclaim
+                && !request.enable_expire
+                && !request.enable_block_reclaim
+                && !request.enable_block_compaction
+                && !request.enable_index_gc;
+            let engine = if evict_only {
+                inner.storage_engine(request.shard_id)
+            } else {
+                inner.engine.clone()
+            };
+            let mut report = engine.run_storage_manager_cycle(request.clone());
+            if request.enable_evict && !request.dry_run
+                && report.completed && report.errors.is_empty() && !cancellation.is_requested()
+            {
+                if let Some((_, _, reclaimed)) =
+                    inner.reclaim_cache_budget(request.shard_id, request.eviction_batch_limit)
+                {
+                    if let Some(eviction) = report.eviction_report.as_mut() {
+                        eviction.dropped_object_count =
+                            eviction.dropped_object_count.saturating_add(reclaimed);
+                    }
+                }
+            }
             let status = if report.completed && report.errors.is_empty() {
                 Status::ok()
             } else {
