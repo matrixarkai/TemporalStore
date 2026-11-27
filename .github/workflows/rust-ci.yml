@@ -489,6 +489,8 @@ jobs:
               engine::tests::a_detail_read_carries_its_own_bound::a_detail_read_with_no_count_is_bounded_by_the_configured_cap \
               engine::tests::a_detail_read_carries_its_own_bound::a_count_larger_than_the_cap_is_still_capped \
               engine::tests::a_detail_read_carries_its_own_bound::a_named_count_under_the_cap_is_honoured \
+              engine::tests::hash_read_union_divergence::under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable \
+              engine::tests::manifest_restore_model_maps::a_manifest_restore_on_the_default_recovery_arm_keeps_the_blocks_only_the_index_names \
               wal::registration_records::tests::mutations_match_an_independent_slot_model \
               wal::registration_records::tests::uniform_expectations_stay_inline_and_conflicts_release_their_storage \
               engine::block_in_wal::physical::registration_summary_tests::summaries_combine_domains_and_follow_replacement_retirement_and_clear \
