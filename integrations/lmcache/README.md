@@ -160,6 +160,24 @@ For tensor payloads, measure compression before setting
 apply to the cache, WAL, and block store respectively.
 
 
+### Raft write sizing
+
+For Raft-backed tables, size the replication and apply budgets on every
+datanode for the largest encoded tensor write and its batch. The default
+replication budget is 32 KiB and the default apply batch budget is 64 KiB.
+A larger chunk can be rejected even if it fits in the SSD cache. Leave room
+for the command and replication framing.
+
+The 1 MiB tensor test used these settings on each replica:
+
+```bash
+export TS_RAFT_MAX_MEMORY_REPLICATE_LOG_BYTES=16777216
+export TS_RAFT_MAX_APPLY_BATCH_BYTES=16777216
+```
+
+The replication budget also bounds in-flight bytes per follower. Use the
+smallest values that cover the planned writes and batches.
+
 Raft replicas open their serving cache in an isolated storage directory
 under the process temporary directory. Set `TMPDIR` to the intended local
 device before starting the datanode. A snapshot replacement opens a new

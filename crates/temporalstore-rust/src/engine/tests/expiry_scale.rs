@@ -1171,6 +1171,218 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
     );
 }
 
+#[test]
+fn logged_expiry_is_admitted_before_a_newer_write_and_stale_append_defers() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    const SHARD: ShardId = 1;
+    const REPLACED: &str = "expiry-replaced";
+    const REMOVED: &str = "expiry-removed";
+    const UNRELATED: &str = "expiry-unrelated-write";
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &blocks, &indexes);
+    let _group = crate::index_log::group_write_in_test(true);
+    engine.load_shard(SHARD);
+    write_keys(&engine, SHARD, vec![(REPLACED.into(), 3_600_000), (REMOVED.into(), 3_600_000)]);
+    engine.flush_shard_index(SHARD);
+    let base_path = engine.index_path(SHARD);
+    let base_bytes = std::fs::read(&base_path).unwrap();
+    let base = decode_index_bytes(&base_bytes).unwrap();
+    let base_cut = base.applied_wal_sequence.unwrap();
+    assert!(base.string_address(REPLACED).is_some() && base.string_address(REMOVED).is_some());
+    let deadline = now_ms().saturating_sub(1);
+    engine.shards.with_state_mut(SHARD, |shard| {
+        let shard = shard.unwrap();
+        crate::engine::set_expiry(shard, REPLACED.to_string(), deadline);
+        crate::engine::set_expiry(shard, REMOVED.to_string(), deadline);
+    });
+    assert_eq!(deadline_census(&engine, SHARD), (2, 2));
+
+    let (cut, latest, replacement) = std::thread::scope(|scope| {
+        let (captured, wait) = mpsc::channel();
+        let (resume, release) = mpsc::channel();
+        let round = scope.spawn(|| {
+            let _group = crate::index_log::group_write_in_test(true);
+            crate::engine::recovery_sweep_compact::pause_after_expiry_capture_for_test(captured, release);
+            sweep_once(&engine, SHARD)
+        });
+        wait.recv_timeout(Duration::from_secs(10)).expect("sweep reached the detached boundary");
+        let cut = engine.wal_store.cached_last_sequence(SHARD);
+        assert_eq!(cut, base_cut + 1, "one real deletion WAL frame was admitted");
+        let stale_keys = engine.shards.with_state(SHARD, |shard| {
+            let state = shard.unwrap();
+            assert!(state.string_address(REPLACED).is_none() && state.string_address(REMOVED).is_none());
+            crate::engine::capture_key_states(state, &[REPLACED.to_string(), REMOVED.to_string()])
+        });
+        let value = b"written after the expiry capture".to_vec();
+        for key in [REPLACED, UNRELATED] {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: SHARD,
+                command: Command::StringSet { key: key.to_string(), value: value.clone() },
+            });
+            assert!(response.status.ok, "competing write failed: {:?}", response.status);
+        }
+        let latest = engine.wal_store.cached_last_sequence(SHARD);
+        assert_eq!(latest, cut + 2);
+        let stale = engine.index_log_store.append_expiry_delta(
+            SHARD, Vec::new(), stale_keys, cut, false, Some(&engine.wal_store),
+        );
+        assert!(matches!(stale, Err(crate::index_log::IndexLogError::Io(error))
+            if error.kind() == std::io::ErrorKind::Interrupted),
+            "a late capture cannot append tombstones after newer writes");
+        let replacement = engine.shards.with_state(SHARD, |shard| {
+            shard.unwrap().string_address(REPLACED).unwrap()
+        });
+        resume.send(()).unwrap();
+        assert_eq!(round.join().unwrap().expired_records_removed, 2);
+        (cut, latest, replacement)
+    });
+
+    let records = engine.index_log_store.read_delta_records(SHARD, 0).unwrap();
+    assert_eq!(
+        records.iter().filter_map(|record| record.applied_wal_sequence)
+            .filter(|anchor| *anchor > base_cut).collect::<Vec<_>>(),
+        vec![cut, cut + 1, latest],
+        "the expiry record must precede both later writes, with no duplicate stale append",
+    );
+    let expiry = records.iter().find(|record| record.applied_wal_sequence == Some(cut)).unwrap();
+    assert!(expiry.items.is_empty());
+    assert_eq!(expiry.key_states.len(), 2);
+    assert_eq!(std::fs::read(&base_path).unwrap(), base_bytes);
+    drop(engine);
+
+    let reopened = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("reopen-cache"), &blocks, &indexes,
+    );
+    let folded = reopened.load_index_checked(SHARD, false).unwrap().unwrap();
+    assert_eq!(folded.applied_wal_sequence, Some(latest));
+    assert_eq!(folded.string_address(REPLACED), Some(replacement));
+    assert!(folded.string_address(REMOVED).is_none());
+    assert!(folded.string_address(UNRELATED).is_some());
+    reopened.load_shard(SHARD);
+    for (key, expected) in [
+        (REPLACED, Some(b"written after the expiry capture".to_vec())),
+        (UNRELATED, Some(b"written after the expiry capture".to_vec())),
+        (REMOVED, None),
+    ] {
+        let response = reopened.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command: Command::StringGet { key: key.to_string() },
+        });
+        assert!(response.status.ok, "read after reopen: {:?}", response.status);
+        assert_eq!(response.response, CommandResponse::Bytes { value: expected });
+    }
+}
+
+#[test]
+fn failed_expiry_index_admission_retains_the_wal_replay_cut() {
+    expiry_recovery_after_index_failure(true);
+}
+
+#[test]
+fn accepted_expiry_index_frame_survives_a_failed_batch_write_and_retries_once() {
+    expiry_recovery_after_index_failure(false);
+}
+
+fn expiry_recovery_after_index_failure(fail_admission: bool) {
+    const SHARD: ShardId = 1;
+    const EXPIRED: &str = "failed-index-expiry";
+    const UNRELATED: &str = "write-after-index-failure";
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &blocks, &indexes);
+    let _group = crate::index_log::group_write_in_test(true);
+    let _flusher = crate::index_log::flusher_in_test(false);
+    engine.load_shard(SHARD);
+    write_keys(&engine, SHARD, vec![(EXPIRED.into(), 3_600_000)]);
+    engine.flush_shard_index(SHARD);
+    let base_path = engine.index_path(SHARD);
+    let base_bytes = std::fs::read(&base_path).unwrap();
+    let base = decode_index_bytes(&base_bytes).unwrap();
+    let base_cut = base.applied_wal_sequence.unwrap();
+    assert!(base.string_address(EXPIRED).is_some());
+    engine.shards.with_state_mut(SHARD, |shard| {
+        crate::engine::set_expiry(shard.unwrap(), EXPIRED.to_string(), now_ms().saturating_sub(1));
+    });
+    assert_eq!(deadline_census(&engine, SHARD), (1, 1));
+    if fail_admission {
+        crate::index_log::fail_next_expiry_delta_prepare_for_test();
+    }
+    let sweep = engine.sweep_expired_records_with_request(ShardExpirySweepRequest {
+        shard_id: SHARD, load_cold_buckets: true,
+        max_hot_buckets_per_round: HOT_LIMIT, max_cold_buckets_per_round: COLD_LIMIT,
+        ..ShardExpirySweepRequest::default()
+    });
+    if fail_admission {
+        let error = sweep.expect_err("expiry encoding failed before queue admission");
+        assert_eq!(error.code, "expire_index_admission_failed");
+        assert!(error.message.contains("injected expiry delta preparation error"));
+    } else {
+        assert_eq!(sweep.unwrap().expired_records_removed, 1);
+        crate::index_log::fail_next_pending_index_write_for_test();
+        let before_retry = engine.index_log_store.read_delta_records(SHARD, 0).unwrap();
+        assert!(before_retry.iter().all(|r| r.applied_wal_sequence.unwrap_or(0) <= base_cut),
+            "the injected write failure kept the admitted expiry frame off disk");
+    }
+    let expiry_cut = engine.wal_store.cached_last_sequence(SHARD);
+    assert_eq!(expiry_cut, base_cut + 1);
+    assert!(engine.shards.with_state(SHARD, |shard| shard.unwrap().string_address(EXPIRED).is_none()));
+    let value = b"unrelated write survives expiry Index failure".to_vec();
+    let write = engine.execute(ExecuteRequest {
+        shard_id: SHARD,
+        command: Command::StringSet { key: UNRELATED.to_string(), value: value.clone() },
+    });
+    assert!(write.status.ok, "new WAL write failed: {:?}", write.status);
+    let new_cut = engine.wal_store.cached_last_sequence(SHARD);
+    assert_eq!(new_cut, expiry_cut + 1);
+
+    let read_anchors = || engine.index_log_store.read_delta_records(SHARD, 0).unwrap()
+        .iter().filter_map(|row| row.applied_wal_sequence).filter(|cut| *cut > base_cut)
+        .collect::<Vec<_>>();
+    if fail_admission {
+        assert!(read_anchors().is_empty(), "failed expiry admission must fence the later anchor");
+        assert_eq!(engine.shards.with_state(SHARD, |shard| shard.unwrap().checkpoint_wal_sequence()), None);
+        engine.flush_shard_index(SHARD);
+    } else {
+        assert_eq!(read_anchors(), vec![expiry_cut, new_cut], "retry must finish the older retained frame first");
+        assert_eq!(read_anchors(), vec![expiry_cut, new_cut], "a second drain must be idempotent");
+    }
+    assert_eq!(std::fs::read(&base_path).unwrap(), base_bytes);
+    let (wal, _) = engine.wal_store.scan_decoded(SHARD, 0, u64::MAX, u64::MAX).unwrap();
+    let deletion_count = wal.iter().flat_map(|(_, frame)| &frame.outcomes)
+        .filter(|row| row.object_key == EXPIRED && row.deleted).count();
+    assert_eq!(deletion_count, 1, "Index failure or retry must not append another WAL tombstone");
+    drop(engine);
+
+    let checked = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("checked-cache"), &blocks, &indexes,
+    );
+    let folded = checked.load_index_checked(SHARD, false).unwrap().unwrap();
+    let expected_cut = if fail_admission { base_cut } else { new_cut };
+    assert_eq!(folded.applied_wal_sequence, Some(expected_cut));
+    assert_eq!(folded.string_address(EXPIRED).is_some(), fail_admission);
+    assert_eq!(folded.string_address(UNRELATED).is_some(), !fail_admission);
+    drop(checked);
+    assert_eq!(std::fs::read(&base_path).unwrap(), base_bytes);
+
+    let reopened = TemporalEngine::with_local_dirs(
+        1 << 20, dir.path().join("reopen-cache"), &blocks, &indexes,
+    );
+    reopened.load_shard(SHARD);
+    for (key, expected) in [(EXPIRED, None), (UNRELATED, Some(value))] {
+        let get = reopened.execute(ExecuteRequest {
+            shard_id: SHARD, command: Command::StringGet { key: key.to_string() },
+        });
+        assert!(get.status.ok, "reopen read failed: {:?}", get.status);
+        assert_eq!(get.response, CommandResponse::Bytes { value: expected });
+    }
+    assert_eq!(sweep_once(&reopened, SHARD).expired_records_removed, 0);
+}
+
 /// THE FOLD ITSELF, not the record it reads: a delta-fold recovery applies the expiry
 /// tombstones, and it is the only thing in that load which can.
 ///

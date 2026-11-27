@@ -1118,6 +1118,32 @@ jobs:
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
+      - name: cargo test (aged purge and idle quarantine, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          passed_tests=0
+          for t in \
+            data_node::tests::part3::aged_quarantine_purges_and_preserves_twenty_thousand_values \
+            data_node::tests::part3::the_footprint_columns_stay_bounded_on_an_idle_shard
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/purge-named-gate.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/purge-named-gate.log || true)
+            one=$(grep -Ec '^running 1 test$' /tmp/purge-named-gate.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/purge-named-gate.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/purge-named-gate.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/purge-named-gate.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/purge-named-gate.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 2 ] || { echo '::error::expected both purge tests to execute and pass'; exit 1; }
+
       - name: cargo test (loop ordering and quarantine grace guards, hard gate)
         timeout-minutes: 20
         run: |

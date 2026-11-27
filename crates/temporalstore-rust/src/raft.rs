@@ -5343,9 +5343,11 @@ impl RaftCluster {
             }
             let request = match self.build_append_entries_request(target_id) {
                 Ok(request) => request,
-                // The timer can drain this peer while available voters form the quorum.
+                // One peer's occupied byte window cannot veto a healthy quorum.
+                // Keep its reservation/limits intact; do not turn admission pressure
+                // into snapshot fallback or append the command a second time.
                 Err(RaftError::AppendBackpressure { .. }) => continue,
-                Err(error) => return Err(error),
+                Err(err) => return Err(err),
             };
             live_target_ids.push(target_id);
             live_requests.push((target_id, request));
@@ -5508,6 +5510,11 @@ impl RaftCluster {
         }
 
         if replicated < required {
+            // A failed foreground recovery still observes the configured reply
+            // deadline. A recovered quorum proceeds without a delay.
+            if !timer_active {
+                thread::sleep(replication_deadline.saturating_duration_since(Instant::now()));
+            }
             return Err(RaftError::NoMajority {
                 live: replicated,
                 required,
