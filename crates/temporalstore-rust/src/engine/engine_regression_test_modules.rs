@@ -369,6 +369,8 @@ mod the_write_path_leaves_the_bucket_ttl_alone;
 mod marking_an_object_dirty_reaches_its_blocks;
 #[path = "tests/one_key_one_allocation.rs"]
 mod one_key_one_allocation;
+#[path = "tests/a_block_reading_read_takes_the_shared_lock.rs"]
+mod a_block_reading_read_takes_the_shared_lock;
 #[path = "tests/string_keyed_holders.rs"]
 mod string_keyed_holders;
 #[path = "tests/one_record_per_object.rs"]

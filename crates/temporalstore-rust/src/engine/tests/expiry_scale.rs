@@ -3891,7 +3891,22 @@ fn cache_pass_fixture(
                 key: key.clone(),
                 member: b"sweep-member".to_vec(),
             });
-            run(Command::SetMembers { key: key.clone() });
+            let listed = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::SetMembers { key: key.clone() },
+            });
+            assert!(listed.status.ok, "fixture listing failed: {:?}", listed.status);
+            assert_eq!(
+                listed.response,
+                CommandResponse::Members { members: vec![b"sweep-member".to_vec()] }
+            );
+            // Exercise invalidation of a listing cached by the fallback path. A
+            // shared read can return the live set without filling this entry.
+            crate::engine::command_validation::cached_response(
+                &engine.cache,
+                CacheKey::set_members(1, &key),
+                || listed.response,
+            );
             run(Command::FeatureAppend {
                 key: key.clone(),
                 points: vec![crate::types::FeaturePoint {
