@@ -126,6 +126,40 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: cargo test (quarantine discovery and guarded completion, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          passed_tests=0
+          for t in \
+            block_store::quarantine_scan_tests::paused_quarantine_enumeration_allows_independent_append_and_sync \
+            block_store::quarantine_scan_tests::a_stale_discovery_does_not_destroy_an_entry_twice \
+            block_store::quarantine_scan_tests::a_concurrent_arrival_invalidates_scan_and_empty_memo \
+            block_store::quarantine_scan_tests::a_pin_admitted_after_discovery_restores_before_destroying \
+            block_store::quarantine_scan_tests::a_same_id_install_invalidates_discovery_without_overwriting_bytes \
+            block_store::quarantine_scan_tests::scan_keeps_selected_successful_work_cap_and_live_restore_priority \
+            block_store::quarantine_scan_tests::a_failed_directory_sync_does_not_publish_manifest_before_reopen \
+            block_store::quarantine_scan_tests::productive_discovery_next_and_stat_allow_durable_commit_before_release \
+            block_store::quarantine_scan_tests::successful_work_reaches_past_a_full_skipped_prefix_without_false_memos
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/quarantine-discovery.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/quarantine-discovery.log || true)
+            one=$(grep -Fxc 'running 1 test' /tmp/quarantine-discovery.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/quarantine-discovery.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/quarantine-discovery.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/quarantine-discovery.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/quarantine-discovery.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named pass and zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 9 ] || { echo '::error::expected nine quarantine discovery and guarded completion tests'; exit 1; }
+
       # Direct mode over the shared client SDK is part of the default build, so the default job
       # builds it and runs its tests: the gateway-versus-direct fixtures and the direct door.
       - name: Direct mode over the shared client SDK (default build)

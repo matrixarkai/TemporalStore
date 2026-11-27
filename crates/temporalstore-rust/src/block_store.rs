@@ -26,6 +26,9 @@ mod read;
 #[path = "block_store/block_store_gc.rs"]
 mod gc;
 mod read_retention;
+mod quarantine_scan;
+#[cfg(test)]
+mod quarantine_scan_tests;
 #[cfg(test)]
 mod quarantine_probe_tests;
 pub(crate) use read_retention::BlockStoreReadSnapshot;
@@ -2049,6 +2052,8 @@ struct BlockStoreInner {
     /// fresh process starts here at `None` -- so the first round after any restart walks, and it
     /// is that round which decides whether a `Some` is justified.
     delayed_destroy_earliest_unix_ms: Option<u64>,
+    // Invalidates off-catalog discovery before any namespace or arrival-stamp change.
+    quarantine_scan_revision: u64,
     /// Slabs that have entered quarantine since this store opened. Only ever incremented, at the one
     /// place a slab is set aside.
     quarantine_arrivals: u64,
@@ -2425,6 +2430,7 @@ impl BlockStore {
                 // the state this has to open in: the directory on disk may hold slabs this
                 // manifest never learned about, so the first purge round must walk.
                 delayed_destroy_earliest_unix_ms: None,
+                quarantine_scan_revision: 0,
                 quarantine_arrivals: 0,
                 quarantine_checked_arrivals: 0,
                 quarantine_known_empty: false,
@@ -2637,6 +2643,9 @@ impl BlockStore {
                 first_error: None,
             };
             if inner.slabs.get(&slab.block_slab_id) != Some(&descriptor) {
+                inner.note_quarantine_scan_change();
+                inner.delayed_destroy_earliest_unix_ms = None;
+                inner.quarantine_known_empty = false;
                 inner.slabs.insert(slab.block_slab_id, descriptor);
                 changed = true;
             }
@@ -2931,12 +2940,10 @@ impl BlockStore {
 
     /// The purge, bounded to `max_slabs_per_round` slabs of work. 0 means unbounded.
     ///
-    /// THE BOUND IS ON THE LOCK HOLD. Everything above funnels into this function, and this
-    /// function takes the store-wide lock and keeps it until it returns, so the round's length is
-    /// the length of time nothing else can touch the store. Unbounded, that was 58.7 seconds at
-    /// eighty thousand quarantined slabs, measured, and linear -- the quarantine has no ceiling of
-    /// its own, so neither did the hold. The cap is the shipped default rather than an opt-in
-    /// because a caller that forgets it does not get a slower purge, it gets a minute-long stall.
+    /// A bounded directory/metadata look-ahead runs outside the catalog. The original successful-
+    /// work loop consumes that prefix and continues the same iterator under the guard if needed.
+    /// A namespace revision rejects stale discovery before mutation. Irreversible work, its fresh
+    /// identity/liveness/age checks and durability barriers still retain the catalog guard.
     ///
     /// THE BUDGET IS SPENT ON WORK DONE -- a destroy or a restore -- AND NOT ON ENTRIES EXAMINED.
     /// That is the whole reason this advances rather than stalling, and getting it the other way
@@ -3011,21 +3018,23 @@ impl BlockStore {
         allow_destroy: bool,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
         let mut live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        inner.check_owned_recovery()?;
-        live_block_slab_ids.extend(inner.owned_active.iter().copied());
-        live_block_slab_ids.extend(inner.read_pins.keys().copied());
-        let trash_dir = delayed_destroy_dir(&inner.root);
+        let (root, scan_revision, no_deletion_work, live_quarantined, arrivals_seen) = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            inner.check_owned_recovery()?;
+            live_block_slab_ids.extend(inner.owned_active.iter().copied());
+            live_block_slab_ids.extend(inner.read_pins.keys().copied());
+            (inner.root.clone(), inner.quarantine_scan_revision,
+                !allow_destroy || inner.delayed_destroy_earliest_unix_ms
+                    .is_some_and(|earliest| now_unix_ms().saturating_sub(earliest) < min_age_ms),
+                live_set_names_a_quarantined_slab(&inner.slabs, &live_block_slab_ids),
+                inner.quarantine_arrivals)
+        };
+        let trash_dir = delayed_destroy_dir(&root);
         let mut purged = Vec::new();
         let mut purged_physical_bytes = 0;
-        let mut retained_too_young = Vec::new();
-        let mut retained_too_young_physical_bytes = 0;
         let mut restored = Vec::new();
         let mut restored_physical_bytes = 0;
-        let mut restore_blocked = Vec::new();
         let mut processed = 0usize;
-        let mut examined = 0usize;
-        let mut budget_exhausted = false;
         if !trash_dir.exists() {
             return Ok(BlockStorePurgeDelayedDestroyReport {
                 max_slabs_per_round,
@@ -3035,16 +3044,11 @@ impl BlockStore {
         // THE ROUND THAT DOES NOT HAPPEN. See the note above the signature for why this is an
         // equivalence rather than an approximation; both halves of the condition are required and
         // neither costs a system call.
-        let no_deletion_work = !allow_destroy
-            || inner.delayed_destroy_earliest_unix_ms
-                .is_some_and(|earliest| now_unix_ms().saturating_sub(earliest) < min_age_ms);
-        if no_deletion_work
-            && !live_set_names_a_quarantined_slab(&inner.slabs, &live_block_slab_ids)
-        {
+        if no_deletion_work && !live_quarantined {
             return Ok(BlockStorePurgeDelayedDestroyReport {
                 max_slabs_per_round,
                 declined_without_examining: true,
-                quarantine_arrivals_seen: inner.quarantine_arrivals,
+                quarantine_arrivals_seen: arrivals_seen,
                 ..Default::default()
             });
         }
@@ -3052,26 +3056,20 @@ impl BlockStore {
         // up having seen every entry that is still in the directory when it finishes. `None` here
         // is not "no entries"; it is "this round is not entitled to an opinion", and it is the
         // value every uncertainty resolves to.
-        let mut earliest_seen: Option<u64> = None;
+        let scan = self.scan_delayed_destroy(&root, scan_revision)?;
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.check_owned_recovery()?;
+        scan.validate(&inner)?;
+        let mut earliest_seen = None;
         let mut may_publish_earliest = true;
-        let root = inner.root.clone();
-        // The purge's OWN walk of the same directory, counted under the same name as the two the
-        // storage round takes through `delayed_destroy_slab_reports_at` before reaching here --
-        // the point of the tally is the total per round, and which of the three is which is a
-        // question for a profile rather than a counter.
-        crate::durability_metrics::record_scan("block_store_trash_dir_walk", 1);
-        for entry in std::fs::read_dir(&trash_dir)? {
-            // COUNTED HERE, AT THE TOP, AND NOT WHERE THE ENTRY GETS A NAME. What this number is
-            // for is telling a round that STOPPED from a round that walked on, and those two
-            // differ in iterations, not in classifications -- put the increment after the budget
-            // check below and both readings come back equal to the budget, which is the hole this
-            // field exists to close.
+        let mut retained_too_young = Vec::new();
+        let mut retained_too_young_physical_bytes = 0;
+        let mut restore_blocked = Vec::new();
+        let mut examined = 0usize;
+        let mut budget_exhausted = false;
+        // Only successful work spends the cap; skipped rows continue into the remainder.
+        for entry in scan.into_entries() {
             examined += 1;
-            // THE BUDGET IS CHECKED BEFORE THE ENTRY IS EVEN NAMED, and it stops the round rather
-            // than advancing to the next entry. Continuing would walk the remaining eighty
-            // thousand directory entries to do no work; stopping is what makes a capped round
-            // cost the budget rather than the directory. The unexamined entries stay exactly as
-            // they are, and `budget_exhausted` tells the caller there are more.
             if max_slabs_per_round > 0 && processed >= max_slabs_per_round {
                 budget_exhausted = true;
                 break;
@@ -3080,7 +3078,7 @@ impl BlockStore {
             let Some(id) = delayed_destroy_slab_id_from_name(&entry.file_name()) else {
                 continue;
             };
-            // THE MANIFEST STAMP, READ ONCE AND USED TWICE. The age test below needs it, and so
+            // THE COMMIT-TIME MANIFEST STAMP. The age test below needs it, and so
             // does the earliest-arrival this round may publish -- which has to account for the
             // entries the age test never reaches, or a round narrowed by a caller's list could
             // never publish anything, and that list is exactly what the periodic cycle passes.
@@ -3112,8 +3110,16 @@ impl BlockStore {
             // "too young to destroy", it is NOT FOR DESTROYING, and waiting longer would not
             // make it safe. It also must not be left where it is -- quarantine is a rename out
             // of the store, so the reader that needs it cannot reach it until the file is back.
-            if live_block_slab_ids.contains(&id) {
-                if restore_slab_from_delayed_destroy_unsynced(&root, id, &entry.path())? {
+            if live_block_slab_ids.contains(&id) || inner.owned_active.contains(&id)
+                || inner.read_pins.contains_key(&id) {
+                let restored_now = if slab_path(&root, id).exists() {
+                    false
+                } else {
+                    entry.validate_for_action()?;
+                    inner.note_quarantine_scan_change();
+                    restore_slab_from_delayed_destroy_unsynced(&root, id, &entry.path())?
+                };
+                if restored_now {
                     set_slab_state(&mut inner.slabs, id, BlockStoreSlabState::Sealed);
                     restored.push(id);
                     restored_physical_bytes += bytes;
@@ -3156,7 +3162,7 @@ impl BlockStore {
             // round with the full hour of grace skipped. The mtime is a weaker clock (a rename
             // keeps the mtime of the last append, so it runs EARLY and the window it grants is
             // shorter than the real one) but it is a clock, and a short window beats none.
-            let quarantined_at = stamped_at.or_else(|| file_modified_unix_ms(&entry.path()));
+            let quarantined_at = stamped_at.or_else(|| entry.modified_unix_ms());
             if let Some(quarantined_at) = quarantined_at {
                 if now_unix_ms().saturating_sub(quarantined_at) < min_age_ms {
                     // HELD, SO STILL IN THE DIRECTORY -- and `stamped_at`, not `quarantined_at`.
@@ -3176,6 +3182,8 @@ impl BlockStore {
                 }
             }
             purged_physical_bytes += bytes;
+            entry.validate_for_action()?;
+            inner.note_quarantine_scan_change();
             std::fs::remove_file(entry.path())?;
             set_slab_state(&mut inner.slabs, id, BlockStoreSlabState::Purged);
             purged.push(id);
@@ -3258,12 +3266,14 @@ impl BlockStore {
         // trash directory and acts on none of it. Measured on a sixteen-slab quarantine: three
         // directory fsyncs plus a full manifest rewrite per round, for no durable change.
         if !purged.is_empty() || !restored.is_empty() {
+            #[cfg(test)]
+            quarantine_scan::notify(quarantine_scan::ScanPoint::BeforeSync);
             sync_delayed_destroy_dirs(&root)?;
             inner.persist_slab_manifest_counted()?;
             inner.cleanup_purged_reservations(&purged, &trash_dir)?;
         }
         retained_too_young.sort_unstable();
-        Ok(BlockStorePurgeDelayedDestroyReport {
+        let report = BlockStorePurgeDelayedDestroyReport {
             purged_block_slab_ids: purged,
             purged_physical_bytes,
             retained_too_young_block_slab_ids: retained_too_young,
@@ -3277,7 +3287,9 @@ impl BlockStore {
             examined_block_slabs: examined,
             declined_without_examining: false,
             quarantine_arrivals_seen: inner.quarantine_arrivals,
-        })
+        };
+        drop(inner);
+        Ok(report)
     }
 
     /// Record that a purge round checked the whole quarantine against a real live set.
@@ -3406,6 +3418,7 @@ impl BlockStore {
         // what a clock stepping backwards would look like from the cache's side, and the answer
         // is the same in both cases: withdraw the claim and let the next round walk.
         inner.delayed_destroy_earliest_unix_ms = None;
+        inner.note_quarantine_scan_change();
         inner.persist_slab_manifest_counted()?;
         Ok(moved)
     }
