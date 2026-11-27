@@ -2155,9 +2155,12 @@ pub(super) fn rebuild_bucket_block_ownership(
 fn physical_ownership_rebuild_preserves_pending_claims_and_empty_owner_state() {
     let mut shard = ShardState::default();
     let key = "restored-live-key";
-    let live = block_routing_bucket(key, 0, u32::MAX);
-    let deleted_empty = live.wrapping_add(1);
-    let live_empty = live.wrapping_add(2);
+    shard.set_routing_range(17, 19);
+    let (start, end) = shard.routing_range();
+    let live = block_routing_bucket(key, start, end);
+    let mut empty = (start..=end).filter(|id| *id != live);
+    let deleted_empty = empty.next().unwrap();
+    let live_empty = empty.next().unwrap();
     // A physical inline String has ordinal zero. Check the complete stored address
     // before rebuild so the oracle measures rebuild, rather than inline encoding.
     let address = ElementEntry::try_from_parts(3, 16, 32, Some(0), None).unwrap();
@@ -2180,7 +2183,7 @@ fn physical_ownership_rebuild_preserves_pending_claims_and_empty_owner_state() {
         }
         shard.bucket_index.bucket_map.insert(id, node);
     }
-    rebuild_bucket_block_ownership(1, &mut shard, 0, u32::MAX);
+    rebuild_bucket_block_ownership(1, &mut shard, start, end);
     refresh_bucket_runtime_flags_after_reconstruct(&mut shard);
     for (id, generation, wal, index, deleted) in [
         (live, 7, 41, 19, false),
