@@ -126,6 +126,62 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: cargo test (metrics main7bbd runtime refresh, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          for t in \
+            engine::tests::part3::a_scrape_reuses_a_fresh_bucket_listing_and_rebuilds_a_stale_one \
+            engine::prometheus_metrics::scrape_cache_lifecycle_tests::unload_releases_the_cached_listing_without_a_later_scrape \
+            engine::prometheus_metrics::scrape_cache_lifecycle_tests::owner_replacement_detaches_old_cache_without_removing_the_new_entry \
+            engine::prometheus_metrics::scrape_cache_lifecycle_tests::stale_refresh_cannot_publish_after_unload_and_same_id_replacement \
+            engine::prometheus_metrics::scrape_cache_lifecycle_tests::metadata_reload_invalidates_an_in_flight_scrape_on_the_same_owner \
+            engine::prometheus_metrics::scrape_cache_lifecycle_tests::a_parked_refresh_does_not_block_another_shards_scrape_or_write \
+            engine::tests::shard_carried_identity::the_only_production_site_that_installs_a_shard_stamps_the_id_it_inserts_under
+          do
+          cargo test --locked --release -p temporalstore-rust --lib "$t" \
+            -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/metrics-owner-source-gate.log
+          running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/metrics-owner-source-gate.log || true)
+          one=$(grep -Ec '^running 1 test$' /tmp/metrics-owner-source-gate.log || true)
+          rows=$(grep -Ec '^test .* \.\.\. ' /tmp/metrics-owner-source-gate.log || true)
+          exact_ok=$(grep -Fxc "test $t ... ok" /tmp/metrics-owner-source-gate.log || true)
+          summaries=$(grep -Ec '^test result:' /tmp/metrics-owner-source-gate.log || true)
+          passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/metrics-owner-source-gate.log || true)
+          if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+            || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+            echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+            exit 1
+          fi
+
+          done
+
+          set -euo pipefail
+          passed_tests=0
+          for t in \
+            tests::server_raft_control_scale_up_down_preserves_serving \
+            tests::raft_test_listener_reservations_are_distinct_and_still_bound
+          do
+            CARGO_TERM_COLOR=never cargo test --locked --release -p temporalstore-rust \
+              --bin server --bin matrixark_rust_datanode "$t" \
+              -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/metrics-raft-reservations-gate.log
+            server=$(grep -Ec '^[[:space:]]*Running unittests src/bin/temporalstore_data_server\.rs \(' /tmp/metrics-raft-reservations-gate.log || true)
+            datanode=$(grep -Ec '^[[:space:]]*Running unittests src/bin/matrixark_rust_datanode\.rs \(' /tmp/metrics-raft-reservations-gate.log || true)
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/metrics-raft-reservations-gate.log || true)
+            one=$(grep -Ec '^running 1 test$' /tmp/metrics-raft-reservations-gate.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/metrics-raft-reservations-gate.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/metrics-raft-reservations-gate.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/metrics-raft-reservations-gate.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/metrics-raft-reservations-gate.log || true)
+            if [ "$server" != "1" ] || [ "$datanode" != "1" ] || [ "$running" != "2" ] \
+              || [ "$one" != "2" ] || [ "$rows" != "2" ] || [ "$exact_ok" != "2" ] \
+              || [ "$summaries" != "2" ] || [ "$passed" != "2" ]; then
+              echo "::error::$t: expected both binary harnesses, each with exactly one named pass and zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 2))
+          done
+          [ "$passed_tests" -eq 4 ] || { echo '::error::expected both raft fixture tests to pass in both binary harnesses'; exit 1; }
+
       # Direct mode over the shared client SDK is part of the default build, so the default job
       # builds it and runs its tests: the gateway-versus-direct fixtures and the direct door.
       - name: Direct mode over the shared client SDK (default build)
@@ -323,6 +379,18 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-gate-records.log
           done
 
+      - name: Raft cache write admission checks
+        run: |
+          set -o pipefail
+          for t in \
+            raft::tests::part2::quorum_refusal_before_append_is_retryable_without_writing \
+            raft::tests::part2::a_local_follower_cannot_propose_through_the_remote_leaders_shadow \
+            raft::tests::part2::deployed_quorum_recovery_defers_an_unreachable_uncompacted_peer; do
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/raft-cache-admission.log
+            grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/raft-cache-admission.log
+          done
+
       # The delta records of concurrent writers reach the index log as one write per batch.
       # `cargo test` EXITS 0 WHEN THE FILTER MATCHES NOTHING, so each name is run alone and the
       # greps below fail the step if it matched no test or did not pass.
@@ -473,11 +541,18 @@ jobs:
           # One invocation per guard, because `cargo test` takes a single positional filter and a
           # second one is silently an error rather than a second filter.
           for t in \
+              engine::maintenance_log::tests::deleting_or_expiring_an_event_series_removes_its_persisted_timeline \
+              engine::tests::a_detail_read_carries_its_own_bound::a_detail_read_with_no_count_is_bounded_by_the_configured_cap \
+              engine::tests::a_detail_read_carries_its_own_bound::a_count_larger_than_the_cap_is_still_capped \
+              engine::tests::a_detail_read_carries_its_own_bound::a_named_count_under_the_cap_is_honoured \
               wal::registration_records::tests::mutations_match_an_independent_slot_model \
               wal::registration_records::tests::uniform_expectations_stay_inline_and_conflicts_release_their_storage \
               engine::block_in_wal::physical::registration_summary_tests::summaries_combine_domains_and_follow_replacement_retirement_and_clear \
               engine::block_in_wal::physical::registration_summary_tests::summary_queries_complete_while_both_locator_registries_are_locked \
               engine::storage_lifecycle_methods::planning_order_tests::claim_ranks_match_manifest_augmented_summaries \
+              engine::tests::expiry_command_boundaries::a_ttl_that_collects_an_expired_key_maintains_the_block_index \
+              engine::tests::part2::a_capped_dump_still_reclaims \
+              engine::tests::reclaim_dump::a_container_tombstone_retains_its_wal_record_after_restart \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::execution_plan_uses_dirty_metadata_without_block_summaries \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::empty_quarantine_purge_skips_every_loaded_shards_live_address_walk \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::nonempty_quarantine_still_walks_liveness_and_keeps_the_grace_window \
@@ -585,6 +660,9 @@ jobs:
             engine::tests::a_set_door_asks_one_member_not_the_set::the_door_never_lists_the_set \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_answers_what_the_sorted_listing_answered \
             engine::tests::a_set_pop_and_random_member_read_the_first_members::the_door_reads_a_prefix_and_never_lists \
+            wal::tests::a_record_walk_skips_a_valid_footer_at_a_reclaimed_boundary_without_padding \
+            engine::tests::a_list_write_records_its_block_once::each_list_write_leaves_one_list_outcome_in_its_record \
+            engine::tests::a_list_write_records_its_block_once::the_list_reads_back_the_same_from_a_replayed_log_and_from_an_unload_and_a_load \
             engine::tests::a_removal_retires_its_vacated_block_by_naming_it::removals_never_walk_the_object_and_leave_what_a_model_leaves_across_a_restart \
             engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_pop_takes_the_first_or_last_members_in_order_and_leaves_the_rest \
             engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_range_of_the_first_members_answers_what_the_full_sort_answered \
@@ -1155,6 +1233,43 @@ jobs:
             passed_tests=$((passed_tests + 1))
           done
           [ "$passed_tests" -eq 2 ] || { echo '::error::expected both purge tests to execute and pass'; exit 1; }
+
+      - name: cargo test (captured owner dump completion, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          passed_tests=0
+          for t in \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::create_only_keeps_claims_and_current_normal_completion_clears_them \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::unrelated_write_and_newer_publication_do_not_stall_selected_owner_completion \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::public_unload_reload_and_write_cannot_inherit_a_parked_normal_completion \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::a_newer_write_keeps_its_real_claims_after_the_older_normal_dump \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::replacement_between_entry_handle_and_checkpoint_capture_keeps_new_owner_pending \
+            engine::bucket_dump_manifest_methods::completion_identity_tests::bulk_frozen_image_retains_uncovered_work_and_reopens_acknowledged_tail \
+            engine::checkpoint_publication::tests::captured_owner_check_requires_own_success_and_allows_later_publications \
+            engine::checkpoint_publication::tests::captured_owner_check_keeps_old_success_but_never_borrows_newer_success \
+            engine::checkpoint_publication::tests::forget_closes_a_completed_token_before_same_id_reuse \
+            engine::checkpoint_publication::tests::close_invalidates_a_completed_token_before_drain_and_detachment \
+            engine::checkpoint_publication::tests::captured_owner_check_progresses_while_global_membership_is_locked \
+            engine::checkpoint_publication::tests::captured_owner_check_refuses_revision_wraparound
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee /tmp/dump-owner-completion.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/dump-owner-completion.log || true)
+            one=$(grep -Fxc 'running 1 test' /tmp/dump-owner-completion.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/dump-owner-completion.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/dump-owner-completion.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/dump-owner-completion.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/dump-owner-completion.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 12 ] || { echo '::error::expected twelve completion tests to execute and pass'; exit 1; }
 
       - name: cargo test (loop ordering and quarantine grace guards, hard gate)
         timeout-minutes: 20
@@ -1749,6 +1864,7 @@ jobs:
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::a_sequence_query_answers_the_rows_that_were_added \
             engine::tests::a_resident_map_read_takes_the_shared_lock::each_resident_map_read_answers_while_the_shared_lock_is_held \
             engine::tests::a_resident_map_read_takes_the_shared_lock::the_fast_reads_answer_what_the_maps_hold \
+            engine::tests::a_block_key_spells_its_numbers_without_the_formatter::the_selector_is_the_formatters_spelling_at_every_digit_boundary \
             engine::tests::a_rewritten_context_node_replaces_its_block::a_rewritten_node_holds_one_block_entry \
             engine::tests::a_rewritten_context_node_replaces_its_block::a_rewritten_node_reads_back_after_a_restart \
             engine::tests::a_sequence_read_takes_the_shared_lock::a_sequence_read_answers_while_the_shared_lock_is_held \

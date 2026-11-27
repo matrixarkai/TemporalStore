@@ -40,11 +40,72 @@ def completed(adapter, event, get_result):
     raise TimeoutError(f"LMCache task did not complete; fd={event}")
 
 
+def table_smoke(meta_url: str, namespace: str, model: str) -> None:
+    config = PluginL2AdapterConfig.from_dict({
+        "module_path": "lmcache_temporalstore.adapter",
+        "class_name": "TemporalStoreL2Adapter",
+        "adapter_params": {"meta_url": meta_url, "namespace": namespace},
+    })
+    # A fresh key lets repeated runs share a model table.
+    key = ObjectKey(chunk_hash=os.urandom(32), model_name=model, kv_rank=(1 << 24) | (1 << 8))
+    payload = bytes((0, 128, 255, 17))
+    writer = _create_plugin_adapter(config)
+    reader = _create_plugin_adapter(config)
+    try:
+        for value in (payload, b"diff"):
+            store = writer.submit_store_task([key], [memory(value)])
+            result = completed(
+                writer, writer.get_store_event_fd(),
+                lambda: writer.pop_completed_store_tasks().get(store),
+            )
+            assert result.is_successful()
+        assert writer.report_status()["stores"] == 1
+
+        def lookup():
+            task = reader.submit_lookup_and_lock_task([key], {})
+            return completed(
+                reader, reader.get_lookup_and_lock_event_fd(),
+                lambda: reader.query_lookup_and_lock_result(task),
+            ).test(0)
+
+        assert lookup()
+        for size in (len(payload) - 1, len(payload)):
+            target = memory(bytes(size))
+            task = reader.submit_load_task([key], [target])
+            found = completed(
+                reader, reader.get_load_event_fd(), lambda: reader.query_load_result(task),
+            ).test(0)
+            assert found == (size == len(payload))
+            assert bytes(target.byte_array) == (payload if found else bytes(size))
+        reader.submit_unlock([key])
+        assert reader.report_status()["loads"] == 1
+
+        writer.delete([key])
+        until = time.monotonic() + 10
+        while lookup():
+            reader.submit_unlock([key])
+            if time.monotonic() >= until:
+                raise AssertionError("deleted payload remains visible")
+            time.sleep(0.02)
+        print("PASS: two adapters shared a table and verified conditional store, lookup, load, and delete")
+    finally:
+        reader.close()
+        writer.close()
+
+
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("server", type=Path)
-    parser.add_argument("--target-dir", type=Path, required=True)
+    parser.add_argument("server", type=Path, nargs="?")
+    parser.add_argument("--target-dir", type=Path)
+    parser.add_argument("--meta-url")
+    parser.add_argument("--namespace", default="kvcache")
+    parser.add_argument("--model", default="smoke")
     args = parser.parse_args()
+    if args.meta_url:
+        table_smoke(args.meta_url, args.namespace, args.model)
+        return
+    if args.server is None or args.target_dir is None:
+        parser.error("provide server and --target-dir, or --meta-url for a provisioned table")
     args.target_dir.mkdir(parents=True, exist_ok=True)
     with socket.socket() as sock:
         sock.bind(("127.0.0.1", 0))

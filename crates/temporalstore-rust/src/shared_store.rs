@@ -6284,7 +6284,7 @@ fn decode_wal_offset_metadata_frames(
     Ok(bytes.len() - last_frame_start)
 }
 
-fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
+pub(crate) fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
     let kind = match command {
         Command::CommonExpire { key, ttl_ms } => {
             v1::command::Kind::CommonExpire(v1::CommonExpire {

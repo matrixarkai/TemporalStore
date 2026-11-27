@@ -421,8 +421,10 @@ impl DataNodeRuntime {
         report.last_server_state = response.server_state.clone();
         report.forbid_auto_register = response.forbid_auto_register;
         report.consecutive_failures = if response.status.ok {
+            report.cache_budgets.clone_from(&response.cache_budgets);
             0
         } else {
+            report.cache_budgets.clear();
             report.consecutive_failures.saturating_add(1)
         };
     }
@@ -495,6 +497,7 @@ impl DataNodeRuntime {
                 };
                 let worker = self.shard_worker_info(stats.shard_id);
                 ServerShardServingState {
+                    raft_role: None,
                     shard_id: stats.shard_id,
                     serving_state: serving_state.to_string(),
                     worker_index: worker.worker_index,
