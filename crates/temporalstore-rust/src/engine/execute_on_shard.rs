@@ -2875,21 +2875,7 @@ pub(crate) fn execute_on_shard(
             rev,
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let length = shard.bucket_index.zsets.get(&key).map_or(0, BTreeMap::len) as i64;
-            let resolve = |index: i64| if index < 0 { length + index } else { index };
-            let from = resolve(start).max(0);
-            let to = resolve(stop).min(length - 1);
-            let members = if from > to || length == 0 {
-                Vec::new()
-            } else {
-                zset_first_refs(shard, &key, to as usize + 1, rev)[from as usize..=to as usize]
-                    .iter()
-                    .flat_map(|(member, biased)| {
-                        [member.to_vec(), zset_score_string(*biased).into_bytes()]
-                    })
-                    .collect()
-            };
-            CommandResponse::Members { members }
+            zset_range_answer(shard, &key, start, stop, rev)
         }
         Command::ZSetRangeByScore {
             key,
@@ -3693,65 +3679,15 @@ pub(crate) fn execute_on_shard(
             // The length comes from the map itself -- `ListLen` below takes the same number the
             // same way. Copying every address to obtain it, and to index a slice of it, meant a
             // ten-entry block of a four-thousand-entry list copied four thousand addresses.
-            let list = shard.bucket_index.lists.get(&key);
-            let length = list.map_or(0, |list| list.len()) as i64;
-            let resolve = |index: i64| -> i64 {
-                if index < 0 {
-                    length + index
-                } else {
-                    index
-                }
-            };
-            let from = resolve(start).max(0);
-            let to = resolve(stop).min(length - 1);
-            let members = if from > to || length == 0 {
-                Vec::new()
-            } else {
-                // A BTreeMap iterates in key order, which is the list's order -- the same order the
-                // materialised Vec had. Only the requested span is READ: `read_block_bytes` runs
-                // `wanted` times, not `length` times, which is what stopped a ten-entry block of a
-                // four-thousand-entry list from touching four thousand blocks.
-                //
-                // `skip(from)` still ADVANCES the iterator `from` times, so reaching a late offset
-                // walks the nodes before it -- cheap per step and allocating nothing, but not
-                // free. A read near the head is O(wanted); one near the tail is O(from + wanted).
-                // An allocation probe cannot see that difference, so it is stated here rather
-                // than left for a flat byte measurement to imply otherwise.
-                let wanted = (to - from + 1) as usize;
-                // One routing bucket for the whole range, and one page-key builder: the entries of
-                // a list sit in few slabs, so their keys share a record key rather than each
-                // spelling it again, and the element name is rendered in place rather than in a
-                // `String` per entry.
-                let routing_bucket =
-                    block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                let mut block_keys = crate::engine::BlockKeys::new();
-                list.map(|list| {
-                    // From the element's own sequence word, so reaching a late offset costs two
-                    // ordered-map lookups and not a walk over every node before it.
-                    list_seq_at(list, from as usize)
-                        .into_iter()
-                        .flat_map(|start| list.range(start..).take(wanted))
-                        .filter_map(|(seq, address)| {
-                            // The same rendering ListPop uses, which is what the index rows
-                            // for this list were filed under.
-                            let mut name = [0_u8; 16];
-                            let element_name = list_element_name(*seq, &mut name);
-                            let cache_key = block_keys.key(shard_id, address, Some(routing_bucket));
-                            read_block_value_keyed(
-                                cache,
-                                block_store,
-                                shard_id,
-                                address,
-                                // Re-derived from the sequence the same way ListPop renders it. `.values()` used to
-                                // drop that sequence, which is why the iteration above is now `.iter()`.
-                                BlockIdentity::of(shard_id, "list", &key, Some(element_name)),
-                                cache_key,
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-            };
+            // The window of addresses is taken from the map and the blocks are read from it, as the
+            // fast path does under the shared lock; a block that cannot be read is left out.
+            let window = list_range_window(shard, &key, start, stop);
+            let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let members: Vec<Vec<u8>> =
+                read_list_window(cache, block_store, shard_id, &key, &window, routing_bucket)
+                    .into_iter()
+                    .flatten()
+                    .collect();
             CommandResponse::Members { members }
         }
         Command::ListLen { key } => {
@@ -3803,13 +3739,8 @@ pub(crate) fn execute_on_shard(
                 // matters twice: `derive_membership` does not become a zero-caller function,
                 // and a listing can never answer EMPTY for a key whose blocks say otherwise
                 // -- which is exactly the `listed=0` against 40 that killed the entries walk.
-                if shard.set_listing_from_map {
-                    if let Some(members) = shard.bucket_index.sets.get(&key) {
-                        SET_LISTING_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return CommandResponse::Members {
-                            members: members.iter().map(|(member, _)| member.clone()).collect(),
-                        };
-                    }
+                if let Some(answer) = set_members_from_map(shard, &key) {
+                    return answer;
                 }
                 // IDENTITY IS IN THE PAYLOAD, AND THERE IS NO LONGER ANOTHER WAY.
                 //
@@ -7568,6 +7499,104 @@ pub(super) fn set_is_member_answer(
     Some(CommandResponse::Integer {
         value: i64::from(members.contains_key(member)),
     })
+}
+
+/// The members of a sorted set at positions `start..=stop` (Redis index rules, negatives from the
+/// end; descending when `rev`), each followed by its score. One function for the ordinary arm and
+/// the shared-lock path, so the two cannot answer differently.
+pub(super) fn zset_range_answer(
+    shard: &ShardState,
+    key: &str,
+    start: i64,
+    stop: i64,
+    rev: bool,
+) -> CommandResponse {
+    let length = shard.bucket_index.zsets.get(key).map_or(0, BTreeMap::len) as i64;
+    let resolve = |index: i64| if index < 0 { length + index } else { index };
+    let from = resolve(start).max(0);
+    let to = resolve(stop).min(length - 1);
+    let members = if from > to || length == 0 {
+        Vec::new()
+    } else {
+        zset_first_refs(shard, key, to as usize + 1, rev)[from as usize..=to as usize]
+            .iter()
+            .flat_map(|(member, biased)| [member.to_vec(), zset_score_string(*biased).into_bytes()])
+            .collect()
+    };
+    CommandResponse::Members { members }
+}
+
+/// The members of a set from its member map, when the shard may serve listings from it and the map
+/// holds the key; `None` leaves the read to the fold over the blocks.
+pub(super) fn set_members_from_map(shard: &ShardState, key: &str) -> Option<CommandResponse> {
+    if !shard.set_listing_from_map {
+        return None;
+    }
+    let members = shard.bucket_index.sets.get(key)?;
+    SET_LISTING_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(CommandResponse::Members {
+        members: members.iter().map(|(member, _)| member.clone()).collect(),
+    })
+}
+
+/// The sequence words and addresses of the list elements at positions `start..=stop` (Redis index
+/// rules), in list order. Only the span is copied.
+pub(super) fn list_range_window(
+    shard: &ShardState,
+    key: &str,
+    start: i64,
+    stop: i64,
+) -> Vec<(i64, ElementEntry)> {
+    let list = shard.bucket_index.lists.get(key);
+    let length = list.map_or(0, |list| list.len()) as i64;
+    let resolve = |index: i64| if index < 0 { length + index } else { index };
+    let from = resolve(start).max(0);
+    let to = resolve(stop).min(length - 1);
+    if from > to || length == 0 {
+        return Vec::new();
+    }
+    let wanted = (to - from + 1) as usize;
+    list.map(|list| {
+        // From the element's own sequence word, so a late offset costs two ordered-map lookups and
+        // not a walk over every node before it.
+        list_seq_at(list, from as usize)
+            .into_iter()
+            .flat_map(|first| list.range(first..).take(wanted))
+            .map(|(seq, address)| (*seq, address.clone()))
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// The element of each address of a list window, read from its block, `None` where a block could not
+/// be read. One page-key builder for the whole span: the elements of a list sit in few slabs.
+pub(super) fn read_list_window(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    key: &str,
+    window: &[(i64, ElementEntry)],
+    routing_bucket: u32,
+) -> Vec<Option<Vec<u8>>> {
+    let mut page_keys = crate::engine::BlockKeys::new();
+    window
+        .iter()
+        .map(|(seq, address)| {
+            // The same rendering ListPop uses, which is what the index rows for this list were
+            // filed under.
+            let mut name = [0_u8; 16];
+            let element_name = list_element_name(*seq, &mut name);
+            let cache_key = page_keys.key(shard_id, address, Some(routing_bucket));
+            read_block_value_keyed(
+                cache,
+                block_store,
+                shard_id,
+                address,
+                BlockIdentity::of(shard_id, "list", key, Some(element_name)),
+                cache_key,
+            )
+        })
+        .collect()
 }
 
 pub(super) fn zset_scan_answer(

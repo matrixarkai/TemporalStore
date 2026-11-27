@@ -670,3 +670,5 @@ mod a_removal_retires_its_vacated_block_by_naming_it;
 
 #[path = "tests/a_block_key_spells_its_numbers_without_the_formatter.rs"]
 mod a_block_key_spells_its_numbers_without_the_formatter;
+#[path = "tests/a_block_reading_read_takes_the_shared_lock.rs"]
+mod a_block_reading_read_takes_the_shared_lock;
