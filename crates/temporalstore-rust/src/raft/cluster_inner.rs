@@ -137,9 +137,26 @@ impl RaftClusterInner {
                 node.alive && node.role == RaftRole::Leader
             });
         if !is_local_leader {
-            return Err(RaftError::NotLeader { node_id: local_node_id });
+            return Err(RaftError::NotLeader { node_id: local_node_id }.before_proposal_append());
         }
         Ok(())
+    }
+
+    /// Admission under the same lock as append. After append, quorum
+    /// failures can leave an entry that a later leader may commit.
+    pub(super) fn check_proposal_quorum(&self) -> Result<usize, RaftError> {
+        if let Some((live, required)) = self.joint_majority_failure() {
+            return Err(RaftError::NoMajority { live, required }.before_proposal_append());
+        }
+        let required = self.required_majority();
+        let live = self.live_quorum_participants();
+        if live < required {
+            return Err(RaftError::NoMajority { live, required }.before_proposal_append());
+        }
+        if !self.leader_lease_valid() {
+            return Err(RaftError::LeaderUnavailable.before_proposal_append());
+        }
+        Ok(required)
     }
 
     pub(super) fn promote_best_live_follower(&mut self) -> Result<(), RaftError> {

@@ -323,6 +323,18 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-gate-records.log
           done
 
+      - name: Raft cache write admission checks
+        run: |
+          set -o pipefail
+          for t in \
+            raft::tests::part2::quorum_refusal_before_append_is_retryable_without_writing \
+            raft::tests::part2::a_local_follower_cannot_propose_through_the_remote_leaders_shadow \
+            raft::tests::part2::deployed_quorum_recovery_defers_an_unreachable_uncompacted_peer; do
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/raft-cache-admission.log
+            grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/raft-cache-admission.log
+          done
+
       # The delta records of concurrent writers reach the index log as one write per batch.
       # `cargo test` EXITS 0 WHEN THE FILTER MATCHES NOTHING, so each name is run alone and the
       # greps below fail the step if it matched no test or did not pass.
