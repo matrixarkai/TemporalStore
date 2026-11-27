@@ -691,6 +691,29 @@ impl TemporalEngine {
                     &record.items,
                     record.upsert,
                 );
+                // An upsert can append feature points without a full key-state snapshot.
+                // Recover those points before applying this record's explicit drops and edits.
+                if record.upsert {
+                    for item in &record.items {
+                        if item.kind != crate::index_log::IndexItemKind::Block
+                            || item.deleted
+                            || item.model_id != "feature"
+                        {
+                            continue;
+                        }
+                        if let Some(address) = &item.entry {
+                            storage_bucket_internals::insert_timestamped_secondary_view(
+                                &self.block_store,
+                                None,
+                                &mut Vec::new(),
+                                shard.features_mut(),
+                                item.object_key.to_string(),
+                                address.clone(),
+                                None,
+                            );
+                        }
+                    }
+                }
                 apply_key_states(shard, &record.key_states);
                 // The carried container elements are COLLECTED here and applied once the fold has
                 // finished, not folded in as they arrive. A fold replays a suffix of the log, so one
@@ -1284,7 +1307,7 @@ impl TemporalEngine {
         Ok(())
     }
 
-    pub(super) fn validate_load_version(
+    pub(crate) fn validate_load_version(
         &self,
         shard_id: ShardId,
         load_version: u64,

@@ -1436,6 +1436,8 @@ struct WriterDirectory {
     reader_budget: Arc<point_readers::Budget>,
     writers: Mutex<BTreeMap<ShardId, Arc<ShardWriter>>>,
     ready: Arc<Mutex<BTreeSet<ShardId>>>,
+    #[cfg(test)]
+    background_flush_disabled: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -1811,11 +1813,26 @@ impl LocalWriteAheadLogStore {
         let root = root.into();
         let _ = fs::create_dir_all(&root);
         Self {
-            inner: Arc::new(WriterDirectory { root, scratch: None, point_reads: Arc::default(),
-                reader_budget: Arc::default(), writers: Mutex::new(BTreeMap::new()), ready: Arc::default() }),
+            inner: Arc::new(WriterDirectory {
+                root,
+                scratch: None,
+                point_reads: Arc::default(),
+                reader_budget: Arc::default(),
+                writers: Mutex::new(BTreeMap::new()),
+                ready: Arc::default(),
+                #[cfg(test)]
+                background_flush_disabled: AtomicBool::new(false),
+            }),
             flat_append: Arc::new(AtomicBool::new(true)),
             flusher_started: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Isolate this fixture's foreground WAL counters before its first append.
+    #[cfg(test)]
+    pub(crate) fn disable_background_flush_for_test(&self) {
+        assert!(!self.flusher_started.load(AtomicOrdering::Acquire));
+        self.inner.background_flush_disabled.store(true, AtomicOrdering::Relaxed);
     }
 
     /// Whether an append resolves its sequence from the warm in-process cache.
@@ -2773,6 +2790,10 @@ impl LocalWriteAheadLogStore {
     /// is written within one tick even when no new commit arrives. Holds only weak handles and
     /// exits when the store is dropped.
     fn ensure_flusher(&self) {
+        #[cfg(test)]
+        if self.inner.background_flush_disabled.load(AtomicOrdering::Relaxed) {
+            return;
+        }
         if self.flusher_started.swap(true, AtomicOrdering::AcqRel) {
             return;
         }
@@ -7025,7 +7046,32 @@ fn skip_block_footer_if_due<R: std::io::BufRead + std::io::Seek>(
     }
     let relative = at - header_len;
     let index = block_of(relative);
-    if relative < block_data_end(index) {
+    let data_end = block_data_end(index);
+    // Prefix reclaim can move a complete footer away from its original block boundary.
+    // With no padding before it there is no zero run to start the footer search.
+    if header_len != 0 && relative != data_end {
+        let prefix = reader.fill_buf()?;
+        let possible_footer = prefix.first().is_some_and(|&length| {
+            (11..=WAL_BLOCK_FOOTER_BYTES as u8 - 2).contains(&length)
+        }) && prefix.get(1).is_none_or(|&high_byte| high_byte == 0)
+            && prefix.get(2).is_none_or(|&tag| tag == 9);
+        if possible_footer {
+            let resume = reader.stream_position()?;
+            let mut slot = [0u8; WAL_BLOCK_FOOTER_BYTES as usize];
+            let complete = match reader.read_exact(&mut slot) {
+                Ok(()) => true,
+                Err(error) if error.kind() == std::io::ErrorKind::UnexpectedEof => false,
+                Err(error) => return Err(error.into()),
+            };
+            if complete && decode_block_footer(&slot).is_some_and(|footer| {
+                footer.version == 2 && footer.last_record_left_size == 0
+            }) {
+                return Ok(at + WAL_BLOCK_FOOTER_BYTES);
+            }
+            reader.seek(SeekFrom::Start(resume))?;
+        }
+    }
+    if relative < data_end {
         return Ok(at);
     }
     // At or past this block's data end -- but that is a statement about POSITION, and a log
@@ -9552,6 +9598,56 @@ mod tests {
             records as u64 - retain_from + 1,
             missing.first()
         );
+    }
+
+    #[test]
+    fn a_record_walk_skips_a_valid_footer_at_a_reclaimed_boundary_without_padding() {
+        use std::io::{BufReader, Cursor, Seek, SeekFrom};
+
+        for (block_number, removed_prefix) in [(0, 4_096), (1, WAL_BLOCK_BYTES - 32)] {
+            let header = crate::log_framing::encode_base_header(removed_prefix);
+            let header_len = header.len() as u64;
+            let footer_start = header_len + block_footer_at(block_number) - removed_prefix;
+            let mut footer = crate::storage_descriptor::BlockFooter {
+                magic: WAL_BLOCK_FOOTER_MAGIC,
+                version: 2,
+                timestamp_ms: 1_795_768_730_000,
+                block_number,
+                block_end: block_footer_at(0) as u32,
+                last_record_offset: 130_800,
+                last_record_sequence: 300,
+                ..Default::default()
+            };
+            let valid = encode_block_footer_message(&footer);
+            if block_number == 0 {
+                assert_eq!(u16::from_le_bytes([valid[0], valid[1]]), 29);
+            }
+            let mut damaged = valid.clone();
+            *damaged.last_mut().unwrap() ^= 1;
+            footer.last_record_left_size = 450;
+            let continuation = encode_block_footer_message(&footer);
+            for (slot, complete) in [
+                (valid.as_slice(), true),
+                (damaged.as_slice(), false),
+                (continuation.as_slice(), false),
+                (&valid[..3], false),
+            ] {
+                let mut bytes = header.clone();
+                bytes.resize(footer_start as usize, 0);
+                bytes.extend_from_slice(slot);
+                bytes.push(crate::log_framing::FRAME_MAGIC_V3);
+                for capacity in [1, 3, 8_192] {
+                    let mut reader = BufReader::with_capacity(capacity, Cursor::new(bytes.as_slice()));
+                    reader.seek(SeekFrom::Start(footer_start)).unwrap();
+                    let expected = footer_start + if complete { WAL_BLOCK_FOOTER_BYTES } else { 0 };
+                    assert_eq!(
+                        skip_block_footer_if_due(&mut reader, footer_start, header_len).unwrap(),
+                        expected
+                    );
+                    assert_eq!(reader.stream_position().unwrap(), expected);
+                }
+            }
+        }
     }
 
     /// The displaced-footer search may only ever say YES on the MAGIC.

@@ -73,6 +73,7 @@ fn handle_manage_service_route(
                     meta,
                     register_server,
                     RegisterServerRequest {
+                        grpc_addr: None,
                         registered_at_ms: 0,
                         numa_nodes: Vec::new(),
                         server_addr: heartbeat_server_addr(&req),
@@ -466,6 +467,7 @@ fn handle_master_service_route(
                     meta,
                     register_server,
                     RegisterServerRequest {
+                        grpc_addr: None,
                         registered_at_ms: 0,
                         numa_nodes: Vec::new(),
                         server_addr,

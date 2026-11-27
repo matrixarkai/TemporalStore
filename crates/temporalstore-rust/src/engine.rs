@@ -1167,16 +1167,25 @@ impl TemporalEngine {
         if let Some(async_storage) = async_storage_override {
             config.async_storage = async_storage;
         }
-        // A synchronous string write stores its value once, in the record it acks on. From here
-        // on it takes the same storage placement an asynchronous write does (value in the log,
-        // no block-store copy, no per-write index delta) while `sync` below stays true, so the ack
-        // still waits for the WAL barrier. Not under replay or a replicated apply, whose
-        // placement is decided elsewhere.
+        // Synchronous writes still wait on the engine WAL. A replicated cache
+        // insert can keep its bytes there until normal storage maintenance
+        // materializes them, just like a standalone synchronous string write.
+        let raft_insert_uses_wal_placement = || {
+            matches!(
+                &command,
+                Command::StringSetConditional {
+                    condition: crate::types::StringSetCondition::IfNotExists,
+                    return_old: false,
+                    keep_ttl: false,
+                    ..
+                }
+            ) && crate::wal::wal_data_only_enabled()
+        };
         let value_once = writes_string_block
             && !config.async_storage
             && !bulk_ingest_mode()
             && !replaying_wal()
-            && !raft_applying()
+            && (!raft_applying() || raft_insert_uses_wal_placement())
             && sync_value_once_enabled();
         let defer_storage = config.async_storage || value_once;
         let table_admission_enabled = (if write_command {
@@ -2040,6 +2049,9 @@ impl TemporalEngine {
                 | Command::ControlStateQuery { .. }
                 | Command::ControlStateSelectionQuery { .. }
                 | Command::SeenCard { .. }
+                | Command::ZSetRange { .. }
+                | Command::SetMembers { .. }
+                | Command::ListRange { .. }
         );
         if !read_command {
             return None;
@@ -2398,7 +2410,9 @@ impl TemporalEngine {
                 | Command::ListLen { key }
                 | Command::SetScan { key, .. }
                 | Command::SetCard { key }
-                | Command::SetIsMember { key, .. } => {
+                | Command::SetIsMember { key, .. }
+                | Command::ZSetRange { key, .. }
+                | Command::SetMembers { key } => {
                     if shard
                         .expires_at_ms()
                         .get(key.as_str())
@@ -2490,6 +2504,29 @@ impl TemporalEngine {
                             .control_state_selection
                             .get(key.as_str())
                             .map(|stored| stored.value.clone()),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::ListRange { key, start, stop } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    // THE ADDRESSES ARE TAKEN UNDER THE GUARD AND THE BLOCKS ARE READ AFTER IT DROPS,
+                    // as a hash read does: the window is copied, and pinned if any of it is still in
+                    // the log.
+                    FastPathRead::List {
+                        key: key.as_str(),
+                        window: execute_on_shard::list_range_window(shard, key, *start, *stop),
                         routing_bucket: block_routing_bucket(
                             key,
                             start_routing_bucket,
@@ -2713,6 +2750,29 @@ impl TemporalEngine {
                     response: CommandResponse::WindowReduceRanking { ranked },
                 })
             }
+            FastPathRead::List {
+                key,
+                window,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                // A block that cannot be read declines the fast path, so the ordinary path answers
+                // instead of this one answering short.
+                let members = execute_on_shard::read_list_window(
+                    &self.cache,
+                    &self.block_store,
+                    request.shard_id,
+                    key,
+                    &window,
+                    routing_bucket,
+                )
+                .into_iter()
+                .collect::<Option<Vec<_>>>()?;
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Members { members },
+                })
+            }
             FastPathRead::Response {
                 response,
                 routing_bucket,
@@ -2810,28 +2870,38 @@ impl TemporalEngine {
                 range,
             } => {
                 self.note_fast_read_recency(request.shard_id, routing_bucket);
-                // The shard has already said whether the key is there; an absent key reads nothing.
-                let bytes = match address {
-                    Some(address) => Some(read_block_shared(
-                        &self.cache,
-                        &self.block_store,
-                        request.shard_id,
-                        &address,
-                        BlockIdentity::of(request.shard_id, "string", key, None),
-                        Some(routing_bucket),
-                    )?),
-                    None => None,
-                };
                 let response = match range {
                     None => CommandResponse::Integer {
-                        value: bytes.map_or(0, |bytes| bytes.len() as i64),
+                        value: match address {
+                            Some(address) => read_string_length(
+                                &self.cache,
+                                &self.block_store,
+                                request.shard_id,
+                                &address,
+                                key,
+                                routing_bucket,
+                            )?,
+                            None => 0,
+                        },
                     },
-                    Some((start, end)) => CommandResponse::Bytes {
-                        value: bytes.map(|bytes| {
-                            let (from, to) = crate::redis::normalize_range(start, end, bytes.len());
-                            bytes[from..to].to_vec()
-                        }),
-                    },
+                    Some((start, end)) => {
+                        let value = match address {
+                            Some(address) => {
+                                let bytes = read_block_shared(
+                                    &self.cache,
+                                    &self.block_store,
+                                    request.shard_id,
+                                    &address,
+                                    BlockIdentity::of(request.shard_id, "string", key, None),
+                                    Some(routing_bucket),
+                                )?;
+                                let (from, to) = crate::redis::normalize_range(start, end, bytes.len());
+                                Some(bytes[from..to].to_vec())
+                            }
+                            None => None,
+                        };
+                        CommandResponse::Bytes { value }
+                    }
                 };
                 Some(ExecuteResponse {
                     status: Status::ok(),
@@ -4265,6 +4335,12 @@ enum FastPathRead<'a> {
     },
     /// An integer answered from the index alone, with nothing to read afterwards.
     Answer { value: i64, routing_bucket: u32 },
+    /// The addresses of a list window, taken under the guard; the elements are read after it drops.
+    List {
+        key: &'a str,
+        window: Vec<(i64, ElementEntry)>,
+        routing_bucket: u32,
+    },
     /// A whole response answered from a resident map under the guard, with nothing to read
     /// afterwards.
     Response {
@@ -4336,6 +4412,10 @@ fn index_only_read(shard: &ShardState, command: &Command) -> Option<CommandRespo
         Command::SetIsMember { key, member } => {
             execute_on_shard::set_is_member_answer(shard, key, member)
         }
+        Command::ZSetRange { key, start, stop, rev } => {
+            Some(execute_on_shard::zset_range_answer(shard, key, *start, *stop, *rev))
+        }
+        Command::SetMembers { key } => execute_on_shard::set_members_from_map(shard, key),
         _ => None,
     }
 }
@@ -4440,6 +4520,22 @@ impl FastPathRead<'_> {
                 }
                 snapshot
             }
+            Self::List { key, window, .. }
+                if window.iter().any(|(_, address)| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                }) =>
+            {
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                let object = stable_block_object_id(shard, "list", key);
+                for (seq, address) in window {
+                    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                        let mut name = [0_u8; 16];
+                        let element_name = execute_on_shard::list_element_name(*seq, &mut name);
+                        guard.pin(blocks, object, Some(element_name), address);
+                    }
+                }
+                Some(guard)
+            }
             // A READ THAT FETCHES NO BLOCKS HAS NO LOCATION TO PIN. `Answer` is an integer taken
             // from the index and `Value` is a byte string copied out of a resident map, both under
             // the guard; nothing is read after it drops, so there is no WAL-resident address a
@@ -4448,7 +4544,8 @@ impl FastPathRead<'_> {
             Self::Hash { .. }
             | Self::Answer { .. }
             | Self::Response { .. }
-            | Self::Value { .. } => None,
+            | Self::Value { .. }
+            | Self::List { .. } => None,
         }
     }
 }
@@ -8160,6 +8257,7 @@ fn delete_record_exact_with_identity_batch(
     removed |= shard.control_state_selection.remove(key).is_some();
     removed |= shard.context_nodes_mut().remove(key).is_some();
     removed |= shard.context_events_mut().remove(key).is_some();
+    removed |= shard.context_event_timeline.remove(key).is_some();
     removed |= shard.context_indexes_mut().remove(key).is_some();
     removed |= shard.context_audits_mut().remove(key).is_some();
     removed |= shard.context_entities_mut().remove(key).is_some();
@@ -10162,15 +10260,22 @@ fn read_block_frame_shared(
     if let Ok(Some(bytes)) = cached {
         return Some(bytes);
     }
-    read_block_frame_bytes_after_cache_miss(
-        cache,
-        block_store,
-        shard_id,
-        address,
-        identity,
-        cache_key,
-    )
-    .map(std::sync::Arc::from)
+    read_block_frame_shared_after_cache_miss(cache, block_store, shard_id, address, identity, cache_key)
+}
+
+fn read_block_frame_shared_after_cache_miss(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<std::sync::Arc<[u8]>> {
+    let bytes: std::sync::Arc<[u8]> =
+        read_block_frame_from_storage(block_store, shard_id, address, identity)?.into();
+    // Cache promotion and the reader retain the same frame allocation.
+    let _ = cache.put_shared(cache_key, std::sync::Arc::clone(&bytes));
+    Some(bytes)
 }
 
 /// Read a frame from durable storage after its cache key has already missed.
@@ -10184,6 +10289,17 @@ fn read_block_frame_bytes_after_cache_miss(
     address: &ElementEntry,
     identity: BlockIdentity<'_>,
     cache_key: CacheKey,
+) -> Option<Vec<u8>> {
+    let bytes = read_block_frame_from_storage(block_store, shard_id, address, identity)?;
+    let _ = cache.put(cache_key, bytes.clone());
+    Some(bytes)
+}
+
+fn read_block_frame_from_storage(
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
 ) -> Option<Vec<u8>> {
     // Past the cache, so this call goes to storage. Counted here rather than at each of the
     // three fallbacks below because every one of them is a trip to the store and they must not
@@ -10199,12 +10315,10 @@ fn read_block_frame_bytes_after_cache_miss(
             identity.element_name(),
             address,
         ) {
-            let _ = cache.put(cache_key, bytes.clone());
             return Some(bytes);
         }
     }
     if let Ok(bytes) = block_store.read(address) {
-        let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
     }
     // The block store could not answer, so try the record that carries this block.
@@ -10229,7 +10343,6 @@ fn read_block_frame_bytes_after_cache_miss(
         identity.element_name(),
         address,
     ) {
-        let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
     }
     None
@@ -10372,7 +10485,6 @@ impl BlockKeys {
                 record_key
             }
         };
-        use std::fmt::Write as _;
         // Sized exactly: a miss stores this key, and a string grown by appends can sit on up to
         // twice the bytes it holds for as long as the entry does.
         let width = |n: u64| n.checked_ilog10().map_or(1, |digits| digits as usize + 1);
@@ -10381,10 +10493,19 @@ impl BlockKeys {
             + width(address.length())
             + routing_bucket.map_or(0, |bucket| "slot-".len() + width(u64::from(bucket)) + 1);
         let mut selector = String::with_capacity(capacity);
+        // THE DIGITS ARE WRITTEN DIRECTLY, NOT THROUGH THE FORMATTER. Three integers per key, on
+        // every block a read touches, went through `core::fmt` -- over a quarter of the
+        // instructions of a whole-series feature read. The spelling is the formatter's, byte for
+        // byte (`a_block_key_spells_its_numbers_without_the_formatter`): a changed byte is a silent
+        // cache miss.
         if let Some(bucket) = routing_bucket {
-            let _ = write!(selector, "slot-{bucket}:");
+            selector.push_str("slot-");
+            push_decimal(&mut selector, u64::from(bucket));
+            selector.push(':');
         }
-        let _ = write!(selector, "{}:{}", address.offset(), address.length());
+        push_decimal(&mut selector, address.offset());
+        selector.push(':');
+        push_decimal(&mut selector, address.length());
         CacheKey {
             shard_id,
             record_key,
@@ -10392,6 +10513,21 @@ impl BlockKeys {
             selector: std::borrow::Cow::Owned(selector),
         }
     }
+}
+
+/// Append the decimal digits of `n` to `out`, as `{n}` spells them.
+fn push_decimal(out: &mut String, mut n: u64) {
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.push_str(std::str::from_utf8(&digits[at..]).expect("digits are ascii"));
 }
 
 thread_local! {
@@ -10467,6 +10603,44 @@ pub fn reset_corrupt_container_block_count() {
 /// blocks and picks one out of itself by identity; handed only the object id it answers with the
 /// FIRST block of that object, which is another element's bytes rather than a miss.
 #[allow(clippy::too_many_arguments)]
+fn read_string_length(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    key: &str,
+    routing_bucket: u32,
+) -> Option<i64> {
+    // The live write path assigns this sentinel only to logical bytes carried
+    // in the WAL. Its length excludes all WAL framing and compression.
+    if address.block_slab_id() == HOT_BLOCK_SLAB_ID {
+        return Some(address.length() as i64);
+    }
+
+    let cache_key = read_block_key(shard_id, address, Some(routing_bucket));
+    if let Some(bytes) = cache.get_memory_shared(&cache_key) {
+        return Some(bytes.len() as i64);
+    }
+    if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+        shard_write_guard::note_block_read();
+        if let Some(length) = block_store.local_block_payload_length(address) {
+            return Some(length as i64);
+        }
+    }
+
+    // Older unframed records, remote slabs and alternate WAL locators use
+    // the existing read path.
+    read_block_shared_keyed(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        BlockIdentity::of(shard_id, "string", key, None),
+        cache_key,
+    )
+    .map(|bytes| bytes.len() as i64)
+}
+
 fn read_block_shared(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -10495,11 +10669,10 @@ fn read_block_shared_keyed(
     if let Ok(Some(bytes)) = cached {
         return select_shared_block_value(bytes, identity);
     }
-    // Every path below writes to the cache and hands back what it wrote. Continue after the miss
-    // already observed above so the storage fallbacks stay in one place without probing this key
-    // again.
-    read_block_bytes_after_cache_miss(cache, block_store, shard_id, address, identity, cache_key)
-        .map(std::sync::Arc::from)
+    let frame = read_block_frame_shared_after_cache_miss(
+        cache, block_store, shard_id, address, identity, cache_key,
+    )?;
+    select_shared_block_value(frame, identity)
 }
 
 struct SharedBlockRead<'a> {
@@ -10547,15 +10720,15 @@ fn read_blocks_shared(
             if let Some(bytes) = bytes {
                 return select_shared_block_value(bytes, read.identity);
             }
-            read_block_bytes_after_cache_miss(
+            let frame = read_block_frame_shared_after_cache_miss(
                 cache,
                 block_store,
                 shard_id,
                 read.address,
                 read.identity,
                 cache_key,
-            )
-            .map(std::sync::Arc::from)
+            )?;
+            select_shared_block_value(frame, read.identity)
         })
         .collect()
 }
