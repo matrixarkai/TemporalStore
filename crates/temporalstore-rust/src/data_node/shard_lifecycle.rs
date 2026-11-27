@@ -7,6 +7,12 @@ use super::*;
 use crate::control::{LoadShardRequest, LoadShardResponse, UnloadShardRequest, UnloadShardResponse};
 use crate::types::Status;
 
+impl DataNodeRuntimeInner {
+    pub(super) fn shard_generation_lock(&self, shard_id: ShardId) -> &RwLock<()> {
+        &self.shard_generation_locks[shard_id as usize % SHARD_GENERATION_LOCKS]
+    }
+}
+
 pub(super) fn load_shard_with_inner(
     inner: &DataNodeRuntimeInner,
     request: LoadShardRequest,
@@ -19,6 +25,9 @@ pub(super) fn load_shard_with_shared_tail_inner(
     request: LoadShardRequest,
     replay_tail: impl FnOnce() -> Result<(), Status>,
 ) -> LoadShardResponse {
+    let _generation = inner.shard_generation_lock(request.shard_id)
+        .write()
+        .expect("shard generation lock poisoned");
     if let Err(status) =
         validate_lifecycle_token_inner(inner, request.shard_id, "load", request.load_version)
     {
@@ -56,6 +65,9 @@ pub(super) fn reload_shard_with_inner(
     inner: &DataNodeRuntimeInner,
     request: LoadShardRequest,
 ) -> LoadShardResponse {
+    let _generation = inner.shard_generation_lock(request.shard_id)
+        .write()
+        .expect("shard generation lock poisoned");
     if let Err(status) =
         validate_lifecycle_token_inner(inner, request.shard_id, "reload", request.load_version)
     {
@@ -94,6 +106,9 @@ pub(super) fn unload_shard_with_inner(
     request: UnloadShardRequest,
     reject_when_busy: bool,
 ) -> UnloadShardResponse {
+    let _generation = inner.shard_generation_lock(request.shard_id)
+        .write()
+        .expect("shard generation lock poisoned");
     let load_version = inner
         .engine
         .get_info(request.shard_id)

@@ -1475,7 +1475,15 @@ fn append_entries_matches_snapshot_floor_after_leader_compaction() {
         .unwrap();
     cluster.set_alive(3, true).unwrap();
 
-    let request = cluster.build_append_entries_request(3).unwrap();
+    let probe = cluster.build_capped_append_entries_request(3, 0).unwrap();
+    assert!(probe.entries.is_empty());
+    assert_eq!(probe.prev_log_index, 2);
+    let reply = cluster.receive_append_entries(probe).unwrap();
+    assert!(reply.success);
+    assert_eq!(reply.match_index, 2);
+    cluster.record_append_entries_response(3, &reply).unwrap();
+
+    let request = cluster.build_capped_append_entries_request(3, 1).unwrap();
     assert_eq!(request.prev_log_index, 2);
     assert_eq!(request.prev_log_term, 1);
     assert_eq!(

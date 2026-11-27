@@ -651,6 +651,7 @@ fn table_write_refreshes_topology_after_meta_changed_without_write_retry_budget(
                             serving_options: crate::meta::TableServingOptions::default(),
                         }),
                         shards: vec![TableShard {
+                            raft_route: None,
                             load_version: 0,
                             shard_id: 1,
                             start_bucket: 0,

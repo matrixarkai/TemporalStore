@@ -10,6 +10,8 @@ set -euo pipefail
 DATA_DIR="${TS_DATA_DIR:-/var/lib/temporalstore}"
 META_PORT="${TS_META_PORT:-17101}"
 DATA_PORT="${TS_DATA_PORT:-17102}"
+META_GRPC_PORT="${TS_META_GRPC_PORT:-17201}"
+DATA_GRPC_PORT="${TS_DATA_GRPC_PORT:-17202}"
 
 # Bind on all interfaces so the ports are reachable from the host and from other
 # containers. The two processes talk to each other over localhost *inside* the
@@ -18,6 +20,9 @@ export TS_META_BIND_ADDR="0.0.0.0:${META_PORT}"
 export TS_META_ADDR="127.0.0.1:${META_PORT}"
 export TS_SERVER_BIND_ADDR="0.0.0.0:${DATA_PORT}"
 export TS_SERVER_ADVERTISE_ADDR="127.0.0.1:${DATA_PORT}"
+export TS_META_GRPC_BIND_ADDR="0.0.0.0:${META_GRPC_PORT}"
+export TS_SERVER_GRPC_BIND_ADDR="0.0.0.0:${DATA_GRPC_PORT}"
+export TS_SERVER_GRPC_ADVERTISE_ADDR="${TS_SERVER_GRPC_ADVERTISE_ADDR:-127.0.0.1:${DATA_GRPC_PORT}}"
 export TS_SHARD_ID="${TS_SHARD_ID:-1}"
 export TS_CACHE_DIR="${DATA_DIR}/cache"
 # The canonical directory, unless the previous one is the one that is already there: a container
@@ -49,8 +54,10 @@ matrixark_rust_datanode &
 pids+=("$!")
 
 echo "[temporalstore] single node up:"
-echo "[temporalstore]   metaserver  http://0.0.0.0:${META_PORT}/health"
-echo "[temporalstore]   datanode    http://0.0.0.0:${DATA_PORT}/health  (writes/reads via POST /execute)"
+echo "[temporalstore]   metadata    grpc://127.0.0.1:${META_GRPC_PORT}"
+echo "[temporalstore]   commands    grpc://${TS_SERVER_GRPC_ADVERTISE_ADDR}"
+echo "[temporalstore]   metaserver  http://127.0.0.1:${META_PORT}/health"
+echo "[temporalstore]   datanode    http://127.0.0.1:${DATA_PORT}/health"
 
 # Take the container down as soon as either service exits, so orchestrators can
 # restart a broken node instead of leaving a half-dead one running.

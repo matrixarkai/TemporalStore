@@ -127,6 +127,7 @@ mod tests {
 
     fn server_record(addr: &str, node_id: u64, state: MetaEntityState) -> ServerMetaInfo {
         ServerMetaInfo {
+            grpc_addr: None,
             registered_at_ms: 0,
             reported_record_count: 0,
             reported_storage_bytes: 0,
