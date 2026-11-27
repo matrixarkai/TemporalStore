@@ -1119,3 +1119,179 @@ fn the_residual_outside_the_round_stage_rows_recovers_a_planted_whole_store_walk
          is put in front of it is not measuring what is outside the stage rows"
     );
 }
+
+#[test]
+fn a_full_no_dump_cycle_names_the_first_owner_claim_transition() {
+    use std::cell::{Cell, RefCell};
+    use std::collections::BTreeMap;
+    use std::rc::Rc;
+
+    #[derive(Debug)]
+    struct OwnerRow {
+        dirty: bool,
+        deleted: bool,
+        generation: u64,
+        wal: u64,
+        index: u64,
+        deleted_ids: BTreeSet<u64>,
+        blocks: usize,
+    }
+    struct Snapshot {
+        round: usize,
+        boundary: &'static str,
+        same_owner: bool,
+        applied_wal: Option<u64>,
+        checkpoint_wal: Option<u64>,
+        logical: BTreeSet<u32>,
+        claims: BTreeSet<u32>,
+        flags: BTreeSet<u32>,
+        cache: BTreeSet<u32>,
+        rows: BTreeMap<u32, OwnerRow>,
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = round_engine(dir.path());
+    seed(&engine, 0, SMALL);
+    std::thread::sleep(std::time::Duration::from_millis(30));
+    let initial_owner = engine.shards.handle(1).expect("seeded owner");
+    let snapshots = Rc::new(RefCell::new(Vec::<Snapshot>::new()));
+    let round = Rc::new(Cell::new(0usize));
+    let recorded = Rc::clone(&snapshots);
+    let observed_round = Rc::clone(&round);
+    let drained_before = drained_total();
+    let reports = crate::engine::storage_manager_cycle::with_owner_stage_observer(
+        move |engine, shard_id, boundary| {
+            let current = engine.shards.handle(shard_id).expect("cycle owner disappeared");
+            let same_owner = initial_owner.same_incarnation(&current);
+            let snapshot = current.with_read(|state| {
+                let state = state.expect("cycle owner retired");
+                let (claims, _) = crate::engine::storage_reporting::dirty_bucket_claims_with_summary_state(state);
+                let nodes = &state.bucket_index.bucket_map;
+                Snapshot {
+                    round: observed_round.get(),
+                    boundary,
+                    same_owner,
+                    applied_wal: state.applied_wal_sequence,
+                    checkpoint_wal: state.checkpoint_wal_sequence(),
+                    logical: state.dirty_objects.bucket_ids().collect(),
+                    claims: claims.into_keys().collect(),
+                    flags: nodes.iter().filter_map(|(&id, node)| node.dirty().then_some(id)).collect(),
+                    cache: nodes.dirty_buckets().clone(),
+                    rows: nodes.iter().map(|(&id, node)| (id, OwnerRow {
+                        dirty: node.dirty(),
+                        deleted: node.deleted(),
+                        generation: node.dirty_generation,
+                        wal: node.first_dirty_wal_sequence,
+                        index: node.first_dirty_index_log_sequence,
+                        deleted_ids: node.deleted_object_index.iter().copied().collect(),
+                        blocks: node.block_index.len(),
+                    })).collect(),
+                }
+            });
+            recorded.borrow_mut().push(snapshot);
+        },
+        || {
+            (0..3).map(|index| {
+                round.set(index);
+                engine.run_storage_manager_cycle(round_request(PUBLISHED_MIN_UNDUMPED_WAL_RECORDS))
+            }).collect::<Vec<_>>()
+        },
+    );
+
+    let snapshots = snapshots.borrow();
+    let expected_boundaries = [
+        "before_initial_plan", "after_initial_plan", "after_prepare",
+        "after_materialize_before_lifecycle", "after_reclaim_wal", "after_expire",
+        "after_evict", "after_reclaim_page", "after_install_prune_before_catalog",
+        "after_catalog_before_index_gc_report", "after_index_gc", "after_merged_policy",
+        "after_compact", "after_reap_metrics", "before_return",
+    ];
+    assert_eq!(snapshots.len(), 3 * expected_boundaries.len(), "all real cycle hooks must run");
+    for index in 0..3 {
+        assert_eq!(
+            snapshots.iter().filter(|snapshot| snapshot.round == index)
+                .map(|snapshot| snapshot.boundary).collect::<Vec<_>>(),
+            expected_boundaries.to_vec(),
+            "round {index} did not traverse the exact actual-work boundaries",
+        );
+    }
+    let mut first_membership_loss = None;
+    let mut first_debt_loss = None;
+    for (position, snapshot) in snapshots.iter().enumerate() {
+        let missing: Vec<_> = snapshot.logical.difference(&snapshot.flags).copied().collect();
+        eprintln!(
+            "owner-boundary round={} boundary={} same_owner={} nodes={} logical={} C={} F={} K={} applied={:?} checkpoint={:?} missing={} sample={:?}",
+            snapshot.round, snapshot.boundary, snapshot.same_owner, snapshot.rows.len(),
+            snapshot.logical.len(), snapshot.claims.len(), snapshot.flags.len(), snapshot.cache.len(),
+            snapshot.applied_wal, snapshot.checkpoint_wal, missing.len(),
+            missing.iter().take(16).collect::<Vec<_>>(),
+        );
+        if !snapshot.same_owner || !missing.is_empty()
+            || snapshot.claims != snapshot.flags || snapshot.cache != snapshot.flags
+        {
+            first_membership_loss.get_or_insert((snapshot.round, snapshot.boundary));
+        }
+        let Some(previous) = position.checked_sub(1).map(|index| &snapshots[index]) else { continue; };
+        let mut lost_dirty = Vec::new();
+        let mut lost_wal = Vec::new();
+        let mut lost_index = Vec::new();
+        let mut lost_generation = Vec::new();
+        let mut lost_deleted_ids = Vec::new();
+        for (&id, old) in &previous.rows {
+            let next = snapshot.rows.get(&id);
+            if old.dirty && next.is_none_or(|node| !node.dirty) { lost_dirty.push(id); }
+            if snapshot.logical.contains(&id) {
+                if old.wal > 0 && next.is_none_or(|node| node.wal == 0 || node.wal > old.wal) { lost_wal.push(id); }
+                if old.index > 0 && next.is_none_or(|node| node.index == 0 || node.index > old.index) { lost_index.push(id); }
+                if next.is_none_or(|node| node.generation < old.generation) { lost_generation.push(id); }
+            }
+            for object in &old.deleted_ids {
+                if next.is_none_or(|node| !node.deleted_ids.contains(object)) {
+                    lost_deleted_ids.push((id, *object));
+                }
+            }
+        }
+        if !lost_wal.is_empty() || !lost_index.is_empty() || !lost_deleted_ids.is_empty() {
+            first_debt_loss.get_or_insert((snapshot.round, snapshot.boundary));
+        }
+        if !lost_dirty.is_empty() || !lost_wal.is_empty() || !lost_index.is_empty()
+            || !lost_generation.is_empty() || !lost_deleted_ids.is_empty()
+        {
+            eprintln!(
+                "owner-transition {}:{} -> {}:{} lost_dirty={} lost_wal={} lost_index={} regressed_generation={} lost_deleted_ids={} samples={:?}/{:?}/{:?}/{:?}/{:?}",
+                previous.round, previous.boundary, snapshot.round, snapshot.boundary,
+                lost_dirty.len(), lost_wal.len(), lost_index.len(), lost_generation.len(), lost_deleted_ids.len(),
+                lost_dirty.iter().take(16).collect::<Vec<_>>(), lost_wal.iter().take(16).collect::<Vec<_>>(),
+                lost_index.iter().take(16).collect::<Vec<_>>(), lost_generation.iter().take(16).collect::<Vec<_>>(),
+                lost_deleted_ids.iter().take(16).collect::<Vec<_>>(),
+            );
+            for id in lost_dirty.iter().chain(&lost_wal).chain(&lost_index).chain(&lost_generation)
+                .copied().collect::<BTreeSet<_>>().iter().take(16)
+            {
+                eprintln!("owner-row {id}: before={:?} after={:?}", previous.rows.get(id), snapshot.rows.get(id));
+            }
+        }
+        // Retain deletion classification separately from released live owners.
+        let deleted_empty = snapshot.rows.values().filter(|row| row.deleted && row.blocks == 0).count();
+        let live_empty_with_ids = snapshot.rows.values()
+            .filter(|row| !row.deleted && row.blocks == 0 && !row.deleted_ids.is_empty()).count();
+        eprintln!("owner-classes deleted_empty={deleted_empty} live_empty_with_deleted_ids={live_empty_with_ids}");
+    }
+    for (index, report) in reports.iter().enumerate() {
+        assert!(report.completed && report.errors.is_empty(), "round {index}: {:?}", report.errors);
+        assert!(report.plan.selected_dump_buckets.is_empty(), "diagnostic changed no-dump regime");
+        assert!(report.pressure_signals.undumped_wal_records < PUBLISHED_MIN_UNDUMPED_WAL_RECORDS);
+        for name in ["prepare", "reclaim_wal", "expire", "evict", "reclaim_page", "index_gc", "compact", "reap_metrics"] {
+            assert!(report.stages.iter().find(|stage| stage.stage == name)
+                .expect("every enabled real stage must be reported").enabled);
+        }
+        assert!(report.lifecycle_report.as_ref().is_some_and(|lifecycle| lifecycle.dump_manifest.is_none() && lifecycle.install_roll_forward_reports.is_empty()));
+        eprintln!("owner-cycle {index}: expire={:?} compaction={} dirty_report={} selected={}", report.expiry_report, report.compaction_report.is_some(), report.pressure_signals.dirty_bucket_count, report.plan.selected_dump_buckets.len());
+    }
+    assert_eq!(drained_total() - drained_before, 0, "no dirty drain is permitted in this arm");
+    assert_eq!(dirty_state(&engine).0, SMALL);
+    eprintln!("first owner membership loss={first_membership_loss:?}; first claim/deleted-ID loss={first_debt_loss:?}");
+    assert!(first_membership_loss.is_none(), "first owner membership disagreement: {first_membership_loss:?}");
+    assert!(first_debt_loss.is_none(), "no-dump arm lost accepted owner debt: {first_debt_loss:?}");
+    assert_eq!(reports.last().unwrap().pressure_signals.dirty_bucket_count, dirty_state(&engine).1);
+}
