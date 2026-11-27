@@ -1382,7 +1382,7 @@ fn deployed_quorum_recovery_defers_an_unreachable_uncompacted_peer() {
         failures_left: Arc::new(Mutex::new(1)),
     };
     let _timer = leader.register_data_commit_timer();
-    let result = leader.propose_distributed(
+    let result = leader.propose_distributed_with_admission(
         Command::StringSet { key: "during-loss".to_owned(), value: vec![0, 255] },
         &transport,
     );
@@ -2387,14 +2387,43 @@ fn a_local_follower_cannot_propose_through_the_remote_leaders_shadow() {
     assert_eq!(before.leader_id, 1);
     cluster.set_local_node_id(2);
 
-    let result = cluster.propose_distributed(
-        Command::StringSet {
-            key: "queued-write".to_string(),
-            value: b"value".to_vec(),
-        },
-        &cluster,
+    let command = Command::StringSet {
+        key: "queued-write".to_string(),
+        value: b"value".to_vec(),
+    };
+    assert_eq!(
+        cluster.propose_distributed_with_admission(command.clone(), &cluster),
+        Err(RaftError::NotLeader { node_id: 2 }.before_proposal_append())
     );
-    assert!(matches!(result, Err(RaftError::NotLeader { node_id: 2 })));
+    assert!(matches!(
+        cluster.propose_distributed(command, &cluster),
+        Err(RaftError::NotLeader { node_id: 2 })
+    ));
+    assert_eq!(cluster.status(), before);
+}
+
+#[test]
+fn quorum_refusal_before_append_is_retryable_without_writing() {
+    let cluster = RaftCluster::new_single_shard(11, [1, 2, 3]);
+    cluster.set_local_node_id(1);
+    {
+        // Model unavailable followers without changing the injected leader.
+        let mut inner = cluster.inner.write().unwrap();
+        inner.nodes.get_mut(&2).unwrap().alive = false;
+        inner.nodes.get_mut(&3).unwrap().alive = false;
+    }
+    let before = cluster.status();
+    assert_eq!(before.leader_id, 1);
+    let command = Command::StringSet {
+        key: "wait-for-quorum".to_string(),
+        value: b"value".to_vec(),
+    };
+    let quorum = || RaftError::NoMajority { live: 1, required: 2 };
+    assert_eq!(
+        cluster.propose_distributed_with_admission(command.clone(), &cluster),
+        Err(quorum().before_proposal_append()),
+    );
+    assert_eq!(cluster.propose_distributed(command, &cluster), Err(quorum()));
     assert_eq!(cluster.status(), before);
 }
 
