@@ -489,6 +489,8 @@ jobs:
               engine::tests::a_detail_read_carries_its_own_bound::a_detail_read_with_no_count_is_bounded_by_the_configured_cap \
               engine::tests::a_detail_read_carries_its_own_bound::a_count_larger_than_the_cap_is_still_capped \
               engine::tests::a_detail_read_carries_its_own_bound::a_named_count_under_the_cap_is_honoured \
+              engine::tests::hash_read_union_divergence::under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable \
+              engine::tests::manifest_restore_model_maps::a_manifest_restore_on_the_default_recovery_arm_keeps_the_blocks_only_the_index_names \
               wal::registration_records::tests::mutations_match_an_independent_slot_model \
               wal::registration_records::tests::uniform_expectations_stay_inline_and_conflicts_release_their_storage \
               engine::block_in_wal::physical::registration_summary_tests::summaries_combine_domains_and_follow_replacement_retirement_and_clear \
@@ -608,6 +610,8 @@ jobs:
             engine::tests::a_list_write_records_its_block_once::each_list_write_leaves_one_list_outcome_in_its_record \
             engine::tests::a_list_write_records_its_block_once::the_list_reads_back_the_same_from_a_replayed_log_and_from_an_unload_and_a_load \
             engine::tests::a_removal_retires_its_vacated_block_by_naming_it::removals_never_walk_the_object_and_leave_what_a_model_leaves_across_a_restart \
+            engine::tests::a_rewrite_asks_once_whether_two_elements_share_a_block::the_whole_object_is_checked_once_whatever_the_writes_and_the_size \
+            engine::tests::a_rewrite_asks_once_whether_two_elements_share_a_block::a_rewrite_after_a_compaction_does_not_hide_the_elements_that_share_its_block \
             engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_pop_takes_the_first_or_last_members_in_order_and_leaves_the_rest \
             engine::tests::a_sorted_set_range_and_pop_select_the_first_members::a_range_of_the_first_members_answers_what_the_full_sort_answered \
             engine::tests::a_list_position_and_removal_answer_what_a_walk_answered::positions_and_removals_answer_what_a_walk_answered_with_and_without_a_hole \
@@ -616,6 +620,10 @@ jobs:
             engine::tests::set_install_census::every_command_that_installs_a_set_member_reports_a_touched_element \
             shared_store::tests::a_string_increment_and_an_append_are_framed_as_protobuf_and_round_trip \
             engine::tests::part4::what_each_command_recorded_describes_everything_it_changed \
+            engine::tests::a_block_reading_read_takes_the_shared_lock::each_read_answers_while_the_shared_lock_is_held \
+            engine::tests::a_block_reading_read_takes_the_shared_lock::the_fast_reads_answer_what_the_ordinary_arms_answered \
+            engine::tests::a_block_reading_read_takes_the_shared_lock::a_list_range_keeps_its_snapshot_when_its_elements_are_overwritten_after_the_plan \
+            engine::tests::expiry_scale::one_expiry_pass_walks_the_cache_once_instead_of_twice_per_expired_key \
             engine::tests::the_side_table_codec_resolves_shape_from_spelling::every_side_table_domain_round_trips_as_its_own_shape \
             engine::tests::the_side_table_codec_resolves_shape_from_spelling::the_seven_spellings_are_distinct_and_the_six_old_ones_are_unchanged \
             engine::tests::the_side_table_codec_resolves_shape_from_spelling::the_stored_image_carries_the_spellings_without_a_variant_tag \
