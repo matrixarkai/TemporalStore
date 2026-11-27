@@ -1878,8 +1878,9 @@ pub(super) fn refresh_live_blockless_owner(shard: &mut ShardState, key: &str, st
                 // Deleted identities can also remain in that index, so count only live ones.
                 let has_released_live_object = released
                     && bucket.object_index.iter().any(|id| !bucket.deleted_object_index.contains(id));
-                bucket.set_deleted(!has_released_live_object
-                    && bucket.block_index.values().all(|block| block.deleted()));
+                let deleted = !has_released_live_object
+                    && bucket.block_index.values().all(|block| block.deleted());
+                bucket.set_deleted(deleted);
             }
         }
     }
@@ -2233,7 +2234,7 @@ fn a_real_wal_resident_readd_clears_the_empty_deleted_owner_before_refresh() {
         assert!(node.object_index.contains(&id));
         assert!(node.deleted_object_index.contains(&id));
     });
-    assert_eq!(engine.object_manager_runtime_report(1).deleted_object_count, 1);
+    assert_eq!(engine.object_manager_runtime_report(1).delete_marker_object_count, 1);
     execute(Command::StringSet { key: key.into(), value: vec![2; 96] });
     engine.shards.with_state_mut(1, |shard| {
         let shard = shard.unwrap();
@@ -2291,7 +2292,7 @@ fn accepted_blockless_request_revives_owner_without_erasing_deleted_string_ident
         assert!(node.deleted_object_index.contains(&id));
     });
     assert_eq!(execute(Command::SeenCard { key: key.into() }), CommandResponse::Integer { value: 1 });
-    assert_eq!(engine.object_manager_runtime_report(1).deleted_object_count, 1);
+    assert_eq!(engine.object_manager_runtime_report(1).delete_marker_object_count, 1);
 }
 
 #[cfg(test)]
@@ -2330,7 +2331,7 @@ fn deleting_the_last_physical_key_preserves_a_live_blockless_peer_in_its_bucket(
         assert!(node.deleted_object_index.contains(&id) && node.object_index.contains(&id));
     });
     assert_eq!(execute(Command::SeenCard { key: metadata.into() }), CommandResponse::Integer { value: 1 });
-    assert_eq!(engine.object_manager_runtime_report(1).deleted_object_count, 1);
+    assert_eq!(engine.object_manager_runtime_report(1).delete_marker_object_count, 1);
     drop(engine);
     let reopened = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024, root.path().join("cache"), root.path().join("blocks"),
@@ -2410,7 +2411,7 @@ fn deleting_last_metadata_keeps_released_physical_owner_live() {
         assert!(!node.deleted() && node.object_index.contains(&id));
         assert_eq!((node.first_dirty_wal_sequence, node.first_dirty_index_log_sequence, node.dirty_generation), claims);
     });
-    assert_eq!(engine.object_manager_runtime_report(1).deleted_object_count, 0);
+    assert_eq!(engine.object_manager_runtime_report(1).delete_marker_object_count, 0);
     engine.cache.invalidate_shard(1).unwrap();
     assert_eq!(execute(Command::StringGet { key: physical.into() }), CommandResponse::Bytes { value: Some(value) });
 }
