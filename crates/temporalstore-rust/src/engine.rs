@@ -1167,16 +1167,25 @@ impl TemporalEngine {
         if let Some(async_storage) = async_storage_override {
             config.async_storage = async_storage;
         }
-        // A synchronous string write stores its value once, in the record it acks on. From here
-        // on it takes the same storage placement an asynchronous write does (value in the log,
-        // no block-store copy, no per-write index delta) while `sync` below stays true, so the ack
-        // still waits for the WAL barrier. Not under replay or a replicated apply, whose
-        // placement is decided elsewhere.
+        // Synchronous writes still wait on the engine WAL. A replicated cache
+        // insert can keep its bytes there until normal storage maintenance
+        // materializes them, just like a standalone synchronous string write.
+        let raft_insert_uses_wal_placement = || {
+            matches!(
+                &command,
+                Command::StringSetConditional {
+                    condition: crate::types::StringSetCondition::IfNotExists,
+                    return_old: false,
+                    keep_ttl: false,
+                    ..
+                }
+            ) && crate::wal::wal_data_only_enabled()
+        };
         let value_once = writes_string_block
             && !config.async_storage
             && !bulk_ingest_mode()
             && !replaying_wal()
-            && !raft_applying()
+            && (!raft_applying() || raft_insert_uses_wal_placement())
             && sync_value_once_enabled();
         let defer_storage = config.async_storage || value_once;
         let table_admission_enabled = (if write_command {

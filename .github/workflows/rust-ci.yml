@@ -345,6 +345,14 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-group-write.log
           done
 
+      - name: Replicated cache WAL placement check
+        run: |
+          set -o pipefail
+          cargo test --release -p temporalstore-rust --lib \
+            engine::log_backed_string_tests::replicated_insert_only_strings_reload_before_and_after_materialization \
+            -- --exact --test-threads=1 2>&1 | tee /tmp/cache-wal-placement.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/cache-wal-placement.log
+
       - name: Source naming checks
         run: |
           set -o pipefail
