@@ -1780,6 +1780,130 @@ fn a_container_tombstone_retains_its_wal_record_after_restart() {
         });
         assert!(response.status.ok, "write failed: {:?}", response.status);
     }
+    for (key, member) in [("live-set", b"survivor-a".as_slice()), ("other-set", b"survivor-b".as_slice())] {
+        assert!(engine.execute(ExecuteRequest {
+            shard_id: RECLAIM_DUMP_SHARD,
+            command: Command::SetAdd { key: key.into(), member: member.to_vec() },
+        }).status.ok);
+    }
+    let object_id = stable_block_object_id(RECLAIM_DUMP_SHARD, "set", "removed-set");
+    let element_name = crate::engine::execute_on_shard::set_element_name(b"former-member");
+    let folded = block_in_wal::wal_resident_key(object_id, Some(&element_name));
+    let tombstone_address = |engine: &TemporalEngine| {
+        engine.shards.with_state(RECLAIM_DUMP_SHARD, |state| {
+            let entries = collect_live_block_entries(state.unwrap());
+            let matching: Vec<_> = entries.iter().filter(|entry| {
+                entry.kind.as_str() == "set" && entry.object_key.as_ref() == "removed-set" && entry.deleted
+            }).collect();
+            assert_eq!(matching.len(), 1, "the actual removed member must retain one indexed tombstone");
+            matching[0].address.clone()
+        })
+    };
+    let address = tombstone_address(&engine);
+    assert!(crate::wal_record::is_wal_resident(address.block_slab_id()));
+    let placement = engine.shards.with_state(RECLAIM_DUMP_SHARD, |state| {
+        *state.unwrap().wal_resident_blocks.get(&folded).expect("tombstone WAL locator")
+    });
+    assert_eq!(placement.sequence, 2);
+    let assert_wal_tombstone = |engine: &TemporalEngine| {
+        assert_eq!(tombstone_address(engine), address);
+        assert_eq!(engine.shards.with_state(RECLAIM_DUMP_SHARD, |state| {
+            state.unwrap().wal_resident_blocks.get(&folded).copied()
+        }), Some(placement));
+        assert_eq!(block_in_wal::min_registered_sequence(
+            &engine.block_store, RECLAIM_DUMP_SHARD, &engine.wal_store,
+        ), Some(2));
+        let frame = engine.wal_store().read_frame_at_log_id(RECLAIM_DUMP_SHARD, placement.log_id)
+            .expect("read exact tombstone record").expect("WAL2 must remain physically readable");
+        let record = crate::wal::decode_wal_line(&frame).expect("decode exact tombstone record");
+        assert_eq!(record.sequence, 2);
+        assert!(record.outcomes.iter().any(|item| {
+            item.kind == "set" && item.object_id == object_id && item.deleted
+                && item.resolved_address().as_ref() == Some(&address)
+        }), "WAL2 must attest the indexed tombstone's identity and address");
+        let blocks: Vec<_> = record.staged_blocks.iter().filter(|block| {
+            block.object_id == object_id && block.element_name.as_deref() == Some(element_name.as_str())
+        }).collect();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(container_blocks::select_container_element(&blocks[0].bytes, &element_name),
+            container_blocks::ContainerElementRead::Removed);
+        match container_blocks::decode_container_block(&blocks[0].bytes) {
+            container_blocks::ContainerBlockDecode::Framed { items, .. } => {
+                assert_eq!(items.len(), 1);
+                assert!(items[0].deleted);
+            }
+            other => panic!("tombstone must be a framed removal: {other:?}"),
+        }
+        assert_eq!(block_in_wal::read_block_at(&engine.block_store, RECLAIM_DUMP_SHARD,
+            object_id, Some(&element_name), &address), Some(blocks[0].bytes.clone()));
+    };
+    let assert_contents = |engine: &TemporalEngine| {
+        for (key, members) in [
+            ("removed-set", Vec::new()),
+            ("live-set", vec![b"survivor-a".to_vec()]),
+            ("other-set", vec![b"survivor-b".to_vec()]),
+        ] {
+            let result = engine.execute(ExecuteRequest {
+                shard_id: RECLAIM_DUMP_SHARD, command: Command::SetMembers { key: key.into() },
+            });
+            assert!(result.status.ok, "read {key}: {:?}", result.status);
+            assert_eq!(result.response, CommandResponse::Members { members }, "{key}");
+        }
+    };
+    assert_wal_tombstone(&engine);
+    assert_contents(&engine);
+    // The installed GC floor is not the registration query. With no durable predecessor,
+    // normal reclaim must refuse rather than invent a frontier for the fixture.
+    assert_eq!(engine.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD), None);
+    let before_coverage = engine.storage_wal_reclaim_plan(RECLAIM_DUMP_SHARD, [], []);
+    assert!(!before_coverage.safe_to_reclaim, "{before_coverage:?}");
+    let refused = engine.apply_storage_wal_reclaim(before_coverage);
+    assert!(!refused.applied);
+    assert_wal_tombstone(&engine);
+    assert_eq!(engine.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD), None);
+
+    // This is a local WAL-backed recovery checkpoint, not a portable slab-only image.
+    // Direct capture does not run the String-only materializer.
+    let manifest = engine.create_bucket_dump_manifest(RECLAIM_DUMP_SHARD, []).unwrap();
+    let persisted = bucket_dump_io::list_bucket_dump_manifests_shared_at(&engine.index_dir, RECLAIM_DUMP_SHARD)
+        .unwrap().into_iter().find(|held| held.manifest_id == manifest.manifest_id)
+        .expect("published checkpoint must be readable from its real durable path");
+    assert!(!persisted.checksum.is_empty());
+    assert_eq!(bucket_dump_io::bucket_dump_manifest_checksum(&persisted).unwrap(), persisted.checksum);
+    let image = installable_image(&persisted).unwrap();
+    assert_eq!(sha256_hex_bytes(image), persisted.index_sha256);
+    let snapshot = decode_index_bytes(image).unwrap();
+    assert_eq!(snapshot.wal_resident_blocks.get(&folded), Some(&placement));
+    assert!(collect_live_block_entries(&snapshot).iter().any(|entry| {
+        entry.kind.as_str() == "set" && entry.object_key.as_ref() == "removed-set"
+            && entry.deleted && entry.address == address
+    }));
+    assert_eq!(storage_lifecycle_methods::wal_floor_of_index_image(&snapshot), Some(2));
+    assert_eq!(snapshot.applied_wal_sequence, Some(manifest.wal_sequence));
+    assert_eq!(manifest.wal_sequence, 4);
+    engine.clear_dumped_bucket_dirty_state(RECLAIM_DUMP_SHARD, &manifest);
+    assert_wal_tombstone(&engine);
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024, dir.path().join("cache-b"), &blocks, &indexes,
+    );
+    let load = restarted.load_shard_with(LoadShardRequest {
+        shard_id: RECLAIM_DUMP_SHARD, load_version: 0, local_node_id: None,
+        shard_uri: String::new(), start_routing_bucket: 0, end_routing_bucket: u32::MAX,
+        readonly: false, table_name: String::new(),
+    });
+    assert!(load.status.ok, "checkpoint reopen: {:?}", load.status);
+    assert_wal_tombstone(&restarted);
+    assert_contents(&restarted);
+    let plan = restarted.storage_wal_reclaim_plan(RECLAIM_DUMP_SHARD, [], []);
+    assert!(plan.safe_to_reclaim, "{plan:?}");
+    let reclaimed = restarted.apply_storage_wal_reclaim(plan);
+    assert!(reclaimed.applied, "{reclaimed:?}");
+    assert!(reclaimed.wal_records_removed > 0, "the superseded SetAdd must actually be reclaimed: {reclaimed:?}");
+    assert_eq!(restarted.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD), Some(2));
+    assert_wal_tombstone(&restarted);
+    assert_contents(&restarted);
     let request = StorageManagerCycleRequest {
         shard_id: RECLAIM_DUMP_SHARD,
         min_undumped_wal_records: 0,
@@ -1793,30 +1917,24 @@ fn a_container_tombstone_retains_its_wal_record_after_restart() {
         enable_index_gc: false,
         ..StorageManagerCycleRequest::default()
     };
-    engine.run_storage_manager_cycle(request.clone());
-    drop(engine);
-
-    let restarted = TemporalEngine::with_local_dirs(
-        64 * 1024 * 1024,
-        dir.path().join("cache-b"),
-        &blocks,
-        &indexes,
-    );
-    restarted.load_shard(RECLAIM_DUMP_SHARD);
-    assert_eq!(restarted.registration_count_for_test(RECLAIM_DUMP_SHARD), 1);
-    restarted.run_storage_manager_cycle(request);
+    let cycle = restarted.run_storage_manager_cycle(request);
+    let cycle_reclaim = cycle.wal_reclaim_report.as_ref().expect("normal cycle must report its reclaim outcome");
+    assert!(cycle_reclaim.applied, "{cycle_reclaim:?}");
     assert_eq!(restarted.wal_store().block_retention_floor(RECLAIM_DUMP_SHARD), Some(2));
-    assert_eq!(
-        restarted
-            .execute(ExecuteRequest {
-                shard_id: RECLAIM_DUMP_SHARD,
-                command: Command::SetMembers {
-                    key: "removed-set".to_string(),
-                },
-            })
-            .response,
-        CommandResponse::Members { members: Vec::new() }
+    assert_wal_tombstone(&restarted);
+    assert_contents(&restarted);
+    drop(restarted);
+    let reopened = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024, dir.path().join("cache-c"), &blocks, &indexes,
     );
+    let load = reopened.load_shard_with(LoadShardRequest {
+        shard_id: RECLAIM_DUMP_SHARD, load_version: 0, local_node_id: None,
+        shard_uri: String::new(), start_routing_bucket: 0, end_routing_bucket: u32::MAX,
+        readonly: false, table_name: String::new(),
+    });
+    assert!(load.status.ok, "post-reclaim reopen: {:?}", load.status);
+    assert_wal_tombstone(&reopened);
+    assert_contents(&reopened);
 }
 
 #[test]

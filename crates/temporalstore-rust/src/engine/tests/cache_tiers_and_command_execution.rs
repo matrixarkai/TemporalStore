@@ -3186,72 +3186,174 @@ fn a_capped_dump_takes_the_oldest_undumped_bucket_first() {
     );
 }
 
-/// A capped dump still reclaims, because an undumped bucket holds the logs only from its own
-/// oldest write.
-///
-/// A bucket that is dirty and has no durable dump manifest is captured nowhere. The plan used to
-/// have no choice but to retain everything for it -- floor 0 -- so a round that dumped only some
-/// of the dirty buckets reclaimed NOTHING, for ever
-/// (`the_shipped_dump_cap_still_lets_the_log_be_reclaimed` is why the cap had to be turned off).
-///
-/// With `first_dirty_wal_sequence` and `first_dirty_index_log_sequence` such a bucket can say
-/// where its oldest undumped write sits in each log, and hold them only from there. Measured over
-/// 12 rounds of 500 dirty buckets:
-///
-/// | cap | records behind the head, before | after |
-/// |---|---|---|
-/// | 64 | 6001 (nothing reclaimed) | 436 |
-/// | 128 | 6001 | 372 |
-/// | 256 | 6001 | 244 |
-///
-/// Both claims are required and a zero in either still blocks: they count in different sequences,
-/// and a bucket that can place itself in one log but not the other has said nothing about the
-/// second. That is the assertion that matters here -- not the exact distance behind the head,
-/// which depends on the cap.
+/// A capped dump preserves every undumped claim, then drains within its bucket budget.
+/// Partial and fully drained publications must both reopen with exact latest values.
 #[test]
 fn a_capped_dump_still_reclaims() {
-    let dir = tempfile::tempdir().unwrap();
-    let engine = TemporalEngine::with_local_dirs(
-        8 << 20,
-        dir.path().join("cache"),
-        dir.path().join("blocks"),
-        dir.path().join("indexes"),
-    );
-    engine.load_shard(1);
+    const KEYS: usize = 200;
+    const CAP: usize = 16;
+    const ROUNDS: u64 = 4;
+    type Claims = std::collections::BTreeMap<u32, (u64, u64)>;
 
-    // Far more dirty buckets per round than the cap can cover, for several rounds.
-    let mut last_retain = 0u64;
-    for _round in 1..=4u64 {
-        for index in 0..200 {
-            write_string(&engine, &format!("capped-{index:04}"), &[b'v'; 128]);
-        }
+    fn claims(engine: &TemporalEngine) -> Claims {
+        engine.shards.with_state(1, |shard| {
+            crate::engine::storage_reporting::dirty_bucket_claims(shard.unwrap())
+        })
+    }
+
+    fn value(index: usize, round: u64) -> Vec<u8> {
+        let mut bytes = vec![round as u8; 128];
+        bytes[..8].copy_from_slice(&(index as u64).to_le_bytes());
+        bytes
+    }
+
+    fn capped_cycle(engine: &TemporalEngine) -> (u64, usize) {
+        let before = claims(engine);
+        assert!(!before.is_empty());
+        assert!(before.values().all(|&(wal, index)| wal > 0 && index > 0));
+        let mut ranked = before.iter().map(|(&bucket, &(wal, _))| (wal, bucket))
+            .collect::<Vec<_>>();
+        ranked.sort_unstable();
+        let selected = ranked.iter().take(CAP).map(|&(_, bucket)| bucket)
+            .collect::<std::collections::BTreeSet<_>>();
         let report = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
             shard_id: 1,
             min_undumped_wal_records: 0,
             min_undumped_wal_bytes: 0,
-            max_dump_buckets_per_round: 16,
+            max_dump_buckets_per_round: CAP,
             ..StorageManagerCycleRequest::default()
         });
-        let wal = report
-            .wal_reclaim_report
-            .as_ref()
-            .expect("the round must run WAL reclaim");
-        last_retain = wal.plan.retain_from_wal_sequence;
+        assert!(report.completed && report.errors.is_empty(), "{report:?}");
+        let lifecycle = report.lifecycle_report.as_ref().expect("actual dump stage");
+        let manifest = lifecycle.dump_manifest.as_ref().expect("actual durable manifest");
+        assert_eq!(lifecycle.plan.selected_dump_buckets.iter().copied().collect::<std::collections::BTreeSet<_>>(), selected);
+        assert_eq!(manifest.bucket_ids.iter().copied().collect::<std::collections::BTreeSet<_>>(), selected);
+        assert_eq!(manifest.bucket_ids.len(), selected.len());
+        assert!(selected.len() <= CAP);
+        assert!(engine.list_bucket_dump_manifests(1).iter().any(|stored| {
+            stored.manifest_id == manifest.manifest_id && stored.index_bytes == manifest.index_bytes
+        }), "the reported image must actually be persisted");
+
+        // A partial selection still publishes the whole index and every root it can install.
+        let image = crate::engine::decode_index_bytes(&manifest.index_bytes).unwrap();
+        assert_eq!(image.applied_wal_sequence, Some(manifest.wal_sequence));
+        assert_eq!(image.strings().len(), KEYS);
+        for (key, slot) in image.strings().iter() {
+            assert!(key.starts_with("capped-"));
+            assert!(manifest.block_slab_ids.contains(&slot.address().block_slab_id()));
+        }
+        assert_eq!(engine.wal_resident_block_count(1), 0);
+        assert_eq!(engine.persisted_images_wal_floor(1).unwrap(), None);
+
+        let mut expected = before;
+        for bucket in &selected {
+            expected.remove(bucket);
+        }
+        assert_eq!(claims(engine), expected, "only actually dumped owners may retire claims");
+        let wal = report.wal_reclaim_report.as_ref().expect("actual WAL reclaim stage");
+        let expected_wal = expected.values().map(|&(wal, _)| wal).min()
+            .unwrap_or(wal.plan.current_wal_sequence + 1);
+        let expected_index = expected.values().map(|&(_, index)| index).min()
+            .unwrap_or(wal.plan.current_index_log_sequence + 1);
+        assert!(wal.plan.safe_to_reclaim && wal.applied, "{wal:?}");
+        assert_eq!(wal.plan.retain_from_wal_sequence, expected_wal);
+        assert_eq!(wal.plan.durable_bucket_generation_frontier_wal_sequence, expected_wal - 1);
+        assert_eq!(wal.plan.retain_from_index_log_sequence, expected_index);
+        assert_eq!(wal.plan.durable_bucket_generation_frontier_index_log_sequence, expected_index - 1);
+        assert!(wal.plan.missing_bucket_generations.is_empty());
+        assert_eq!((wal.plan.follower_cursor_block_count, wal.plan.raft_snapshot_block_count), (0, 0));
+
+        let (records, truncated) = engine.write_ahead_log_store()
+            .scan_decoded(1, 0, u64::MAX, 16 << 20).unwrap();
+        assert!(!truncated);
+        let sequences = records.iter().map(|(_, record)| record.sequence).collect::<Vec<_>>();
+        if expected.is_empty() {
+            // GC may retain its last continuity record, never the covered prefix.
+            assert!(sequences.len() <= 1);
+            assert!(sequences.iter().all(|&sequence| sequence == wal.plan.current_wal_sequence));
+        } else {
+            assert_eq!(sequences, (expected_wal..=wal.plan.current_wal_sequence).collect::<Vec<_>>());
+        }
+        (expected_wal, wal.wal_records_removed)
     }
 
-    let stats = engine.write_ahead_log_store().stats(1);
-    assert!(
-        last_retain > 0,
-        "a capped round reclaimed nothing: the floor is still pinned at 0 with {} records \
-         written, which is the state a dump cap used to force",
-        stats.last_sequence,
-    );
-    // And it must be a real floor, not a token one: most of the log should be behind it.
-    assert!(
-        last_retain * 2 > stats.last_sequence,
-        "the floor advanced to {last_retain} of {}, which is too little to call reclaimable",
-        stats.last_sequence,
-    );
+    for drain in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            8 << 20, dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let mut removed = 0;
+        let mut last_retain = 0;
+        for round in 1..=ROUNDS {
+            let retained = claims(&engine);
+            for index in 0..KEYS {
+                assert!(engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet { key: format!("capped-{index:04}"), value: value(index, round) },
+                }).status.ok);
+            }
+            let written = claims(&engine);
+            assert_eq!(written.len(), KEYS, "keys must occupy distinct dirty buckets");
+            for (bucket, claim) in retained {
+                assert_eq!(written.get(&bucket), Some(&claim), "overwrites must retain both early claims");
+            }
+            let (floor, freed) = capped_cycle(&engine);
+            assert_eq!(floor, round * CAP as u64 + 1);
+            assert!(floor > last_retain);
+            last_retain = floor;
+            removed += freed;
+        }
+        assert_eq!(last_retain, 65);
+        assert_eq!(engine.write_ahead_log_store().stats(1).last_sequence, 800);
+        let pending = claims(&engine);
+        assert_eq!(pending.len(), KEYS - CAP);
+        assert_eq!(pending.values().filter(|&&(wal, _)| wal <= KEYS as u64).count(),
+            KEYS - ROUNDS as usize * CAP, "never-dumped owners retain their first-burst claims");
+        assert_eq!(pending.values().filter(|&&(wal, _)| wal > KEYS as u64).count(),
+            (ROUNDS as usize - 1) * CAP, "previously dumped owners were dirtied again");
+        assert!(removed > 0, "partial rounds must reclaim real records");
+
+        if drain {
+            let bytes_before = engine.write_ahead_log_store().stats(1).persistent_bytes;
+            let tail = engine.write_ahead_log_store().stats(1).last_sequence;
+            let max_passes = claims(&engine).len().div_ceil(CAP);
+            assert_eq!(max_passes, 12);
+            let drain_floors = [81, 97, 113, 129, 145, 161, 177, 193, 209, 425, 641, 801];
+            let mut drained = false;
+            let mut drain_removed = 0;
+            for pass in 0..max_passes {
+                let (floor, freed) = capped_cycle(&engine);
+                assert_eq!(floor, drain_floors[pass]);
+                assert!(floor > last_retain);
+                last_retain = floor;
+                drain_removed += freed;
+                if floor == tail + 1 {
+                    drained = true;
+                    break;
+                }
+            }
+            assert!(drained, "no-write drain must finish within {max_passes} capped passes");
+            assert!(claims(&engine).is_empty());
+            assert!(drain_removed > 0);
+            let stats = engine.write_ahead_log_store().stats(1);
+            assert_eq!(stats.last_sequence, tail, "draining must not manufacture client writes");
+            assert!(stats.persistent_bytes < bytes_before, "real retained WAL bytes must fall");
+            assert!(last_retain * 2 > stats.last_sequence);
+        }
+
+        // Do not let an unload/full checkpoint repair the partial-publication arm.
+        drop(engine);
+        let reader = TemporalEngine::with_local_dirs(
+            8 << 20, dir.path().join("fresh-cache"), dir.path().join("blocks"), dir.path().join("indexes"),
+        );
+        reader.load_shard(1);
+        for index in 0..KEYS {
+            assert_eq!(read_string(&reader, &format!("capped-{index:04}")), Some(value(index, ROUNDS)),
+                "drain={drain}, key={index}: exact latest bytes after actual prefix reclamation");
+        }
+        assert_eq!(reader.write_ahead_log_store().stats(1).last_sequence, 800);
+    }
 }
 
 fn write_string(engine: &TemporalEngine, key: &str, value: &[u8]) {

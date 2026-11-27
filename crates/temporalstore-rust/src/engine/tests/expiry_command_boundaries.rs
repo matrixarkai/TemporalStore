@@ -161,6 +161,20 @@ fn a_ttl_that_collects_an_expired_key_maintains_the_block_index() {
          be observed leaving it",
     );
 
+    let collected_bucket = engine.routing_bucket_for_key(1, "ttl:collected");
+    assert_ne!(collected_bucket, engine.routing_bucket_for_key(1, "ttl:live"));
+    let (object_id, generation, wal, index) = engine.shards.with_state(1, |state| {
+        let node = state.unwrap().bucket_index.bucket_map.get(&collected_bucket).unwrap();
+        assert_eq!(node.object_index.object_count(), 1);
+        assert!(node.deleted_object_index.is_empty() && !node.deleted());
+        (
+            *node.object_index.iter().next().unwrap(),
+            node.dirty_generation,
+            node.first_dirty_wal_sequence,
+            node.first_dirty_index_log_sequence,
+        )
+    });
+
     // Only one of them expires, and it expires without any command seeing it.
     backdate(&engine, "ttl:collected");
 
@@ -190,10 +204,19 @@ fn a_ttl_that_collects_an_expired_key_maintains_the_block_index() {
          belonging to a record that is no longer there, and reclaim will go on treating it as \
          live.",
     );
-    assert!(
-        !collected_bucket_after,
-        "and the collected key's routing bucket must no longer be in the bucket map",
-    );
+    assert!(collected_bucket_after, "the empty owner still holds the uncompleted deletion");
+    engine.shards.with_state(1, |state| {
+        let node = state.unwrap().bucket_index.bucket_map.get(&collected_bucket).unwrap();
+        assert!(node.dirty() && node.deleted());
+        assert!(node.block_index.is_empty() && node.tombstone_elements.is_empty());
+        assert_eq!(node.object_index.object_count(), 1);
+        assert!(node.object_index.contains(&object_id));
+        assert_eq!(node.deleted_object_index.object_count(), 1);
+        assert!(node.deleted_object_index.contains(&object_id));
+        assert!(node.dirty_generation >= generation && node.dirty_generation > 0);
+        assert_eq!(node.first_dirty_wal_sequence, wal);
+        assert_eq!(node.first_dirty_index_log_sequence, index);
+    });
 
     // ---- CONTROL: the live key's block is untouched -------------------------------------
     // Without this, an index that had simply been emptied would satisfy the claim above.
