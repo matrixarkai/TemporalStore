@@ -2202,6 +2202,8 @@ impl TemporalEngine {
                         seen.by_time.remove(&(previous, member.clone()));
                     }
                     seen.by_time.insert((seen_at, member), ());
+                    let (start, end) = shard.routing_range();
+                    storage_bucket_internals::refresh_live_blockless_owner(shard, &item.object_key, start, end);
                     true
                 }
                 // The bucket the take left behind: tokens, then the refill moment.
@@ -2217,6 +2219,8 @@ impl TemporalEngine {
                     shard
                         .buckets
                         .insert(std::sync::Arc::from(&item.object_key[..]), (tokens, refilled_at));
+                    let (start, end) = shard.routing_range();
+                    storage_bucket_internals::refresh_live_blockless_owner(shard, &item.object_key, start, end);
                     true
                 }
                 // A retry token a merge-reduce append filed in its key's ring, and the receipt it
@@ -2722,6 +2726,8 @@ impl TemporalEngine {
                         return false;
                     };
                     super::hll::record_change(shard, &item.object_key, bucket_ms, value);
+                    let (start, end) = shard.routing_range();
+                    storage_bucket_internals::refresh_live_blockless_owner(shard, &item.object_key, start, end);
                     true
                 }
                 // The value that won a first/last comparison. The winner is installed directly rather
@@ -2744,6 +2750,8 @@ impl TemporalEngine {
                             selection_type,
                         },
                     );
+                    let (start, end) = shard.routing_range();
+                    storage_bucket_internals::refresh_live_blockless_owner(shard, &item.object_key, start, end);
                     true
                 }
                 _ => false,
