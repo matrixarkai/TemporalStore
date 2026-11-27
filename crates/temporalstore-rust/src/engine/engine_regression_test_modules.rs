@@ -286,6 +286,8 @@ mod two_level_resident_shape;
 mod adopting_the_ported_index_log_record;
 #[path = "tests/reconcile_allocation.rs"]
 mod reconcile_allocation;
+#[path = "tests/an_encode_allocates_once.rs"]
+mod an_encode_allocates_once;
 #[path = "tests/hash_read_union_divergence.rs"]
 mod hash_read_union_divergence;
 // `packed_element_scan_cost` WAS DECLARED HERE AND THE FILE IS DELETED.
