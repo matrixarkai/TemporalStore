@@ -323,20 +323,6 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-gate-records.log
           done
 
-      # Library and integration failures block merging. Keep --no-fail-fast so a
-      # failing target does not prevent the remaining targets from being tested.
-      # Restore these two source-only naming censuses after reconciling their
-      # fixture/type allowlists. Expiry blocks CI until the exclusions are removed.
-      - name: Check temporary source-census exclusions
-        run: |
-          python3 - <<'PY'
-          import datetime
-          deadline = datetime.date(2026, 11, 27)
-          if datetime.datetime.now(datetime.timezone.utc).date() >= deadline:
-              raise SystemExit("Source-census exclusions expired; restore both naming checks")
-          print("::warning::Two source-only naming checks are excluded until 2026-11-27 UTC; runtime correctness tests remain required")
-          PY
-
       # The delta records of concurrent writers reach the index log as one write per batch.
       # `cargo test` EXITS 0 WHEN THE FILTER MATCHES NOTHING, so each name is run alone and the
       # greps below fail the step if it matched no test or did not pass.
@@ -359,15 +345,24 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/index-group-write.log
           done
 
+      - name: Source naming checks
+        run: |
+          set -o pipefail
+          for t in \
+            engine::tests::no_signature_names_the_series::no_production_signature_names_the_series_representation \
+            engine::tests::page_and_block_name_one_tier::no_page_named_identity_type_field_or_size_constant_exists_in_this_crate; do
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/source-naming.log
+            grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/source-naming.log
+          done
+
       - name: cargo test (lib + integration, single-threaded, release)
         timeout-minutes: 45
         # Reports every failure but does not block the merge: about a hundred tests in unrelated
         # areas fail on main today and are being triaged. Every dedicated guard below stays a hard gate.
         continue-on-error: true
         run: |
-          cargo test --release -p temporalstore-rust --lib --tests --no-fail-fast -- --test-threads=1 \
-            --skip engine::tests::no_signature_names_the_series::no_production_signature_names_the_series_representation \
-            --skip engine::tests::page_and_block_name_one_tier::no_page_named_identity_type_field_or_size_constant_exists_in_this_crate
+          cargo test --release -p temporalstore-rust --lib --tests --no-fail-fast -- --test-threads=1
 
       # Keep dedicated guards with explicit test-count checks. When sender
       # attribution broke, the three-node chaos
