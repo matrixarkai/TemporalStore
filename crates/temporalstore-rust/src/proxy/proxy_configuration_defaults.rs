@@ -62,6 +62,7 @@ pub(super) fn proxy_client_from_options(options: &ProxyOptions) -> TemporalStore
     TemporalStoreClient::with_options(ClientOptions {
         proxy_addr: options.proxy_addr.clone(),
         meta_addr: Some(options.meta_addr.clone()),
+        meta_grpc_target: options.meta_grpc_target.clone(),
         connect_timeout_ms: options.connect_timeout_ms,
         io_timeout_ms: options.io_timeout_ms,
         max_retries: options.max_retries,

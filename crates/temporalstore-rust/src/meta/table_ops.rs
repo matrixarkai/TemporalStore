@@ -52,16 +52,30 @@ impl SingleNodeMeta {
             }
             _ => {}
         }
-        state
-            .namespaces
-            .entry(request.namespace.clone())
-            .or_insert(MetaEntityState::Normal);
         let key = table_key(&request.namespace, &request.table_name);
         if state.tables.contains_key(&key) {
             return AckResponse {
                 status: Status::error("already_exists", "table already exists"),
             };
         }
+        if cache_table_range_conflicts(
+            &state,
+            &key,
+            request.first_shard_id,
+            request.shard_count,
+            request.serving_options.cache_class,
+        ) {
+            return AckResponse {
+                status: Status::error(
+                    "cache_shard_overlap",
+                    "a cache table requires its own shard range",
+                ),
+            };
+        }
+        state
+            .namespaces
+            .entry(request.namespace.clone())
+            .or_insert(MetaEntityState::Normal);
         let table_id = state.next_table_id;
         state.next_table_id += 1;
         let namespace = request.namespace.clone();
@@ -282,6 +296,20 @@ impl SingleNodeMeta {
                 status: Status::error("bad_request", err),
             };
         }
+        if cache_table_range_conflicts(
+            &state,
+            &key,
+            existing.first_shard_id,
+            new_shard_count,
+            new_serving_options.cache_class,
+        ) {
+            return AckResponse {
+                status: Status::error(
+                    "cache_shard_overlap",
+                    "a cache table requires its own shard range",
+                ),
+            };
+        }
         let changed = new_shard_count != existing.shard_count
             || new_replica_count != existing.replica_count
             || new_serving_options != existing.serving_options;
@@ -314,6 +342,35 @@ impl SingleNodeMeta {
             status: Status::ok(),
         }
     }
+}
+
+/// A cache shard can lose keys during reclamation, so it must belong to one table.
+fn cache_table_range_conflicts(
+    state: &MetaState,
+    key: &str,
+    first: ShardId,
+    count: u64,
+    cache_class: bool,
+) -> bool {
+    let end = first.saturating_add(count);
+    let conflicts = |(other_key, table): (&String, &TableRecord)| {
+        let other = &table.info;
+        other_key != key
+            && (cache_class || other.serving_options.cache_class)
+            && other.first_shard_id < end
+            && first < other.first_shard_id.saturating_add(other.shard_count)
+    };
+    if state.table_ranges_overlap {
+        return state.tables.iter().any(conflicts);
+    }
+    state
+        .table_starts
+        .range(..first)
+        .next_back()
+        .into_iter()
+        .chain(state.table_starts.range(first..end))
+        .filter_map(|(_, other_key)| Some((other_key, state.tables.get(other_key)?)))
+        .any(conflicts)
 }
 
 /// Whether any of a table's shards has been registered to a server, which is

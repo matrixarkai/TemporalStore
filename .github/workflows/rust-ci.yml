@@ -478,6 +478,9 @@ jobs:
               engine::block_in_wal::physical::registration_summary_tests::summaries_combine_domains_and_follow_replacement_retirement_and_clear \
               engine::block_in_wal::physical::registration_summary_tests::summary_queries_complete_while_both_locator_registries_are_locked \
               engine::storage_lifecycle_methods::planning_order_tests::claim_ranks_match_manifest_augmented_summaries \
+              engine::tests::expiry_command_boundaries::a_ttl_that_collects_an_expired_key_maintains_the_block_index \
+              engine::tests::part2::a_capped_dump_still_reclaims \
+              engine::tests::reclaim_dump::a_container_tombstone_retains_its_wal_record_after_restart \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::execution_plan_uses_dirty_metadata_without_block_summaries \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::empty_quarantine_purge_skips_every_loaded_shards_live_address_walk \
               engine::storage_lifecycle_methods::lifecycle_report_work_tests::nonempty_quarantine_still_walks_liveness_and_keeps_the_grace_window \

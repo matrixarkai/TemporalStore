@@ -160,6 +160,7 @@ pub(super) fn server_host(server_addr: &str) -> String {
 
 pub(super) fn server_endpoint(state: &MetaState, server_addr: &str) -> ServerEndpoint {
     ServerEndpoint {
+        grpc_addr: state.servers.get(server_addr).and_then(|server| server.grpc_addr.clone()),
         server_addr: server_addr.to_string(),
         location: state
             .servers
@@ -174,6 +175,7 @@ pub(super) fn ensure_server(state: &mut MetaState, server_addr: &str) {
         .servers
         .entry(server_addr.to_string())
         .or_insert_with(|| ServerMetaInfo {
+            grpc_addr: None,
             registered_at_ms: 0,
             reported_record_count: 0,
             reported_storage_bytes: 0,
