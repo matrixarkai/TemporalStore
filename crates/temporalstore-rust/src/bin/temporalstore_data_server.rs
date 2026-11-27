@@ -2303,7 +2303,22 @@ impl std::fmt::Debug for MatrixObjectNetworkedWalSink {
 
 impl temporalstore_rust::SharedWalSink for MatrixObjectNetworkedWalSink {
     fn record_write(&self, shard_id: u64, command: &Command) {
-        self.record_entry(shard_id, Some(command.clone()), Vec::new());
+        self.record_owned_write(shard_id, command.clone());
+    }
+
+    fn record_owned_write(&self, shard_id: u64, command: Command) {
+        self.record_entry(shard_id, Some(command), Vec::new());
+    }
+
+    fn record_owned_writes(&self, shard_id: u64, mut commands: Vec<Command>) {
+        if commands.len() < 2 {
+            if let Some(command) = commands.pop() {
+                self.record_owned_write(shard_id, command);
+            }
+            return;
+        }
+        let result = self.handle.block_on(self.writer.write_sync_batch(shard_id, commands));
+        self.observe_write_result(shard_id, result);
     }
 
     fn record_outcomes(&self, shard_id: u64, outcomes: &[temporalstore_rust::wal::WalOutcomeItem]) {
@@ -2327,8 +2342,16 @@ impl MatrixObjectNetworkedWalSink {
                     None => writer.write_outcomes(shard_id, outcomes).await,
                 }
             });
+        self.observe_write_result(shard_id, result.map(|_| ()));
+    }
+
+    fn observe_write_result(
+        &self,
+        shard_id: u64,
+        result: Result<(), SharedStoreReplicationError>,
+    ) {
         match result {
-            Ok(_) => {}
+            Ok(()) => {}
             Err(err) => {
                 // The local write already succeeded, so the node stays available. The shared log
                 // does NOT catch up by itself: a publish that failed after its retries leaves an
@@ -2427,7 +2450,12 @@ fn wire_matrixobject_networked_durability(
             return None;
         }
     };
-    let replicator = Arc::new(SharedStoreReplicator::new(cluster_id, Arc::new(store)));
+    let max_wal_segment_bytes =
+        matrixobjectstore_rs::net::cluster_gateway::GatewayOptions::default().max_object_bytes as u64;
+    let replicator = Arc::new(
+        SharedStoreReplicator::new(cluster_id, Arc::new(store))
+            .with_wal_segment_max_bytes(max_wal_segment_bytes),
+    );
     if let Err(err) = replicator.reattach_lazy_checkpoint_sources(&engine.block_store()) {
         error!(shard_id, %err, "cannot reattach saved lazy checkpoints");
         return None;

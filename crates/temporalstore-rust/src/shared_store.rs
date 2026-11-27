@@ -618,6 +618,8 @@ pub struct SharedStoreReplicator<O> {
     /// Appends a WAL segment takes before the next one starts. See
     /// [`SHARED_STORE_WAL_SEGMENT_APPENDS_DEFAULT`].
     wal_segment_appends: usize,
+    /// Maximum encoded length of a segment log object on the configured backend.
+    wal_segment_max_bytes: Option<u64>,
     /// The segment each shard is being appended to by this replicator and its clones.
     active_segments: Arc<Mutex<BTreeMap<ShardId, ActiveWalSegment>>>,
     /// Bounds on retrying a failed publish. See [`SharedStorePublishRetry`].
@@ -710,6 +712,7 @@ impl<O> Clone for SharedStoreReplicator<O> {
             // that started cold would pay a whole read to learn it.
             offset_index_cache: Arc::clone(&self.offset_index_cache),
             wal_segment_appends: self.wal_segment_appends,
+            wal_segment_max_bytes: self.wal_segment_max_bytes,
             // SHARED, so every clone of a writer's replicator appends to the one active segment.
             active_segments: Arc::clone(&self.active_segments),
             publish_retry: self.publish_retry,
@@ -1149,6 +1152,7 @@ where
             cursor_abandon: None,
             offset_index_cache: Arc::new(Mutex::new(BTreeMap::new())),
             wal_segment_appends: shared_store_wal_segment_appends(),
+            wal_segment_max_bytes: None,
             active_segments: Arc::new(Mutex::new(BTreeMap::new())),
             publish_retry: SharedStorePublishRetry::default(),
         }
@@ -1173,6 +1177,7 @@ where
             cursor_abandon: None,
             offset_index_cache: Arc::new(Mutex::new(BTreeMap::new())),
             wal_segment_appends: shared_store_wal_segment_appends(),
+            wal_segment_max_bytes: None,
             active_segments: Arc::new(Mutex::new(BTreeMap::new())),
             publish_retry: SharedStorePublishRetry::default(),
         }
@@ -1190,6 +1195,12 @@ where
     /// Evaluated per batch: a batch is one append to each object of a segment and never spans two.
     pub fn with_wal_segment_appends(mut self, appends: usize) -> Self {
         self.wal_segment_appends = appends.max(1);
+        self
+    }
+
+    /// Roll before the next encoded append would exceed the backend's object limit.
+    pub fn with_wal_segment_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.wal_segment_max_bytes = Some(max_bytes.max(1));
         self
     }
 
@@ -1400,11 +1411,11 @@ where
         &self,
         entry: SharedStoreWalEntry,
     ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
-        let segment = self.segment_for_append(entry.shard_id, entry.wal_index);
-        let key = self.wal_segment_log_key(entry.shard_id, segment.first_index);
-        let index_key = self.wal_segment_index_key(entry.shard_id, segment.first_index);
         let command_metadata = wal_command_metadata(entry.command.as_ref())?;
         let frame = encode_wal_proto_frame(&entry, self.wal_frame_format)?;
+        let segment = self.segment_for_append(entry.shard_id, entry.wal_index, frame.len() as u64)?;
+        let key = self.wal_segment_log_key(entry.shard_id, segment.first_index);
+        let index_key = self.wal_segment_index_key(entry.shard_id, segment.first_index);
         let receipt = self
             .append_resolved(&key, Bytes::from(frame), segment.log_len)
             .await?;
@@ -1421,20 +1432,29 @@ where
         Ok(Some(receipt))
     }
 
-    /// The segment the next batch starting at `wal_index` is appended to.
-    ///
-    /// A writer that has no active segment, which is every writer that has just started, opens a
-    /// new one named by this batch's first index, so the extent count a previous owner left in an
-    /// older segment never has to be learned. A segment that has taken its quota is closed the same
-    /// way. The decision is per batch because a batch is one append to each object and its entries
-    /// share one span, so it cannot be split across segments.
-    fn segment_for_append(&self, shard_id: ShardId, wal_index: u64) -> ActiveWalSegment {
+    /// Reuse an active segment only if it can hold the complete encoded append.
+    /// A restarted writer opens a segment named by its next index, so it never
+    /// has to infer an earlier owner's append count or object length.
+    fn segment_for_append(
+        &self,
+        shard_id: ShardId,
+        wal_index: u64,
+        append_bytes: u64,
+    ) -> Result<ActiveWalSegment, SharedStoreReplicationError> {
+        let max_bytes = self.wal_segment_max_bytes.unwrap_or(u64::MAX);
+        if append_bytes > max_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("encoded WAL entry requires {append_bytes} bytes; the limit is {max_bytes}"),
+            ).into());
+        }
         let mut active = self
             .active_segments
             .lock()
             .expect("active WAL segment table poisoned");
-        match active.get(&shard_id).copied() {
-            Some(segment) if segment.appends < self.wal_segment_appends => segment,
+        Ok(match active.get(&shard_id).copied() {
+            Some(segment) if segment.appends < self.wal_segment_appends
+                && segment.log_len <= max_bytes - append_bytes => segment,
             _ => {
                 let segment = ActiveWalSegment {
                     first_index: wal_index,
@@ -1445,7 +1465,7 @@ where
                 active.insert(shard_id, segment);
                 segment
             }
-        }
+        })
     }
 
     /// Counts an append to the log object, as soon as it has landed. Counted BEFORE the index
@@ -1603,14 +1623,25 @@ where
     /// index is its own object, so no single-object barrier exists; the batch degrades to per-entry
     /// publishes (still correct, just no fsync coalescing — the win is inherent to append-blob mode).
     ///
-    /// Durability: this returns `Ok` only after the covering append(s) have reached the store, so a
-    /// caller that fans `Ok` out to waiters can never ack a write before its barrier completed.
+    /// A size-limited backend may require multiple appends. Each entry is durable only after
+    /// both its log frame and offset index have been written.
     pub async fn publish_wal_entries_batch(
         &self,
         entries: &[SharedStoreWalEntry],
     ) -> Result<Vec<SharedStoreWriteReport>, SharedStoreReplicationError> {
+        let mut reports = Vec::with_capacity(entries.len());
+        self.publish_wal_entries_counted(entries, &mut reports).await?;
+        Ok(reports)
+    }
+
+    // Retain successfully published prefix entries if a later append fails.
+    async fn publish_wal_entries_counted(
+        &self,
+        entries: &[SharedStoreWalEntry],
+        reports: &mut Vec<SharedStoreWriteReport>,
+    ) -> Result<(), SharedStoreReplicationError> {
         if entries.is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let shard_id = entries[0].shard_id;
         let single_shard = entries.iter().all(|entry| entry.shard_id == shard_id);
@@ -1621,20 +1652,15 @@ where
         if !append_blob_mode || !single_shard {
             // No single-object barrier available (PerKeyObject, or a mixed-shard batch): publish each
             // entry on its own durable barrier. Correct, just uncoalesced.
-            let mut reports = Vec::with_capacity(entries.len());
             for entry in entries {
                 let receipt = self.publish_wal_entry(entry.clone()).await?;
                 reports.push(write_report_from_receipt(entry.wal_index, receipt.as_ref()));
             }
-            return Ok(reports);
+            return Ok(());
         }
 
         // R2 single-writer fence: re-validate ownership once before the coalesced append.
         self.enforce_fence(shard_id).await?;
-        let segment = self.segment_for_append(shard_id, entries[0].wal_index);
-        let wal_blob_key = self.wal_segment_log_key(shard_id, segment.first_index);
-        let wal_index_key = self.wal_segment_index_key(shard_id, segment.first_index);
-
         // Concatenate every entry's length-prefixed frame into one append payload, remembering each
         // frame's length (and command metadata) so per-entry offsets can be derived from the single
         // receipt below.
@@ -1677,6 +1703,27 @@ where
                 (payload, spans)
             }
         };
+        if let Some(max_bytes) = self.wal_segment_max_bytes {
+            if wal_payload.len() as u64 > max_bytes && entries.len() > 1 {
+                // Reject an oversized entry before publishing any of this batch.
+                for entry in entries {
+                    let bytes = encode_wal_proto_frame(entry, self.wal_frame_format)?.len() as u64;
+                    if bytes > max_bytes {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!("encoded WAL entry requires {bytes} bytes; the limit is {max_bytes}"),
+                        ).into());
+                    }
+                }
+                drop(wal_payload);
+                let mid = entries.len() / 2;
+                Box::pin(self.publish_wal_entries_counted(&entries[..mid], reports)).await?;
+                return Box::pin(self.publish_wal_entries_counted(&entries[mid..], reports)).await;
+            }
+        }
+        let segment = self.segment_for_append(shard_id, entries[0].wal_index, wal_payload.len() as u64)?;
+        let wal_blob_key = self.wal_segment_log_key(shard_id, segment.first_index);
+        let wal_index_key = self.wal_segment_index_key(shard_id, segment.first_index);
         let receipt = self
             .append_resolved(&wal_blob_key, Bytes::from(wal_payload), segment.log_len)
             .await?;
@@ -1685,7 +1732,6 @@ where
         // Derive each entry's [start, end) from the batch receipt and build the concatenated
         // offset-index payload, then make it durable in a single append.
         let mut offset_metadatas = Vec::with_capacity(entries.len());
-        let mut reports = Vec::with_capacity(entries.len());
         for ((entry, (span_from, span_to)), metadata) in entries
             .iter()
             .zip(entry_spans.into_iter())
@@ -1707,15 +1753,6 @@ where
                 command_encoding: metadata.encoding,
             };
             offset_metadatas.push(offset_metadata);
-            reports.push(SharedStoreWriteReport {
-                wal_index: entry.wal_index,
-                published: true,
-                queued: false,
-                wal_blob_start_offset: Some(start),
-                wal_blob_end_offset: Some(end),
-                wal_blob_bytes_written: Some(end.saturating_sub(start)),
-                wal_blob_object_length: Some(receipt.object_length),
-            });
         }
         // One frame for a container, whose entries all share a span; entry frames otherwise.
         let offset_payload = match encode_wal_offset_container_frame(&offset_metadatas, &wal_blob_key)
@@ -1736,7 +1773,16 @@ where
             .append_resolved(&wal_index_key, Bytes::from(offset_payload), segment.index_len)
             .await?;
         self.note_segment_index_len(shard_id, landed.object_length);
-        Ok(reports)
+        reports.extend(offset_metadatas.into_iter().map(|metadata| SharedStoreWriteReport {
+            wal_index: metadata.wal_index,
+            published: true,
+            queued: false,
+            wal_blob_start_offset: Some(metadata.wal_blob_start_offset),
+            wal_blob_end_offset: Some(metadata.wal_blob_end_offset),
+            wal_blob_bytes_written: Some(metadata.wal_blob_bytes_written),
+            wal_blob_object_length: Some(metadata.wal_blob_object_length),
+        }));
+        Ok(())
     }
 
     pub async fn lookup_wal_offset_metadata(
@@ -4450,6 +4496,46 @@ where
         self.write_entry(shard_id, Some(command), Vec::new()).await
     }
 
+    /// Publish the applied commands of one request in their original order.
+    ///
+    /// The caller uses this with the synchronous writer whose publish lock covers the whole
+    /// request. An oversized request may use multiple durable appends.
+    pub async fn write_sync_batch(
+        &self,
+        shard_id: ShardId,
+        commands: Vec<Command>,
+    ) -> Result<(), SharedStoreReplicationError> {
+        if self.mode != SharedStoreStorageMode::Sync || self.group_commit {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "request batches require a synchronous WAL writer with serialized publication",
+            ).into());
+        }
+        if commands.is_empty() {
+            return Ok(());
+        }
+        let _order = self.publish_order.lock().await;
+        self.refuse_if_hole()?;
+        let first_index = self.next_wal_index.fetch_add(commands.len() as u64, Ordering::Relaxed);
+        let entries: Vec<_> = commands.into_iter().enumerate().map(|(offset, command)| SharedStoreWalEntry {
+            shard_id,
+            wal_index: first_index + offset as u64,
+            command: Some(command),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        }).collect();
+        let mut durable = Vec::with_capacity(entries.len());
+        let result = self.replicator.publish_wal_entries_counted(&entries, &mut durable).await;
+        if let Err(error) = &result {
+            self.record_hole(
+                first_index + durable.len() as u64,
+                first_index + entries.len() as u64 - 1,
+                error,
+            );
+        }
+        result
+    }
+
     pub async fn write_outcomes(
         &self,
         shard_id: ShardId,
@@ -4559,7 +4645,7 @@ where
     /// writer drains a one-entry batch immediately, adding no latency.
     ///
     /// Durability invariant: a waiter is told `Ok` STRICTLY AFTER the append covering its entry
-    /// returned `Ok`; on failure every covered waiter (leader included) gets `Err`. A leader that
+    /// returned `Ok`; on failure each unpublished waiter gets `Err`. A leader that
     /// vanishes without delivering (its `waker` dropped) surfaces as `Err` to the follower — never
     /// a false ack. Exactly amortizes N durable barriers onto ~1 per group.
     async fn group_commit_write(
@@ -4617,43 +4703,36 @@ where
                 batch.iter().map(|waiter| waiter.entry.clone()).collect();
             // Entries numbered before an earlier round failed are refused, not published: they
             // would sit after the hole that round left.
+            let mut reports = Vec::with_capacity(entries.len());
             let result = match self.refuse_if_hole() {
                 Err(error) => Err(error),
-                Ok(()) => self.replicator.publish_wal_entries_batch(&entries).await,
+                Ok(()) => self.replicator
+                    .publish_wal_entries_counted(&entries, &mut reports).await,
             };
             if let Err(error) = &result {
-                if !matches!(error, SharedStoreReplicationError::UnresolvedWalHole { .. }) {
-                    let first = entries.iter().map(|entry| entry.wal_index).min().unwrap_or(0);
-                    let last = entries.iter().map(|entry| entry.wal_index).max().unwrap_or(0);
-                    self.record_hole(first, last, error);
+                let mut unresolved = entries[reports.len()..].iter().map(|entry| entry.wal_index);
+                if let Some(first) = unresolved.next() {
+                    let (first, last) = unresolved.fold((first, first), |(first, last), index| {
+                        (first.min(index), last.max(index))
+                    });
+                    if !matches!(error, SharedStoreReplicationError::UnresolvedWalHole { .. }) {
+                        self.record_hole(first, last, error);
+                    }
                 }
             }
-            match result {
-                Ok(reports) => {
-                    for (waiter, report) in batch.into_iter().zip(reports.into_iter()) {
-                        let outcome = GroupCommitOutcome::Committed(report);
-                        if waiter.entry.wal_index == wal_index {
-                            my_outcome = Some(outcome);
-                        } else {
-                            // A dropped receiver just means that follower's future was canceled;
-                            // its entry is already durable, so nothing to undo.
-                            let _ = waiter.waker.send(outcome);
-                        }
-                    }
-                }
-                Err(err) => {
-                    // The covering append failed: every entry in this round is NOT durable. Fan the
-                    // error out to all of them (never a false ack). The stringified error is shared;
-                    // the leader keeps a typed error for its own return.
-                    let message = err.to_string();
-                    for waiter in batch.into_iter() {
-                        let outcome = GroupCommitOutcome::Failed(message.clone());
-                        if waiter.entry.wal_index == wal_index {
-                            my_outcome = Some(outcome);
-                        } else {
-                            let _ = waiter.waker.send(outcome);
-                        }
-                    }
+            let message = result.err().map(|error| error.to_string());
+            let mut reports = reports.into_iter();
+            for waiter in batch {
+                let outcome = match reports.next() {
+                    Some(report) => GroupCommitOutcome::Committed(report),
+                    None => GroupCommitOutcome::Failed(
+                        message.as_ref().expect("unpublished entry without an error").clone(),
+                    ),
+                };
+                if waiter.entry.wal_index == wal_index {
+                    my_outcome = Some(outcome);
+                } else {
+                    let _ = waiter.waker.send(outcome);
                 }
             }
         }
@@ -4709,22 +4788,18 @@ where
         // itself, which it documents as "correct, just uncoalesced". So a mixed queue is slower
         // and never wrong.
         //
-        // ALL-OR-NOTHING ON FAILURE, which is simpler than the index arithmetic it replaces: the
-        // coalesced write is one append, so it either landed or it did not, and there is no
-        // prefix of it to keep. The whole run goes back on the queue in its original order.
-        let reports = match self.replicator.publish_wal_entries_batch(&drained).await {
-            Ok(reports) => reports,
-            Err(err) => {
-                let mut pending = self
-                    .pending
-                    .lock()
-                    .expect("shared-store async queue lock poisoned");
-                for entry in drained.iter().rev().cloned() {
-                    pending.push_front(entry);
-                }
-                return Err(err);
+        // If a later append failed, requeue only the entries without a completed durable barrier.
+        let mut reports = Vec::with_capacity(drained.len());
+        if let Err(error) = self.replicator.publish_wal_entries_counted(&drained, &mut reports).await {
+            let mut pending = self
+                .pending
+                .lock()
+                .expect("shared-store async queue lock poisoned");
+            for entry in drained.into_iter().skip(reports.len()).rev() {
+                pending.push_front(entry);
             }
-        };
+            return Err(error);
+        }
 
         let last = reports.last();
         let remaining = self.queued_len();

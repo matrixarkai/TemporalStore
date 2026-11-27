@@ -2125,7 +2125,9 @@ fn runtime_compaction_rewrites_live_blocks_and_reports_stale_slabs() {
         });
         assert!(response.status.ok);
     }
-    assert_eq!(engine.live_block_slab_ids(1), vec![0]);
+    let original_slabs = engine.live_block_slab_ids(1);
+    assert_eq!(original_slabs.len(), 1);
+    let source_slab = original_slabs[0];
 
     let runtime = DataNodeRuntime::new(
         engine.clone(),
@@ -2146,9 +2148,9 @@ fn runtime_compaction_rewrites_live_blocks_and_reports_stale_slabs() {
     };
     assert!(output.status.ok);
     assert_eq!(output.compacted_objects, 2);
-    assert_eq!(output.previous_block_slab_id, 0);
-    assert_eq!(output.compacted_block_slab_id, 1);
-    assert_eq!(output.stale_block_slab_ids, vec![0]);
+    assert_eq!(output.previous_block_slab_id, source_slab);
+    assert!(output.compacted_block_slab_id > source_slab);
+    assert_eq!(output.stale_block_slab_ids, vec![source_slab]);
     assert_eq!(output.before.total_block_count, 3);
     assert_eq!(output.before.live_block_refs, 2);
     assert_eq!(output.before.stale_block_estimate, 1);
@@ -2157,7 +2159,11 @@ fn runtime_compaction_rewrites_live_blocks_and_reports_stale_slabs() {
     assert_eq!(output.after.live_block_refs, 2);
     assert_eq!(output.after.stale_block_estimate, 0);
     assert_eq!(output.after.live_ref_density_basis_points, 10_000);
-    assert_eq!(engine.live_block_slab_ids(1), vec![1]);
+    assert_eq!(engine.live_block_slab_ids(1), vec![output.compacted_block_slab_id]);
+    let destination = engine.block_store().slab_descriptors().into_iter()
+        .find(|slab| slab.block_slab_id == output.compacted_block_slab_id)
+        .expect("compaction destination must be catalogued");
+    assert_eq!(destination.owner_shard_id, Some(1));
     assert_eq!(
         engine
             .execute(ExecuteRequest {
@@ -2200,8 +2206,18 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             value: Some(b"a".to_vec())
         }
     );
-    engine.block_store().install_slab(1, b"old").unwrap();
-    engine.block_store().install_slab(2, b"new").unwrap();
+    let serving_slabs = engine.live_block_slab_ids(1);
+    assert_eq!(serving_slabs.len(), 1);
+    let blocks = engine.block_store();
+    let stale = blocks.append_block_of_object_for_shard(99, b"old", None, None, 0).unwrap();
+    let roll = blocks.roll_slab_for_shard(99).unwrap();
+    assert_eq!(roll.previous_block_slab_id, stale.block_slab_id());
+    let retained = blocks.append_block_of_object_for_shard(99, b"new", None, None, 1).unwrap();
+    assert_eq!(retained.block_slab_id(), roll.new_block_slab_id);
+    assert!(!serving_slabs.contains(&stale.block_slab_id()));
+    let mut expected_slabs = blocks.slab_ids().unwrap();
+    assert!(expected_slabs.contains(&stale.block_slab_id()));
+    expected_slabs.retain(|id| *id != stale.block_slab_id());
 
     let runtime = DataNodeRuntime::new(
         engine.clone(),
@@ -2216,7 +2232,7 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             shard_id: 1,
             retain_wal_from_sequence: Some(3),
             retain_index_log_from_sequence: Some(2),
-            retain_block_slabs_from_id: Some(2),
+            retain_block_slabs_from_id: Some(roll.new_block_slab_id),
             block_gc_delayed_destroy: false,
             block_gc_invalidate_removed_slabs_only: false,
             block_gc_max_destroy_slabs_per_round: 0,
@@ -2262,7 +2278,13 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
     assert!(output.block_slabs_retained_live_physical_bytes > 0);
     assert_eq!(engine.write_ahead_log_store().stats(1).last_sequence, 3);
     assert_eq!(engine.index_log_store().stats(1).last_sequence, 3);
-    assert_eq!(engine.block_store().slab_ids().unwrap(), vec![0, 2]);
+    assert_eq!(blocks.slab_ids().unwrap(), expected_slabs);
+    assert_eq!(blocks.read(&retained).unwrap(), b"new");
+    assert_eq!(engine.live_block_slab_ids(1), serving_slabs);
+    assert_eq!(engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet { key: "a".to_string() },
+    }).response, CommandResponse::Bytes { value: Some(b"a".to_vec()) });
 }
 
 #[test]
