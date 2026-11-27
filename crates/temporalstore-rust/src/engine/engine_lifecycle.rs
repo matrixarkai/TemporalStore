@@ -2981,6 +2981,10 @@ impl TemporalEngine {
             }
             Some((unresolved, require_wal))
         }) else { return Ok(()); };
+        // Readonly restore must not acquire lifetime append ownership merely to read.
+        // Both restore callers hold the same-ID lifecycle reservation through this step.
+        let writable_intent = self.infos.read().expect("info lock poisoned")
+            .get(&shard_id).is_some_and(|info| !info.readonly);
         // The records are read in batches, in log-id order: a batch lists the log's segments once
         // and reuses the open file, where a read per value listed them every time (about 100 s for
         // 100,000 values over a 300 MB log). A batch that fails as a whole is read value by value,
@@ -2988,7 +2992,21 @@ impl TemporalEngine {
         let unresolved: Vec<(u64, Vec<(u64, u64)>)> = unresolved.into_iter().collect();
         for batch in unresolved.chunks(4096) {
             let ids: Vec<u64> = batch.iter().map(|(log_id, _)| *log_id).collect();
-            let frames = match self.wal_store.read_frames_at_log_ids(shard_id, &ids) {
+            let qualified: Option<Vec<(u64, u64)>> = batch.iter().map(|(log_id, placements)| {
+                let sequence = placements.first()?.1;
+                (sequence > 0 && placements.iter().all(|(_, other)| *other == sequence))
+                    .then_some((*log_id, sequence))
+            }).collect();
+            let admitted = match qualified.as_deref() {
+                Some(requests) => self.wal_store.read_restore_frames_at_log_ids(shard_id, requests, writable_intent),
+                None => Ok(None),
+            };
+            let frames = match match admitted {
+                Ok(Some(frames)) => Ok(frames),
+                // Cold ownership refusal, an in-flight collector, or a changed/corrupt
+                // extent retains the complete old batch and individual-record behavior.
+                _ => self.wal_store.read_frames_at_log_ids(shard_id, &ids),
+            } {
                 Ok(frames) => frames,
                 Err(_) => ids
                     .iter()
