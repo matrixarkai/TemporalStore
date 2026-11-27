@@ -1436,6 +1436,8 @@ struct WriterDirectory {
     reader_budget: Arc<point_readers::Budget>,
     writers: Mutex<BTreeMap<ShardId, Arc<ShardWriter>>>,
     ready: Arc<Mutex<BTreeSet<ShardId>>>,
+    #[cfg(test)]
+    background_flush_disabled: AtomicBool,
 }
 
 #[derive(Debug)]
@@ -1811,11 +1813,26 @@ impl LocalWriteAheadLogStore {
         let root = root.into();
         let _ = fs::create_dir_all(&root);
         Self {
-            inner: Arc::new(WriterDirectory { root, scratch: None, point_reads: Arc::default(),
-                reader_budget: Arc::default(), writers: Mutex::new(BTreeMap::new()), ready: Arc::default() }),
+            inner: Arc::new(WriterDirectory {
+                root,
+                scratch: None,
+                point_reads: Arc::default(),
+                reader_budget: Arc::default(),
+                writers: Mutex::new(BTreeMap::new()),
+                ready: Arc::default(),
+                #[cfg(test)]
+                background_flush_disabled: AtomicBool::new(false),
+            }),
             flat_append: Arc::new(AtomicBool::new(true)),
             flusher_started: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Isolate this fixture's foreground WAL counters before its first append.
+    #[cfg(test)]
+    pub(crate) fn disable_background_flush_for_test(&self) {
+        assert!(!self.flusher_started.load(AtomicOrdering::Acquire));
+        self.inner.background_flush_disabled.store(true, AtomicOrdering::Relaxed);
     }
 
     /// Whether an append resolves its sequence from the warm in-process cache.
@@ -2773,6 +2790,10 @@ impl LocalWriteAheadLogStore {
     /// is written within one tick even when no new commit arrives. Holds only weak handles and
     /// exits when the store is dropped.
     fn ensure_flusher(&self) {
+        #[cfg(test)]
+        if self.inner.background_flush_disabled.load(AtomicOrdering::Relaxed) {
+            return;
+        }
         if self.flusher_started.swap(true, AtomicOrdering::AcqRel) {
             return;
         }

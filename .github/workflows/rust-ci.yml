@@ -353,6 +353,14 @@ jobs:
             -- --exact --test-threads=1 2>&1 | tee /tmp/cache-wal-placement.log
           grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/cache-wal-placement.log
 
+      - name: Eviction WAL sync attribution check
+        run: |
+          set -o pipefail
+          cargo test --release -p temporalstore-rust --lib \
+            engine::storage_lifecycle_methods::eviction_round_scale::where_a_delete_drop_rounds_shard_guard_hold_actually_goes \
+            -- --exact --test-threads=1 2>&1 | tee /tmp/eviction-wal-sync.log
+          grep -Fq 'test result: ok. 1 passed; 0 failed;' /tmp/eviction-wal-sync.log
+
       - name: Source naming checks
         run: |
           set -o pipefail
