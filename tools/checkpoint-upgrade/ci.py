@@ -10,13 +10,13 @@ import re
 import shutil
 import subprocess
 import time
-from urllib.parse import parse_qs, urlsplit
 
 import owned_children
 
 ROOT = Path(__file__).resolve().parent
 OLD = "d771121eeebfc833873dc37a54bfbdcd268c660a"
-REPO = "https://github.com/matrixarkai/TemporalStore.git"
+OLD_TREE = "edbb3df83148c8eb65082c5e71d7a2f94570a1c4"
+LIBRARY = Path("crates/temporalstore-rust/Cargo.toml")
 FILES = ("ci.py", "common.rs", "producer/main.rs", "producer/Cargo.toml",
          "consumer/main.rs", "consumer/Cargo.toml", "owned_children.py")
 
@@ -45,28 +45,51 @@ def declared_format(body, role):
     return value
 
 
-def git_source(source, commit):
-    if not isinstance(source, str) or not source.startswith("git+"):
-        raise ValueError("product must retain its immutable Git source ID")
-    parsed = urlsplit(source[4:])
-    if (parsed.scheme != "https" or parsed.netloc != "github.com"
-            or parsed.path.casefold().removesuffix(".git") != "/matrixarkai/temporalstore"
-            or parse_qs(parsed.query) != {"rev": [commit]} or parsed.fragment != commit):
-        raise ValueError("resolved product source does not match the requested revision")
+def render_manifest(template, library):
+    if template.count("PRODUCT_PATH_JSON") != 1 or not library.is_absolute():
+        raise ValueError("expected one absolute product path slot")
+    str(library).encode("utf-8")
+    return template.replace("PRODUCT_PATH_JSON", json.dumps(str(library), ensure_ascii=False))
 
 
-def product_package(metadata, commit):
+def product_package(metadata, library_manifest, bridge_manifest):
     packages = [row for row in metadata["packages"] if row["name"] == "temporalstore-rust"]
     if len(packages) != 1:
         raise ValueError("expected one product library in each bridge graph")
     package = packages[0]
-    git_source(package["source"], commit)
+    def exact_manifest(value, expected):
+        path = Path(value)
+        return path.is_absolute() and path.resolve() == expected.resolve()
+
+    if package["source"] is not None or not exact_manifest(package["manifest_path"], library_manifest):
+        raise ValueError("product must be the exact bound path package")
+    root_id = metadata["resolve"]["root"]
+    roots = [row for row in metadata["packages"] if row["id"] == root_id]
+    if len(roots) != 1 or not exact_manifest(roots[0]["manifest_path"], bridge_manifest):
+        raise ValueError("metadata root is not the generated bridge")
     node = next(row for row in metadata["resolve"]["nodes"]
                 if row["id"] == metadata["resolve"]["root"])
     deps = [row for row in node["deps"] if row["name"] == "temporalstore"]
     if len(deps) != 1 or deps[0]["pkg"] != package["id"]:
         raise ValueError("bridge dependency is not the bound product package")
     return package
+
+
+def checkout_binding(root, revision, expected_tree=None, workspace_target=False):
+    if root.is_symlink() or root.resolve(strict=True) != root:
+        raise RuntimeError("checkout path is not its fixed physical directory")
+    env = clean_env()
+    def git(value):
+        return subprocess.check_output(["git", "-C", str(root), "rev-parse", value],
+                                       env=env, text=True, timeout=30).strip()
+    if Path(git("--show-toplevel")).resolve(strict=True) != root:
+        raise RuntimeError("expected an independent checkout root")
+    actual, tree = git("HEAD"), git("HEAD^{tree}")
+    if (actual != revision or not re.fullmatch("[0-9a-f]{40}", tree)
+            or (expected_tree is not None and tree != expected_tree)):
+        raise RuntimeError("checkout revision or tree does not match its binding")
+    clean_checkout(root, workspace_target=workspace_target, env=env)
+    return {"path": str(root), "head": actual, "tree": tree, "clean": True}
 
 
 def hosted_context():
@@ -85,24 +108,19 @@ def hosted_context():
     expected = event.get("pull_request", {}).get("head", {}).get("sha", os.environ["GITHUB_SHA"])
     if not re.fullmatch("[0-9a-f]{40}", expected):
         raise RuntimeError("missing immutable tested revision")
-    actual = subprocess.check_output(["git", "-C", str(workspace), "rev-parse", "HEAD"], text=True).strip()
-    if actual != expected:
-        raise RuntimeError("checkout must use the exact PR head, not a different merge tree")
-    tree = subprocess.check_output(["git", "-C", str(workspace), "rev-parse", "HEAD^{tree}"], text=True).strip()
-    clean_checkout(workspace, workspace_target=True)
-    return workspace, temporary, target, actual, tree
+    bound = checkout_binding(workspace, expected, workspace_target=True)
+    return workspace, temporary, target, bound["head"], bound["tree"]
 
 
-def clean_checkout(root, workspace_target=False):
+def clean_checkout(root, workspace_target=False, env=None):
     subprocess.run(["git", "-C", str(root), "diff", "HEAD", "--exit-code", "--quiet",
-                    "--ignore-submodules=none"], check=True)
+                    "--ignore-submodules=none"], env=env, check=True, timeout=30)
     command = ["git", "-C", str(root), "status", "--porcelain=v1", "-z",
                "--untracked-files=all", "--ignored"]
     if workspace_target:
         command += ["--", ".", ":(top,literal,exclude)target"]
-    status = subprocess.check_output(command)
-    unknown = [row for row in status.split(b"\0") if row and row not in (
-        b"?? .cargo-ok", b"!! .cargo-ok")]
+    status = subprocess.check_output(command, env=env, timeout=30)
+    unknown = [row for row in status.split(b"\0") if row]
     if unknown:
         raise RuntimeError("staged, modified or unknown source in a product checkout")
 
@@ -185,6 +203,13 @@ def main():
                UPGRADE_CONSUMER_COMMIT=consumer)
     report["git_policy"] = {"maintenance.auto": False, "gc.auto": 0}
     report["git_version"] = subprocess.check_output(["git", "--version"], env=env, text=True).strip()
+    checkouts = {"producer": target / "checkpoint-producer", "consumer": workspace}
+    bindings = {
+        "producer": checkout_binding(checkouts["producer"], OLD, OLD_TREE),
+        "consumer": checkout_binding(workspace, consumer, tree, workspace_target=True),
+    }
+    report["source_checkouts"] = bindings
+    save()
 
     def execute(command, log, timeout):
         row = {"command": command, "log": log.name, "timeout_seconds": timeout,
@@ -214,11 +239,10 @@ def main():
     for role, revision in (("producer", OLD), ("consumer", consumer)):
         project = work / role
         project.mkdir()
-        manifest_text = (ROOT / role / "Cargo.toml").read_text()
-        if role == "consumer":
-            if manifest_text.count("CONSUMER_REVISION") != 1:
-                raise RuntimeError("consumer manifest revision slot is not unique")
-            manifest_text = manifest_text.replace("CONSUMER_REVISION", revision)
+        library_manifest = checkouts[role] / LIBRARY
+        if library_manifest.is_symlink() or library_manifest.resolve(strict=True) != library_manifest:
+            raise RuntimeError("library manifest escaped the bound checkout layout")
+        manifest_text = render_manifest((ROOT / role / "Cargo.toml").read_text(), library_manifest.parent)
         (project / "Cargo.toml").write_text(manifest_text)
         shutil.copyfile(ROOT / role / "main.rs", project / "main.rs")
         shutil.copyfile(ROOT / "common.rs", work / "common.rs")
@@ -226,14 +250,14 @@ def main():
         execute(["cargo", "+1.89.0", "generate-lockfile", *manifest], work / (role + "-resolve.log"), 180)
         metadata = one_json(execute(["cargo", "+1.89.0", "metadata", "--locked", "--format-version", "1", *manifest],
                                    work / (role + "-metadata.log"), 180), ("packages", "resolve"))
-        product = product_package(metadata, revision)
+        product = product_package(metadata, library_manifest, project / "Cargo.toml")
         product_node = next(row for row in metadata["resolve"]["nodes"] if row["id"] == product["id"])
-        library = Path(product["manifest_path"]).parent
-        actual = subprocess.check_output(["git", "-C", str(library), "rev-parse", "HEAD"], text=True).strip()
-        if actual != revision:
-            raise RuntimeError("resolved product checkout revision changed")
-        clean_checkout(library)
-        body = (library / "src/engine.rs").read_text()
+        library = library_manifest.parent
+        if checkout_binding(checkouts[role], revision, bindings[role]["tree"],
+                            workspace_target=role == "consumer") != bindings[role]:
+            raise RuntimeError("source checkout changed before compilation")
+        engine_bytes = (library / "src/engine.rs").read_bytes()
+        body = engine_bytes.decode("utf-8")
         version = declared_format(body, role)
         # The producer uses the same oracle bytes but never emits the consumer format.
         env["UPGRADE_TARGET_FORMAT"] = str(version)
@@ -255,9 +279,13 @@ def main():
             raise RuntimeError("compiled bridge identity mismatch")
         if identity["expected_format"] != version:
             raise RuntimeError("compiled bridge format is not its library's declared format")
-        clean_checkout(library)
-        report["builds"][role] = {"commit": revision, "source_id": product["source"],
-            "engine_sha256": sha(body.encode()), "format": version,
+        after = checkout_binding(checkouts[role], revision, bindings[role]["tree"],
+                                 workspace_target=role == "consumer")
+        if after != bindings[role]:
+            raise RuntimeError("source checkout changed during compilation")
+        report["builds"][role] = {"commit": revision, "source_kind": "path", "cargo_source": None,
+            "manifest_path": str(library_manifest), "source_checkout": after,
+            "engine_sha256": sha(engine_bytes), "format": version,
             "features": product_node["features"],
             "artifact_profiles": [row["profile"] for row in artifacts
                                   if row.get("package_id") == product["id"]
@@ -283,7 +311,10 @@ def main():
             save()
     if source != {name: sha((ROOT / name).read_bytes()) for name in FILES}:
         raise RuntimeError("oracle source changed during validation")
-    clean_checkout(workspace, workspace_target=True)
+    for role, revision in (("producer", OLD), ("consumer", consumer)):
+        if checkout_binding(checkouts[role], revision, bindings[role]["tree"],
+                            workspace_target=role == "consumer") != bindings[role]:
+            raise RuntimeError("source checkout changed during the upgrade")
     for role, binary in executables.items():
         if sha(binary.read_bytes()) != report["builds"][role]["binary_sha256"]:
             raise RuntimeError("oracle executable changed during validation")

@@ -8,7 +8,7 @@ license = "Apache-2.0"
 [workspace]
 
 [dependencies]
-temporalstore = { package = "temporalstore-rust", git = "https://github.com/matrixarkai/TemporalStore.git", rev = "CONSUMER_REVISION", default-features = true }
+temporalstore = { package = "temporalstore-rust", path = PRODUCT_PATH_JSON, default-features = true }
 serde_json = "1"
 sha2 = "0.10"
 

@@ -14,37 +14,74 @@ import owned_children
 
 
 class SourceChecks(unittest.TestCase):
-    def source(self, revision=ci.OLD):
-        return f"git+{ci.REPO}?rev={revision}#{revision}"
+    library = Path(__file__).resolve().parent / "mock-source" / ci.LIBRARY
+    bridge = Path(__file__).resolve().parent / "mock-bridge" / "Cargo.toml"
 
     def metadata(self):
-        return {"packages": [{"name": "temporalstore-rust", "id": "lib", "source": self.source()}],
+        return {"packages": [
+                    {"name": "temporalstore-rust", "id": "lib", "source": None,
+                     "manifest_path": str(self.library)},
+                    {"name": "bridge", "id": "bridge", "source": None,
+                     "manifest_path": str(self.bridge)}],
                 "resolve": {"root": "bridge", "nodes": [{"id": "bridge", "deps": [
                     {"name": "temporalstore", "pkg": "lib"}]}]}}
 
-    def test_exact_git_source(self):
-        ci.git_source(self.source(), ci.OLD)
-        ci.git_source(self.source().replace("TemporalStore", "temporalstore"), ci.OLD)
+    def test_manifest_path_slot_is_unique_and_escaped(self):
+        template = 'path = PRODUCT_PATH_JSON\n'
+        for name in ('simple', 'quote"slash\\', 'line\nnext', 'unicode-\u00e9-\U0001f642'):
+            path = self.library.parent / name
+            rendered = ci.render_manifest(template, path)
+            self.assertEqual(json.loads(rendered.removeprefix("path = ").strip()), str(path))
+        for template in ("", "PRODUCT_PATH_JSON PRODUCT_PATH_JSON"):
+            with self.assertRaises(ValueError):
+                ci.render_manifest(template, self.library.parent)
+        with self.assertRaises(ValueError):
+            ci.render_manifest('path = PRODUCT_PATH_JSON', Path("relative"))
 
-    def test_non_git_or_wrong_identity_refused(self):
-        cases = [None, "path+file:///tmp/product", self.source().replace("github.com", "example.org"),
-                 self.source().replace("?rev=", "?branch="), self.source() + "extra",
-                 self.source().replace("TemporalStore", "OtherStore")]
-        for source in cases:
-            with self.subTest(source=source), self.assertRaises(ValueError):
-                ci.git_source(source, ci.OLD)
+    def test_checkout_revision_tree_and_root_refused(self):
+        from tempfile import TemporaryDirectory
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            cases = [(str(root), "0" * 40, ci.OLD_TREE),
+                     (str(root), ci.OLD, "0" * 40),
+                     (str(root.parent), ci.OLD, ci.OLD_TREE),
+                     (str(root), ci.OLD, "invalid-tree")]
+            for values in cases:
+                with self.subTest(values=values), \
+                        patch.object(ci.subprocess, "check_output", side_effect=values), \
+                        patch.object(ci, "clean_checkout") as clean:
+                    with self.assertRaises(RuntimeError):
+                        ci.checkout_binding(root, ci.OLD, ci.OLD_TREE)
+                    clean.assert_not_called()
+            with patch.object(ci.subprocess, "check_output", side_effect=[str(root), ci.OLD, ci.OLD_TREE]), \
+                    patch.object(ci, "clean_checkout") as clean:
+                self.assertEqual(ci.checkout_binding(root, ci.OLD, ci.OLD_TREE),
+                                 {"path": str(root), "head": ci.OLD, "tree": ci.OLD_TREE, "clean": True})
+                self.assertFalse(clean.call_args.kwargs["workspace_target"])
 
     def test_graph_selects_actual_product_edge(self):
-        self.assertEqual(ci.product_package(self.metadata(), ci.OLD)["id"], "lib")
+        self.assertEqual(ci.product_package(self.metadata(), self.library, self.bridge)["id"], "lib")
 
-    def test_wrong_edge_and_duplicate_product_refused(self):
+    def test_wrong_path_source_root_edge_and_duplicate_product_refused(self):
+        cases = []
+        for source in ("git+https://example.invalid/product", "registry+other"):
+            wrong = self.metadata()
+            wrong["packages"][0]["source"] = source
+            cases.append(wrong)
+        for index, path in ((0, str(self.bridge)), (0, "relative/Cargo.toml"),
+                            (1, str(self.library))):
+            wrong = self.metadata()
+            wrong["packages"][index]["manifest_path"] = path
+            cases.append(wrong)
         wrong = self.metadata()
         wrong["resolve"]["nodes"][0]["deps"][0]["pkg"] = "different"
+        cases.append(wrong)
         duplicate = copy.deepcopy(self.metadata())
         duplicate["packages"].append(copy.deepcopy(duplicate["packages"][0]))
-        for metadata in (wrong, duplicate):
-            with self.assertRaises(ValueError):
-                ci.product_package(metadata, ci.OLD)
+        cases.append(duplicate)
+        for metadata in cases:
+            with self.subTest(metadata=metadata), self.assertRaises(ValueError):
+                ci.product_package(metadata, self.library, self.bridge)
 
     def test_local_context_refuses_before_any_command(self):
         with patch.dict(os.environ, {}, clear=True), patch.object(ci.subprocess, "check_output") as call:
@@ -93,13 +130,19 @@ class SourceChecks(unittest.TestCase):
         self.assertIn('const NEW: &str = env!("UPGRADE_CONSUMER_COMMIT");', common)
         self.assertIn('const LIB_COMMIT: &str = env!("UPGRADE_CONSUMER_COMMIT");', consumer)
         self.assertIn('env!("UPGRADE_TARGET_FORMAT")', common)
-        self.assertEqual((root / "consumer/Cargo.toml").read_text().count("CONSUMER_REVISION"), 1)
+        self.assertEqual(ci.OLD_TREE, "edbb3df83148c8eb65082c5e71d7a2f94570a1c4")
+        for role in ("producer", "consumer"):
+            template = (root / role / "Cargo.toml").read_text()
+            self.assertEqual(template.count("PRODUCT_PATH_JSON"), 1)
+            self.assertIn("default-features = true", template)
+            self.assertNotIn("git =", template)
 
     def test_checkout_checks_staged_and_untracked_sources(self):
         with patch.object(ci.subprocess, "run") as diff, patch.object(ci.subprocess, "check_output", return_value=b""):
             ci.clean_checkout(Path("/product"))
         self.assertIn("HEAD", diff.call_args.args[0])
-        for status in (b"A  src/injected.rs\0", b"?? src/injected.rs\0", b"!! src/hidden.rs\0"):
+        for status in (b"A  src/injected.rs\0", b"?? src/injected.rs\0", b"!! src/hidden.rs\0",
+                       b"?? .cargo-ok\0", b"!! .cargo-ok\0"):
             with patch.object(ci.subprocess, "run"), patch.object(ci.subprocess, "check_output", return_value=status):
                 with self.assertRaises(RuntimeError):
                     ci.clean_checkout(Path("/product"))
