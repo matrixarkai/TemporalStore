@@ -32,6 +32,21 @@ fn string(engine: &TemporalEngine, key: &str, value: &[u8]) {
     run(engine, Command::StringSet { key: key.into(), value: value.to_vec() });
 }
 
+fn prime_reclaim_anchor(engine: &TemporalEngine) {
+    // A claim at sequence 1 has no reclaimable predecessor, and an undumped
+    // fresh shard has no durable recovery anchor. Publish only this predecessor;
+    // the writes under test must remain dirty and outside its generation.
+    string(engine, LIVE, b"durable predecessor of the tested writes");
+    let manifest = engine.create_bucket_dump_manifest(SHARD, vec![bucket(engine, LIVE)])
+        .expect("real durable predecessor manifest");
+    engine.validate_bucket_dump_manifest(&manifest).expect("valid predecessor");
+    assert!(manifest.wal_sequence > 0 && manifest.index_log_sequence > 0);
+    engine.clear_dumped_bucket_dirty_state(SHARD, &manifest);
+    let published = state(engine);
+    assert!(published.logical.is_empty() && published.flags.is_empty());
+    assert!(published.claims.is_empty(), "only the predecessor's debt was retired");
+}
+
 fn expect_string(engine: &TemporalEngine, key: &str, value: Option<&[u8]>) {
     assert_eq!(run(engine, Command::StringGet { key: key.into() }),
         crate::types::CommandResponse::Bytes { value: value.map(|bytes| bytes.to_vec()) });
@@ -168,10 +183,12 @@ fn retention_is_claim_bounded(engine: &TemporalEngine, captured: &State) {
     let first_wal = captured.claims.values().map(|claims| claims.0).min().unwrap();
     let first_index = captured.claims.values().map(|claims| claims.1).min().unwrap();
     assert!(first_wal > 0 && first_index > 0);
+    assert!(first_wal > 1 && first_index > 1, "a real reclaimable predecessor is required");
     let plan = engine.storage_wal_reclaim_plan(SHARD, Vec::new(), Vec::new());
     assert!(plan.missing_bucket_generations.is_empty(), "{:?}", plan.blocker_reasons);
-    // No bucket dump exists in this fixture. Positive claims, not clean-node omission or
-    // unknown-zero fallback, must establish both retain boundaries.
+    assert!(plan.safe_to_reclaim, "{:?}", plan.blocker_reasons);
+    // The predecessor manifest does not cover these newer dirty generations.
+    // Positive claims, not unknown-zero fallback, establish both retain boundaries.
     assert_eq!(plan.retain_from_wal_sequence, first_wal);
     assert_eq!(plan.retain_from_index_log_sequence, first_index);
 }
@@ -181,12 +198,22 @@ fn deletion_fallback(expire: bool) {
     let engine = open(root.path(), u32::MAX);
     let ids = [LIVE, DELETED, ELEMENT].map(|key| bucket(&engine, key));
     assert_eq!(ids.into_iter().collect::<BTreeSet<_>>().len(), 3);
+    prime_reclaim_anchor(&engine);
     string(&engine, LIVE, b"exact live payload before fallback");
     if expire {
-        run(&engine, Command::StringSetEx {
-            key: DELETED.into(), value: b"expires".to_vec(), ttl_ms: 1,
+        {
+            // Use the existing resolved-time producer, not an elapsed-time guess.
+            // The positive TTL remains live for this command's captured clock.
+            let _clock = super::super::ReplayClockGuard::enter(Some(1));
+            run(&engine, Command::StringSetEx {
+                key: DELETED.into(), value: b"expires".to_vec(), ttl_ms: 1,
+            });
+        }
+        engine.shards.with_state(SHARD, |shard| {
+            let shard = shard.unwrap();
+            assert!(shard.strings().get(DELETED).is_some(), "sweep, not a prior lazy read, must delete it");
+            assert_eq!(shard.expires_at_ms().get(DELETED), Some(&2));
         });
-        std::thread::sleep(std::time::Duration::from_millis(10));
         let swept = engine.sweep_expired_records_with_request(ShardExpirySweepRequest {
             shard_id: SHARD, load_cold_buckets: true, ..ShardExpirySweepRequest::default()
         }).unwrap();
@@ -198,7 +225,21 @@ fn deletion_fallback(expire: bool) {
     run(&engine, Command::SetAdd { key: ELEMENT.into(), member: b"member".to_vec() });
     run(&engine, Command::SetRemove { key: ELEMENT.into(), member: b"member".to_vec() });
     let before = state(&engine);
-    assert_eq!(before.logical, [LIVE, DELETED, ELEMENT].into_iter().map(str::to_owned).collect());
+    let mut expected_logical = [LIVE, DELETED, ELEMENT].into_iter().map(str::to_owned)
+        .collect::<BTreeSet<_>>();
+    if !expire {
+        // CommonDelete records all canonical family aliases, including absent
+        // families. The expiry sweep records only its selected exact record.
+        expected_logical.extend([
+            "control_state:cpc:owner-deleted",
+            "control_state:fol:owner-deleted",
+            "control_state:h:owner-deleted",
+        ].into_iter().map(str::to_owned));
+    }
+    assert_eq!(before.logical, expected_logical);
+    let dump_ids = before.owners.keys().copied().collect::<Vec<_>>();
+    assert_eq!(dump_ids.iter().copied().collect::<BTreeSet<_>>(),
+        before.logical.iter().map(|key| bucket(&engine, key)).collect());
     let dead = &before.owners[&ids[1]];
     assert!(dead.dirty && dead.deleted && !dead.deleted_ids.is_empty());
     assert_eq!(dead.blocks, 0, "whole-object deletion is not an element tombstone block");
@@ -221,14 +262,14 @@ fn deletion_fallback(expire: bool) {
     assert_eq!(run(&engine, Command::SetMembers { key: ELEMENT.into() }),
         crate::types::CommandResponse::Members { members: Vec::new() });
 
-    let manifest = engine.create_bucket_dump_manifest(SHARD, ids.to_vec()).unwrap();
+    let manifest = engine.create_bucket_dump_manifest(SHARD, dump_ids.clone()).unwrap();
     string(&engine, LIVE, b"newer than the captured dump");
     engine.clear_dumped_bucket_dirty_state(SHARD, &manifest);
     let newer = state(&engine);
     assert_eq!(newer.logical, [LIVE.to_owned()].into_iter().collect());
     assert!(newer.owners[&ids[0]].generation > after.owners[&ids[0]].generation);
     assert_eq!(newer.claims.get(&ids[0]), after.claims.get(&ids[0]));
-    for id in &ids[1..] {
+    for id in dump_ids.iter().filter(|id| **id != ids[0]) {
         assert!(!newer.flags.contains(id));
         let owner = &newer.owners[id];
         assert_eq!((owner.wal, owner.index), (0, 0), "only covered generations retire claims");
@@ -254,6 +295,10 @@ fn expiry_only_owner_survives_the_real_released_string_fallback() {
 
 #[test]
 fn released_live_wal_owner_with_deleted_ids_is_not_a_deleted_owner_and_readd_prunes() {
+    // Test builds intentionally default this placement OFF. Select the shipped
+    // single-copy producer; the address below still comes from real StringSet.
+    let _value_once = super::super::value_once_in_test(true);
+    assert!(super::super::sync_value_once_enabled());
     let root = tempfile::tempdir().unwrap();
     let engine = open(root.path(), 0);
     string(&engine, LIVE, b"survives in a mixed owner");
@@ -293,6 +338,7 @@ fn released_live_wal_owner_with_deleted_ids_is_not_a_deleted_owner_and_readd_pru
 fn in_place_compaction_retains_the_same_owner_claim_contract() {
     let root = tempfile::tempdir().unwrap();
     let engine = open(root.path(), u32::MAX);
+    prime_reclaim_anchor(&engine);
     string(&engine, LIVE, b"in-place exact payload");
     let before = state(&engine);
     compact(&engine, 1);
@@ -471,6 +517,7 @@ fn dirty_resident_string_beside_released_string_survives_both_partial_move_order
         let root = tempfile::tempdir().unwrap();
         let engine = open(root.path(), u32::MAX);
         assert_ne!(bucket(&engine, LIVE), bucket(&engine, RESIDENT));
+        prime_reclaim_anchor(&engine);
         string(&engine, LIVE, b"released A exact payload");
         string(&engine, RESIDENT, b"dirty resident B exact payload");
         assert_eq!(string_block_flags(&engine, LIVE), (true, false));
