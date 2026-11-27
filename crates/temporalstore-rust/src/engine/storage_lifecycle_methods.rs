@@ -3247,6 +3247,13 @@ mod eviction_round_scale {
     use std::sync::atomic::Ordering;
 
     fn engine_with(objects: usize) -> (tempfile::TempDir, TemporalEngine) {
+        engine_with_background_flush(objects, true)
+    }
+
+    fn engine_with_background_flush(
+        objects: usize,
+        background_flush: bool,
+    ) -> (tempfile::TempDir, TemporalEngine) {
         let dir = tempfile::tempdir().unwrap();
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -3254,6 +3261,9 @@ mod eviction_round_scale {
             dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
+        if !background_flush {
+            engine.wal_store.disable_background_flush_for_test();
+        }
         engine.load_shard(1);
         for index in 0..objects {
             fixture_command(&engine, Command::StringSet {
@@ -3796,7 +3806,9 @@ mod eviction_round_scale {
         }
 
         fn round(objects: usize) -> Round {
-            let (_dir, engine) = engine_with(objects);
+            // The store's sync counter includes periodic barriers. Measure the
+            // eviction call with only this fixture's background worker disabled.
+            let (_dir, engine) = engine_with_background_flush(objects, false);
             engine.use_sampled_eviction_for_test();
             APPENDS.store(0, Ordering::Relaxed);
             NANOS.reset();
