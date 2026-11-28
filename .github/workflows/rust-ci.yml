@@ -182,6 +182,159 @@ jobs:
           done
           [ "$passed_tests" -eq 4 ] || { echo '::error::expected both raft fixture tests to pass in both binary harnesses'; exit 1; }
 
+      - name: Write-only proposal endpoint controls (hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          mkdir -p /tmp/typed-feature-proposal-contract
+          passed_tests=0
+          run_control() {
+            kind=$1; target=$2; t=$3
+            log="/tmp/typed-feature-proposal-contract/$passed_tests.log"
+            cargo test --locked --release -p temporalstore-rust "$kind" "$target" "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee "$log"
+            running=$(grep -Ec '^running [0-9]+ tests?$' "$log" || true)
+            one=$(grep -Fxc 'running 1 test' "$log" || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' "$log" || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" "$log" || true)
+            summaries=$(grep -Ec '^test result:' "$log" || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log" || true)
+            if [ "$running" != 1 ] || [ "$one" != 1 ] || [ "$rows" != 1 ] \
+              || [ "$exact_ok" != 1 ] || [ "$summaries" != 1 ] || [ "$passed" != 1 ]; then
+              echo "::error::$t: expected one ordinary proposal contract control to pass"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          }
+          run_control --test feature_reduce_http_status proposal_rejects_reads_before_admission_and_normal_http_client_still_forwards_queries
+          run_control --test feature_reduce_http_status raft_node_proposal_rejects_reads_and_keeps_normal_write_admission
+          run_control --bin distributed_raft_harness typed_read_route_tests::distributed_proposal_handler_refuses_reads_before_any_admission
+          test "$passed_tests" = 3
+      - name: Upload proposal contract evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typed-feature-proposal-contract
+          path: /tmp/typed-feature-proposal-contract
+          if-no-files-found: error
+
+      - name: Typed HTTP and distributed read status controls (hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          mkdir -p /tmp/typed-feature-http-status
+          passed_tests=0
+          run_control() {
+            kind=$1; target=$2; t=$3
+            log="/tmp/typed-feature-http-status/$passed_tests.log"
+            cargo test --locked --release -p temporalstore-rust "$kind" "$target" "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee "$log"
+            running=$(grep -Ec '^running [0-9]+ tests?$' "$log" || true)
+            one=$(grep -Fxc 'running 1 test' "$log" || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' "$log" || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" "$log" || true)
+            summaries=$(grep -Ec '^test result:' "$log" || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log" || true)
+            if [ "$running" != 1 ] || [ "$one" != 1 ] || [ "$rows" != 1 ] \
+              || [ "$exact_ok" != 1 ] || [ "$summaries" != 1 ] || [ "$passed" != 1 ]; then
+              echo "::error::$t: expected one ordinary HTTP route control to pass"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          }
+          run_control --test feature_reduce_http_status production_datanode_http_and_distributed_reads_preserve_typed_errors
+          run_control --test feature_reduce_http_status production_raft_node_http_read_preserves_typed_errors_and_read_gates
+          run_control --test feature_reduce_http_status production_datanode_http_batch_keeps_valid_invalid_valid_rows
+          run_control --bin distributed_raft_harness typed_read_route_tests::distributed_handler_serialized_typed_reads_keep_engine_status
+          [ "$passed_tests" -eq 4 ]
+
+      - name: Upload typed HTTP read status evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typed-feature-http-status-controls
+          path: /tmp/typed-feature-http-status/*.log
+          if-no-files-found: error
+
+      - name: Raft datanode typed read status controls (hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          mkdir -p /tmp/typed-feature-raft-status
+          passed_tests=0
+          for t in \
+            grpc::typed_read_status_tests::raft_executor_single_rpc_preserves_scale_and_alpha_validation_status \
+            grpc::typed_read_status_tests::raft_executor_all_read_batch_rpc_keeps_valid_invalid_valid_rows \
+            grpc::typed_read_status_tests::raft_executor_rpc_retains_generation_and_primary_read_rejections
+          do
+            log="/tmp/typed-feature-raft-status/$passed_tests.log"
+            cargo test --locked --release -p temporalstore-rust --bin matrixark_rust_datanode "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee "$log"
+            running=$(grep -Ec '^running [0-9]+ tests?$' "$log" || true)
+            one=$(grep -Fxc 'running 1 test' "$log" || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' "$log" || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" "$log" || true)
+            summaries=$(grep -Ec '^test result:' "$log" || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log" || true)
+            if [ "$running" != 1 ] || [ "$one" != 1 ] || [ "$rows" != 1 ] \
+              || [ "$exact_ok" != 1 ] || [ "$summaries" != 1 ] || [ "$passed" != 1 ]; then
+              echo "::error::$t: expected exactly one ordinary production datanode RPC control to pass"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 3 ]
+
+      - name: Upload Raft datanode typed read status evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typed-feature-raft-status-controls
+          path: /tmp/typed-feature-raft-status/*.log
+          if-no-files-found: error
+
+      - name: Typed feature reducer serialized RPC controls (hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          mkdir -p /tmp/typed-feature-rpc
+          passed_tests=0
+          for t in \
+            client::grpc_commands::feature_reduce_rpc_tests::every_typed_reducer_crosses_single_rpc_with_exact_parameters_and_numbers \
+            client::grpc_commands::feature_reduce_rpc_tests::typed_rpc_batch_preserves_errors_caps_empty_windows_and_named_family_results \
+            client::grpc_commands::feature_reduce_rpc_tests::serialized_typed_rpc_refuses_unknown_tags_and_preserves_default_presence \
+            proxy::grpc::feature_reduce_grpc_tests::readonly_proxy_forwards_typed_single_and_batch_rpc_without_losing_shape
+          do
+            log="/tmp/typed-feature-rpc/$passed_tests.log"
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee "$log"
+            running=$(grep -Ec '^running [0-9]+ tests?$' "$log" || true)
+            one=$(grep -Fxc 'running 1 test' "$log" || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' "$log" || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" "$log" || true)
+            summaries=$(grep -Ec '^test result:' "$log" || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' "$log" || true)
+            if [ "$running" != 1 ] || [ "$one" != 1 ] || [ "$rows" != 1 ] \
+              || [ "$exact_ok" != 1 ] || [ "$summaries" != 1 ] || [ "$passed" != 1 ]; then
+              echo "::error::$t: expected exactly one ordinary named RPC control to pass"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 4 ]
+
+      - name: Upload typed feature reducer RPC evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: typed-feature-rpc-controls
+          path: /tmp/typed-feature-rpc/*.log
+          if-no-files-found: error
+
       # Direct mode over the shared client SDK is part of the default build, so the default job
       # builds it and runs its tests: the gateway-versus-direct fixtures and the direct door.
       - name: Direct mode over the shared client SDK (default build)
@@ -553,6 +706,8 @@ jobs:
               engine::tests::a_detail_read_carries_its_own_bound::a_detail_read_with_no_count_is_bounded_by_the_configured_cap \
               engine::tests::a_detail_read_carries_its_own_bound::a_count_larger_than_the_cap_is_still_capped \
               engine::tests::a_detail_read_carries_its_own_bound::a_named_count_under_the_cap_is_honoured \
+              engine::tests::expiry_command_boundaries::every_drop_if_expired_call_accumulates_into_the_mutation_report \
+              engine::tests::expiry_scale::execute_on_shard_guards_every_arm_that_can_hold_a_deadline \
               engine::tests::hash_read_union_divergence::under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable \
               engine::tests::manifest_restore_model_maps::a_manifest_restore_on_the_default_recovery_arm_keeps_the_blocks_only_the_index_names \
               wal::registration_records::tests::mutations_match_an_independent_slot_model \
@@ -1923,6 +2078,12 @@ jobs:
             engine::tests::a_feature_sum_reads_each_point_in_place::with_feature_point_value_answers_what_the_decoder_answers \
             engine::tests::a_feature_sum_reads_each_point_in_place::a_sum_answers_what_the_collected_values_summed_to \
             engine::tests::a_feature_sum_reads_each_point_in_place::block_keys_equal_the_constructors_keys \
+            engine::tests::a_feature_aggregate_takes_a_typed_reducer::every_typed_reducer_answers_its_hand_computed_value \
+            engine::tests::a_feature_aggregate_takes_a_typed_reducer::the_count_cap_and_an_empty_window_apply_to_a_typed_query \
+            engine::tests::a_feature_aggregate_takes_a_typed_reducer::the_name_based_aggregate_answers_what_it_always_did \
+            engine::tests::a_feature_aggregate_takes_a_typed_reducer::a_bad_parameter_is_refused_naming_its_field \
+            engine::tests::a_feature_aggregate_takes_a_typed_reducer::the_weights_limit_refuses_one_past_and_accepts_the_limit \
+            engine::tests::a_feature_aggregate_takes_a_typed_reducer::a_typed_query_reads_from_named_fields \
             engine::tests::a_cached_feature_query_sees_a_sequence_add::a_cached_feature_query_sees_a_sequence_add \
             engine::tests::a_cached_feature_query_sees_a_sequence_add::a_cached_feature_query_sees_a_sequence_add_after_expiry \
             engine::tests::a_sequence_query_decodes_each_row_where_it_sits::an_in_place_read_answers_what_the_decoder_answered \

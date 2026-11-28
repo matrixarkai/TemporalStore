@@ -42,11 +42,21 @@ impl RaftCluster {
         node_id: RaftNodeId,
         command: Command,
     ) -> Result<CommandResponse, RaftError> {
+        self.read_from_replica_with_status(node_id, command)
+            .map(|response| response.response)
+    }
+
+    /// Preserve engine validation status after the same replica freshness gate.
+    pub fn read_from_replica_with_status(
+        &self,
+        node_id: RaftNodeId,
+        command: Command,
+    ) -> Result<crate::types::ExecuteResponse, RaftError> {
         let (shard_id, engine) = {
             let inner = self.inner.read().expect("raft cluster lock poisoned");
             (inner.shard_id, readable_replica(&inner, node_id)?.engine.clone())
         };
-        Ok(engine.execute(ExecuteRequest { shard_id, command }).response)
+        Ok(engine.execute(ExecuteRequest { shard_id, command }))
     }
 
     /// Read an ordered batch from a replica that has applied the leader's commit frontier.
@@ -56,6 +66,16 @@ impl RaftCluster {
         node_id: RaftNodeId,
         commands: Vec<Command>,
     ) -> Result<Vec<CommandResponse>, RaftError> {
+        self.read_batch_from_replica_with_status(node_id, commands)
+            .map(|responses| responses.into_iter().map(|response| response.response).collect())
+    }
+
+    /// Preserve each ordered engine status without changing batch read admission.
+    pub fn read_batch_from_replica_with_status(
+        &self,
+        node_id: RaftNodeId,
+        commands: Vec<Command>,
+    ) -> Result<Vec<crate::types::ExecuteResponse>, RaftError> {
         if commands.iter().any(crate::engine::is_write_command) {
             return Err(RaftError::WriteInReplicaReadBatch);
         }
@@ -65,7 +85,7 @@ impl RaftCluster {
         };
         Ok(commands
             .into_iter()
-            .map(|command| engine.execute(ExecuteRequest { shard_id, command }).response)
+            .map(|command| engine.execute(ExecuteRequest { shard_id, command }))
             .collect())
     }
 

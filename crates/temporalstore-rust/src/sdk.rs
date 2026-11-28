@@ -708,6 +708,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             aggregator: command.aggregator,
             count: command.count.map(|value| platform_usize(value, "count")).transpose()?,
         },
+        v1::command::Kind::FeatureReduceQuery(command) => feature_reduce_from_proto(command)?,
         v1::command::Kind::FeatureDelete(command) => {
             types::Command::FeatureDelete { key: command.key }
         }
@@ -1587,6 +1588,68 @@ pub(crate) fn window_reduce_remove_from_proto(command: v1::WindowReduceRemove) -
             filters,
         },
     ))
+}
+
+pub(crate) fn feature_reduce_to_proto(
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+    reducer: &types::FeatureReducer,
+    rounding: types::FeatureRounding,
+    scale: u64,
+    count: Option<usize>,
+) -> v1::FeatureReduceQuery {
+    use types::FeatureReducer as R;
+    use v1::feature_reduce_query::Reducer as W;
+    let reducer = match reducer {
+        R::Mean => W::Mean(v1::FeatureReduceUnit {}),
+        R::Variance { sample } => W::Variance(v1::FeatureReduceSample { sample: *sample }),
+        R::StdDev { sample } => W::StdDev(v1::FeatureReduceSample { sample: *sample }),
+        R::DecayedSum { half_life_ms, as_of_ms } => W::DecayedSum(v1::FeatureReduceDecay {
+            half_life_ms: *half_life_ms, as_of_ms: *as_of_ms,
+        }),
+        R::Ewma { alpha } => W::Ewma(*alpha),
+        R::Rate => W::Rate(v1::FeatureReduceUnit {}),
+        R::Ratio { at_least } => W::Ratio(*at_least),
+        R::Wilson { at_least, z } => W::Wilson(v1::FeatureReduceWilson { at_least: *at_least, z: *z }),
+        R::Weighted { weights } => W::Weighted(v1::FeatureReduceWeighted { weights: weights.clone() }),
+    };
+    let rounding = match rounding {
+        types::FeatureRounding::Nearest => v1::FeatureReduceRounding::Nearest,
+        types::FeatureRounding::Floor => v1::FeatureReduceRounding::Floor,
+        types::FeatureRounding::Ceil => v1::FeatureReduceRounding::Ceil,
+    };
+    v1::FeatureReduceQuery {
+        key: key.to_owned(), start_ms, end_ms, count: count.map(|value| value as u64),
+        scale: Some(scale), rounding: rounding as i32, reducer: Some(reducer),
+    }
+}
+
+fn feature_reduce_from_proto(command: v1::FeatureReduceQuery) -> Result<types::Command, TonicStatus> {
+    use types::FeatureReducer as R;
+    use v1::feature_reduce_query::Reducer as W;
+    let reducer = match command.reducer.ok_or_else(|| TonicStatus::invalid_argument("missing reducer"))? {
+        W::Mean(_) => R::Mean,
+        W::Variance(value) => R::Variance { sample: value.sample },
+        W::StdDev(value) => R::StdDev { sample: value.sample },
+        W::DecayedSum(value) => R::DecayedSum { half_life_ms: value.half_life_ms, as_of_ms: value.as_of_ms },
+        W::Ewma(alpha) => R::Ewma { alpha },
+        W::Rate(_) => R::Rate,
+        W::Ratio(at_least) => R::Ratio { at_least },
+        W::Wilson(value) => R::Wilson { at_least: value.at_least, z: value.z },
+        W::Weighted(value) => R::Weighted { weights: value.weights },
+    };
+    let rounding = match v1::FeatureReduceRounding::try_from(command.rounding) {
+        Ok(v1::FeatureReduceRounding::Nearest) => types::FeatureRounding::Nearest,
+        Ok(v1::FeatureReduceRounding::Floor) => types::FeatureRounding::Floor,
+        Ok(v1::FeatureReduceRounding::Ceil) => types::FeatureRounding::Ceil,
+        Err(_) => return Err(TonicStatus::invalid_argument("unknown rounding")),
+    };
+    Ok(types::Command::FeatureReduceQuery {
+        key: command.key, start_ms: command.start_ms, end_ms: command.end_ms,
+        reducer, rounding, scale: command.scale.unwrap_or(1),
+        count: command.count.map(|value| platform_usize(value, "count")).transpose()?,
+    })
 }
 
 /// THE FAMILY TAG, RUST SPELLING TO WIRE NUMBER.

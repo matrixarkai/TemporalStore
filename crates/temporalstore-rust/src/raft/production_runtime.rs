@@ -256,6 +256,18 @@ impl ProductionRaftRuntime {
             .map_err(RaftError::legacy_proposal_error)
     }
 
+    /// The HTTP proposal endpoint accepts mutations, not query execution.
+    /// Keep its boundary tied to the engine's authoritative write classifier.
+    pub fn validate_proposal_command(command: &Command) -> Result<(), Status> {
+        if !crate::engine::is_write_command(command) {
+            return Err(Status::error(
+                "invalid_argument",
+                "the proposal endpoint accepts write commands only; use a read route",
+            ));
+        }
+        Ok(())
+    }
+
     /// Distinguish a request rejected before its first append from one that
     /// may already have executed on the previous leader.
     pub fn propose_with_admission(&self, command: Command) -> Result<CommandResponse, RaftError> {
@@ -413,8 +425,18 @@ impl ProductionRaftRuntime {
         node_id: RaftNodeId,
         command: Command,
     ) -> Result<CommandResponse, RaftError> {
+        self.read_local_with_status(node_id, command)
+            .map(|response| response.response)
+    }
+
+    /// Keep semantic engine refusals after the existing distributed read gates.
+    pub fn read_local_with_status(
+        &self,
+        node_id: RaftNodeId,
+        command: Command,
+    ) -> Result<crate::types::ExecuteResponse, RaftError> {
         self.cluster.read_index(node_id)?;
-        self.cluster.read_from_replica(node_id, command)
+        self.cluster.read_from_replica_with_status(node_id, command)
     }
 
     pub fn wait_for_applied_index(

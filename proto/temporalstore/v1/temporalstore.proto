@@ -485,6 +485,7 @@ message Command {
     StringGetRange string_get_range = 85;
     FeatureAggregateQuery feature_agg_query = 86;
     FeatureAggregateQuery feature_proto_agg_query = 87;
+    FeatureReduceQuery feature_reduce_query = 88;
   }
 }
 
@@ -634,6 +635,50 @@ message ZSetScan {
   string key = 1;
   bytes after = 2;
   uint64 limit = 3;
+}
+
+// A typed numeric query on Feature values, not FeatureProto or Sequence rows.
+// Absent scale keeps the Rust command's default (1); zero is an invalid scale.
+message FeatureReduceQuery {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  optional uint64 count = 4;
+  optional uint64 scale = 5;
+  FeatureReduceRounding rounding = 6;
+  oneof reducer {
+    FeatureReduceUnit mean = 7;
+    FeatureReduceSample variance = 8;
+    FeatureReduceSample std_dev = 9;
+    FeatureReduceDecay decayed_sum = 10;
+    double ewma = 11;
+    FeatureReduceUnit rate = 12;
+    int64 ratio = 13;
+    FeatureReduceWilson wilson = 14;
+    FeatureReduceWeighted weighted = 15;
+  }
+}
+
+enum FeatureReduceRounding {
+  FEATURE_REDUCE_ROUNDING_NEAREST = 0;
+  FEATURE_REDUCE_ROUNDING_FLOOR = 1;
+  FEATURE_REDUCE_ROUNDING_CEIL = 2;
+}
+
+message FeatureReduceUnit {}
+message FeatureReduceSample {
+  bool sample = 1;
+}
+message FeatureReduceDecay {
+  uint64 half_life_ms = 1;
+  uint64 as_of_ms = 2;
+}
+message FeatureReduceWilson {
+  int64 at_least = 1;
+  double z = 2;
+}
+message FeatureReduceWeighted {
+  repeated double weights = 1;
 }
 
 message FeatureAggregateQuery {
