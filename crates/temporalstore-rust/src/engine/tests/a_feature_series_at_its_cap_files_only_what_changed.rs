@@ -665,10 +665,10 @@ mod probe {
 
 mod logical_edit_generation {
     use super::*;
+    use crate::engine::hashing::block_routing_bucket;
     use crate::engine::state::{BlockLookupRef, BucketFlags, BucketNode, CoreIndex, StaleCause};
     use crate::engine::storage_bucket_internals::{
-        block_routing_bucket, file_series_blocks_after_write,
-        sync_bucket_index_object_blocks_with_mode,
+        file_series_blocks_after_write, sync_bucket_index_object_blocks_with_mode,
     };
 
     type OwnerRows = BTreeMap<u32, (u64, u64, u64, bool, bool, Vec<(u64, bool, bool, Identity)>)>;
