@@ -751,6 +751,41 @@ class AdapterTest(unittest.TestCase):
         for call in client.batch_execute.call_args_list:
             self.assertTrue(call.args[0][0].HasField("string_get"))
 
+    def test_large_raft_store_readback_uses_a_borrowed_reply_and_matches_every_byte(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from temporalstore_sdk import MetadataError
+        from temporalstore_sdk.cache_load_wire import LoadReply
+
+        backend = TableValueBackend("grpc://127.0.0.1:1", "kvcache", 3, 1, 0)
+        self.addCleanup(backend.close)
+        key = Key("uncertain-raft-insert")
+        key.model_name, key.kv_rank = "fixture/model", 0
+        payload = b"\x00\x80\xff\x19" * (128 * 1024)
+
+        for equal in (True, False):
+            with self.subTest(equal=equal):
+                client = Mock()
+                client.iter_batch_responses.return_value = iter([
+                    (0, pb.CommandResponse(status=pb.Status(code="write_outcome_unknown"))),
+                ])
+                returned = payload if equal else payload[:-1] + b"\x18"
+                client.batch_execute.return_value = [
+                    LoadReply(pb.Status(ok=True), memoryview(returned), True),
+                ]
+                with patch.object(backend, "_table", return_value=client):
+                    inserts = backend.iter_store_results([(key, memoryview(payload))])
+                    if equal:
+                        self.assertEqual(list(inserts), [(0, False)])
+                    else:
+                        with self.assertRaisesRegex(MetadataError, "write_outcome_unknown"):
+                            list(inserts)
+                client.iter_batch_responses.assert_called_once()
+                client.batch_execute.assert_called_once()
+                request = client.batch_execute.call_args
+                self.assertTrue(request.kwargs["borrowed_load"])
+                self.assertEqual(request.args[0][0].string_get.key, key.name)
+        self.assertEqual(backend.stores_confirmed_by_read, 1)
+
     def test_proxy_unknown_durability_never_confirms_through_readback(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
         from temporalstore_sdk import MetadataError
