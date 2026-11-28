@@ -36,6 +36,7 @@ _READ_ROUTE_CHANGED = {"raft_not_leader", "load_version_mismatch"}
 _READ_RETRYABLE_STATUS = _READ_ROUTE_CHANGED | {"read_unavailable"}
 _LOOKUP_TEMPORARILY_UNAVAILABLE = {
     "raft_not_leader", "load_version_mismatch", "no_grpc_primary", "read_unavailable",
+    "read_peer_cooldown",
 }
 
 
@@ -98,6 +99,7 @@ class TableValueBackend(ValueBackend):
                     client = TableClient(
                         self._metadata, self._namespace, name, timeout_seconds=self._timeout,
                         parallel_reads=True, preserve_insert_outcomes=True,
+                        lookup_failure_cooldown_seconds=1.0,
                     )
                 else:
                     client = ProxyTableClient(
@@ -201,6 +203,7 @@ class TableValueBackend(ValueBackend):
             stale = [
                 index for index, response in enumerate(responses)
                 if response.status.code in _READ_RETRYABLE_STATUS
+                or response.status.code == "read_peer_cooldown"
             ]
             if not stale:
                 return responses
@@ -229,12 +232,14 @@ class TableValueBackend(ValueBackend):
                     else:
                         for index, response in zip(stale, retry, strict=True):
                             responses[index] = response
-                        stale = [
-                            index for index in stale
-                            if responses[index].status.code in _READ_RETRYABLE_STATUS
-                        ]
-                        if not stale:
-                            return responses
+                    # A cooled route gets one metadata refresh, even if another
+                    # operation cached its old topology. Do not keep polling it.
+                    stale = [
+                        index for index in stale
+                        if responses[index].status.code in _READ_RETRYABLE_STATUS
+                    ]
+                    if not stale:
+                        return responses
                     remaining = deadline - monotonic()
                     if remaining > 0:
                         sleep(min(delay, remaining))

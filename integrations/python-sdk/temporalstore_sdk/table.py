@@ -64,11 +64,14 @@ class TableClient:
         timeout_seconds: float = 10.0,
         parallel_reads: bool = False,
         preserve_insert_outcomes: bool = False,
+        lookup_failure_cooldown_seconds: float = 0.0,
     ):
         if not namespace or not table:
             raise ValueError("namespace and table are required")
         if not isfinite(topology_ttl_seconds) or topology_ttl_seconds <= 0:
             raise ValueError("topology TTL must be finite and positive")
+        if not isfinite(lookup_failure_cooldown_seconds) or lookup_failure_cooldown_seconds < 0:
+            raise ValueError("lookup failure cooldown must be finite and nonnegative")
         self._metadata = metadata
         self._namespace = namespace
         self._table = table
@@ -76,6 +79,8 @@ class TableClient:
         self._timeout = timeout_seconds
         self._parallel_reads = parallel_reads
         self._preserve_insert_outcomes = preserve_insert_outcomes
+        self._lookup_failure_cooldown = lookup_failure_cooldown_seconds
+        self._lookup_cooldowns: dict[tuple[int, int, str | None], float] = {}
         self._route_state_lock = Lock()
         self._topology = None
         self._expires_at = 0.0
@@ -226,7 +231,22 @@ class TableClient:
         # A write batch validates all routes before it can dispatch any command.
         channels = {}
         missing = []
+        lookup_cooldown = self._lookup_failure_cooldown if allow_partial_reads else 0.0
+        cooling_routes = None
+        if lookup_cooldown and self._lookup_cooldowns:
+            with self._route_state_lock:
+                now = monotonic()
+                self._lookup_cooldowns = {
+                    route: until for route, until in self._lookup_cooldowns.items() if until > now
+                }
+                cooling_routes = set(self._lookup_cooldowns)
+        cooled = False
         for shard, group in groups.items():
+            if cooling_routes and (shard.shard_id, shard.load_version, shard.primary_grpc) in cooling_routes:
+                status = pb.Status(code="read_peer_cooldown", message="lookup peer is cooling down")
+                missing.extend((position, pb.CommandResponse(status=status)) for position, _ in group)
+                cooled = True
+                continue
             try:
                 channels[shard] = self._channel_for(shard, deadline)
             except RaftPrimaryUnavailable as error:
@@ -234,6 +254,9 @@ class TableClient:
                     raise
                 status = pb.Status(code=error.code, message=str(error))
                 missing.extend((position, pb.CommandResponse(status=status)) for position, _ in group)
+        if cooled:
+            # The next lookup may already have a different primary or load version.
+            self._invalidate_route(topology)
         if missing:
             groups = {shard: groups[shard] for shard in channels}
             yield from missing
@@ -251,6 +274,11 @@ class TableClient:
                             recoverable_inserts and write_outcome_is_unknown(response)
                         ):
                             raise response
+                        if lookup_cooldown and response.code() == grpc.StatusCode.UNAVAILABLE:
+                            failed = self._shard_for_command(topology, group[0][1])
+                            route = (failed.shard_id, failed.load_version, failed.primary_grpc)
+                            with self._route_state_lock:
+                                self._lookup_cooldowns[route] = monotonic() + lookup_cooldown
                         if recoverable_inserts or response.code() == grpc.StatusCode.UNAVAILABLE:
                             self._invalidate_route(topology)
                         code = "read_unavailable"
