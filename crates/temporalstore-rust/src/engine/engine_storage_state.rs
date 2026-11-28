@@ -302,6 +302,9 @@ pub(super) struct ShardState {
     /// `expires_at_ms` above: the ordering here is the whole point of this map and is untouched,
     /// but the characters it orders are the ones that map already holds.
     pub(super) expiry_by_deadline: BTreeMap<(u64, Arc<str>), ()>,
+    /// Last inspected deadlines for the bounded hot and cold maintenance scans.
+    #[serde(skip)]
+    pub(super) expiry_scan_positions: [Option<(u64, Arc<str>)>; 2],
     // ONE FIELD FOR BOTH ADDRESS MAPS NOW, keyed by `AddressMap`, behind `strings()` /
     // `_mut()` and `context_nodes()` / `_mut()`. `default`, because an index written before
     // this merge carries `strings` and no `address_maps` and must still DECODE -- the stamp
@@ -595,11 +598,14 @@ pub(super) struct ShardState {
     /// replay); a missing index file replays the whole retained WAL onto empty state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) applied_wal_sequence: Option<u64>,
+    /// The file-backed source and remote sequence already installed in this local image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) file_restore_frontier: Option<(String, u64)>,
     /// Relocation prefix folded into this image; not a WAL or load replay cursor.
     #[serde(default)]
     pub(super) captured_relocation_sequence: u64,
-    /// An applied record skipped an unapplied log prefix. Only replay can establish
-    /// a complete state boundary again; do not publish this in-memory image.
+    /// Replay must restore a publishable checkpoint boundary. An unapplied WAL
+    /// prefix or a required expiry delta that failed admission can invalidate it.
     #[serde(skip)]
     pub(super) wal_apply_discontinuous: bool,
     /// Per-bucket LRU recency: wall-clock ms of the last read/write that touched the
@@ -3533,7 +3539,7 @@ fn note_stored_slots_repeated_an_id(count: u64) {
     STORED_SLOTS_REPEATED_AN_ID.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
     tracing::warn!(
         repeated = count,
-        "a stored object list named the same object in more than one slot; the first slot wins and          the rest are left as placeholders so nothing above them renumbers"
+        "a stored object list named the same object in more than one slot; the first slot wins and the rest are left as placeholders so nothing above them renumbers"
     );
 }
 
@@ -5333,7 +5339,7 @@ impl BlockIndexNamedBy<'_> {
                     .position(|object| block_index_handle(object, block) == *handle)
                     .unwrap_or_else(|| {
                         panic!(
-                            "no object named by this fixture is filed at handle {handle}; the                              named objects are {:?}",
+                            "no object named by this fixture is filed at handle {handle}; the named objects are {:?}",
                             self.1
                         )
                     });
@@ -5343,7 +5349,7 @@ impl BlockIndexNamedBy<'_> {
             .collect();
         if let Some(at) = used.iter().position(|hit| !hit) {
             panic!(
-                "this fixture names the object {:?}, which accounts for none of the {} block(s)                  in the map; a name left behind by a fixture that stopped writing it would go on                  passing",
+                "this fixture names the object {:?}, which accounts for none of the {} block(s) in the map; a name left behind by a fixture that stopped writing it would go on passing",
                 self.1[at],
                 paired.len()
             );
@@ -8834,7 +8840,7 @@ impl CoreIndex {
         } = rebuilt;
         debug_assert!(
             rebuilt_objects.is_empty(),
-            "a reconstruct built {} object kind(s) of its own. It cannot: the object map is the              durable record of which objects exist and is carried from the index being replaced,              so anything built here is a second, younger copy that would win silently",
+            "a reconstruct built {} object kind(s) of its own. It cannot: the object map is the durable record of which objects exist and is carried from the index being replaced, so anything built here is a second, younger copy that would win silently",
             rebuilt_objects.len()
         );
         // THE CARRIED REFS ARE MERGED AND THEN PRUNED, WHICH IS THE ONLY RULE THAT HOLDS FOR
@@ -9951,7 +9957,7 @@ mod element_name_lookup_tests {
         let held = refs.as_slice();
         assert!(
             held.windows(2).all(|pair| pair[0] < pair[1]),
-            "the refs in the slot are not strictly ascending, so `BlockRefs::remove`'s binary              search can miss a ref that is present: {held:?}"
+            "the refs in the slot are not strictly ascending, so `BlockRefs::remove`'s binary search can miss a ref that is present: {held:?}"
         );
 
         // THE REF INSERTED LAST IS AT THE FRONT, which an append cannot achieve.
@@ -9962,7 +9968,7 @@ mod element_name_lookup_tests {
         assert_eq!(
             Some(&lowest),
             held.first(),
-            "the lowest ref went in last and is not at the front, so the insert is not placing by              order: {held:?}"
+            "the lowest ref went in last and is not at the front, so the insert is not placing by order: {held:?}"
         );
 
         // AND `remove` FINDS IT. This is the failure an append-style insert actually produces: the
@@ -10393,7 +10399,19 @@ pub(super) static REPACK_ADOPTED_FIELDS: std::sync::atomic::AtomicUsize =
 pub(super) static REPACK_ADOPTED_HASHED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
+pub(super) fn thread_repack_calls() -> usize {
+    THREAD_REPACK_CALLS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static THREAD_REPACK_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
+    #[cfg(test)]
+    THREAD_REPACK_CALLS.with(|calls| calls.set(calls.get() + 1));
     let ShardState {
         // ----- Packed here. Deserialized, and filled one entry at a time. -----
         wal_resident_blocks,
@@ -10433,6 +10451,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // refill happens in the expiry path rather than here, and is left to it.
         buckets_pending_flag_refresh: _,
         expiry_by_deadline: _,
+        expiry_scan_positions: _,
         rollups: _,
         control_coalesce_persist: _,
         control_state_max_size: _,
@@ -10465,6 +10484,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         shard_id: _,
         shard_id_known: _,
         applied_wal_sequence: _,
+        file_restore_frontier: _,
         captured_relocation_sequence: _,
         wal_apply_discontinuous: _,
         index_format_version: _,
@@ -12275,7 +12295,7 @@ mod a_records_blocks_can_live_on_the_shard_beside_the_record {
         let b = serde_json::to_vec(&with).expect("encoding a shard failed");
         assert_ne!(
             a, b,
-            "a filed layout did NOT change the stored bytes, so the field is skipped again and a              reload would drop where a multi-block record's blocks are"
+            "a filed layout did NOT change the stored bytes, so the field is skipped again and a reload would drop where a multi-block record's blocks are"
         );
 
         let back: ShardState =
@@ -12283,7 +12303,7 @@ mod a_records_blocks_can_live_on_the_shard_beside_the_record {
         assert_eq!(
             1,
             back.object_block_layouts.len(),
-            "the layout did not survive the round trip, so the field is written but not readable              back -- which is the same loss as not writing it"
+            "the layout did not survive the round trip, so the field is written but not readable back -- which is the same loss as not writing it"
         );
     }
 }

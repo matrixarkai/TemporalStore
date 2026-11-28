@@ -195,7 +195,7 @@ fn a_shard_opened_over_an_undumped_tail_runs_the_stage_in_its_first_round() {
     // NON-VACUITY: the log the first process left is above the gate, and only the log can say so.
     assert!(
         pressure.wal_bytes >= options.min_undumped_wal_bytes,
-        "the reopened shard counts {} undumped bytes against a {}-byte gate, so a tail the          previous process left is not counted",
+        "the reopened shard counts {} undumped bytes against a {}-byte gate, so a tail the previous process left is not counted",
         pressure.wal_bytes,
         options.min_undumped_wal_bytes
     );

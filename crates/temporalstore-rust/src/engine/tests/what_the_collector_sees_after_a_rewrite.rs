@@ -176,11 +176,10 @@ fn what_the_collector_sees_after_a_rewrite() {
     }
 
     // ---- NOW RECLAIM, through the production round.
-    let buckets: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let buckets: Vec<u32> = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
         shard.bucket_index.bucket_map.keys().copied().collect()
-    };
+    });
     assert!(!buckets.is_empty(), "no bucket to dump, so the reclaim round has nothing to act on");
     let cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
         shard_id: 1,

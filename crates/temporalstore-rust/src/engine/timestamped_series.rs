@@ -785,7 +785,7 @@ mod a_short_series_does_not_hold_a_buffer_it_is_not_using {
         }
         assert_eq!(
             worst, 0,
-            "the saving should reach zero somewhere below the threshold -- where length meets a              doubling boundary the two shapes agree, and a non-zero worst case here would mean              this comparison is not modelling `Vec`'s growth"
+            "the saving should reach zero somewhere below the threshold -- where length meets a doubling boundary the two shapes agree, and a non-zero worst case here would mean this comparison is not modelling `Vec`'s growth"
         );
     }
 

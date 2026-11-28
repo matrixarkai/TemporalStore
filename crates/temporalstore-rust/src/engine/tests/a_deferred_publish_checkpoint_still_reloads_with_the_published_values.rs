@@ -209,14 +209,9 @@ fn a_deferred_publish_checkpoint_still_reloads_with_the_published_values() {
         let engine = engine_over(dir.path());
         seed(&engine, KEYS);
 
-        let seeded = engine
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .get(&SHARD)
-            .expect("shard is loaded")
-            .strings()
-            .len();
+        let seeded = engine.shards.with_state(SHARD, |state| {
+            state.expect("shard is loaded").strings().len()
+        });
         assert_eq!(
             KEYS, seeded,
             "the seed must have landed, or nothing below means anything"

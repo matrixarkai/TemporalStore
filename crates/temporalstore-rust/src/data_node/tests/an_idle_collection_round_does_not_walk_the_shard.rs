@@ -30,9 +30,11 @@ use super::*;
 
 const SHARD: u64 = 1;
 
-fn runtime_with_slabs(slabs: usize, keys_per_slab: usize) -> DataNodeRuntime {
+fn runtime_with_slabs(slabs: usize, keys_per_slab: usize) -> (DataNodeRuntime, u64, u64) {
     let engine = TemporalEngine::default();
     engine.load_shard(SHARD);
+    let mut sealed = Vec::with_capacity(slabs);
+    let mut retain_from = 0;
     for slab in 0..slabs {
         for key in 0..keys_per_slab {
             let response = engine.execute(ExecuteRequest {
@@ -44,16 +46,22 @@ fn runtime_with_slabs(slabs: usize, keys_per_slab: usize) -> DataNodeRuntime {
             });
             assert!(response.status.ok);
         }
-        engine.block_store().roll_slab().unwrap();
+        let rolled = engine.block_store().roll_slab_for_shard(SHARD).unwrap();
+        assert!(!engine.block_store().active_block_slab_ids().contains(&rolled.previous_block_slab_id));
+        assert!(rolled.previous_block_slab_id < rolled.new_block_slab_id);
+        sealed.push(rolled.previous_block_slab_id);
+        retain_from = rolled.new_block_slab_id;
     }
-    DataNodeRuntime::new_without_workers_with_options(
+    assert_eq!(engine.live_block_slab_ids(SHARD), sealed);
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
         engine,
         DataNodeRuntimeOptions {
             worker_threads: 0,
             max_queue_depth: 4,
             max_background_queue_depth: 2,
         },
-    )
+    );
+    (runtime, sealed[0], retain_from)
 }
 
 /// What one collection round cost on THIS thread, so the counters belong to it.
@@ -113,9 +121,9 @@ fn assert_tally_derived(runtime: &DataNodeRuntime) {
 
 #[test]
 fn an_idle_collection_round_does_not_walk_the_shard() {
-    let runtime = runtime_with_slabs(3, 40);
+    let (runtime, _, retain_from) = runtime_with_slabs(3, 40);
     assert_tally_derived(&runtime);
-    let round = collect(&runtime, 100);
+    let round = collect(&runtime, retain_from);
     assert_eq!(round.walks, 0, "a round with nothing collectable walked every shard's index");
     assert_eq!(round.plans, 0, "an idle round built a lifecycle plan nobody asked for");
     assert!(round.response.lifecycle_plan.is_none());
@@ -130,9 +138,9 @@ fn an_idle_collection_round_does_not_walk_the_shard() {
 
 #[test]
 fn a_slab_that_lost_its_last_live_block_is_still_collected() {
-    let runtime = runtime_with_slabs(3, 40);
+    let (runtime, first_slab, retain_from) = runtime_with_slabs(3, 40);
     assert_tally_derived(&runtime);
-    // Rewrite every key that lives in slab 0, so nothing points into it any more.
+    // Rewrite every key in the first slab, so nothing points into it any more.
     for key in 0..40 {
         let response = runtime.engine().execute(ExecuteRequest {
             shard_id: SHARD,
@@ -143,8 +151,9 @@ fn a_slab_that_lost_its_last_live_block_is_still_collected() {
         });
         assert!(response.status.ok);
     }
-    assert!(runtime.engine().block_store().slab_ids().unwrap().contains(&0));
-    let round = collect(&runtime, 100);
+    assert!(!runtime.engine().live_block_slab_ids(SHARD).contains(&first_slab));
+    assert!(runtime.engine().block_store().slab_ids().unwrap().contains(&first_slab));
+    let round = collect(&runtime, retain_from);
     assert_eq!(round.walks, 1, "a collectable slab was removed without the authoritative walk");
     assert!(
         round.response.block_slabs_removed >= 1,
@@ -152,30 +161,30 @@ fn a_slab_that_lost_its_last_live_block_is_still_collected() {
     );
     assert_eq!(round.trims, 1, "a round that released a slab did not ask for a trim");
     assert_eq!(round.plans, 0);
-    assert!(!runtime.engine().block_store().slab_ids().unwrap().contains(&0));
+    assert!(!runtime.engine().block_store().slab_ids().unwrap().contains(&first_slab));
 }
 
 #[test]
 fn a_tally_that_forgot_a_live_slab_costs_a_walk_and_not_the_slab() {
-    let runtime = runtime_with_slabs(3, 40);
+    let (runtime, first_slab, retain_from) = runtime_with_slabs(3, 40);
     assert_tally_derived(&runtime);
-    assert!(runtime.engine().live_block_slab_ids(SHARD).contains(&0));
-    runtime.engine().forget_tally_slab_for_test(SHARD, 0);
+    assert!(runtime.engine().live_block_slab_ids(SHARD).contains(&first_slab));
+    runtime.engine().forget_tally_slab_for_test(SHARD, first_slab);
     assert!(
         !runtime
             .engine()
             .live_block_slab_ids_from_tally()
             .unwrap()
-            .contains(&0),
-        "the tally still names slab 0, so this arm is not testing a wrong tally"
+            .contains(&first_slab),
+        "the tally still names the first slab, so this arm is not testing a wrong tally"
     );
-    let round = collect(&runtime, 100);
+    let round = collect(&runtime, retain_from);
     assert_eq!(round.walks, 1, "a slab the tally did not name was not confirmed by the walk");
     assert_eq!(
         round.response.block_slabs_removed, 0,
         "a live slab was destroyed on the tally's word"
     );
-    assert!(runtime.engine().block_store().slab_ids().unwrap().contains(&0));
+    assert!(runtime.engine().block_store().slab_ids().unwrap().contains(&first_slab));
     assert_eq!(
         runtime.engine().execute(ExecuteRequest {
             shard_id: SHARD,
@@ -189,9 +198,9 @@ fn a_tally_that_forgot_a_live_slab_costs_a_walk_and_not_the_slab() {
 /// This is the control for the zero above: without it, "no plan" could mean the plan is gone.
 #[test]
 fn the_lifecycle_plan_is_built_once_when_the_request_asks_for_it() {
-    let runtime = runtime_with_slabs(3, 40);
+    let (runtime, _, retain_from) = runtime_with_slabs(3, 40);
     assert_tally_derived(&runtime);
-    let round = collect_with(&runtime, 100, true);
+    let round = collect_with(&runtime, retain_from, true);
     assert_eq!(round.plans, 1);
     assert!(round.response.lifecycle_plan.is_some());
 }

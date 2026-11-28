@@ -47,7 +47,7 @@ fn one_bucket_without_a_claim_does_not_put_the_figure_back_on_the_zeroed_counter
     let figure = engine.undumped_wal_bytes_from_claims(1, &claims);
     assert!(
         figure >= counter + counter / 2,
-        "with one claimless bucket the figure is {figure}, no better than the zeroed counter          {counter}, so the buckets that could be placed were ignored"
+        "with one claimless bucket the figure is {figure}, no better than the zeroed counter {counter}, so the buckets that could be placed were ignored"
     );
     // And with every bucket placed the answer is the claim's, not the counter's.
     claims.remove(&9u32);
