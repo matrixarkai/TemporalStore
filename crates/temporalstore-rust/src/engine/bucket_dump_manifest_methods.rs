@@ -376,13 +376,12 @@ impl TemporalEngine {
             // A reused bulk image was decoded before capture. A new image
             // was encoded from this completed owned state.
             let entries = collect_live_block_entries(&dump_index_state);
-            let source = if completion.is_some() {
-                super::dump_wal_dependencies::DumpWalSource::RecoveryCapture
-            } else {
-                super::dump_wal_dependencies::DumpWalSource::PortableCapture
-            };
             let proof = self.read_local_dump_wal_dependencies(
-                shard_id, wal_sequence, &dump_index_state, &entries, source,
+                shard_id,
+                wal_sequence,
+                &dump_index_state,
+                &entries,
+                super::dump_wal_dependencies::DumpWalSource::RecoveryCapture,
             )?.ok_or_else(|| Status::error("slot_dump_invalid_wal_binding",
                 "captured resident dump has no verified WAL dependencies"))?;
             Some(proof)
@@ -523,6 +522,50 @@ impl TemporalEngine {
                     shard.mark_items_dumped();
                 }
             });
+        }
+        Ok(manifest)
+    }
+
+    /// Derive a transfer image from a committed local dump. The sender must keep
+    /// the source dump and its storage dependencies available during the transfer.
+    /// Live WAL-backed blocks still require their original frames. Only deleted
+    /// element rows can be transferred without their WAL payloads.
+    pub fn portable_bucket_dump_manifest(
+        &self,
+        mut manifest: BucketDumpManifest,
+    ) -> Result<BucketDumpManifest, Status> {
+        if manifest.manifest_kind != "slot_dump" {
+            return Err(Status::error(
+                "slot_dump_invalid",
+                "portable export requires a full slot dump",
+            ));
+        }
+        self.validate_bucket_dump_manifest(&manifest)?;
+        if manifest.wal_frames.is_empty() {
+            return Ok(manifest);
+        }
+
+        let mut snapshot = decode_index_bytes(&manifest.index_bytes)
+            .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        rebuild_unserialized_model_maps_from_bucket_index(&mut snapshot);
+        let entries = collect_live_block_entries(&snapshot);
+        let proof = self.read_local_dump_wal_dependencies(
+            manifest.shard_id,
+            manifest.wal_sequence,
+            &snapshot,
+            &entries,
+            super::dump_wal_dependencies::DumpWalSource::PortableCapture,
+        )?.ok_or_else(|| Status::error(
+            "slot_dump_invalid_wal_binding",
+            "portable export has no verified WAL dependencies",
+        ))?;
+        if proof.prune_capture_placements(&mut snapshot) {
+            manifest.manifest_id.push_str("-portable");
+            manifest.index_bytes = serialize_index(&snapshot);
+            manifest.index_sha256 = sha256_hex_bytes(&manifest.index_bytes);
+            manifest.wal_frames = proof.commitments.clone();
+            manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
+            manifest.checksum = bucket_dump_manifest_checksum_in_place(&mut manifest)?;
         }
         Ok(manifest)
     }

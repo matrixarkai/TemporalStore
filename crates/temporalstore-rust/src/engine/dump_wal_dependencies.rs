@@ -927,7 +927,14 @@ mod tests {
             assert!(engine.execute(ExecuteRequest { shard_id: 1, command }).status.ok);
         }
         let owner = engine.routing_bucket_for_key(1, "gone");
-        let manifest = engine.create_bucket_dump_manifest(1, [owner]).unwrap();
+        let durable = engine.create_bucket_dump_manifest(1, [owner]).unwrap();
+        assert_eq!(durable.wal_frames.len(), 1);
+        let durable_id = durable.manifest_id.clone();
+        let manifest = engine.portable_bucket_dump_manifest(durable).unwrap();
+        assert_ne!(manifest.manifest_id, durable_id);
+        assert!(engine.list_bucket_dump_manifests(1).iter().any(|entry| {
+            entry.manifest_id == durable_id && entry.wal_frames.len() == 1
+        }));
         assert_eq!(manifest.version, 4);
         assert!(manifest.wal_frames.is_empty());
         assert_eq!(manifest.block_slab_ids, [super::super::HOT_BLOCK_SLAB_ID]);
@@ -981,7 +988,9 @@ mod tests {
         assert!(engine.execute(ExecuteRequest {
             shard_id: 1, command: Command::StringSet { key: "stays".into(), value: vec![4; 64] },
         }).status.ok);
-        let mut mixed = engine.create_bucket_dump_manifest(1, []).unwrap();
+        let durable_mixed = engine.create_bucket_dump_manifest(1, []).unwrap();
+        assert_eq!(durable_mixed.wal_frames.len(), 2);
+        let mut mixed = engine.portable_bucket_dump_manifest(durable_mixed).unwrap();
         assert_eq!(mixed.version, 4);
         assert_eq!(mixed.wal_frames.len(), 1, "only the live String frame is required");
         reopened.validate_bucket_dump_manifest(&mixed).unwrap_err();
