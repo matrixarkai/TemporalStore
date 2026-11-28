@@ -180,86 +180,87 @@ fn every_served_shard_carries_the_id_its_owner_routes_it_under() {
     // --- THE TREE. ---
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = multi_shard_engine(dir.path());
-    let shards = engine.shards.read().expect("engine lock poisoned");
+    engine.shards.with_all_states(|shards| {
 
-    let observed: Vec<crate::types::ShardId> = shards.keys().copied().collect();
-    let distinct: BTreeSet<crate::types::ShardId> = observed.iter().copied().collect();
+        let observed: Vec<crate::types::ShardId> = shards.keys().copied().collect();
+        let distinct: BTreeSet<crate::types::ShardId> = observed.iter().copied().collect();
 
-    // --- VACUITY FLOORS, BEFORE THE VERDICT. An empty map satisfies a for-loop. ---
-    assert_eq!(
-        SHARD_IDS.len(),
-        shards.len(),
-        "the fixture loaded {} shards and the served map holds {}; the loop below would be \
-         checking a different set from the one this module reasons about",
-        SHARD_IDS.len(),
-        shards.len()
-    );
-    assert!(
-        shards.len() >= 5,
-        "the served map holds {} shard(s); a single-shard fixture cannot tell an id from a \
-         constant and this whole module would pass on a stamp that ignores its argument",
-        shards.len()
-    );
-    assert_eq!(
-        shards.len(),
-        distinct.len(),
-        "the served map holds {} shards under {} distinct ids, so at least two entries share a \
-         key and the equality below is not per-shard",
-        shards.len(),
-        distinct.len()
-    );
-    assert!(
-        distinct.iter().filter(|id| **id != 0).count() >= 4,
-        "only {} served shard(s) have a non-zero id; a stamp stuck at 0 needs at least two \
-         non-zero shards to be caught and this fixture would let it through",
-        distinct.iter().filter(|id| **id != 0).count()
-    );
-    assert!(
-        distinct.contains(&0),
-        "shard 0 is not in the served map; the fixture no longer proves that a REAL zero id is \
-         distinguishable from an unstamped state"
-    );
+        // --- VACUITY FLOORS, BEFORE THE VERDICT. An empty map satisfies a for-loop. ---
+        assert_eq!(
+            SHARD_IDS.len(),
+            shards.len(),
+            "the fixture loaded {} shards and the served map holds {}; the loop below would be \
+             checking a different set from the one this module reasons about",
+            SHARD_IDS.len(),
+            shards.len()
+        );
+        assert!(
+            shards.len() >= 5,
+            "the served map holds {} shard(s); a single-shard fixture cannot tell an id from a \
+             constant and this whole module would pass on a stamp that ignores its argument",
+            shards.len()
+        );
+        assert_eq!(
+            shards.len(),
+            distinct.len(),
+            "the served map holds {} shards under {} distinct ids, so at least two entries share a \
+             key and the equality below is not per-shard",
+            shards.len(),
+            distinct.len()
+        );
+        assert!(
+            distinct.iter().filter(|id| **id != 0).count() >= 4,
+            "only {} served shard(s) have a non-zero id; a stamp stuck at 0 needs at least two \
+             non-zero shards to be caught and this fixture would let it through",
+            distinct.iter().filter(|id| **id != 0).count()
+        );
+        assert!(
+            distinct.contains(&0),
+            "shard 0 is not in the served map; the fixture no longer proves that a REAL zero id is \
+             distinguishable from an unstamped state"
+        );
 
-    let mut verdict_lines = Vec::new();
-    let mut unstamped = 0usize;
-    let mut mismatched = Vec::new();
-    for (routed_under, state) in shards.iter() {
-        let carried = state.shard_id();
-        verdict_lines.push(format!(
-            "    routed under {routed_under:>5}  carries {carried:?}"
-        ));
-        if carried.is_none() {
-            unstamped += 1;
+        let mut verdict_lines = Vec::new();
+        let mut unstamped = 0usize;
+        let mut mismatched = Vec::new();
+        for (routed_under, state) in shards.iter() {
+            let carried = state.shard_id();
+            verdict_lines.push(format!(
+                "    routed under {routed_under:>5}  carries {carried:?}"
+            ));
+            if carried.is_none() {
+                unstamped += 1;
+            }
+            if !carries(state, *routed_under) {
+                mismatched.push(format!("{routed_under} carries {carried:?}"));
+            }
         }
-        if !carries(state, *routed_under) {
-            mismatched.push(format!("{routed_under} carries {carried:?}"));
+        println!(
+            "  {} served shards, {} distinct ids, ids {:?}",
+            shards.len(),
+            distinct.len(),
+            distinct
+        );
+        for line in &verdict_lines {
+            println!("{line}");
         }
-    }
-    println!(
-        "  {} served shards, {} distinct ids, ids {:?}",
-        shards.len(),
-        distinct.len(),
-        distinct
-    );
-    for line in &verdict_lines {
-        println!("{line}");
-    }
-    assert_eq!(
-        0, unstamped,
-        "{unstamped} of {} served shards entered the map without a shard id stamped. There is one \
-         function that installs a ShardState (`install_shard_state`) and it stamps; if another way \
-         in has appeared, route it through that one.",
-        shards.len()
-    );
-    assert!(
-        mismatched.is_empty(),
-        "{} of {} served shards carry an id that is NOT the key the served map routes them under: \
-         {mismatched:?}. A wrong id here is worse than none: \
-         `stable_block_object_id(shard, kind, key)` would return a well-formed id belonging to a \
-         different shard's object.",
-        mismatched.len(),
-        shards.len()
-    );
+        assert_eq!(
+            0, unstamped,
+            "{unstamped} of {} served shards entered the map without a shard id stamped. There is one \
+             function that installs a ShardState (`install_shard_state`) and it stamps; if another way \
+             in has appeared, route it through that one.",
+            shards.len()
+        );
+        assert!(
+            mismatched.is_empty(),
+            "{} of {} served shards carry an id that is NOT the key the served map routes them under: \
+             {mismatched:?}. A wrong id here is worse than none: \
+             `stable_block_object_id(shard, kind, key)` would return a well-formed id belonging to a \
+             different shard's object.",
+            mismatched.len(),
+            shards.len()
+        );
+    })
 }
 
 // =================================================================================================
@@ -282,94 +283,95 @@ fn every_served_shard_carries_the_id_its_owner_routes_it_under() {
 fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blocks() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = multi_shard_engine(dir.path());
-    let shards = engine.shards.read().expect("engine lock poisoned");
+    engine.shards.with_all_states(|shards| {
 
-    let mut checked = 0usize;
-    let mut without_stored_id = 0usize;
-    let mut shards_with_blocks = 0usize;
-    let mut differed = Vec::new();
+        let mut checked = 0usize;
+        let mut without_stored_id = 0usize;
+        let mut shards_with_blocks = 0usize;
+        let mut differed = Vec::new();
 
-    for (routed_under, state) in shards.iter() {
-        // THE ONLY INPUT. Not the map key -- the shard's own answer, which is the reachability
-        // this module is about.
-        let carried = state
-            .shard_id()
-            .expect("a served shard carries its id; part 1 of this module holds that");
-        let named = super::BlockObjects::of(&state.bucket_index);
-        let mut blocks_here = 0usize;
-        for bucket in state.bucket_index.bucket_map.values() {
-            for (handle, block) in bucket.block_index.iter() {
-                let object_key = named.at(bucket.routing_bucket, *handle);
-                // THE INDEPENDENT SIDE IS NOW THE WRITE PATH'S OWN COPY, and it has to be: the
-                // address used to hold one and does not any more. `bucket.object_index` was filled
-                // by the write path from the id it ACTUALLY USED, before this field existed and
-                // without consulting it -- so comparing a fresh derivation against that membership
-                // is still an equality between two answers rather than between one and itself.
-                let derived = crate::engine::hashing::stable_block_object_id(
-                    carried,
-                    block.model_id().as_str(),
-                    object_key,
-                );
-                blocks_here += 1;
-                checked += 1;
-                if !bucket.object_index.contains(&derived) {
-                    without_stored_id += 1;
-                    differed.push(format!(
-                        "shard {routed_under} kind {} key {} derived {derived}, which the bucket's \
-                         own object index does not hold",
+        for (routed_under, state) in shards.iter() {
+            // THE ONLY INPUT. Not the map key -- the shard's own answer, which is the reachability
+            // this module is about.
+            let carried = state
+                .shard_id()
+                .expect("a served shard carries its id; part 1 of this module holds that");
+            let named = super::BlockObjects::of(&state.bucket_index);
+            let mut blocks_here = 0usize;
+            for bucket in state.bucket_index.bucket_map.values() {
+                for (handle, block) in bucket.block_index.iter() {
+                    let object_key = named.at(bucket.routing_bucket, *handle);
+                    // THE INDEPENDENT SIDE IS NOW THE WRITE PATH'S OWN COPY, and it has to be: the
+                    // address used to hold one and does not any more. `bucket.object_index` was filled
+                    // by the write path from the id it ACTUALLY USED, before this field existed and
+                    // without consulting it -- so comparing a fresh derivation against that membership
+                    // is still an equality between two answers rather than between one and itself.
+                    let derived = crate::engine::hashing::stable_block_object_id(
+                        carried,
                         block.model_id().as_str(),
-                        object_key
-                    ));
+                        object_key,
+                    );
+                    blocks_here += 1;
+                    checked += 1;
+                    if !bucket.object_index.contains(&derived) {
+                        without_stored_id += 1;
+                        differed.push(format!(
+                            "shard {routed_under} kind {} key {} derived {derived}, which the bucket's \
+                             own object index does not hold",
+                            block.model_id().as_str(),
+                            object_key
+                        ));
+                    }
                 }
             }
+            if blocks_here > 0 {
+                shards_with_blocks += 1;
+            }
         }
-        if blocks_here > 0 {
-            shards_with_blocks += 1;
-        }
-    }
 
-    println!(
-        "  derived from the shard's own id on {checked} live block entries across \
-         {shards_with_blocks} shards ({without_stored_id} not held by their bucket's object index), \
-         {} differed",
-        differed.len()
-    );
+        println!(
+            "  derived from the shard's own id on {checked} live block entries across \
+             {shards_with_blocks} shards ({without_stored_id} not held by their bucket's object index), \
+             {} differed",
+            differed.len()
+        );
 
-    // --- DENOMINATORS. A zero-entry walk satisfies the emptiness assertion below. ---
-    assert!(
-        checked >= 100,
-        "the walk compared {checked} block entries; the fixture writes {} records of two kinds on \
-         {} shards, so below 100 it is not reading the block index and `differed` is empty for the \
-         wrong reason",
-        RECORDS,
-        SHARD_IDS.len()
-    );
-    assert_eq!(
-        SHARD_IDS.len(),
-        shards_with_blocks,
-        "only {shards_with_blocks} of {} shards contributed a block entry, so the derivation was \
-         never exercised on the other shards' ids -- which is where a wrong id shows up",
-        SHARD_IDS.len()
-    );
+        // --- DENOMINATORS. A zero-entry walk satisfies the emptiness assertion below. ---
+        assert!(
+            checked >= 100,
+            "the walk compared {checked} block entries; the fixture writes {} records of two kinds on \
+             {} shards, so below 100 it is not reading the block index and `differed` is empty for the \
+             wrong reason",
+            RECORDS,
+            SHARD_IDS.len()
+        );
+        assert_eq!(
+            SHARD_IDS.len(),
+            shards_with_blocks,
+            "only {shards_with_blocks} of {} shards contributed a block entry, so the derivation was \
+             never exercised on the other shards' ids -- which is where a wrong id shows up",
+            SHARD_IDS.len()
+        );
 
-    // --- THE CONTROL: the comparison DOES separate a wrong shard from the right one. ---
-    let (right, wrong) = (SHARD_IDS[2], SHARD_IDS[4]);
-    assert_ne!(
-        crate::engine::hashing::stable_block_object_id(right, "string", "ident-7-0000"),
-        crate::engine::hashing::stable_block_object_id(wrong, "string", "ident-7-0000"),
-        "`stable_block_object_id` returns the same id for shard {right} and shard {wrong} on one \
-         key, so the equality above cannot detect a wrong shard id and this test is vacuous"
-    );
+        // --- THE CONTROL: the comparison DOES separate a wrong shard from the right one. ---
+        let (right, wrong) = (SHARD_IDS[2], SHARD_IDS[4]);
+        assert_ne!(
+            crate::engine::hashing::stable_block_object_id(right, "string", "ident-7-0000"),
+            crate::engine::hashing::stable_block_object_id(wrong, "string", "ident-7-0000"),
+            "`stable_block_object_id` returns the same id for shard {right} and shard {wrong} on one \
+             key, so the equality above cannot detect a wrong shard id and this test is vacuous"
+        );
 
-    assert!(
-        differed.is_empty(),
-        "{} of {checked} live block entries derive an object id from the shard's OWN carried id \
-         that differs from the one the write path stored: {:?}. Either the carried id is not the \
-         shard the engine routed those writes to, or the derivation is no longer the identity the \
-         write path uses.",
-        differed.len(),
-        differed.iter().take(4).collect::<Vec<_>>()
-    );
+        assert!(
+            differed.is_empty(),
+            "{} of {checked} live block entries derive an object id from the shard's OWN carried id \
+             that differs from the one the write path stored: {:?}. Either the carried id is not the \
+             shard the engine routed those writes to, or the derivation is no longer the identity the \
+             write path uses.",
+            differed.len(),
+            differed.iter().take(4).collect::<Vec<_>>()
+        );
+    })
 }
 
 // =================================================================================================
@@ -481,6 +483,63 @@ fn the_shard_id_field_changes_no_serialized_byte() {
 // 5. THE GUARD: THE ONE WAY IN STAMPS THE ID IT INSERTS UNDER
 // =================================================================================================
 
+fn owner_install_body(source: &str, method: &str) -> String {
+    let signature = format!(" fn {method}(");
+    let (_, method) = source.split_once(signature.as_str()).expect("owner install method");
+    let (_, body) = method.split_once('{').expect("owner install method body");
+    let (body, _) = body.split_once("\n    }").expect("owner install method end");
+    body.lines()
+        .flat_map(|line| {
+            line.split("//").next().unwrap_or_default().chars().filter(|c| !c.is_whitespace())
+        })
+        .collect()
+}
+
+const OWNER_PUBLICATION: &str = "letretired=self.shards.install(shard_id,state);";
+const OWNER_RETIREMENT: &str = concat!(
+    "letprevious_owner=self.shards.handle(shard_id);",
+    "letretired=self.shards.install(shard_id,state);",
+    "letscrape_cache=previous_owner.as_ref()",
+    ".and_then(|owner|self.detach_scrape_bucket_summaries(owner));",
+    "drop((retired,scrape_cache));",
+);
+
+fn owner_install_identity(installer: &str, facade: &str, registry: &str) -> Result<(), &'static str> {
+    let publish = OWNER_PUBLICATION;
+    let Some(publication) = installer.find(publish) else {
+        return Err("engine must publish once through the owner facade");
+    };
+    if installer.matches("self.shards.install(").count() != 1 {
+        return Err("engine must publish once through the owner facade");
+    }
+    let stamp = "state.set_shard_id(shard_id);";
+    if installer.matches("state.set_shard_id(").count() != 1
+        || !installer.find(stamp).is_some_and(|position| position < publication)
+    {
+        return Err("engine must stamp the same shard ID before publication");
+    }
+    // Keep the old owner alive through cache detachment, without shadowed retirement bindings.
+    if installer.matches(OWNER_RETIREMENT).count() != 1
+        || installer.matches("previous_owner").count() != 2
+        || installer.matches("retired").count() != 2
+        || installer.matches("scrape_cache").count() != 2
+    {
+        return Err("engine must retire the replaced owner and its scrape cache");
+    }
+    if facade != "self.owners.replace(shard_id,state)" {
+        return Err("facade must forward the stamped state and shard ID");
+    }
+    let store = "entries.insert(shard_id,replacement);";
+    let replacement = "letreplacement=Arc::new(RwLock::new(Some(state)));";
+    if registry.matches("entries.insert(").count() != 2
+        || registry.matches(store).count() != 2
+        || !registry.find(replacement).zip(registry.find(store)).is_some_and(|(build, write)| build < write)
+    {
+        return Err("registry must publish the replacement at the same shard ID on both paths");
+    }
+    Ok(())
+}
+
 /// `install_shard_state` STAMPS THE ID, AND NO OTHER PRODUCTION SITE STAMPS ONE.
 ///
 /// `every_shard_the_engine_installs_carries_its_routing_range` already holds, as an equality-compared
@@ -496,25 +555,76 @@ fn the_only_production_site_that_installs_a_shard_stamps_the_id_it_inserts_under
     use std::path::Path;
 
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
-    let installer = std::fs::read_to_string(root.join("engine.rs")).expect("engine.rs");
-    assert!(
-        installer.len() > 100_000,
-        "engine.rs read back as {} bytes; below 100,000 this is not the file and the containment \
-         checks below pass or fail for the wrong reason",
-        installer.len()
+    let engine = std::fs::read_to_string(root.join("engine.rs")).expect("engine.rs");
+    let facade = std::fs::read_to_string(root.join("engine/shard_guard.rs")).expect("shard facade");
+    let registry = std::fs::read_to_string(root.join("engine/shard_state_registry.rs"))
+        .expect("shard registry");
+    let installer = owner_install_body(&engine, "install_shard_state");
+    let facade = owner_install_body(&facade, "install");
+    let registry = owner_install_body(&registry, "replace");
+    assert_eq!(owner_install_identity(&installer, &facade, &registry), Ok(()));
+
+    // These controls use the actual method bodies, changing only the link
+    // whose absence, incorrect key or ordering the oracle must detect.
+    let bypass = installer.replace(
+        OWNER_PUBLICATION,
+        "self.shards.insert(shard_id,state);",
     );
-    assert!(
-        installer.contains("state.set_shard_id(shard_id);"),
-        "`install_shard_state` no longer stamps the id it inserts under. Every served shard would \
-         answer None, and the four functions named in this module's header go back to being unable \
-         to derive an object id."
+    assert_eq!(
+        owner_install_identity(&bypass, &facade, &registry),
+        Err("engine must publish once through the owner facade"),
     );
-    // It stamps the ARGUMENT it inserts under, not something re-derived: the insert is keyed on the
-    // same name.
-    assert!(
-        installer.contains(".insert(shard_id, state);"),
-        "`install_shard_state` no longer inserts under `shard_id`, so stamping `shard_id` is no \
-         longer the same number the served map routes by"
+    let late_stamp = installer.replace("state.set_shard_id(shard_id);", "").replace(
+        OWNER_PUBLICATION,
+        &format!("{OWNER_PUBLICATION}state.set_shard_id(shard_id);"),
+    );
+    assert_eq!(
+        owner_install_identity(&late_stamp, &facade, &registry),
+        Err("engine must stamp the same shard ID before publication"),
+    );
+    assert_eq!(
+        owner_install_identity(
+            &installer.replace(OWNER_PUBLICATION, &format!("{OWNER_PUBLICATION}{OWNER_PUBLICATION}")),
+            &facade, &registry,
+        ),
+        Err("engine must publish once through the owner facade"),
+    );
+    assert_eq!(
+        owner_install_identity(
+            &installer.replace("install(shard_id,state)", "install(other_id,state)"),
+            &facade, &registry,
+        ),
+        Err("engine must publish once through the owner facade"),
+    );
+    for changed in [
+        installer.replace("handle(shard_id)", "handle(other_id)"),
+        installer.replace("previous_owner.as_ref()", "self.shards.handle(shard_id).as_ref()"),
+        installer.replace("detach_scrape_bucket_summaries(owner)", "detach_scrape_bucket_summaries(other_owner)"),
+        installer.replace("drop((retired,scrape_cache));", "drop(retired);"),
+        installer.replace("drop((retired,scrape_cache));", ""),
+        installer.replace("letscrape_cache=", "letretired=other_owner;letscrape_cache="),
+        installer.replace("letscrape_cache=", "letretired:Owner=other_owner;letscrape_cache="),
+        installer.replace(OWNER_RETIREMENT, &format!(
+            "{OWNER_PUBLICATION}letprevious_owner=self.shards.handle(shard_id);letscrape_cache=previous_owner.as_ref().and_then(|owner|self.detach_scrape_bucket_summaries(owner));drop((retired,scrape_cache));",
+        )),
+    ] {
+        assert_ne!(changed, installer, "the control must alter the actual retirement sequence");
+        assert_eq!(
+            owner_install_identity(&changed, &facade, &registry),
+            Err("engine must retire the replaced owner and its scrape cache"),
+        );
+    }
+    assert_eq!(
+        owner_install_identity(
+            &installer, &facade.replace("replace(shard_id,", "replace(other_id,"), &registry,
+        ),
+        Err("facade must forward the stamped state and shard ID"),
+    );
+    assert_eq!(
+        owner_install_identity(
+            &installer, &facade, &registry.replacen("entries.insert(shard_id,", "entries.insert(other_id,", 1),
+        ),
+        Err("registry must publish the replacement at the same shard ID on both paths"),
     );
 
     // No other production file stamps an id. A second setter call site could stamp a shard with

@@ -77,23 +77,24 @@ fn buffered_index_keeps_all_decoded_fields_and_reads_both_compression_levels() {
             if count > 0 {
                 seed(&engine, count);
             }
-            let shards = engine.shards.read().unwrap();
-            let shard = shards.get(&1).unwrap();
-            let raw = uncompressed(shard);
-            if count == 257 {
-                assert!(raw.len() > 64 * 1024);
-            }
-            let buffered = encode_index_bytes(shard);
-            let old_frame = materialized(shard, 3);
-            assert_eq!(&buffered[..11], &old_frame[..11]);
-            let current = decode_index_bytes(&buffered).unwrap();
-            let previous = decode_index_bytes(&old_frame).unwrap();
-            // HashFieldMap's existing wire adapter creates an unordered map on each encode.
-            // Compare every decoded field, not the incidental ordering of map entries.
-            assert!(
-                serde_json::to_value(current).unwrap() == serde_json::to_value(previous).unwrap(),
-                "buffered and materialized frames must preserve the same complete state"
-            );
+            engine.shards.with_state(1, |shard_state| {
+                let shard = shard_state.unwrap();
+                let raw = uncompressed(shard);
+                if count == 257 {
+                    assert!(raw.len() > 64 * 1024);
+                }
+                let buffered = encode_index_bytes(shard);
+                let old_frame = materialized(shard, 3);
+                assert_eq!(&buffered[..11], &old_frame[..11]);
+                let current = decode_index_bytes(&buffered).unwrap();
+                let previous = decode_index_bytes(&old_frame).unwrap();
+                // HashFieldMap's existing wire adapter creates an unordered map on each encode.
+                // Compare every decoded field, not the incidental ordering of map entries.
+                assert!(
+                    serde_json::to_value(current).unwrap() == serde_json::to_value(previous).unwrap(),
+                    "buffered and materialized frames must preserve the same complete state"
+                );
+            });
         }
     }
 }
@@ -166,28 +167,29 @@ fn buffered_index_avoids_the_full_raw_buffer_and_payload_copy_allocations() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path(), false);
     seed(&engine, 8192);
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    let raw_bytes = uncompressed(shard).len();
-    assert!(raw_bytes > 1024 * 1024);
-    drop(materialized(shard, INDEX_ZSTD_LEVEL));
-    drop(encode_index_bytes(shard));
-    let probe = crate::alloc_probe::Probe::start();
-    let old = materialized(shard, INDEX_ZSTD_LEVEL);
-    let old_counts = probe.stop();
-    let probe = crate::alloc_probe::Probe::start();
-    let current = encode_index_bytes(shard);
-    let new_counts = probe.stop();
-    println!("raw_bytes={raw_bytes} materialized_rust_alloc_bytes={} buffered_rust_alloc_bytes={} materialized_calls={} buffered_calls={}",
-        old_counts.alloc_bytes, new_counts.alloc_bytes, old_counts.allocs, new_counts.allocs);
-    assert!(
-        serde_json::to_value(decode_index_bytes(&old).unwrap()).unwrap()
-            == serde_json::to_value(decode_index_bytes(&current).unwrap()).unwrap(),
-        "both allocation probes must encode the same complete state"
-    );
-    // Existing serializer adapters still allocate; isolate the raw buffer removed here.
-    assert!(
-        old_counts.alloc_bytes >= new_counts.alloc_bytes + raw_bytes as u64,
-        "encoding should avoid at least one full raw index worth of Rust allocation requests"
-    );
+    engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.unwrap();
+        let raw_bytes = uncompressed(shard).len();
+        assert!(raw_bytes > 1024 * 1024);
+        drop(materialized(shard, INDEX_ZSTD_LEVEL));
+        drop(encode_index_bytes(shard));
+        let probe = crate::alloc_probe::Probe::start();
+        let old = materialized(shard, INDEX_ZSTD_LEVEL);
+        let old_counts = probe.stop();
+        let probe = crate::alloc_probe::Probe::start();
+        let current = encode_index_bytes(shard);
+        let new_counts = probe.stop();
+        println!("raw_bytes={raw_bytes} materialized_rust_alloc_bytes={} buffered_rust_alloc_bytes={} materialized_calls={} buffered_calls={}",
+            old_counts.alloc_bytes, new_counts.alloc_bytes, old_counts.allocs, new_counts.allocs);
+        assert!(
+            serde_json::to_value(decode_index_bytes(&old).unwrap()).unwrap()
+                == serde_json::to_value(decode_index_bytes(&current).unwrap()).unwrap(),
+            "both allocation probes must encode the same complete state"
+        );
+        // Existing serializer adapters still allocate; isolate the raw buffer removed here.
+        assert!(
+            old_counts.alloc_bytes >= new_counts.alloc_bytes + raw_bytes as u64,
+            "encoding should avoid at least one full raw index worth of Rust allocation requests"
+        );
+    })
 }

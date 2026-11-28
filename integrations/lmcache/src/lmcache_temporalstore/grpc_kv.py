@@ -17,6 +17,7 @@ from temporalstore_sdk import (
     MetadataClient, MetadataError, ProxyCommandClient, ProxyTableClient,
     RaftPrimaryUnavailable, TableClient, commands as pb,
 )
+from temporalstore_sdk.cache_wire import CacheInsert
 
 from .kv import ValueBackend
 from .layout import layout_table_name
@@ -26,10 +27,13 @@ if TYPE_CHECKING:
 
 
 TABLE_DESCRIPTOR_KEY = "__lmcache_layout_v1"
+_BORROWED_INSERT_MIN_BYTES = 256 * 1024
+_BORROWED_LOAD_MIN_BYTES = 256 * 1024
 # Both codes identify rejection before any work for the affected command.
 _STORE_NOT_STARTED = {"raft_write_not_started", "load_version_mismatch"}
 _STORE_OUTCOME_UNCERTAIN = {"raft_error", "write_outcome_unknown"}
-_STORE_READBACK_ROUTE_CHANGED = {"raft_not_leader", "load_version_mismatch"}
+_READ_ROUTE_CHANGED = {"raft_not_leader", "load_version_mismatch"}
+_READ_RETRYABLE_STATUS = _READ_ROUTE_CHANGED | {"read_unavailable"}
 _LOOKUP_TEMPORARILY_UNAVAILABLE = {
     "raft_not_leader", "load_version_mismatch", "no_grpc_primary", "read_unavailable",
 }
@@ -39,10 +43,14 @@ def _table_for_key(key: ObjectKey) -> str:
     return layout_table_name(key.model_name, (key.kv_rank >> 24) & 255, (key.kv_rank >> 8) & 255)
 
 
-def _command(document: dict) -> pb.Command:
+def _command(document: dict, *, borrow_payload: bool = False) -> pb.Command | CacheInsert:
     kind = document["kind"]
     key = document["key"]
     if kind == "string_set_conditional":
+        if borrow_payload:
+            tensor = memoryview(document["value"])
+            if tensor.nbytes >= _BORROWED_INSERT_MIN_BYTES and tensor.c_contiguous:
+                return CacheInsert(key, tensor, document["ttl_ms"])
         command = pb.Command()
         set_value = command.string_set_conditional
         set_value.key = key
@@ -89,7 +97,7 @@ class TableValueBackend(ValueBackend):
                 if self._proxy is None:
                     client = TableClient(
                         self._metadata, self._namespace, name, timeout_seconds=self._timeout,
-                        parallel_reads=True,
+                        parallel_reads=True, preserve_insert_outcomes=True,
                     )
                 else:
                     client = ProxyTableClient(
@@ -140,11 +148,13 @@ class TableValueBackend(ValueBackend):
             registered.update(pending)
             self._registered_layouts[name] = identity, registered
 
-    def _iter_responses(self, entries, *, lookup, partial=False):
+    def _iter_responses(self, entries, *, lookup, partial=False, borrowed_load=False):
         groups = {}
         for index, (key, document) in enumerate(entries):
             groups.setdefault(_table_for_key(key), []).append((index, document))
         options = {"timeout_seconds": self._lookup_timeout} if lookup else {}
+        if borrowed_load:
+            options["borrowed_load"] = True
         for name, group in groups.items():
             client = self._table(name)
             start = 0
@@ -152,10 +162,12 @@ class TableValueBackend(ValueBackend):
                 end, bytes_used = start, 0
                 commands = []
                 for _, document in group[start:start + 128]:
-                    size = len(document.get("value", b"")) + len(document["key"].encode("utf-8")) + 64
+                    value = document.get("value", b"")
+                    value_size = value.nbytes if isinstance(value, memoryview) else len(value)
+                    size = value_size + len(document["key"].encode("utf-8")) + 64
                     if commands and bytes_used + size > 16 * 1024 * 1024:
                         break
-                    commands.append(_command(document))
+                    commands.append(_command(document, borrow_payload=partial and self._proxy is None))
                     bytes_used += size
                     end += 1
                 if partial:
@@ -179,7 +191,7 @@ class TableValueBackend(ValueBackend):
             responses = client.batch_execute(commands, **options)
         except (MetadataError, grpc.RpcError) as error:
             route_changed = (
-                error.code == "raft_not_leader" if isinstance(error, MetadataError)
+                error.code in _READ_RETRYABLE_STATUS if isinstance(error, MetadataError)
                 else error.code() == grpc.StatusCode.UNAVAILABLE
             )
             remaining = deadline - monotonic()
@@ -188,7 +200,7 @@ class TableValueBackend(ValueBackend):
         else:
             stale = [
                 index for index, response in enumerate(responses)
-                if response.status.code == "raft_not_leader"
+                if response.status.code in _READ_RETRYABLE_STATUS
             ]
             if not stale:
                 return responses
@@ -196,21 +208,38 @@ class TableValueBackend(ValueBackend):
             if remaining <= 0:
                 return responses
             if options.get("allow_partial_reads") or self._proxy is not None:
-                try:
-                    retry = client.batch_execute(
-                        [commands[index] for index in stale],
-                        **dict(options, timeout_seconds=remaining),
-                    )
-                except MetadataError as error:
-                    if error.code in {"unavailable", "deadline_exceeded"}:
-                        return responses
-                    raise
-                except grpc.RpcError as error:
-                    if error.code() in (grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED):
-                        return responses
-                    raise
-                for index, response in zip(stale, retry, strict=True):
-                    responses[index] = response
+                # Election can finish before metadata advertises the new route.
+                delay = 0.025
+                while stale and remaining > 0:
+                    try:
+                        retry = client.batch_execute(
+                            [commands[index] for index in stale],
+                            **dict(options, timeout_seconds=remaining),
+                        )
+                    except MetadataError as error:
+                        if error.code == "deadline_exceeded":
+                            return responses
+                        if error.code != "unavailable":
+                            raise
+                    except grpc.RpcError as error:
+                        if error.code() == grpc.StatusCode.DEADLINE_EXCEEDED:
+                            return responses
+                        if error.code() != grpc.StatusCode.UNAVAILABLE:
+                            raise
+                    else:
+                        for index, response in zip(stale, retry, strict=True):
+                            responses[index] = response
+                        stale = [
+                            index for index in stale
+                            if responses[index].status.code in _READ_RETRYABLE_STATUS
+                        ]
+                        if not stale:
+                            return responses
+                    remaining = deadline - monotonic()
+                    if remaining > 0:
+                        sleep(min(delay, remaining))
+                    remaining = deadline - monotonic()
+                    delay = min(2 * delay, 0.25)
                 return responses
         return client.batch_execute(commands, **dict(options, timeout_seconds=remaining))
 
@@ -266,6 +295,31 @@ class TableValueBackend(ValueBackend):
             ordered[index] = {"value": value}
         return ordered
 
+    def load_into(self, items: list[tuple[ObjectKey, memoryview]]) -> Iterator[bool]:
+        for batch, entries in self._load_batches(items, pair_large=self._proxy is None):
+            responses = [None] * len(batch)
+            borrowed_load = self._proxy is None and any(
+                destination.nbytes >= _BORROWED_LOAD_MIN_BYTES for _, destination in batch
+            )
+            options = {"borrowed_load": True} if borrowed_load else {}
+            for index, _, response in self._iter_responses(entries, lookup=False, **options):
+                if not response.status.ok:
+                    raise MetadataError(response.status.code, response.status.message)
+                responses[index] = response
+            if any(response is None for response in responses):
+                raise MetadataError("invalid_batch", "datanode returned incomplete load responses")
+            # Large gRPC replies expose slices of one immutable response buffer.
+            for index, (_, destination) in enumerate(batch):
+                response = responses[index]
+                responses[index] = None
+                payload = response.value
+                found = bool(payload) and len(payload) == len(destination)
+                if found:
+                    destination[:] = payload
+                del payload, response
+                yield found
+            del responses
+
     @property
     def stores_confirmed_by_read(self) -> int:
         with self._lock:
@@ -274,7 +328,7 @@ class TableValueBackend(ValueBackend):
     def _confirm_stored_value(self, key, stored_key, payload, deadline):
         client = self._table(_table_for_key(key))
         command = _command({"kind": "string_get", "key": stored_key})
-        retryable = _STORE_READBACK_ROUTE_CHANGED
+        retryable = _READ_ROUTE_CHANGED
         if self._proxy is not None:
             # Proxy versions wrap unavailable data nodes in these status codes.
             retryable = retryable | {"status_error", "server_error"}
@@ -317,32 +371,21 @@ class TableValueBackend(ValueBackend):
     ) -> Iterator[tuple[int, bool]]:
         failures = []
         entries = self._store_entries(chunks)
-        replied = set()
         first_error = None
-        transport_error = None
+        # A proxy status cannot identify the durability mode of the serving owner.
+        can_reconcile = self._proxy is None
         try:
             for index, document, response in self._iter_responses(entries, lookup=False, partial=True):
-                replied.add(index)
                 if response.status.ok:
                     yield index, response.count == 1
                 else:
                     status = response.status
                     failures.append((
-                        index, document["key"], status.code in _STORE_OUTCOME_UNCERTAIN,
+                        index, document["key"],
+                        can_reconcile and status.code in _STORE_OUTCOME_UNCERTAIN,
                         MetadataError(status.code, status.message),
                     ))
-        except grpc.RpcError as error:
-            if len(replied) < len(entries) and error.code() in (
-                grpc.StatusCode.DEADLINE_EXCEEDED, grpc.StatusCode.UNAVAILABLE,
-            ):
-                transport_error = error
-                failures.extend(
-                    (index, document["key"], True, error)
-                    for index, (_, document) in enumerate(entries) if index not in replied
-                )
-            else:
-                first_error = error
-        except MetadataError as error:
+        except (MetadataError, grpc.RpcError) as error:
             first_error = error
 
         waiting = sum(uncertain for _, _, uncertain, _ in failures)
@@ -362,7 +405,7 @@ class TableValueBackend(ValueBackend):
                     # The value is usable. The read cannot assign ownership of the insert.
                     yield index, False
                     continue
-            if first_error is None or error is transport_error:
+            if first_error is None:
                 first_error = error
         if first_error is not None:
             raise first_error

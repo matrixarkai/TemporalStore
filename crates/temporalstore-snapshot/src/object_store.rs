@@ -23,8 +23,6 @@ pub enum ObjectStoreError {
     Io(#[from] std::io::Error),
     #[error("http error: {0}")]
     Http(String),
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
     /// A durable compare-and-set precondition failed: the object either did not hold the
     /// expected bytes (lost a race / stale owner) or the backend does not support a fenced
     /// conditional put. This is the single-writer FENCE signal — callers MUST treat it as a
@@ -1236,6 +1234,12 @@ mod tests {
                     Some(reply("200 OK", "", &state.data.clone(), true))
                 }
             }
+            "PUT"
+                if header("x-amz-write-offset-bytes").is_none()
+                    && (header("if-none-match").is_some() || header("if-match").is_some()) =>
+            {
+                Some(reply("412 Precondition Failed", "", b"conditional write refused", true))
+            }
             "PUT" => {
                 state.puts += 1;
                 let attempt_id = header("x-amz-attempt-id").expect("an append carries its attempt id");
@@ -1480,13 +1484,20 @@ mod tests {
         assert_eq!(store.get_range("wal", 1, 3).await.unwrap().as_ref(), b"bcd");
         assert_eq!(BlockingObjectRead::get_blocking(&store, "wal").unwrap().as_ref(), b"abcdef");
         assert_eq!(state.lock().unwrap().data, b"abcdef");
-        // compare_and_swap is the one the trait refuses by default; a forwarding wrapper must
-        // report the inner store's answer, which for the gateway store is also a refusal -- so
-        // check it is the INNER message, not the trait default's.
+        // The conditional fixture refuses both requests. The wrapper must send its
+        // request and preserve the inner failure instead of using the trait default.
         let inner = MatrixObjectHttpStore::new(&uri).unwrap();
+        let before = store.requests_issued();
         let direct = inner.compare_and_swap("k", None, Bytes::from_static(b"x")).await;
         let wrapped = store.compare_and_swap("k", None, Bytes::from_static(b"x")).await;
+        assert!(matches!(&direct, Err(ObjectStoreError::ConditionFailed { key, .. }) if key == "k"));
+        assert!(matches!(&wrapped, Err(ObjectStoreError::ConditionFailed { key, .. }) if key == "k"));
         assert_eq!(format!("{direct:?}"), format!("{wrapped:?}"));
+        assert_eq!(inner.requests_issued(), 1);
+        assert_eq!(store.requests_issued(), before + 1);
+        let state = state.lock().unwrap();
+        assert_eq!(state.puts, 1, "conditional refusals changed append accounting");
+        assert_eq!(state.data, b"abcdef", "a refused condition changed the object");
     }
 
     /// The scripted door, reached in process: the same answers, no socket.

@@ -362,44 +362,46 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
     // --- ARM 1, THE POSITIVE CONTROL: plant an id no live block names, then rebuild that bucket. ---
     const PLANTED: u64 = 0xD15A_6E_ED_BEEF_0001u64;
     let (routing_bucket, slots_before) = {
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        let routing_bucket = *shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .find(|(_, bucket)| !bucket.block_index.is_empty())
-            .expect("the workload filed at least one block")
-            .0;
-        let mut bucket = shard
-            .bucket_index
-            .bucket_map
-            .get_mut(&routing_bucket)
-            .expect("the bucket just found");
-        let before: Vec<Option<u64>> = (0..bucket.object_index.slot_count())
-            .map(|slot| bucket.object_index.id_at(slot))
-            .collect();
-        assert!(
-            bucket.object_index.insert(PLANTED),
-            "the planted id was already held, so this arm plants nothing"
-        );
-        (routing_bucket, before)
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            let routing_bucket = *shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .find(|(_, bucket)| !bucket.block_index.is_empty())
+                .expect("the workload filed at least one block")
+                .0;
+            let mut bucket = shard
+                .bucket_index
+                .bucket_map
+                .get_mut(&routing_bucket)
+                .expect("the bucket just found");
+            let before: Vec<Option<u64>> = (0..bucket.object_index.slot_count())
+                .map(|slot| bucket.object_index.id_at(slot))
+                .collect();
+            assert!(
+                bucket.object_index.insert(PLANTED),
+                "the planted id was already held, so this arm plants nothing"
+            );
+            (routing_bucket, before)
+        })
     };
 
     let before_rebuild = engine.object_index_divergence_report();
     {
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        // SPLIT BY NAMING THE FIELDS, the same way every production sweep does it: the rebuild
-        // reads the object lookup and this arm holds the bucket map mutably.
-        let index = &mut shard.bucket_index;
-        let block_keys =
-            crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
-        let mut bucket = index
-            .bucket_map
-            .get_mut(&routing_bucket)
-            .expect("the planted bucket");
-        crate::engine::storage_bucket_internals::update_bucket_layout(1, &mut bucket, &block_keys);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            // SPLIT BY NAMING THE FIELDS, the same way every production sweep does it: the rebuild
+            // reads the object lookup and this arm holds the bucket map mutably.
+            let index = &mut shard.bucket_index;
+            let block_keys =
+                crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+            let mut bucket = index
+                .bucket_map
+                .get_mut(&routing_bucket)
+                .expect("the planted bucket");
+            crate::engine::storage_bucket_internals::update_bucket_layout(1, &mut bucket, &block_keys);
+        })
     }
     let after_plant = engine.object_index_divergence_report();
     println!("  after the planted rebuild: {after_plant:?}");
@@ -429,43 +431,45 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
 
     // AND THE PLANTED ID IS GONE WITHOUT MOVING WHAT STAYED -- the reconcile, not an assignment.
     {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
-        let bucket = shard
-            .bucket_index
-            .bucket_map
-            .get(&routing_bucket)
-            .expect("the planted bucket");
-        assert_eq!(
-            None,
-            bucket.object_index.slot_of(&PLANTED),
-            "the planted id survived the reconcile"
-        );
-        let after: Vec<Option<u64>> = (0..bucket.object_index.slot_count())
-            .map(|slot| bucket.object_index.id_at(slot))
-            .collect();
-        assert_eq!(
-            slots_before, after,
-            "the reconcile left the bucket at {after:?} where it was {slots_before:?}. Removing an \
-             id it should never have held moved the ids that belonged there"
-        );
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            let bucket = shard
+                .bucket_index
+                .bucket_map
+                .get(&routing_bucket)
+                .expect("the planted bucket");
+            assert_eq!(
+                None,
+                bucket.object_index.slot_of(&PLANTED),
+                "the planted id survived the reconcile"
+            );
+            let after: Vec<Option<u64>> = (0..bucket.object_index.slot_count())
+                .map(|slot| bucket.object_index.id_at(slot))
+                .collect();
+            assert_eq!(
+                slots_before, after,
+                "the reconcile left the bucket at {after:?} where it was {slots_before:?}. Removing an \
+                 id it should never have held moved the ids that belonged there"
+            );
+        })
     }
 
     // --- ARM 2, THE NEGATIVE CONTROL: the same rebuild with nothing planted moves nothing. ---
     let before_clean = engine.object_index_divergence_report();
     {
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        // SPLIT BY NAMING THE FIELDS, the same way every production sweep does it: the rebuild
-        // reads the object lookup and this arm holds the bucket map mutably.
-        let index = &mut shard.bucket_index;
-        let block_keys =
-            crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
-        let mut bucket = index
-            .bucket_map
-            .get_mut(&routing_bucket)
-            .expect("the planted bucket");
-        crate::engine::storage_bucket_internals::update_bucket_layout(1, &mut bucket, &block_keys);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            // SPLIT BY NAMING THE FIELDS, the same way every production sweep does it: the rebuild
+            // reads the object lookup and this arm holds the bucket map mutably.
+            let index = &mut shard.bucket_index;
+            let block_keys =
+                crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
+            let mut bucket = index
+                .bucket_map
+                .get_mut(&routing_bucket)
+                .expect("the planted bucket");
+            crate::engine::storage_bucket_internals::update_bucket_layout(1, &mut bucket, &block_keys);
+        })
     }
     let after_clean = engine.object_index_divergence_report();
     println!("  after a clean rebuild of the same bucket: {after_clean:?}");
@@ -550,10 +554,11 @@ fn deleting_one_packed_row_keeps_its_neighbor_without_reporting_divergence() {
 
     let removed_id = crate::engine::hashing::stable_block_object_id(1, "hash", &removed_key);
     let surviving_id = crate::engine::hashing::stable_block_object_id(1, "hash", &surviving_key);
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let bucket = shard.bucket_index.bucket_map.get(&bucket_id).expect("bucket exists");
-    assert!(!bucket.object_index.contains(&removed_id));
-    assert!(bucket.object_index.contains(&surviving_id));
-    assert!(bucket.deleted_object_index.contains(&removed_id));
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let bucket = shard.bucket_index.bucket_map.get(&bucket_id).expect("bucket exists");
+        assert!(!bucket.object_index.contains(&removed_id));
+        assert!(bucket.object_index.contains(&surviving_id));
+        assert!(bucket.deleted_object_index.contains(&removed_id));
+    })
 }
