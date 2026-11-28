@@ -388,6 +388,36 @@ class TableClientTest(unittest.TestCase):
             self.assertEqual(timed_out.exception.code, "deadline_exceeded")
             channel.assert_not_called()
 
+    def test_timed_read_expires_waiting_for_another_route_refresh(self):
+        metadata = Mock()
+        refresh_started = Event()
+        finish_refresh = Event()
+        topology = TableTopology(
+            "kvcache", "model", 1, 73, 1, (Shard(73, None, (), 7, "primary"),),
+        )
+
+        def discover(*_, **__):
+            refresh_started.set()
+            self.assertTrue(finish_refresh.wait(3), "route refresh was not released")
+            return topology
+
+        metadata.table_topology.side_effect = discover
+        with TableClient(metadata, "kvcache", "model") as table, ThreadPoolExecutor(max_workers=1) as pool, patch(
+            "temporalstore_sdk.table.CommandClient",
+        ) as channel:
+            refresh = pool.submit(table.table_identity)
+            try:
+                self.assertTrue(refresh_started.wait(2), "route refresh did not start")
+                with self.assertRaises(MetadataError) as timed_out:
+                    table.batch_execute([get("key")], timeout_seconds=0.025)
+                self.assertEqual(timed_out.exception.code, "deadline_exceeded")
+                self.assertIn("routing wait", str(timed_out.exception))
+                metadata.table_topology.assert_called_once()
+                channel.assert_not_called()
+            finally:
+                finish_refresh.set()
+            self.assertEqual(refresh.result(timeout=2), table.table_identity())
+
     def test_stale_fence_expires_route_without_retrying_the_failed_write(self):
         metadata = Mock()
         metadata.table_topology.side_effect = [
@@ -529,6 +559,45 @@ class TableClientTest(unittest.TestCase):
                 self.assertEqual(second.execute.call_args.kwargs["load_version"], 8)
                 self.assertAlmostEqual(first.execute.call_args.kwargs["timeout_seconds"], 1.0)
                 self.assertAlmostEqual(second.execute.call_args.kwargs["timeout_seconds"], 0.4)
+
+    def test_unary_read_recovers_exact_bytes_from_the_refreshed_grpc_endpoint(self):
+        payload = bytes(range(256)) * 256
+        calls = []
+
+        class Datashard(TemporalStoreServiceServicer):
+            def __init__(self, role):
+                self.role = role
+
+            def ExecuteChecked(self, request, context):
+                calls.append((self.role, request.shard_id, request.load_version, request.command.string_get.key))
+                if self.role == "old":
+                    context.abort(grpc.StatusCode.UNAVAILABLE, "primary changed")
+                return commands.ExecuteResponse(
+                    status=commands.Status(ok=True), response=commands.CommandResponse(value=payload),
+                )
+
+        with ExitStack() as stack:
+            pool = stack.enter_context(ThreadPoolExecutor(max_workers=2))
+            topologies = []
+            for role, version in (("old", 7), ("new", 8)):
+                server = grpc.server(pool)
+                add_TemporalStoreServiceServicer_to_server(Datashard(role), server)
+                port = server.add_insecure_port("127.0.0.1:0")
+                server.start()
+                stack.callback(lambda server=server: server.stop(0).wait(timeout=3))
+                topologies.append(TableTopology("kvcache", "model", version, 73, 1, (
+                    Shard(73, None, (), version, f"127.0.0.1:{port}"),
+                )))
+
+            metadata = Mock()
+            metadata.table_topology.side_effect = topologies
+            with TableClient(metadata, "kvcache", "model", timeout_seconds=2) as table:
+                reply = table.execute(get("chunk"))
+
+        self.assertTrue(reply.status.ok)
+        self.assertEqual(reply.response.value, payload)
+        self.assertEqual(calls, [("old", 73, 7, "chunk"), ("new", 73, 8, "chunk")])
+        self.assertEqual(metadata.table_topology.call_count, 2)
 
     def test_missing_elected_leader_refreshes_before_normal_topology_ttl(self):
         metadata = Mock()
