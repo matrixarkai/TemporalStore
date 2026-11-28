@@ -95,9 +95,8 @@ fn what_the_mutation_counter_and_the_dirty_container_each_count() {
     });
     let mutations = plan.undumped_wal_objects;
     let log_records = plan.undumped_wal_records;
-    let (distinct_dirty_objects, dirty_buckets, bucket_total) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
+    let (distinct_dirty_objects, dirty_buckets, bucket_total) = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
         let dirty: BTreeSet<u32> = shard
             .bucket_index
             .bucket_map
@@ -110,7 +109,7 @@ fn what_the_mutation_counter_and_the_dirty_container_each_count() {
             dirty.len(),
             shard.bucket_index.bucket_map.len(),
         )
-    };
+    });
 
     println!();
     println!(

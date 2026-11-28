@@ -72,28 +72,29 @@ fn member_bytes(index: usize) -> Vec<u8> {
 
 /// Live blocks, live entries, and entries carrying an element name, for one set object.
 fn blocks_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut blocks = std::collections::BTreeSet::new();
-    let mut entries = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-                || block.deleted()
-            {
-                continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut blocks = std::collections::BTreeSet::new();
+        let mut entries = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                    || block.deleted()
+                {
+                    continue;
+                }
+                entries += 1;
+                blocks.insert((
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                ));
             }
-            entries += 1;
-            blocks.insert((
-                block.address.block_slab_id(),
-                block.address.offset(),
-                block.address.length(),
-            ));
         }
-    }
-    (blocks.len(), entries)
+        (blocks.len(), entries)
+    })
 }
 
 /// Run a whole sweep and report what survived it.

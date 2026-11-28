@@ -209,12 +209,11 @@ fn warm_eviction_pressure_checks_preserve_the_index_wire_image_without_a_census(
                 .ok
         );
     }
-    let wire_before = {
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&1).unwrap();
+    let wire_before = engine.shards.with_state_mut(1, |state| {
+        let shard = state.unwrap();
         let _ = shard.bucket_index.bucket_map.values_mut();
         serde_json::to_vec(&shard.bucket_index).unwrap()
-    };
+    });
     reset_bucket_index_resident_bytes_visits();
     let bytes = engine.bucket_index_resident_bytes(1);
     assert!(bytes > 0);
@@ -230,7 +229,8 @@ fn warm_eviction_pressure_checks_preserve_the_index_wire_image_without_a_census(
         assert_eq!(report.pressure_after, bytes);
     }
     assert_eq!(bucket_index_resident_bytes_visits(), 0);
-    let shards = engine.shards.read().unwrap();
-    let wire_after = serde_json::to_vec(&shards.get(&1).unwrap().bucket_index).unwrap();
+    let wire_after = engine.shards.with_state(1, |state| {
+        serde_json::to_vec(&state.unwrap().bucket_index).unwrap()
+    });
     assert_eq!(wire_before, wire_after);
 }

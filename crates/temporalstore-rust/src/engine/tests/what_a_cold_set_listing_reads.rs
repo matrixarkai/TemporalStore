@@ -136,17 +136,18 @@ fn listed(engine: &TemporalEngine) -> BTreeSet<Vec<u8>> {
 /// How many `set` blocks the bucket index holds, read off the engine's own index. Only one set
 /// object exists in this fixture, so a shard-wide count is that object's count.
 fn set_blocks(engine: &TemporalEngine) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut blocks = 0;
-    for (_routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        for (_handle, block) in bucket.block_index.iter() {
-            if block.model_id().as_str() == "set" {
-                blocks += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut blocks = 0;
+        for (_routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+            for (_handle, block) in bucket.block_index.iter() {
+                if block.model_id().as_str() == "set" {
+                    blocks += 1;
+                }
             }
         }
-    }
-    blocks
+        blocks
+    })
 }
 
 struct Row {

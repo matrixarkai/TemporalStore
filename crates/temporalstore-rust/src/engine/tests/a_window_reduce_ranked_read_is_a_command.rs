@@ -165,12 +165,11 @@ fn an_absent_key_and_an_expired_key_rank_nothing() {
 
     seed(&engine, &key);
     assert_eq!(rank(&engine, &key, spec(ALL, lane("shown"), 5)).rows.len(), 4, "CONTROL: the key is live");
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
         let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
         crate::engine::set_expiry(shard, key.clone(), past);
-    }
+    });
     let expired = rank(&engine, &key, spec(ALL, lane("shown"), 5));
     assert_eq!((expired.rows.len(), expired.refused.as_str()), (0, ""));
 }

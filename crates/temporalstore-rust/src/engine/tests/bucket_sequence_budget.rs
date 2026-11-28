@@ -280,24 +280,25 @@ struct Sequences {
 
 /// Read straight off the bucket index, PER BUCKET and never reduced here.
 fn sequences_by_bucket(engine: &TemporalEngine) -> Vec<Sequences> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let Some(shard) = shards.get(&SEQ_SHARD) else {
-        return Vec::new();
-    };
-    let mut out = shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .map(|(routing_bucket, bucket)| Sequences {
-            routing_bucket: *routing_bucket,
-            dirty: bucket.dirty(),
-            generation: bucket.dirty_generation,
-            wal_claim: bucket.first_dirty_wal_sequence,
-            index_log_claim: bucket.first_dirty_index_log_sequence,
-        })
-        .collect::<Vec<_>>();
-    out.sort_by_key(|row| row.routing_bucket);
-    out
+    engine.shards.with_state(SEQ_SHARD, |state| {
+        let Some(shard) = state else {
+            return Vec::new();
+        };
+        let mut out = shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| Sequences {
+                routing_bucket: *routing_bucket,
+                dirty: bucket.dirty(),
+                generation: bucket.dirty_generation,
+                wal_claim: bucket.first_dirty_wal_sequence,
+                index_log_claim: bucket.first_dirty_index_log_sequence,
+            })
+            .collect::<Vec<_>>();
+        out.sort_by_key(|row| row.routing_bucket);
+        out
+    })
 }
 
 /// min / max / how many are non-zero, over one of the three.
@@ -955,14 +956,15 @@ fn the_bound_on_each_sequence_is_the_stores_lifetime_not_the_corpus() {
 
 /// Overwrite one bucket's field on a live shard. The shard lock is the engine's own.
 fn perturb(engine: &TemporalEngine, routing_bucket: u32, edit: impl Fn(&mut BucketNode)) {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&SEQ_SHARD).expect("shard is loaded");
-    let mut bucket = shard
-        .bucket_index
-        .bucket_map
-        .get_mut(&routing_bucket)
-        .expect("the bucket this test chose is in the map");
-    edit(&mut bucket);
+    engine.shards.with_state_mut(SEQ_SHARD, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut bucket = shard
+            .bucket_index
+            .bucket_map
+            .get_mut(&routing_bucket)
+            .expect("the bucket this test chose is in the map");
+        edit(&mut bucket);
+    })
 }
 
 /// THE TWO TRANSIENT CLAIMS ARE LOAD-BEARING: clearing either one alone stops the plan.
@@ -1369,12 +1371,11 @@ fn what_hoisting_the_two_transient_claims_would_cost_at_two_corpus_sizes() {
         let (side_bytes, side_allocs) = clone_alloc(&side);
 
         // The map the sixteen bytes would come off, on the same instrument.
-        let (live_bytes, live_allocs, accounted) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&SEQ_SHARD).expect("shard is loaded");
+        let (live_bytes, live_allocs, accounted) = engine.shards.with_state(SEQ_SHARD, |state| {
+            let shard = state.expect("shard is loaded");
             let (bytes, allocs) = clone_alloc(&shard.bucket_index.bucket_map);
             (bytes, allocs, size_of::<BucketNode>() * rows.len())
-        };
+        });
         let residual = live_bytes as i64 - accounted as i64;
         let width_saving = 16 * rows.len();
 
@@ -1625,13 +1626,14 @@ fn assert_forgotten_slots_name_nothing(engine: &TemporalEngine, forgotten: &[Seq
 /// durable -- so "the structure no longer knows this bucket is dirty" is modelled by the shipped
 /// operation that stops knowing it, not by a hand-rolled edit to a private field.
 fn forget_dirtiness(engine: &TemporalEngine, routing_bucket: u32) -> usize {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&SEQ_SHARD).expect("shard is loaded");
-    let dropped = shard.dirty_objects.drain_buckets(&[routing_bucket]);
-    if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
-        bucket.set_dirty(false);
-    }
-    dropped
+    engine.shards.with_state_mut(SEQ_SHARD, |state| {
+        let shard = state.expect("shard is loaded");
+        let dropped = shard.dirty_objects.drain_buckets(&[routing_bucket]);
+        if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+            bucket.set_dirty(false);
+        }
+        dropped
+    })
 }
 
 /// A WRAPPED RING ERRS CONSERVATIVE ONLY WHILE IT STILL KNOWS WHICH BUCKETS ARE DIRTY -- and the

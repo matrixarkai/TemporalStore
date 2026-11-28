@@ -87,9 +87,8 @@ fn both_sources(
     engine: &TemporalEngine,
     key: &str,
 ) -> (std::collections::BTreeSet<String>, std::collections::BTreeSet<String>) {
-    let (durable, addresses) = {
-        let shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let (durable, addresses) = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let durable: std::collections::BTreeSet<String> = shard
             .bucket_index.hashes
             .get(key)
@@ -110,7 +109,7 @@ fn both_sources(
             }
         }
         (durable, addresses)
-    };
+    });
     assert!(
         !addresses.is_empty(),
         "DENOMINATOR: no block entries at all for {key}, so the derived side below would be empty \
@@ -254,9 +253,8 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     // and fold paths leave behind for a hash of six fields, read off the index rather than argued
     // from the doc: the map is KEYED by the handle, so its keys are the handles.
     // ---------------------------------------------------------------------------------------
-    let blocks: Vec<(u64, String, String)> = {
-        let shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let blocks: Vec<(u64, String, String)> = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut found = Vec::new();
         for bucket in shard.bucket_index.bucket_map.values() {
@@ -272,7 +270,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
         }
         found.sort();
         found
-    };
+    });
 
     println!("[fold-hash] the {} block entries this object holds:", blocks.len());
     for (handle, element_name, address) in &blocks {
@@ -482,32 +480,33 @@ fn every_hash_install_path_reports_a_touched_element_and_only_a_removal_does_not
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
-    let shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
 
-    assert!(!install.is_empty(), "an empty census bounds nothing");
-    for (name, command) in &install {
-        let touched = crate::engine::command_touched_container_elements(command, shard);
-        println!("[census] {name:<14} reports {} touched element(s)", touched.len());
-        assert!(
-            !touched.is_empty(),
-            "{name} installs a hash block and reports NO touched element, so its field reaches the \
+        assert!(!install.is_empty(), "an empty census bounds nothing");
+        for (name, command) in &install {
+            let touched = crate::engine::command_touched_container_elements(command, shard);
+            println!("[census] {name:<14} reports {} touched element(s)", touched.len());
+            assert!(
+                !touched.is_empty(),
+                "{name} installs a hash block and reports NO touched element, so its field reaches the \
              block index and never the durable map -- which is the gap that makes removing \
              `element_name` lose data",
-        );
-    }
+            );
+        }
 
-    // And the removal, which must report nothing for the stated reason.
-    let delete = Command::HashDelete {
-        key: "k".to_string(),
-        field: "f".to_string(),
-    };
-    let touched = crate::engine::command_touched_container_elements(&delete, shard);
-    println!("[census] {:<14} reports {} touched element(s)", "HashDelete", touched.len());
-    assert!(
-        touched.is_empty(),
-        "HashDelete reports a touched element. A removal that carries its field would have the \
+        // And the removal, which must report nothing for the stated reason.
+        let delete = Command::HashDelete {
+            key: "k".to_string(),
+            field: "f".to_string(),
+        };
+        let touched = crate::engine::command_touched_container_elements(&delete, shard);
+        println!("[census] {:<14} reports {} touched element(s)", "HashDelete", touched.len());
+        assert!(
+            touched.is_empty(),
+            "HashDelete reports a touched element. A removal that carries its field would have the \
          fold restore it whenever the fold still holds some other block at that address, which is \
          the resurrection the `live` gate is there to prevent",
-    );
+        );
+    });
 }

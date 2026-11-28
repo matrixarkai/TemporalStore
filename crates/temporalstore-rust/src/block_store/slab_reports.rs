@@ -26,6 +26,14 @@ fn catalog_state_to_slab_state(state: crate::index_log::SlabCatalogState) -> Blo
 }
 
 impl BlockStore {
+    pub(crate) fn checkpoint_slab_descriptors(
+        &self,
+        ids: &BTreeSet<u64>,
+    ) -> BTreeMap<u64, BlockStoreSlabDescriptor> {
+        let inner = self.inner.lock().expect("block store lock poisoned");
+        ids.iter().filter_map(|&id| inner.slabs.get(&id).cloned().map(|slab| (id, slab))).collect()
+    }
+
     pub fn slab_descriptors(&self) -> Vec<BlockStoreSlabDescriptor> {
         self.inner
             .lock()
@@ -113,16 +121,16 @@ impl BlockStore {
         catalog: &[crate::index_log::SlabCatalogEntry],
     ) -> Result<bool, BlockStoreError> {
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        let active = inner.block_slab_id;
         let mut changed = false;
         for entry in catalog {
             let state = catalog_state_to_slab_state(entry.state);
+            let active = inner.protects_writer_slab(entry.block_slab_id);
             match inner.slabs.get_mut(&entry.block_slab_id) {
                 Some(slab) => {
                     let before = slab.clone();
                     // Never override the live ACTIVE slab's disk-derived state (it holds the open
                     // write frontier); for every other slab adopt the folded lifecycle state.
-                    if entry.block_slab_id != active {
+                    if !active {
                         slab.state = state;
                     }
                     slab.created_unix_ms = slab.created_unix_ms.or(entry.created_unix_ms);
@@ -144,6 +152,7 @@ impl BlockStore {
                         BlockStoreSlabDescriptor {
                             stored_slab_id: entry.block_slab_id,
                             block_slab_id: entry.block_slab_id,
+                            owner_shard_id: None,
                             state,
                             physical_bytes: entry.physical_bytes,
                             logical_bytes: entry.logical_bytes,
@@ -208,7 +217,7 @@ impl BlockStore {
                 let bytes = LocalSlabBackend::new(&root)
                     .read_all(id, &mut tally)?
                     .into_bytes_charged_to_the_process_only();
-                reports.push(inspect_slab(&bytes, id));
+                reports.push(inspect_slab(&bytes, id, owned_writer::has_owned_format(&root, id)?));
             }
             reports
         };
