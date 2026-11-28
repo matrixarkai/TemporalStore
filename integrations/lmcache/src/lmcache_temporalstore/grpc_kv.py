@@ -333,10 +333,14 @@ class TableValueBackend(ValueBackend):
             # Proxy versions wrap unavailable data nodes in these status codes.
             retryable = retryable | {"status_error", "server_error"}
 
+        options = {}
+        if self._proxy is None and memoryview(payload).nbytes >= _BORROWED_LOAD_MIN_BYTES:
+            options["borrowed_load"] = True
+
         recheck_missing = True
         while (remaining := deadline - monotonic()) > 0:
             try:
-                replies = client.batch_execute([command], timeout_seconds=remaining)
+                replies = client.batch_execute([command], timeout_seconds=remaining, **options)
             except RaftPrimaryUnavailable:
                 pass
             except MetadataError as error:

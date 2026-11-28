@@ -114,6 +114,10 @@ fn invalid_response() -> ClientError {
     ClientError::Status("invalid or unsupported gRPC command response".to_owned())
 }
 
+#[cfg(test)]
+#[path = "feature_reduce_rpc_tests.rs"]
+mod feature_reduce_rpc_tests;
+
 fn decode_status(status: Option<v1::Status>) -> Result<Status, ClientError> {
     let status = status.ok_or_else(invalid_response)?;
     Ok(Status {

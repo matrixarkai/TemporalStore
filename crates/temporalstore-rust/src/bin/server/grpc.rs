@@ -80,12 +80,9 @@ pub(super) fn execute_raft_sdk_command(
 ) -> ExecuteResponse {
     if is_raft_read_command(&request.command) {
         return match sdk_read_target(raft)
-            .and_then(|cluster| cluster.read_from_replica(raft.local_node_id, request.command))
+            .and_then(|cluster| cluster.read_from_replica_with_status(raft.local_node_id, request.command))
         {
-            Ok(response) => ExecuteResponse {
-                status: Status::ok(),
-                response,
-            },
+            Ok(response) => response,
             Err(error) => ExecuteResponse {
                 status: sdk_read_error(error),
                 response: CommandResponse::Empty,
@@ -169,18 +166,12 @@ impl TemporalStoreSdkExecutor for DataNodeExecutor {
         if request.commands.len() > 1 && request.commands.iter().all(is_raft_read_command) {
             let count = request.commands.len();
             let result = sdk_read_target(raft).and_then(|cluster| {
-                cluster.read_batch_from_replica(raft.local_node_id, request.commands)
+                cluster.read_batch_from_replica_with_status(raft.local_node_id, request.commands)
             });
             return match result {
                 Ok(responses) => BatchExecuteResponse {
                     status: Status::ok(),
-                    responses: responses
-                        .into_iter()
-                        .map(|response| ExecuteResponse {
-                            status: Status::ok(),
-                            response,
-                        })
-                        .collect(),
+                    responses,
                 },
                 Err(error) => {
                     let status = sdk_read_error(error);
@@ -253,3 +244,7 @@ pub(super) fn start(
         })?;
     Ok(address)
 }
+
+#[cfg(test)]
+#[path = "typed_read_status_tests.rs"]
+mod typed_read_status_tests;
