@@ -698,6 +698,75 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(backend.stores_confirmed_by_read, 0)
 
 
+    def test_proxy_write_unknown_or_cancelled_is_never_confirmed_by_a_read(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        import grpc
+        from temporalstore.v1.temporalstore_pb2_grpc import (
+            ProxyServiceServicer, add_ProxyServiceServicer_to_server,
+        )
+        from temporalstore_sdk import MetadataError
+
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        payload = bytes(range(256)) * (36 * 1024)
+
+        class Proxy(ProxyServiceServicer):
+            def __init__(self, code):
+                self.code = code
+                self.commands = []
+                self.value = None
+
+            def ProxyExecuteStream(self, requests, context):
+                for request in requests:
+                    replies = []
+                    for command in request.batch_execute.commands:
+                        kind = command.WhichOneof("kind")
+                        self.commands.append(kind)
+                        if kind == "string_set_conditional":
+                            self.value = command.string_set_conditional.value
+                            if self.code == "cancelled":
+                                context.abort(grpc.StatusCode.CANCELLED, "grpc_timeout")
+                            replies.append(pb.CommandResponse(status=pb.Status(code=self.code)))
+                        elif kind == "string_get":
+                            replies.append(pb.CommandResponse(
+                                status=pb.Status(ok=True), value=self.value,
+                            ))
+                    yield pb.ProxyStreamEvent(
+                        batch_execute=pb.BatchExecuteResponse(responses=replies),
+                    )
+
+        for code in ("write_outcome_unknown", "write_durability_unconfirmed", "cancelled"):
+            with self.subTest(code=code), ThreadPoolExecutor(max_workers=2) as workers:
+                proxy = Proxy(code)
+                server = grpc.server(workers, options=[
+                    ("grpc.max_receive_message_length", 16 * 1024 * 1024),
+                    ("grpc.max_send_message_length", 16 * 1024 * 1024),
+                ])
+                add_ProxyServiceServicer_to_server(proxy, server)
+                port = server.add_insecure_port("127.0.0.1:0")
+                server.start()
+                backend = TableValueBackend(
+                    "grpc://127.0.0.1:1", "kvcache", 5, 1, 0,
+                    proxy_grpc_target=f"127.0.0.1:{port}",
+                )
+                try:
+                    key = Key("proxy-write")
+                    key.model_name, key.kv_rank = "fixture/model", 0
+                    error_type = grpc.RpcError if code == "cancelled" else MetadataError
+                    with self.assertRaises(error_type) as outcome:
+                        list(backend.iter_store_results([(key, memoryview(payload))]))
+                    if code == "cancelled":
+                        self.assertEqual(outcome.exception.code(), grpc.StatusCode.CANCELLED)
+                    else:
+                        self.assertEqual(outcome.exception.code, code)
+                    self.assertEqual(proxy.value, payload)
+                    self.assertEqual(proxy.commands, ["string_set_conditional"])
+                    self.assertEqual(backend.stores_confirmed_by_read, 0)
+                finally:
+                    backend.close()
+                    server.stop(0).wait()
+
     def test_store_reconciles_received_reply_before_propagating_batch_failure(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
         from temporalstore_sdk import MetadataError
