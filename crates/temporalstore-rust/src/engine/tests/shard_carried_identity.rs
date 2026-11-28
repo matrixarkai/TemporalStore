@@ -495,6 +495,13 @@ fn owner_install_body(source: &str, method: &str) -> String {
         .collect()
 }
 
+const OWNER_REPLACEMENT: &str = concat!(
+    "letreplacement=Arc::new(ShardStateOwner{",
+    "value:RwLock::new(Some(state)),",
+    "fast_read_recency:Mutex::new(BTreeMap::new()),",
+    "});",
+);
+
 fn owner_install_identity(installer: &str, facade: &str, registry: &str) -> Result<(), &'static str> {
     let publish = "drop(self.shards.install(shard_id,state));";
     let Some(publication) = installer.find(publish) else {
@@ -513,14 +520,28 @@ fn owner_install_identity(installer: &str, facade: &str, registry: &str) -> Resu
         return Err("facade must forward the stamped state and shard ID");
     }
     let store = "entries.insert(shard_id,replacement);";
-    let replacement = "letreplacement=Arc::new(RwLock::new(Some(state)));";
+    // One fresh binding and its two publication uses; extra mentions can shadow the owner.
+    if registry.matches("replacement").count() != 3
+        || registry.matches(OWNER_REPLACEMENT).count() != 1
+        || !registry.find(OWNER_REPLACEMENT).zip(registry.find(store))
+            .is_some_and(|(build, write)| build < write)
+    {
+        return Err("registry must wrap the stamped state in a fresh owner before publication");
+    }
     if registry.matches("entries.insert(").count() != 2
         || registry.matches(store).count() != 2
-        || !registry.find(replacement).zip(registry.find(store)).is_some_and(|(build, write)| build < write)
     {
         return Err("registry must publish the replacement at the same shard ID on both paths");
     }
     Ok(())
+}
+
+fn setter_call_count(source: &str) -> usize {
+    let code: String = source.lines().flat_map(|line| {
+        line.split("//").next().unwrap_or_default().chars().filter(|c| !c.is_whitespace())
+    }).collect();
+    code.matches("set_shard_id(").count()
+        .saturating_sub(code.matches("fnset_shard_id(").count())
 }
 
 /// `install_shard_state` STAMPS THE ID, AND NO OTHER PRODUCTION SITE STAMPS ONE.
@@ -577,8 +598,45 @@ fn the_only_production_site_that_installs_a_shard_stamps_the_id_it_inserts_under
         ),
         Err("registry must publish the replacement at the same shard ID on both paths"),
     );
+    for changed in [
+        registry.replacen("Some(state)", "Some(other_state)", 1),
+        registry.replacen("Some(state)", "None", 1),
+        registry.replacen("Mutex::new(BTreeMap::new())", "peer_recency.clone()", 1),
+        registry.replacen(OWNER_REPLACEMENT, "letreplacement=Arc::new(RwLock::new(Some(state)));", 1),
+        format!("{}{}", registry.replacen(OWNER_REPLACEMENT, "", 1), OWNER_REPLACEMENT),
+        format!("{}{}", OWNER_REPLACEMENT, registry),
+        registry.replacen("letretired=old.take();", concat!(
+            "letretired=old.take();",
+            "letreplacement:Arc<ShardStateOwner<T>>=Arc::clone(&previous.state);",
+        ), 1),
+        registry.replacen("letretired=old.take();", concat!(
+            "letretired=old.take();",
+            "letmutreplacement=Arc::clone(&previous.state);",
+        ), 1),
+    ] {
+        assert_ne!(changed, registry, "the control must alter the actual owner installation body");
+        assert_eq!(
+            owner_install_identity(&installer, &facade, &changed),
+            Err("registry must wrap the stamped state in a fresh owner before publication"),
+        );
+    }
+    assert_eq!(
+        owner_install_identity(&installer, &facade, &registry.replacen(
+            "entries.insert(shard_id,replacement);", "entries.insert(shard_id,previous.state.clone());", 1,
+        )),
+        Err("registry must wrap the stamped state in a fresh owner before publication"),
+    );
 
-    // No other production file stamps an id. A second setter call site could stamp a shard with
+    assert_eq!(setter_call_count(&engine), 1);
+    assert_eq!(setter_call_count(&format!(
+        "{engine}\nfn another_site() {{ state.set_shard_id(other_id); }}\n",
+    )), 2, "a second site in engine.rs must not collapse to the same filename");
+    assert_eq!(setter_call_count("state.set_shard_id(1); state.set_shard_id(2);"), 2);
+    assert_eq!(setter_call_count("state . set_shard_id\n (1);"), 1);
+    assert_eq!(setter_call_count("fn set_shard_id(&mut self) { self.set_shard_id(1); }"), 1);
+    assert_eq!(setter_call_count("// state.set_shard_id(1);"), 0);
+
+    // No other production site stamps an id. A second setter call site could stamp a shard with
     // something other than the key it is served under, which is the one failure this field must
     // not have.
     let mut pending = vec![root.clone()];
@@ -611,14 +669,8 @@ fn the_only_production_site_that_installs_a_shard_stamps_the_id_it_inserts_under
                 .rsplit_once("/src/")
                 .map(|(_, tail)| tail.to_string())
                 .unwrap_or(display.clone());
-            for line in text.lines() {
-                // The definition itself is not a call site.
-                if line.contains("fn set_shard_id") {
-                    continue;
-                }
-                if line.contains("set_shard_id(") {
-                    setter_sites.push(relative.clone());
-                }
+            for _ in 0..setter_call_count(&text) {
+                setter_sites.push(relative.clone());
             }
         }
     }
@@ -635,7 +687,6 @@ fn the_only_production_site_that_installs_a_shard_stamps_the_id_it_inserts_under
         "the scan excluded {excluded} test files; this crate has more than ten"
     );
     setter_sites.sort();
-    setter_sites.dedup();
     println!(
         "  {files_scanned} production files scanned, {excluded} test files excluded, setter called \
          in {setter_sites:?}"

@@ -58,6 +58,10 @@ pub(super) fn with_dirty_plan_captures<R>(run: impl FnOnce() -> R) -> (R, Vec<Di
     (result, captures)
 }
 
+#[cfg(test)]
+#[path = "eviction_owner_recency_tests.rs"]
+mod eviction_owner_recency_tests;
+
 /// How many dirty-object keys the dump drain has looked at, across every call.
 ///
 /// The drain's cost is not visible from outside -- it is a closure inside a `retain` -- and
@@ -2800,9 +2804,6 @@ impl TemporalEngine {
         dump_before_evict: bool,
         delete_drop: bool,
     ) -> StorageEvictionReport {
-        // Reads served under the shared shard lock left their recency stamps aside; bring them into
-        // the shards before any bucket is ranked, or a bucket read all day would look idle.
-        self.fold_fast_read_recency();
         // THE SIGNAL, AND IT IS THIS SHARD'S. One term, `bucket_index_resident_bytes(shard_id)`,
         // and that is the whole input.
         //
@@ -2857,6 +2858,9 @@ impl TemporalEngine {
                 ..StorageEvictionReport::default()
             };
         }
+        // Recency does not contribute to resident index bytes. A declined gate need not fold it;
+        // an admitted round must fold this owner before ranking, without waiting on peer owners.
+        self.fold_fast_read_recency_for_shard(shard_id);
         let victims = if self
             .evict_sampled_lru
             .load(std::sync::atomic::Ordering::Relaxed)

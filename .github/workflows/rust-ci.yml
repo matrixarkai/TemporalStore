@@ -126,6 +126,48 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
+      - name: cargo test (owner-local eviction recency and identity, hard gate)
+        timeout-minutes: 30
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          passed_tests=0
+          for t in \
+            engine::shard_state_registry::tests::coherent_mutation_visits_owners_in_key_order \
+            engine::shard_state_registry::tests::retired_stamp_storage_is_reclaimed_with_the_last_captured_handle \
+            engine::shard_state_registry::tests::retired_waiter_and_cleanup_cannot_rebind_to_a_replacement \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::a_captured_recency_owner_cannot_mutate_its_replacement \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::a_fast_hot_read_is_folded_before_sampled_victim_ranking \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::a_parked_peer_stamp_mutex_does_not_block_target_read_or_eviction \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::declined_pressure_and_bound_gates_do_not_fold_either_owner \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::late_fast_plan_stamps_only_its_captured_incarnation \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::pending_repeated_stamps_keep_the_maximum_before_and_after_fold \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::pressured_eviction_and_resident_bound_leave_parked_peer_stamps_pending \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::repeated_same_key_stamps_preserve_the_later_owner_recency \
+            engine::storage_lifecycle_methods::eviction_owner_recency_tests::unload_reload_discards_old_owner_stamps_without_losing_new_reads \
+            engine::tests::shard_carried_identity::a_shard_state_that_never_entered_the_engine_carries_no_shard_id \
+            engine::tests::shard_carried_identity::every_served_shard_carries_the_id_its_owner_routes_it_under \
+            engine::tests::shard_carried_identity::the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blocks \
+            engine::tests::shard_carried_identity::the_only_production_site_that_installs_a_shard_stamps_the_id_it_inserts_under \
+            engine::tests::shard_carried_identity::the_shard_id_field_changes_no_serialized_byte
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee /tmp/owner-eviction-recency.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/owner-eviction-recency.log || true)
+            one=$(grep -Fxc 'running 1 test' /tmp/owner-eviction-recency.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/owner-eviction-recency.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/owner-eviction-recency.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/owner-eviction-recency.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/owner-eviction-recency.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected exactly one named test to pass with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 17 ] || { echo '::error::expected all 17 owner recency and identity tests to execute and pass'; exit 1; }
+
       # Direct mode over the shared client SDK is part of the default build, so the default job
       # builds it and runs its tests: the gateway-versus-direct fixtures and the direct door.
       - name: Direct mode over the shared client SDK (default build)
