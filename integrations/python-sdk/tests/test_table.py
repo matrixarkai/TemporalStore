@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from contextlib import ExitStack
 from threading import Event
 import unittest
@@ -202,6 +202,104 @@ class TableClientTest(unittest.TestCase):
             [call.kwargs["timeout_seconds"] for call in channel.return_value.batch_execute.call_args_list],
             [0.75, 0.5],
         )
+
+    def test_timed_cache_insert_window_includes_discovery_and_all_shards(self):
+        metadata = Mock()
+        topology = TableTopology("kvcache", "model", 1, 73, 2, (
+            Shard(73, None, (), 7, "first"), Shard(74, None, (), 8, "second"),
+        ))
+        first, second = Mock(), Mock()
+        inserts = [commands.Command(string_set_conditional=commands.StringSetConditional(
+            key=key, value=b"payload", condition=commands.STRING_SET_CONDITION_IF_NOT_EXISTS,
+        )) for key in ("alpha", "123456789")]
+        elapsed = 0.0
+
+        def discover(*_, **kwargs):
+            nonlocal elapsed
+            elapsed += 0.25
+            return topology
+
+        def insert(*_, **kwargs):
+            nonlocal elapsed
+            elapsed = 1.0
+            return commands.BatchExecuteResponse(
+                responses=[commands.CommandResponse(status=commands.Status(ok=True), count=1)],
+            )
+
+        metadata.table_topology.side_effect = discover
+        first.batch_execute.side_effect = insert
+        second.batch_execute.side_effect = insert
+        with patch("temporalstore_sdk.table.monotonic", side_effect=lambda: elapsed), patch(
+            "temporalstore_sdk.table.CommandClient", side_effect=[first, second],
+        ), TableClient(metadata, "kvcache", "model", preserve_insert_outcomes=True) as table:
+            accepted, expired = table.batch_execute(inserts, timeout_seconds=1)
+
+        metadata.table_topology.assert_called_once_with("kvcache", "model", timeout_seconds=1)
+        self.assertEqual(first.batch_execute.call_args.kwargs["timeout_seconds"], 0.75)
+        self.assertEqual(accepted.count, 1)
+        self.assertEqual(expired.status.code, "deadline_exceeded")
+        second.batch_execute.assert_not_called()
+
+    def test_uncertain_insert_can_finish_while_metadata_refresh_is_in_flight(self):
+        metadata = Mock()
+        topology = TableTopology("kvcache", "model", 1, 73, 1, (
+            Shard(73, None, (), 7, "first", uses_raft_route=True),
+        ))
+        successor = TableTopology("kvcache", "model", 2, 73, 1, (
+            Shard(73, None, (), 8, "second", uses_raft_route=True),
+        ))
+        started, reply = Event(), Event()
+        refreshing, finish_refresh = Event(), Event()
+
+        class Deadline(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.DEADLINE_EXCEEDED
+
+            def details(self):
+                return "insert deadline expired"
+
+        def discover(*_, **kwargs):
+            if metadata.table_topology.call_count == 1:
+                return topology
+            refreshing.set()
+            if not finish_refresh.wait(4):
+                raise AssertionError("test did not release topology refresh")
+            return successor
+
+        def write(*_, **kwargs):
+            started.set()
+            if not reply.wait(4):
+                raise AssertionError("test did not release insert response")
+            raise Deadline()
+
+        command = commands.Command(string_set_conditional=commands.StringSetConditional(
+            key="alpha", value=b"value", condition=commands.STRING_SET_CONDITION_IF_NOT_EXISTS,
+        ))
+        metadata.table_topology.side_effect = discover
+        with ThreadPoolExecutor(max_workers=2) as workers, patch(
+            "temporalstore_sdk.table.CommandClient",
+        ) as client, TableClient(metadata, "kvcache", "model",
+                                preserve_insert_outcomes=True) as table:
+            self.assertIs(table._current_topology(), topology)
+            client.return_value.batch_execute.side_effect = write
+            pending = workers.submit(table.batch_execute, [command], timeout_seconds=2)
+            try:
+                self.assertTrue(started.wait(2))
+                table._invalidate_route(topology)
+                refresh = workers.submit(table._current_topology)
+                self.assertTrue(refreshing.wait(2))
+                reply.set()
+                try:
+                    [result] = pending.result(timeout=0.5)
+                except TimeoutError as error:
+                    self.fail(f"insert completion waited for the metadata refresh: {error}")
+                self.assertEqual(result.status.code, "write_outcome_unknown")
+            finally:
+                reply.set()
+                finish_refresh.set()
+            self.assertIs(refresh.result(timeout=2), successor)
+            self.assertIs(table._current_topology(), successor)
+            self.assertEqual(metadata.table_topology.call_count, 2)
 
     def test_timed_partial_read_preserves_a_reply_when_another_shard_cannot_start(self):
         metadata = Mock()
