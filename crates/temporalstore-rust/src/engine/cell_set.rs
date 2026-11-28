@@ -50,7 +50,7 @@ pub(crate) const MAX_KEY_DIMENSIONS: usize = 8;
 /// Labels a cell may carry.
 pub(crate) const MAX_LABELS_PER_CELL: usize = 4;
 /// Lanes a cell may carry.
-pub(crate) const MAX_LANES_PER_CELL: usize = 16;
+pub(crate) const MAX_LANES_PER_CELL: usize = 32;
 /// Bytes in a bytes member or a bytes entity.
 pub(crate) const MAX_MEMBER_BYTES: usize = 256;
 /// Bytes in a text dimension, a text entity, or the namespace.
@@ -572,7 +572,15 @@ fn dim_from_tag(tag: u64) -> Option<DimType> {
     })
 }
 
+#[inline(always)]
 fn read_varint(bytes: &[u8], cursor: &mut usize) -> Result<u64, String> {
+    // A one-byte varint is what nearly every length, tag and small value is.
+    if let Some(&byte) = bytes.get(*cursor) {
+        if byte < 0x80 {
+            *cursor += 1;
+            return Ok(u64::from(byte));
+        }
+    }
     decode_varint(bytes, cursor).ok_or_else(|| "truncated or overlong varint".to_string())
 }
 
@@ -934,18 +942,18 @@ pub(crate) struct MergeCounts {
     pub(crate) merged: usize,
 }
 
-/// Merges `incoming` into `snapshot` (kept sorted by member) under the header's lane reducers.
+/// Merges `incoming` into `sample` (kept sorted by member) under the header's lane reducers.
 /// Nothing is changed when the result would hold more than [`MAX_CELLS_PER_SAMPLE`] cells or any
 /// incoming cell is invalid. A member that appears twice in `incoming` merges twice.
-pub(crate) fn merge_into_sample(header: &CellHeader, snapshot: &mut Vec<Cell>, incoming: &[Cell]) -> Result<MergeCounts, String> {
+pub(crate) fn merge_into_sample(header: &CellHeader, sample: &mut Vec<Cell>, incoming: &[Cell]) -> Result<MergeCounts, String> {
     validate_cells_in_request(incoming.len())?;
-    if !is_strictly_ascending(snapshot) {
+    if !is_strictly_ascending(sample) {
         return Err("stored sample is not strictly ascending by member".to_string());
     }
     for cell in incoming {
         validate_cell(header, cell)?;
     }
-    let mut next = snapshot.clone();
+    let mut next = sample.clone();
     let mut counts = MergeCounts::default();
     for cell in incoming {
         match next.binary_search_by(|have| have.member.cmp(&cell.member)) {
@@ -965,7 +973,7 @@ pub(crate) fn merge_into_sample(header: &CellHeader, snapshot: &mut Vec<Cell>, i
             }
         }
     }
-    *snapshot = next;
+    *sample = next;
     Ok(counts)
 }
 
@@ -986,27 +994,27 @@ pub(crate) fn encode_value(header: &CellHeader, cells: &[Cell]) -> Result<Vec<u8
 /// The header and the still-packed sample bytes of a value, the header still undecoded.
 pub(crate) fn split_value_raw(bytes: &[u8]) -> Result<(&[u8], &[u8]), String> {
     let mut cursor = 0;
-    let (mut header, mut snapshot) = (None, None);
+    let (mut header, mut sample) = (None, None);
     while cursor < bytes.len() {
         let (field, wire) = read_tag(bytes, &mut cursor)?;
         match (field, wire) {
             (1, 2) if header.is_none() => header = Some(read_bytes(bytes, &mut cursor)?),
-            (2, 2) if snapshot.is_none() => snapshot = Some(read_bytes(bytes, &mut cursor)?),
+            (2, 2) if sample.is_none() => sample = Some(read_bytes(bytes, &mut cursor)?),
             _ => return Err(format!("unexpected or repeated value field {field}/{wire}")),
         }
     }
-    Ok((header.ok_or("value has no header")?, snapshot.unwrap_or(&[])))
+    Ok((header.ok_or("value has no header")?, sample.unwrap_or(&[])))
 }
 
 /// The header and the still-packed sample bytes of a value.
 pub(crate) fn split_value(bytes: &[u8]) -> Result<(CellHeader, &[u8]), String> {
-    let (header, snapshot) = split_value_raw(bytes)?;
-    Ok((CellHeader::decode(header)?, snapshot))
+    let (header, sample) = split_value_raw(bytes)?;
+    Ok((CellHeader::decode(header)?, sample))
 }
 
 pub(crate) fn decode_value(bytes: &[u8]) -> Result<(CellHeader, Vec<Cell>), String> {
-    let (header, snapshot) = split_value(bytes)?;
-    let cells = decode_sample(&header, snapshot)?;
+    let (header, sample) = split_value(bytes)?;
+    let cells = decode_sample(&header, sample)?;
     Ok((header, cells))
 }
 
@@ -1032,9 +1040,9 @@ pub(crate) fn merge_request(
     let existing = match existing {
         None => Existing::Nothing,
         Some(bytes) => {
-            let (header, snapshot) = split_value(bytes)?;
+            let (header, sample) = split_value(bytes)?;
             own = header;
-            Existing::Stored { header: &own, snapshot }
+            Existing::Stored { header: &own, sample }
         }
     };
     let (effective, cells, counts) = merge_point(newest.as_ref(), existing, request)?;
@@ -1105,6 +1113,17 @@ fn field_len(len: usize) -> usize {
 fn count_cells(bytes: &[u8]) -> usize {
     let (mut cursor, mut count) = (0, 0);
     while cursor < bytes.len() {
+        // A cell as the encoder writes it: the tag byte, a one-byte length, the record.
+        if bytes[cursor] == 0x0a {
+            if let Some(&len) = bytes.get(cursor + 1) {
+                let end = cursor + 2 + usize::from(len);
+                if len < 0x80 && end <= bytes.len() {
+                    cursor = end;
+                    count += 1;
+                    continue;
+                }
+            }
+        }
         let Ok((field, wire)) = read_tag(bytes, &mut cursor) else { break };
         let step = match (field, wire) {
             (1, 2) => read_bytes(bytes, &mut cursor).map(|_| count += 1),
@@ -1135,6 +1154,89 @@ fn unpack_into<T>(
     Ok(())
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Cells read through the fast path in this thread, which a test reads to know the path ran.
+    pub(crate) static FAST_RECORDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Appends a packed run of varints, at most `limit` of them. `false`, with nothing it pushed taken
+/// back, when there are more, or one is damaged: the caller then reads the cell field by field and
+/// says what is wrong.
+#[inline(always)]
+fn unpack_within<T>(packed: &[u8], limit: usize, out: &mut Vec<T>, convert: impl Fn(u64) -> T) -> bool {
+    let (mut cursor, mut count) = (0usize, 0usize);
+    while cursor < packed.len() {
+        if count == limit {
+            return false;
+        }
+        let Ok(value) = read_varint(packed, &mut cursor) else { return false };
+        out.push(convert(value));
+        count += 1;
+    }
+    true
+}
+
+/// Reads one cell written as the encoder writes it -- the member as a varint (tag 8), then the
+/// packed labels (tag 26) if it has any, then the packed lanes (tag 34) if it has any, and nothing
+/// else -- and appends it. `false`, with `out` and `previous` as they were, for any other shape (a
+/// bytes member, a field out of order or repeated, a count over the header's, a damaged varint),
+/// which the caller reads field by field, so every refusal is worded where it always was.
+#[inline(always)]
+fn read_canonical_record(
+    record: &[u8],
+    delta: bool,
+    previous: &mut u64,
+    labels_per_cell: usize,
+    lanes_per_cell: usize,
+    out: &mut FlatCells,
+) -> bool {
+    if record.first() != Some(&0x08) {
+        return false;
+    }
+    let mut at = 1usize;
+    let Ok(raw) = read_varint(record, &mut at) else { return false };
+    let member = if delta {
+        match previous.checked_add(raw) {
+            Some(value) => value,
+            None => return false,
+        }
+    } else {
+        raw
+    };
+    let mut labels: &[u8] = &[];
+    if record.get(at) == Some(&0x1a) {
+        at += 1;
+        let Ok(packed) = read_bytes(record, &mut at) else { return false };
+        labels = packed;
+    }
+    let mut lanes: &[u8] = &[];
+    if record.get(at) == Some(&0x22) {
+        at += 1;
+        let Ok(packed) = read_bytes(record, &mut at) else { return false };
+        lanes = packed;
+    }
+    if at != record.len() {
+        return false;
+    }
+    let (labels_at, lanes_at) = (out.labels.len(), out.lanes.len());
+    if !unpack_within(labels, labels_per_cell, &mut out.labels, |v| v) {
+        out.labels.truncate(labels_at);
+        return false;
+    }
+    if !unpack_within(lanes, lanes_per_cell, &mut out.lanes, unzigzag) {
+        out.labels.truncate(labels_at);
+        out.lanes.truncate(lanes_at);
+        return false;
+    }
+    // Values the cell did not carry (a sample written under an earlier header) read as zero.
+    out.labels.resize(labels_at + labels_per_cell, 0);
+    out.lanes.resize(lanes_at + lanes_per_cell, 0);
+    out.members.push(FlatMember::U64(member));
+    *previous = member;
+    true
+}
+
 impl FlatCells {
     /// No cells, with room for `room` of them.
     pub(crate) fn empty(header: &CellHeader, room: usize) -> FlatCells {
@@ -1157,6 +1259,18 @@ impl FlatCells {
     /// Reads what [`decode_sample`] reads, under the same limits, with room for `room` more
     /// cells than `bytes` holds so a merge into it does not have to grow it.
     pub(crate) fn decode(header: &CellHeader, bytes: &[u8], room: usize) -> Result<FlatCells, String> {
+        FlatCells::decode_with(header, bytes, room, true)
+    }
+
+    /// [`FlatCells::decode`] reading every cell field by field, never through the fast path for a
+    /// cell written as the encoder writes it. The answer is the same by construction and the tests
+    /// compare the two over every shape and every damage they can make.
+    #[cfg(test)]
+    pub(crate) fn decode_by_fields(header: &CellHeader, bytes: &[u8], room: usize) -> Result<FlatCells, String> {
+        FlatCells::decode_with(header, bytes, room, false)
+    }
+
+    fn decode_with(header: &CellHeader, bytes: &[u8], room: usize, fast: bool) -> Result<FlatCells, String> {
         let mut out = FlatCells::empty(header, count_cells(bytes).saturating_add(room));
         let (labels_per_cell, lanes_per_cell) = (out.labels_per_cell, out.lanes_per_cell);
         let mut cursor = 0;
@@ -1177,8 +1291,15 @@ impl FlatCells {
             if (field, wire) != (1, 2) {
                 return Err(format!("unknown sample field {field}/{wire}"));
             }
-            validate_cells_in_sample(out.members.len() + 1)?;
+            if out.members.len() >= MAX_CELLS_PER_SAMPLE {
+                validate_cells_in_sample(out.members.len() + 1)?;
+            }
             let record = read_bytes(bytes, &mut cursor)?;
+            if fast && read_canonical_record(record, delta, &mut previous, labels_per_cell, lanes_per_cell, &mut out) {
+                #[cfg(test)]
+                FAST_RECORDS.with(|n| n.set(n.get() + 1));
+                continue;
+            }
             let (labels_at, lanes_at, arena_at) = (out.labels.len(), out.lanes.len(), out.arena.len());
             let mut at = 0;
             let mut member = None;
@@ -1569,7 +1690,7 @@ pub(crate) enum Existing<'a> {
     /// Nothing is stored or planned there.
     Nothing,
     /// A stored value: its header, and its still-packed sample.
-    Stored { header: &'a CellHeader, snapshot: &'a [u8] },
+    Stored { header: &'a CellHeader, sample: &'a [u8] },
     /// Cells an earlier point of the same request already merged there, with the header they were
     /// merged under.
     Planned { header: std::rc::Rc<CellHeader>, cells: FlatCells },
@@ -1626,12 +1747,12 @@ pub(crate) fn merge_point_known(
     };
     let mut cells = match existing {
         Existing::Nothing => FlatCells::empty(&effective, incoming.len()),
-        Existing::Stored { header, snapshot } => {
+        Existing::Stored { header, sample } => {
             if *header != *effective {
                 // The stored sample may only be an earlier, shorter form of the effective header.
                 check_header(header, &effective)?;
             }
-            FlatCells::decode(&effective, snapshot, incoming.len())?
+            FlatCells::decode(&effective, sample, incoming.len())?
         }
         Existing::Planned { header, mut cells } => {
             if *header != *effective {
@@ -1767,7 +1888,7 @@ mod tests {
     }
 
     #[test]
-    fn a_header_round_trips_and_a_snapshot_round_trips_with_values_only_this_path_makes() {
+    fn a_header_round_trips_and_a_sample_round_trips_with_values_only_this_path_makes() {
         let h = header();
         assert_eq!(CellHeader::decode(&h.encode().unwrap()).unwrap(), h);
         let cells = vec![
@@ -1787,7 +1908,7 @@ mod tests {
     }
 
     #[test]
-    fn an_old_snapshot_reads_a_new_trailing_lane_and_label_as_zero() {
+    fn an_old_sample_reads_a_new_trailing_lane_and_label_as_zero() {
         let old = header();
         let cells = vec![Cell { member: Member::U64(5), labels: vec![9], lanes: vec![4, 6] }];
         let bytes = encode_sample(&old, &cells).unwrap();
@@ -1861,12 +1982,12 @@ mod tests {
     #[test]
     fn merging_applies_each_lane_reducer_per_member_and_replaces_labels() {
         let h = header();
-        let mut snapshot = Vec::new();
+        let mut sample = Vec::new();
         let cell = |m: u64, slot: u64, watch: i64, peak: i64| Cell { member: Member::U64(m), labels: vec![slot], lanes: vec![watch, peak] };
-        merge_into_sample(&h, &mut snapshot, &[cell(2, 1, 10, 3), cell(1, 1, 1, 1)]).unwrap();
-        merge_into_sample(&h, &mut snapshot, &[cell(2, 9, 5, 8), cell(2, 9, 5, 2)]).unwrap();
-        assert_eq!(snapshot, vec![cell(1, 1, 1, 1), cell(2, 9, 20, 8)]);
-        assert!(snapshot.windows(2).all(|w| w[0].member < w[1].member), "sorted by member");
+        merge_into_sample(&h, &mut sample, &[cell(2, 1, 10, 3), cell(1, 1, 1, 1)]).unwrap();
+        merge_into_sample(&h, &mut sample, &[cell(2, 9, 5, 8), cell(2, 9, 5, 2)]).unwrap();
+        assert_eq!(sample, vec![cell(1, 1, 1, 1), cell(2, 9, 20, 8)]);
+        assert!(sample.windows(2).all(|w| w[0].member < w[1].member), "sorted by member");
     }
 
     /// One row per bound: (name, refusal at limit + 1, acceptance at exactly the limit).
@@ -1947,7 +2068,7 @@ mod tests {
         }
         assert_eq!(rows.len(), 11);
         // The limits are the ones the design states.
-        assert_eq!((MAX_KEY_DIMENSIONS, MAX_LABELS_PER_CELL, MAX_LANES_PER_CELL), (8, 4, 16));
+        assert_eq!((MAX_KEY_DIMENSIONS, MAX_LABELS_PER_CELL, MAX_LANES_PER_CELL), (8, 4, 32));
         assert_eq!((MAX_MEMBER_BYTES, MAX_TEXT_DIMENSION_BYTES, MAX_NAME_BYTES), (256, 256, 64));
         assert_eq!((MAX_CELLS_PER_REQUEST, MAX_CELLS_PER_SAMPLE, MAX_TOP_K), (1024, 4096, 1000));
         // Zero is refused where at least one is required.
@@ -1957,7 +2078,7 @@ mod tests {
     }
 
     #[test]
-    fn a_decoded_snapshot_is_held_to_the_same_bounds() {
+    fn a_decoded_sample_is_held_to_the_same_bounds() {
         let h = CellHeader { labels: vec![], lanes: vec![LaneSpec { name: "n".into(), reducer: LaneReducer::Sum }], ..header() };
         let record = |m: u64| {
             let mut r = Vec::new();
@@ -1974,17 +2095,17 @@ mod tests {
     }
 
     #[test]
-    fn a_merge_that_would_overflow_the_snapshot_changes_nothing() {
+    fn a_merge_that_would_overflow_the_sample_changes_nothing() {
         let h = CellHeader { labels: vec![], lanes: vec![LaneSpec { name: "n".into(), reducer: LaneReducer::Sum }], ..header() };
-        let mut snapshot: Vec<Cell> = (0..MAX_CELLS_PER_SAMPLE as u64).map(|m| Cell { member: Member::U64(m), labels: vec![], lanes: vec![1] }).collect();
-        let before = snapshot.clone();
+        let mut sample: Vec<Cell> = (0..MAX_CELLS_PER_SAMPLE as u64).map(|m| Cell { member: Member::U64(m), labels: vec![], lanes: vec![1] }).collect();
+        let before = sample.clone();
         let fresh = Cell { member: Member::U64(u64::MAX), labels: vec![], lanes: vec![1] };
-        assert!(merge_into_sample(&h, &mut snapshot, &[fresh]).is_err());
-        assert_eq!(snapshot, before);
+        assert!(merge_into_sample(&h, &mut sample, &[fresh]).is_err());
+        assert_eq!(sample, before);
         // A merge into an existing member at the limit is fine.
         let existing = Cell { member: Member::U64(0), labels: vec![], lanes: vec![4] };
-        merge_into_sample(&h, &mut snapshot, &[existing]).unwrap();
-        assert_eq!(snapshot[0].lanes, vec![5]);
+        merge_into_sample(&h, &mut sample, &[existing]).unwrap();
+        assert_eq!(sample[0].lanes, vec![5]);
     }
 
     fn one_lane_header() -> CellHeader {
@@ -2032,7 +2153,7 @@ mod tests {
     }
 
     #[test]
-    fn a_request_with_another_header_is_refused_and_one_that_adds_a_lane_upgrades_the_stored_snapshot() {
+    fn a_request_with_another_header_is_refused_and_one_that_adds_a_lane_upgrades_the_stored_sample() {
         let h = one_lane_header();
         let (stored, _, _) = merge_request(None, None, &request(&h, &[(1, 10)])).unwrap();
         let mut renamed = h.clone();
@@ -2296,7 +2417,7 @@ mod tests {
             None => requested,
             Some(stored) => check_header(stored, &requested)?.unwrap_or_else(|| stored.clone()),
         };
-        let mut snapshot = match existing {
+        let mut sample = match existing {
             None => Vec::new(),
             Some(bytes) => {
                 let (own, packed) = split_value(bytes)?;
@@ -2306,8 +2427,8 @@ mod tests {
                 decode_sample(&effective, packed)?
             }
         };
-        let counts = merge_into_sample(&effective, &mut snapshot, &cells)?;
-        Ok((encode_value(&effective, &snapshot)?, effective, counts))
+        let counts = merge_into_sample(&effective, &mut sample, &cells)?;
+        Ok((encode_value(&effective, &sample)?, effective, counts))
     }
 
     fn random_header(state: &mut u64, labels: usize, lanes: usize) -> CellHeader {
@@ -2575,9 +2696,9 @@ mod tests {
                 for (i, count) in [10usize, 110].into_iter().enumerate() {
                     let cells = cells_of(count, width);
                     let (a, b) = counted(|| {
-                        let mut snapshot = Vec::new();
-                        merge_into_sample(&h, &mut snapshot, &cells).unwrap();
-                        let packed = encode_sample(&h, &snapshot).unwrap();
+                        let mut sample = Vec::new();
+                        merge_into_sample(&h, &mut sample, &cells).unwrap();
+                        let packed = encode_sample(&h, &sample).unwrap();
                         decode_sample(&h, &packed).unwrap()
                     });
                     allocs[i] = a;
@@ -2597,3 +2718,11 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "cell_set_lane_cap_tests.rs"]
+mod lane_cap_tests;
+
+#[cfg(test)]
+#[path = "cell_set_decode_fast_tests.rs"]
+mod decode_fast_tests;

@@ -7,14 +7,14 @@
 //!
 //! `wal_cost_scale_harness` reports `log_bytes_on_disk` by summing a directory, which is the right
 //! SHAPE, but it sums only the write-ahead log. A durable write here also lands blocks and an
-//! index, and a comparison whose other half sums a storage pool holding its log and its pages
+//! index, and a comparison whose other half sums a storage pool holding its log and its blocks
 //! together would then differ by WHAT EACH SIDE INCLUDES rather than by what either side costs.
 //! That is the denominator trap, and it is the easiest way to publish a ratio that measures
 //! bookkeeping.
 //!
 //! So this sums every file under the whole data directory — cache, blocks, indexes and log — and
 //! differences it across a fixed number of operations. Sum of file LENGTHS, never resident size:
-//! a resident-set delta follows allocator high-water marks and page reuse, and one taken on this
+//! a resident-set delta follows allocator high-water marks and block reuse, and one taken on this
 //! path went non-monotonic across a sweep and had to be withdrawn.
 //!
 //! # WHAT IT PROVES BEFORE IT REPORTS
@@ -486,14 +486,21 @@ fn main() {
                 assert!(stage.errors.is_empty(), "stage {}: {:?}", stage.stage, stage.errors);
             }
         }
+        let restore_started = std::time::Instant::now();
         drop(engine);
         let restored = TemporalEngine::with_local_dirs(
             memory_capacity_bytes, dir.join("cache"), dir.join("blocks"), dir.join("indexes"),
         );
+        let load_started = std::time::Instant::now();
         let load = restored.load_shard_with(LoadShardRequest {
             shard_id: 1, load_version: 0, local_node_id: None, shard_uri: String::new(),
             start_routing_bucket: 0, end_routing_bucket, readonly: false, table_name: String::new(),
         });
+        let load_us = load_started.elapsed().as_micros();
+        println!(
+            "RESTORE_COST elapsed_us={} load_us={load_us} keys={ops}",
+            restore_started.elapsed().as_micros()
+        );
         assert!(load.status.ok, "maintenance reload failed: {:?}", load.status);
         for index in 0..ops {
             let key = padded("k", index, key_bytes);

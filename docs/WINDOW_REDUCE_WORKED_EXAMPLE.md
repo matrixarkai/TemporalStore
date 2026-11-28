@@ -5,9 +5,10 @@ or bytes), up to four named `u64` **labels**, and between one and sixteen named 
 Nothing in the engine knows what the names mean; a deployment declares them once.
 
 Naming: the model is the Window Reducer (WindowReduce). The unit it stores at one timestamp of a key, all the
-cells of that key at that timestamp, is a **sample**. The message and field names on the wire are the new ones
-(`WindowReduce*`, `samples_written`, `sample_info`, and so on); the command names in this page are renamed to
-WindowReduce names later. Neither rename changes a field number, a wire type or a stored byte.
+cells of that key at that timestamp, is a **sample**. The command, message and field names in this page are the
+WindowReduce names (`WindowReduceRank`, `WindowReduceAnswer`, `samples_written`, `sample_info`, and so on). The
+rename changed no field number, no wire type and no stored byte; the stored key tag `cells` and the retry item
+kind `cell_retry` keep their original spelling because they are written to disk.
 
 * **Key.** An **entity** (a `u64`, text or bytes) and up to eight named **dimensions** become one
   stored feature key, so a read by those values is one lookup.
@@ -17,11 +18,11 @@ WindowReduce names later. Neither rename changes a field number, a wire type or 
 * **Write.** `FeatureAppendWithPolicy` with `MergeReduce` merges the request's cells into the
   sample already stored at that timestamp, lane by lane, and answers a receipt: samples
   written, cells created, cells merged.
-* **Ranked read.** `CellRankQuery` takes a window (`Between`, `Last`, `Since`, `LastN`), named
+* **Ranked read.** `WindowReduceRank` takes a window (`Between`, `Last`, `Since`, `LastN`, `NewestRows`), named
   predicates over labels, lanes or `member`, a score (`Lane`, `Ratio`, `Wilson`, `Member`, `Time`,
   `Weighted`, `Decay`) and `top_k`. It reduces each member across the window's samples, scores it and
   returns the best `k`. A name the key does not declare is refused.
-* **Rollup.** `CellRollup` takes `older_than_ms`, `bucket_ms` and an optional cap. Every sample
+* **Rollup.** `WindowReduceRollup` takes `older_than_ms`, `bucket_ms` and an optional cap. Every sample
   stamped strictly below the cutoff is folded, with the others of its bucket, into one sample
   stored at the bucket start. Cells merge by member, oldest sample first. A `Count` lane holds
   counts, and counts add; `Sum` adds (and saturates), `Max` and `Min` compare, `First` keeps the
@@ -39,7 +40,7 @@ WindowReduce names later. Neither rename changes a field number, a wire type or 
   `keep` reserved for the members seen most recently) and `trigger_over` (a group is cut only when
   it holds more than `keep + trigger_over`).
 
-Bounds: 8 dimensions, 4 labels, 16 lanes, 1 000 top-k, 512 samples per window, 8 predicates and
+Bounds: 8 dimensions, 4 labels, 32 lanes, 1 000 top-k, 512 samples per window, 8 predicates and
 8 lanes in a weighted score.
 A rollup touches at most 1 024 samples below its first cutoff (a longer history is rolled in
 steps, by moving the cutoff forward), keeps between 1 and 4 096 cells per group, adds at most 8
@@ -50,30 +51,32 @@ request the key cannot serve is refused before anything is written.
 
 ## A worked example
 
-`crates/temporalstore-rust/src/engine/tests/a_worked_example_of_cells.rs` is a runnable test that
+`crates/temporalstore-rust/src/engine/tests/a_worked_example_of_window_reduce.rs` is a runnable test that
 doubles as this page's example. One user, two dimensions (`channel`, `kind`), a label (`slot`) and
 two lanes (`impressions`, `clicks`, both summed): it writes four samples, merges two writes at
-one timestamp, then ranks the last minute by click rate and by the Wilson lower bound. Item 1,
-clicked once in one impression, leads by click rate and comes last by the bound; item 2, with 80
-clicks in 100 impressions, leads by the bound.
+one timestamp, then ranks the last minute by click rate and by the Wilson lower bound. A ratio is a
+whole number, so item 1, clicked once in one impression (1), leads by click rate, and items 2 and 3,
+whose rates are below 1, both score 0 and tie. By the bound (times 10,000, cut to a whole number)
+item 1 comes last; item 2, with 80 clicks in 100 impressions (about 7111), leads.
 
 ## A worked example of a rollup
 
 `a_worked_example_of_a_rollup`, in
-`crates/temporalstore-rust/src/engine/tests/a_cell_rollup_is_a_command.rs`, follows one user
+`crates/temporalstore-rust/src/engine/tests/a_window_reduce_rollup_is_a_command.rs`, follows one user
 (entity 42) on one channel. Three minute samples hold items 1, 2 and 3 with the lanes
 `impressions` and `clicks` (summed) and `peak` (max), and a fourth sample comes an hour later.
 Rolled per hour with the cutoff at the hour, the three minutes become one sample at the start of
 the hour: item 1 has 60 impressions, 3 clicks and a peak of 9, item 2 has 10, 5 and 2, item 3 has
 100, 1 and 3, and the later sample is untouched. The receipt reads 4 samples before, 2 after,
-6 cells before, 3 after. Capped to one item per `slot` by click rate (`clicks / impressions`),
-item 2 (0.5) stays and item 1 (0.05) goes; item 3 is alone in its slot.
+6 cells before, 3 after. Capped to one item per `slot` by impressions per click
+(`impressions / clicks`, a whole number), item 1 (60 / 3 = 20) stays and item 2 (10 / 5 = 2) goes;
+item 3 is alone in its slot.
 
 ### Tiers, an age and a truncation
 
 `a_tiered_request_coarsens_old_history_in_one_command_and_ranks_the_same`,
-`an_age_resolves_against_the_newest_stored_snapshot_and_follows_it` and
-`a_truncation_acts_over_its_trigger_and_keeps_the_newest_snapshots`, in the same test file, work one
+`an_age_resolves_against_the_newest_stored_sample_and_follows_it` and
+`a_truncation_acts_over_its_trigger_and_keeps_the_newest_samples`, in the same test file, work one
 twelve-sample key (stamps 100 to 1 200). Below 1 100 the buckets are 200 wide, below 700 they are
 400 wide (700 is aligned down to 600, a multiple of 200), so the twelve become seven, at 0, 400,
 600, 800, 1 000, 1 100 and 1 200. Asked as ages (100 and 500) against the newest stamp, 1 200, the
@@ -169,7 +172,7 @@ runs a crash after a flush through recovery and retries both requests.
 
 **From a client and through the proxy.** The Rust client sends a token with
 `feature_merge_cells_with_token(key, points, token)` and gets back a `CellMergeSummary`
-(`snapshots_written`, `cells_created`, `cells_merged`, `replayed`); `feature_merge_cells` is the same
+(`samples_written`, `cells_created`, `cells_merged`, `replayed`); `feature_merge_cells` is the same
 append with no token. The proxy's `/ProxyService/FeatureAdd` takes `"policy":"merge_reduce"` and an
 optional `"retry_token"` (a number, zero included), and its answer carries `"replayed":true` on a
 replay, the field being left out otherwise. A `retry_token` with no policy is refused with a 400 rather
@@ -179,7 +182,7 @@ token, so a request through it is always the tokenless one.
 
 ## Narrowing a ranked read: members, anchor, quota, decay
 
-A `CellRankQuery` can carry four more things. A read that carries none of them is encoded and
+A `WindowReduceRank` can carry four more things. A read that carries none of them is encoded and
 answered exactly as before: the fields are left out of the encoding when they are at rest, and a
 spec that lacks them reads as one that has them at rest.
 
@@ -203,7 +206,7 @@ spec that lacks them reads as one that has them at rest.
   members from the top-k list, so it never returns more than `top_k` rows, and a lane no member can
   fill leaves the answer short rather than padded. Counts plus `others` are at most 1 000, a quota
   names at most 16 lanes, a count is at least 1 and a lane is named once.
-* **Decay score** (`CellScore::Decay { lane, half_life_ms }`). A member's score is
+* **Decay score** (`WindowReduceScore::Decay { lane, half_life_ms }`). A member's score is
   `sum(value * 0.5^(age / half_life_ms))` over the values its samples store for the lane, with
   `age` measured from the newest sample of the window, so no clock is read. The half-life is
   between 1 ms and ten years. The total is a float and cannot wrap. A rollup cap refuses it: a cap
@@ -212,14 +215,14 @@ spec that lacks them reads as one that has them at rest.
 ### An example
 
 `a_quota_selects_exactly_as_a_fold_of_the_ranking_says`, in
-`crates/temporalstore-rust/src/engine/tests/a_ranked_cell_read_is_a_command.rs`, stores one sample
+`crates/temporalstore-rust/src/engine/tests/a_window_reduce_ranked_read_is_a_command.rs`, stores one sample
 of eight members with the lanes `shown` and `clicked`. Ranked by `shown` they come 1 to 8, and only
 members 3, 6 and 8 have a click. The plain top four are 1, 2, 3, 4. With a quota of two members with
 a click and `top_k` 8, the answer is members 3 and 6; with `top_k` 5 it is member 3 alone, because
 the quota never reaches past the top-k; with `others` 2 added, members 1 and 2 come first, so the
 answer is 1, 2, 3, 6.
 
-`an_anchored_window_reads_the_newest_snapshot_whatever_the_clock_says` stores four samples at
+`an_anchored_window_reads_the_newest_sample_whatever_the_clock_says` stores four samples at
 100, 200, 300 and 400 and ranks by `shown`: an anchored `Last` of 100 is `[301, 400]`, one sample;
 300 is `[101, 400]`, three; 301 reaches the sample at 100. The same `Last` of 100 on the request
 clock, read long after the writes, is empty.
@@ -250,8 +253,8 @@ On the wire (JSON), a read that uses them looks like this; the three keys appear
 ## Reading across keys
 
 When the dimensions you always query by are in the key, a question that spans them ("which items did
-this user respond to best over ALL channels?") spans keys. `CellFanInRankQuery` takes up to 64 keys
-that share one spec and the same read as `CellRankQuery` (window, predicates, score, `top_k`,
+this user respond to best over ALL channels?") spans keys. `WindowReduceFanInRank` takes up to 64 keys
+that share one spec and the same read as `WindowReduceRank` (window, predicates, score, `top_k`,
 projection). It merges the cells of every key BEFORE it scores, so the answer is the one a single
 key holding all their samples would give. Merging the per-key top lists afterwards cannot match
 it: an item that is second in each of two keys can lead their sum.
@@ -272,21 +275,21 @@ it: an item that is second in each of two keys can lead their sum.
 
 ### A batch of independent reads
 
-When the questions are separate, `CellRankBatchQuery` carries up to 64 reads, each with its own key
+When the questions are separate, `WindowReduceRankBatch` carries up to 64 reads, each with its own key
 and read spec, and answers them in request order, one `RankedCells` each. The reads do not affect
 one another: a key with nothing to rank answers empty, an expired key is dropped and answers empty,
 and a read the key cannot serve (an undeclared name, say) answers with `refused` set while the rest
-are answered normally. Each answer equals the one `CellRankQuery` gives for that key and spec. A
+are answered normally. Each answer equals the one `WindowReduceRank` gives for that key and spec. A
 read over a bound (top-k, window, predicates) refuses the whole batch at admission, naming the
 read's position, before any key is read. As with the fan-in read, the keys are read on the shard the
 request names.
 
 ```rust
 // One user, one channel dimension: the best items over email, push and feed together.
-Command::CellFanInRankQuery { keys: vec![email_key, push_key, feed_key], spec }
+Command::WindowReduceFanInRank { keys: vec![email_key, push_key, feed_key], spec }
 ```
 
-`crates/temporalstore-rust/src/engine/tests/a_ranked_read_over_several_cell_keys.rs` is the runnable
+`crates/temporalstore-rust/src/engine/tests/a_window_reduce_read_over_several_keys.rs` is the runnable
 example: one user, a `channel` dimension in the key, three channels and six samples, ranked by a
 summed lane and by a maximum lane, checked equal to a single key that holds the same six samples,
 and then read again after a restart.

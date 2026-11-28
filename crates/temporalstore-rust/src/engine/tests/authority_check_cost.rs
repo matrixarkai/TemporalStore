@@ -124,22 +124,23 @@ fn one_check_under(gate_on: bool) -> (u64, u64, u64, bool) {
         .compact_shard_blocks(1)
         .expect("the fold round must succeed");
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 loaded");
-    let (start, end) = shard.routing_range();
-    // The index as this projection would derive it, so both sides of the comparison agree about
-    // what shape the entries are in.
-    crate::engine::storage_bucket_internals::rebuild_bucket_first_index(1, shard, start, end);
+    let result = engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let (start, end) = shard.routing_range();
+        // The index as this projection would derive it, so both sides of the comparison agree about
+        // what shape the entries are in.
+        crate::engine::storage_bucket_internals::rebuild_bucket_first_index(1, shard, start, end);
 
-    // RESET IMMEDIATELY BEFORE THE CALL BEING MEASURED, which is this instrument's contract.
-    crate::engine::storage_bucket_internals::reset_promote_model_map_check_counts();
-    let promoted = crate::engine::storage_bucket_internals::
-        promote_model_maps_to_bucket_index_authority(1, shard, start, end);
-    let (checks, rebuilds, blocks) =
-        crate::engine::storage_bucket_internals::promote_model_map_check_counts();
-    drop(shards);
+        // RESET IMMEDIATELY BEFORE THE CALL BEING MEASURED, which is this instrument's contract.
+        crate::engine::storage_bucket_internals::reset_promote_model_map_check_counts();
+        let promoted = crate::engine::storage_bucket_internals::
+            promote_model_maps_to_bucket_index_authority(1, shard, start, end);
+        let (checks, rebuilds, blocks) =
+            crate::engine::storage_bucket_internals::promote_model_map_check_counts();
+        (checks, rebuilds, blocks, promoted)
+    });
     drop(engine);
-    (checks, rebuilds, blocks, promoted)
+    result
 }
 
 #[test]

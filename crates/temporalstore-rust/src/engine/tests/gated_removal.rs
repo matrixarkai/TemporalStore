@@ -80,13 +80,14 @@ fn write_to(engine: &TemporalEngine, command: Command) {
 
 /// THE AUTHORITATIVE SOURCE: the members the durable map holds for this object.
 fn resident_members(engine: &TemporalEngine, object_key: &str) -> std::collections::BTreeSet<Vec<u8>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    shard
-        .bucket_index.sets
-        .get(object_key)
-        .map(|members| members.iter().map(|(member, _)| member.clone()).collect())
-        .unwrap_or_default()
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 loaded");
+        shard
+            .bucket_index.sets
+            .get(object_key)
+            .map(|members| members.iter().map(|(member, _)| member.clone()).collect())
+            .unwrap_or_default()
+    })
 }
 
 /// THE OTHER SOURCE: every element key a live block of this object still states as PRESENT.
@@ -96,66 +97,68 @@ fn element_names_the_blocks_state(
     engine: &TemporalEngine,
     object_key: &str,
 ) -> std::collections::BTreeSet<String> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut stated = std::collections::BTreeSet::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-            {
-                continue;
-            }
-            let Ok(bytes) = engine.block_store.read(&block.address) else {
-                continue;
-            };
-            if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
-                spelling,
-                items,
-                ..
-            } = crate::engine::container_blocks::decode_container_block(&bytes)
-            {
-                for item in items {
-                    if item.deleted {
-                        continue;
-                    }
-                    if let Some(element_name) =
-                        crate::engine::container_blocks::element_name_from_element_key(
-                            spelling, &item.key,
-                        )
-                    {
-                        stated.insert(element_name);
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut stated = std::collections::BTreeSet::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                {
+                    continue;
+                }
+                let Ok(bytes) = engine.block_store.read(&block.address) else {
+                    continue;
+                };
+                if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
+                    spelling,
+                    items,
+                    ..
+                } = crate::engine::container_blocks::decode_container_block(&bytes)
+                {
+                    for item in items {
+                        if item.deleted {
+                            continue;
+                        }
+                        if let Some(element_name) =
+                            crate::engine::container_blocks::element_name_from_element_key(
+                                spelling, &item.key,
+                            )
+                        {
+                            stated.insert(element_name);
+                        }
                     }
                 }
             }
         }
-    }
-    stated
+        stated
+    })
 }
 
 /// Live and tombstoned set entries for this object.
 fn entry_counts(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut live = 0usize;
-    let mut tombstoned = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-            {
-                continue;
-            }
-            if block.deleted() {
-                tombstoned += 1;
-            } else {
-                live += 1;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut live = 0usize;
+        let mut tombstoned = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                {
+                    continue;
+                }
+                if block.deleted() {
+                    tombstoned += 1;
+                } else {
+                    live += 1;
+                }
             }
         }
-    }
-    (live, tombstoned)
+        (live, tombstoned)
+    })
 }
 
 #[test]

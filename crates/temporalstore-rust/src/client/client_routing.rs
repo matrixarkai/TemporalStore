@@ -2,11 +2,17 @@
 // Copyright 2026 MatrixArkAI
 
 //! TemporalStoreClient execute + route-resolution + backend-failure methods, split from client.rs.
+use super::response_json::{post_batch_json, post_execute_json};
 use super::*;
 
 impl TemporalStoreClient {
     pub fn execute(&self, request: ExecuteRequest) -> Result<ExecuteResponse, HttpError> {
-        post_json(&self.inner.options.proxy_addr, "/execute", &request)
+        post_execute_json(
+            &self.inner.options.proxy_addr,
+            "/execute",
+            &request,
+            HttpRequestOptions::default(),
+        )
     }
 
     pub fn execute_with_options(
@@ -22,7 +28,12 @@ impl TemporalStoreClient {
         &self,
         request: BatchExecuteRequest,
     ) -> Result<BatchExecuteResponse, HttpError> {
-        post_json(&self.inner.options.proxy_addr, "/batch_execute", &request)
+        post_batch_json(
+            &self.inner.options.proxy_addr,
+            "/batch_execute",
+            &request,
+            HttpRequestOptions::default(),
+        )
     }
 
     pub fn batch_execute_with_options(
@@ -34,7 +45,7 @@ impl TemporalStoreClient {
         let http_options = self.inner.options.http_options();
         if self.inner.options.meta_addr.is_some() {
             let server_addr = self.resolve_route(request.shard_id, false, None)?;
-            return post_json_with_options(&server_addr, "/batch_execute", &request, http_options)
+            return post_batch_json(&server_addr, "/batch_execute", &request, http_options)
                 .or_else(|err| {
                     let became_continuous = self.record_backend_failure(
                         &server_addr,
@@ -58,7 +69,7 @@ impl TemporalStoreClient {
                         return Err(ClientError::WriteOutcomeUnknown(err.to_string()));
                     }
                     let refreshed = self.resolve_route(request.shard_id, true, None)?;
-                    Ok(post_json_with_options(
+                    Ok(post_batch_json(
                         &refreshed,
                         "/batch_execute",
                         &request,
@@ -66,7 +77,7 @@ impl TemporalStoreClient {
                     )?)
                 });
         }
-        Ok(post_json_with_options(
+        Ok(post_batch_json(
             &self.inner.options.proxy_addr,
             "/batch_execute",
             &request,
@@ -164,7 +175,7 @@ impl TemporalStoreClient {
         http_options: HttpRequestOptions,
     ) -> Result<ExecuteResponse, HttpError> {
         if load_version == 0 {
-            return post_json_with_options(server_addr, "/execute", request, http_options);
+            return post_execute_json(server_addr, "/execute", request, http_options);
         }
         let checked = crate::control::CheckedExecuteRequest {
             shard_id: request.shard_id,
@@ -258,7 +269,7 @@ impl TemporalStoreClient {
         }
 
         let _ = force_primary;
-        Ok(post_json_with_options(
+        Ok(post_execute_json(
             &self.inner.options.proxy_addr,
             "/execute",
             &request,
@@ -303,7 +314,7 @@ impl TemporalStoreClient {
                 replica_read_policy,
                 preferred_location,
             )?;
-            return post_json_with_options(&server_addr, "/batch_execute", &request, http_options)
+            return post_batch_json(&server_addr, "/batch_execute", &request, http_options)
                 .or_else(|err| {
                     let became_continuous = self.record_backend_failure(
                         &server_addr,
@@ -340,7 +351,7 @@ impl TemporalStoreClient {
                         replica_read_policy,
                         preferred_location,
                     )?;
-                    let response = post_json_with_options(
+                    let response = post_batch_json(
                         &refreshed,
                         "/batch_execute",
                         &request,
@@ -355,7 +366,7 @@ impl TemporalStoreClient {
                     Ok(response)
                 });
         }
-        Ok(post_json_with_options(
+        Ok(post_batch_json(
             &self.inner.options.proxy_addr,
             "/batch_execute",
             &request,
@@ -363,7 +374,8 @@ impl TemporalStoreClient {
         )?)
     }
 
-    pub(super) fn resolve_route(
+    /// Resolve a shard's primary endpoint, refreshing cached placement when requested.
+    pub fn resolve_route(
         &self,
         shard_id: ShardId,
         force_refresh: bool,
@@ -378,7 +390,8 @@ impl TemporalStoreClient {
         )
     }
 
-    pub(super) fn resolve_route_with_policy(
+    /// Resolve a shard endpoint using the requested replica and location policy.
+    pub fn resolve_route_with_policy(
         &self,
         shard_id: ShardId,
         force_refresh: bool,
@@ -422,17 +435,12 @@ impl TemporalStoreClient {
             .expect("client stats lock poisoned")
             .route_cache_misses += 1;
 
-        let meta_addr = self
-            .inner
-            .options
-            .meta_addr
-            .as_ref()
-            .unwrap_or(&self.inner.options.proxy_addr);
-        let response: GetShardResponse = get_json_with_options(
-            meta_addr,
-            &format!("/shards/{shard_id}"),
-            self.inner.options.http_options(),
-        )?;
+        let path = format!("/shards/{shard_id}");
+        let options = self.inner.options.http_options();
+        let response: GetShardResponse = match &self.inner.options.meta_addr {
+            Some(addr) => get_meta_json(addr, &path, options)?,
+            None => get_json_with_options(&self.inner.options.proxy_addr, &path, options)?,
+        };
         if !response.status.ok {
             return Err(ClientError::Status(response.status.message));
         }
@@ -491,7 +499,8 @@ impl TemporalStoreClient {
         out
     }
 
-    pub(super) fn record_backend_failure(&self, server_addr: &str, continuous_failed_time_ms: u64) -> bool {
+    /// Record a failed backend attempt and return whether the failure window has elapsed.
+    pub fn record_backend_failure(&self, server_addr: &str, continuous_failed_time_ms: u64) -> bool {
         let now = Instant::now();
         self.with_backend_failures(|failures| {
             let state = failures
@@ -507,13 +516,15 @@ impl TemporalStoreClient {
         })
     }
 
-    pub(super) fn record_backend_success(&self, server_addr: &str) {
+    /// Clear the failure history for a backend that responded successfully.
+    pub fn record_backend_success(&self, server_addr: &str) {
         self.with_backend_failures(|failures| {
             failures.remove(server_addr);
         });
     }
 
-    pub(super) fn backend_failure_is_continuous(
+    /// Report whether this backend has failed continuously for at least the given duration.
+    pub fn backend_failure_is_continuous(
         &self,
         server_addr: &str,
         continuous_failed_time_ms: u64,
@@ -547,7 +558,7 @@ impl TemporalStoreClient {
 /// to a batch that carries none -- the same distinction `force_primary` draws on the single
 /// command path, drawn from the same two inputs. `pin_primary` still wins, and a table that has
 /// configured nothing reads `PinPrimary`, so a default table's batches do not move.
-pub(super) fn batch_read_policy(
+pub fn batch_read_policy(
     write: bool,
     table_options: &TableOptions,
 ) -> (ReplicaReadPolicy, Option<&str>) {

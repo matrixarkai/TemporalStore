@@ -12,12 +12,12 @@ $isAdmin = $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administ
 Write-Host "Administrator: $isAdmin"
 
 Write-Host ""
-Write-Host "Step 1: Enable WSL optional component"
+Write-Host "Step 1: Enable WSL optional feature"
 dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart
 Write-Host "WSL feature exit code: $LASTEXITCODE"
 
 Write-Host ""
-Write-Host "Step 2: Enable Virtual Machine Platform optional component"
+Write-Host "Step 2: Enable Virtual Machine Platform optional feature"
 dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart
 Write-Host "VirtualMachinePlatform feature exit code: $LASTEXITCODE"
 

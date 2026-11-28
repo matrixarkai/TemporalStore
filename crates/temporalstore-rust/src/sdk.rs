@@ -17,6 +17,28 @@ use crate::{ClientError, TableOptions, TemporalStoreClient};
 pub trait TemporalStoreSdkExecutor: Send + Sync + 'static {
     fn execute_sdk(&self, request: types::ExecuteRequest) -> types::ExecuteResponse;
 
+    fn execute_checked_sdk(
+        &self,
+        _request: types::ExecuteRequest,
+        _load_version: u64,
+    ) -> types::ExecuteResponse {
+        types::ExecuteResponse {
+            status: types::Status::error("fencing_unsupported", "executor cannot check load version"),
+            response: types::CommandResponse::Empty,
+        }
+    }
+
+    fn batch_execute_checked_sdk(
+        &self,
+        _request: types::BatchExecuteRequest,
+        _load_version: u64,
+    ) -> types::BatchExecuteResponse {
+        types::BatchExecuteResponse {
+            status: types::Status::error("fencing_unsupported", "executor cannot check load version"),
+            responses: Vec::new(),
+        }
+    }
+
     fn batch_execute_sdk(
         &self,
         request: types::BatchExecuteRequest,
@@ -207,6 +229,38 @@ impl TemporalStoreTonicAdapter {
     pub fn from_arc(executor: Arc<dyn TemporalStoreSdkExecutor>) -> Self {
         Self { executor }
     }
+
+    async fn execute_command(
+        &self,
+        request: v1::ExecuteRequest,
+        load_version: Option<u64>,
+    ) -> Result<Response<v1::ExecuteResponse>, TonicStatus> {
+        let request = sdk_execute_request_to_types(request)?;
+        let executor = Arc::clone(&self.executor);
+        let response = tokio::task::spawn_blocking(move || match load_version {
+            Some(version) => executor.execute_checked_sdk(request, version),
+            None => executor.execute_sdk(request),
+        })
+        .await
+        .map_err(|_| TonicStatus::internal("command execution failed"))?;
+        Ok(Response::new(types_execute_response_to_sdk(response)))
+    }
+
+    async fn execute_batch(
+        &self,
+        request: v1::BatchExecuteRequest,
+        load_version: Option<u64>,
+    ) -> Result<Response<v1::BatchExecuteResponse>, TonicStatus> {
+        let request = sdk_batch_request_to_types(request)?;
+        let executor = Arc::clone(&self.executor);
+        let response = tokio::task::spawn_blocking(move || match load_version {
+            Some(version) => executor.batch_execute_checked_sdk(request, version),
+            None => executor.batch_execute_sdk(request),
+        })
+        .await
+        .map_err(|_| TonicStatus::internal("batch execution failed"))?;
+        Ok(Response::new(types_batch_response_to_sdk(response)))
+    }
 }
 
 #[tonic::async_trait]
@@ -215,18 +269,42 @@ impl v1::temporal_store_service_server::TemporalStoreService for TemporalStoreTo
         &self,
         request: Request<v1::ExecuteRequest>,
     ) -> Result<Response<v1::ExecuteResponse>, TonicStatus> {
-        let request = sdk_execute_request_to_types(request.into_inner())?;
-        let response = self.executor.execute_sdk(request);
-        Ok(Response::new(types_execute_response_to_sdk(response)))
+        let request = request.into_inner();
+        if request.load_version.is_some() {
+            return Err(TonicStatus::invalid_argument("use ExecuteChecked with load_version"));
+        }
+        self.execute_command(request, None).await
     }
 
     async fn batch_execute(
         &self,
         request: Request<v1::BatchExecuteRequest>,
     ) -> Result<Response<v1::BatchExecuteResponse>, TonicStatus> {
-        let request = sdk_batch_request_to_types(request.into_inner())?;
-        let response = self.executor.batch_execute_sdk(request);
-        Ok(Response::new(types_batch_response_to_sdk(response)))
+        let request = request.into_inner();
+        if request.load_version.is_some() {
+            return Err(TonicStatus::invalid_argument("use BatchExecuteChecked with load_version"));
+        }
+        self.execute_batch(request, None).await
+    }
+
+    async fn execute_checked(
+        &self,
+        request: Request<v1::ExecuteRequest>,
+    ) -> Result<Response<v1::ExecuteResponse>, TonicStatus> {
+        let request = request.into_inner();
+        let version = request.load_version
+            .ok_or_else(|| TonicStatus::invalid_argument("load_version is required"))?;
+        self.execute_command(request, Some(version)).await
+    }
+
+    async fn batch_execute_checked(
+        &self,
+        request: Request<v1::BatchExecuteRequest>,
+    ) -> Result<Response<v1::BatchExecuteResponse>, TonicStatus> {
+        let request = request.into_inner();
+        let version = request.load_version
+            .ok_or_else(|| TonicStatus::invalid_argument("load_version is required"))?;
+        self.execute_batch(request, Some(version)).await
     }
 
     async fn open_table(
@@ -303,6 +381,14 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 }
             }
         }
+        v1::command::Kind::StringGetRange(command) => types::Command::StringGetRange {
+            key: command.key,
+            start: command.start,
+            end: command.end,
+        },
+        v1::command::Kind::StringLen(command) => {
+            types::Command::StringLen { key: command.key }
+        }
         v1::command::Kind::StringGet(command) => types::Command::StringGet { key: command.key },
         v1::command::Kind::HashDelete(command) => types::Command::HashDelete {
             key: command.key,
@@ -337,9 +423,23 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             left: command.left,
         },
+        v1::command::Kind::ListPushMany(command) => types::Command::ListPushMany {
+            key: command.key,
+            members: command.members,
+            left: command.left,
+        },
+        v1::command::Kind::ListPopMany(command) => types::Command::ListPopMany {
+            key: command.key,
+            left: command.left,
+            count: usize::try_from(command.count).unwrap_or(usize::MAX),
+        },
         v1::command::Kind::SetRemove(command) => types::Command::SetRemove {
             key: command.key,
             member: command.member,
+        },
+        v1::command::Kind::SetRemoveMany(command) => types::Command::SetRemoveMany {
+            key: command.key,
+            members: command.members,
         },
         v1::command::Kind::ZsetAdd(command) => types::Command::ZSetAdd {
             key: command.key,
@@ -349,6 +449,18 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
         v1::command::Kind::ZsetRemove(command) => types::Command::ZSetRemove {
             key: command.key,
             member: command.member,
+        },
+        v1::command::Kind::ZsetAddMany(command) => types::Command::ZSetAddMany {
+            key: command.key,
+            members: command
+                .members
+                .into_iter()
+                .map(|member| types::ZSetScoredMember { member: member.member, score: member.score })
+                .collect(),
+        },
+        v1::command::Kind::ZsetRemoveMany(command) => types::Command::ZSetRemoveMany {
+            key: command.key,
+            members: command.members,
         },
         v1::command::Kind::ZsetIncrBy(command) => types::Command::ZSetIncrBy {
             key: command.key,
@@ -373,6 +485,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             field: command.field,
             value: command.value,
         },
+        v1::command::Kind::HashGetAll(command) => types::Command::HashGetAll { key: command.key },
         v1::command::Kind::HashGet(command) => types::Command::HashGet {
             key: command.key,
             field: command.field,
@@ -415,6 +528,10 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
         v1::command::Kind::SetAdd(command) => types::Command::SetAdd {
             key: command.key,
             member: command.member,
+        },
+        v1::command::Kind::SetAddMany(command) => types::Command::SetAddMany {
+            key: command.key,
+            members: command.members,
         },
         v1::command::Kind::SetMembers(command) => types::Command::SetMembers { key: command.key },
         v1::command::Kind::SetScan(command) => types::Command::SetScan {
@@ -503,6 +620,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             ttl_ms: command.ttl_ms,
         },
+        v1::command::Kind::CommonTtl(command) => types::Command::CommonTtl { key: command.key },
         v1::command::Kind::CommonExists(command) => {
             types::Command::CommonExists { key: command.key }
         }
@@ -576,6 +694,20 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
         v1::command::Kind::CommonPersist(command) => {
             types::Command::CommonPersist { key: command.key }
         }
+        v1::command::Kind::FeatureAggQuery(command) => types::Command::FeatureAggQuery {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            aggregator: command.aggregator,
+            count: command.count.map(|value| platform_usize(value, "count")).transpose()?,
+        },
+        v1::command::Kind::FeatureProtoAggQuery(command) => types::Command::FeatureProtoAggQuery {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            aggregator: command.aggregator,
+            count: command.count.map(|value| platform_usize(value, "count")).transpose()?,
+        },
         v1::command::Kind::FeatureDelete(command) => {
             types::Command::FeatureDelete { key: command.key }
         }
@@ -601,13 +733,13 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 retry_token: command.retry_token,
             }
         }
-        v1::command::Kind::CellRemove(command) => {
-            let (key, spec) = cell_remove_from_proto(command)?;
-            types::Command::CellRemove { key, spec }
+        v1::command::Kind::WindowReduceRemove(command) => {
+            let (key, spec) = window_reduce_remove_from_proto(command)?;
+            types::Command::WindowReduceRemove { key, spec }
         }
-        v1::command::Kind::CellRollup(command) => {
-            let (key, spec) = cell_rollup_from_proto(command)?;
-            types::Command::CellRollup { key, spec }
+        v1::command::Kind::WindowReduceRollup(command) => {
+            let (key, spec) = window_reduce_rollup_from_proto(command)?;
+            types::Command::WindowReduceRollup { key, spec }
         }
         v1::command::Kind::SeenCheck(command) => types::Command::SeenCheck {
             key: command.key,
@@ -1239,74 +1371,74 @@ pub(crate) fn feature_write_policy_from_proto(
     }
 }
 
-pub(crate) fn cell_rollup_score_to_proto(score: &types::CellScore) -> v1::CellRollupScore {
-    use v1::cell_rollup_score::Kind;
+pub(crate) fn window_reduce_rollup_score_to_proto(score: &types::WindowReduceScore) -> v1::WindowReduceRollupScore {
+    use v1::window_reduce_rollup_score::Kind;
     let kind = match score {
-        types::CellScore::Lane { lane } => Kind::Lane(lane.clone()),
-        types::CellScore::Ratio { numerator, denominator } => Kind::Ratio(v1::CellRollupRatio {
+        types::WindowReduceScore::Lane { lane } => Kind::Lane(lane.clone()),
+        types::WindowReduceScore::Ratio { numerator, denominator } => Kind::Ratio(v1::WindowReduceRollupRatio {
             numerator: numerator.clone(),
             denominator: denominator.clone(),
         }),
-        types::CellScore::Wilson { successes, trials, z } => Kind::Wilson(v1::CellRollupWilson {
+        types::WindowReduceScore::Wilson { successes, trials, z } => Kind::Wilson(v1::WindowReduceRollupWilson {
             successes: successes.clone(),
             trials: trials.clone(),
             z: *z,
         }),
-        types::CellScore::Member => Kind::Member(true),
-        types::CellScore::Time => Kind::Time(true),
-        types::CellScore::Weighted { lanes, weights } => Kind::Weighted(v1::CellRollupWeighted {
+        types::WindowReduceScore::Member => Kind::Member(true),
+        types::WindowReduceScore::Time => Kind::Time(true),
+        types::WindowReduceScore::Weighted { lanes, weights } => Kind::Weighted(v1::WindowReduceRollupWeighted {
             lanes: lanes.clone(),
             weights: weights.clone(),
         }),
-        // A decay reads a member's snapshots and a rollup cap scores one folded cell, so the rollup has no
-        // such kind. Sending none is refused by `cell_rollup_score_from_proto`, never defaulted.
+        // A decay reads a member's samples and a rollup cap scores one folded cell, so the rollup has no
+        // such kind. Sending none is refused by `window_reduce_rollup_score_from_proto`, never defaulted.
         // A recent read answers stored cells, which no cap scores: the same refusal.
-        types::CellScore::Decay { .. } | types::CellScore::Recent => return v1::CellRollupScore { kind: None },
+        types::WindowReduceScore::Decay { .. } | types::WindowReduceScore::Recent => return v1::WindowReduceRollupScore { kind: None },
     };
-    v1::CellRollupScore { kind: Some(kind) }
+    v1::WindowReduceRollupScore { kind: Some(kind) }
 }
 
 /// REFUSED, NOT DEFAULTED: a score with no kind, or a flag kind that is not `true`, is not a
 /// score this build can apply.
-pub(crate) fn cell_rollup_score_from_proto(
-    score: Option<v1::CellRollupScore>,
-) -> Result<types::CellScore, TonicStatus> {
-    use v1::cell_rollup_score::Kind;
+pub(crate) fn window_reduce_rollup_score_from_proto(
+    score: Option<v1::WindowReduceRollupScore>,
+) -> Result<types::WindowReduceScore, TonicStatus> {
+    use v1::window_reduce_rollup_score::Kind;
     match score.and_then(|score| score.kind) {
-        Some(Kind::Lane(lane)) => Ok(types::CellScore::Lane { lane }),
-        Some(Kind::Ratio(r)) => Ok(types::CellScore::Ratio { numerator: r.numerator, denominator: r.denominator }),
-        Some(Kind::Wilson(w)) => Ok(types::CellScore::Wilson { successes: w.successes, trials: w.trials, z: w.z }),
-        Some(Kind::Member(true)) => Ok(types::CellScore::Member),
-        Some(Kind::Time(true)) => Ok(types::CellScore::Time),
-        Some(Kind::Weighted(w)) => Ok(types::CellScore::Weighted { lanes: w.lanes, weights: w.weights }),
+        Some(Kind::Lane(lane)) => Ok(types::WindowReduceScore::Lane { lane }),
+        Some(Kind::Ratio(r)) => Ok(types::WindowReduceScore::Ratio { numerator: r.numerator, denominator: r.denominator }),
+        Some(Kind::Wilson(w)) => Ok(types::WindowReduceScore::Wilson { successes: w.successes, trials: w.trials, z: w.z }),
+        Some(Kind::Member(true)) => Ok(types::WindowReduceScore::Member),
+        Some(Kind::Time(true)) => Ok(types::WindowReduceScore::Time),
+        Some(Kind::Weighted(w)) => Ok(types::WindowReduceScore::Weighted { lanes: w.lanes, weights: w.weights }),
         Some(Kind::Member(false)) | Some(Kind::Time(false)) | None => Err(TonicStatus::invalid_argument(
             "a cell rollup score names no kind this build can apply",
         )),
     }
 }
 
-pub(crate) fn cell_rollup_to_proto(key: &str, spec: &types::CellRollupSpec) -> v1::CellRollup {
-    v1::CellRollup {
+pub(crate) fn window_reduce_rollup_to_proto(key: &str, spec: &types::WindowReduceRollupSpec) -> v1::WindowReduceRollup {
+    v1::WindowReduceRollup {
         key: key.to_string(),
         older_than_ms: spec.older_than_ms,
         bucket_ms: spec.bucket_ms,
-        cap: spec.cap.as_ref().map(|cap| v1::CellRollupCap {
+        cap: spec.cap.as_ref().map(|cap| v1::WindowReduceRollupCap {
             group_by: cap.group_by.clone(),
-            score: Some(cell_rollup_score_to_proto(&cap.score)),
+            score: Some(window_reduce_rollup_score_to_proto(&cap.score)),
             keep: cap.keep as u64,
             protect_newest_ppm: cap.protect_newest_ppm,
             trigger_over: cap.trigger_over as u64,
         }),
         anchor: match spec.anchor {
-            types::CellRollupAnchor::Request => v1::CellRollupAnchor::Request,
-            types::CellRollupAnchor::NewestMinusAge => v1::CellRollupAnchor::NewestMinusAge,
+            types::WindowReduceRollupAnchor::Request => v1::WindowReduceRollupAnchor::Request,
+            types::WindowReduceRollupAnchor::NewestMinusAge => v1::WindowReduceRollupAnchor::NewestMinusAge,
         } as i32,
         coarser_tiers: spec
             .coarser_tiers
             .iter()
-            .map(|tier| v1::CellRollupTier { older_than_ms: tier.older_than_ms, bucket_ms: tier.bucket_ms })
+            .map(|tier| v1::WindowReduceRollupTier { older_than_ms: tier.older_than_ms, bucket_ms: tier.bucket_ms })
             .collect(),
-        truncate: spec.truncate.map(|truncate| v1::CellRollupTruncate {
+        truncate: spec.truncate.map(|truncate| v1::WindowReduceRollupTruncate {
             keep_last: truncate.keep_last as u64,
             trigger: truncate.trigger.map(|trigger| trigger as u64),
         }),
@@ -1318,10 +1450,10 @@ fn platform_usize(value: u64, what: &str) -> Result<usize, TonicStatus> {
 }
 
 /// REFUSED, NOT DEFAULTED: an anchor this build does not know is not the request's anchor.
-pub(crate) fn cell_rollup_from_proto(command: v1::CellRollup) -> Result<(String, types::CellRollupSpec), TonicStatus> {
-    let anchor = match v1::CellRollupAnchor::try_from(command.anchor) {
-        Ok(v1::CellRollupAnchor::Request) => types::CellRollupAnchor::Request,
-        Ok(v1::CellRollupAnchor::NewestMinusAge) => types::CellRollupAnchor::NewestMinusAge,
+pub(crate) fn window_reduce_rollup_from_proto(command: v1::WindowReduceRollup) -> Result<(String, types::WindowReduceRollupSpec), TonicStatus> {
+    let anchor = match v1::WindowReduceRollupAnchor::try_from(command.anchor) {
+        Ok(v1::WindowReduceRollupAnchor::Request) => types::WindowReduceRollupAnchor::Request,
+        Ok(v1::WindowReduceRollupAnchor::NewestMinusAge) => types::WindowReduceRollupAnchor::NewestMinusAge,
         Err(_) => {
             return Err(TonicStatus::invalid_argument(format!(
                 "cell rollup anchor {} is not one this build can apply",
@@ -1331,9 +1463,9 @@ pub(crate) fn cell_rollup_from_proto(command: v1::CellRollup) -> Result<(String,
     };
     let cap = match command.cap {
         None => None,
-        Some(cap) => Some(types::CellCapSpec {
+        Some(cap) => Some(types::WindowReduceCapSpec {
             group_by: cap.group_by,
-            score: cell_rollup_score_from_proto(cap.score)?,
+            score: window_reduce_rollup_score_from_proto(cap.score)?,
             keep: platform_usize(cap.keep, "keep")?,
             protect_newest_ppm: cap.protect_newest_ppm,
             trigger_over: platform_usize(cap.trigger_over, "trigger_over")?,
@@ -1341,14 +1473,14 @@ pub(crate) fn cell_rollup_from_proto(command: v1::CellRollup) -> Result<(String,
     };
     let truncate = match command.truncate {
         None => None,
-        Some(truncate) => Some(types::CellTruncateSpec {
+        Some(truncate) => Some(types::WindowReduceTruncateSpec {
             keep_last: platform_usize(truncate.keep_last, "keep_last")?,
             trigger: truncate.trigger.map(|trigger| platform_usize(trigger, "trigger")).transpose()?,
         }),
     };
     Ok((
         command.key,
-        types::CellRollupSpec {
+        types::WindowReduceRollupSpec {
             older_than_ms: command.older_than_ms,
             bucket_ms: command.bucket_ms,
             cap,
@@ -1356,7 +1488,7 @@ pub(crate) fn cell_rollup_from_proto(command: v1::CellRollup) -> Result<(String,
             coarser_tiers: command
                 .coarser_tiers
                 .into_iter()
-                .map(|tier| types::CellRollupTier { older_than_ms: tier.older_than_ms, bucket_ms: tier.bucket_ms })
+                .map(|tier| types::WindowReduceRollupTier { older_than_ms: tier.older_than_ms, bucket_ms: tier.bucket_ms })
                 .collect(),
             truncate,
         },
@@ -1394,8 +1526,8 @@ fn cell_predicate_op_to_proto(op: &types::FeatureFilterOp) -> v1::CellPredicateO
     }
 }
 
-pub(crate) fn cell_remove_to_proto(key: &str, spec: &types::CellRemoveSpec) -> v1::CellRemove {
-    v1::CellRemove {
+pub(crate) fn window_reduce_remove_to_proto(key: &str, spec: &types::WindowReduceRemoveSpec) -> v1::WindowReduceRemove {
+    v1::WindowReduceRemove {
         key: key.to_string(),
         start_ms: spec.start_ms,
         end_ms: spec.end_ms,
@@ -1419,7 +1551,7 @@ pub(crate) fn cell_remove_to_proto(key: &str, spec: &types::CellRemoveSpec) -> v
 
 /// REFUSED, NOT DEFAULTED: an operator this build does not know is not equality, and a member of
 /// no kind is not member 0.
-pub(crate) fn cell_remove_from_proto(command: v1::CellRemove) -> Result<(String, types::CellRemoveSpec), TonicStatus> {
+pub(crate) fn window_reduce_remove_from_proto(command: v1::WindowReduceRemove) -> Result<(String, types::WindowReduceRemoveSpec), TonicStatus> {
     let include = command
         .include
         .map(|set| set.members.into_iter().map(cell_member_from_proto).collect::<Result<Vec<_>, _>>())
@@ -1448,7 +1580,7 @@ pub(crate) fn cell_remove_from_proto(command: v1::CellRemove) -> Result<(String,
         .collect::<Result<Vec<_>, TonicStatus>>()?;
     Ok((
         command.key,
-        types::CellRemoveSpec {
+        types::WindowReduceRemoveSpec {
             start_ms: command.start_ms,
             end_ms: command.end_ms,
             members: types::CellMemberFilter { include, exclude },
@@ -1582,94 +1714,127 @@ pub fn types_batch_response_to_sdk(
         responses: response
             .responses
             .into_iter()
-            .map(types_execute_response_to_sdk)
-            .filter_map(|response| response.response)
+            .map(|response| {
+                let mut payload = types_command_response_to_sdk(response.response);
+                if !response.status.ok {
+                    payload.status = Some(types_status_to_sdk(response.status));
+                }
+                payload
+            })
             .collect(),
         topology_version: 0,
     }
 }
 
 pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::CommandResponse {
+    use v1::CommandResultKind as Kind;
     match response {
         types::CommandResponse::Empty => v1::CommandResponse {
+            result_kind: Kind::Empty as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             ..Default::default()
         },
         types::CommandResponse::Bytes { value } => v1::CommandResponse {
+            result_kind: Kind::Bytes as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
+            value_present: Some(value.is_some()),
             value: value.unwrap_or_default(),
             ..Default::default()
         },
-        types::CommandResponse::Integer { value } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            count: value.max(0) as u64,
-            ..Default::default()
-        },
+        types::CommandResponse::Integer { value } => sdk_integer_response(value, Kind::Integer),
+        types::CommandResponse::Aggregate { value } => sdk_integer_response(value, Kind::Aggregate),
         types::CommandResponse::CellMergeReceipt {
-            snapshots_written,
+            samples_written,
             cells_created,
             cells_merged,
             replayed,
         } => v1::CommandResponse {
+            result_kind: Kind::CellMergeReceipt as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
-            count: snapshots_written,
+            count: samples_written,
             cells_created,
             cells_merged,
             replayed,
             ..Default::default()
         },
-        types::CommandResponse::CellRollupReceipt {
-            snapshots_before,
-            snapshots_after,
+        types::CommandResponse::WindowReduceRollupReceipt {
+            samples_before,
+            samples_after,
             cells_before,
             cells_after,
             cells_dropped,
+            buckets_folded,
+            buckets_remaining,
         } => v1::CommandResponse {
+            result_kind: Kind::WindowReduceRollupReceipt as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
-            count: snapshots_after,
-            snapshots_before,
+            count: samples_after,
+            samples_before,
             cells_before,
             cells_after,
             cells_dropped,
+            buckets_folded,
+            buckets_remaining,
             ..Default::default()
         },
-        types::CommandResponse::CellRemoveReceipt {
-            snapshots_before,
-            snapshots_after,
+        types::CommandResponse::WindowReduceRemoveReceipt {
+            samples_before,
+            samples_after,
             cells_before,
             cells_removed,
         } => v1::CommandResponse {
+            result_kind: Kind::WindowReduceRemoveReceipt as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
-            count: snapshots_after,
-            snapshots_before,
+            count: samples_after,
+            samples_before,
             cells_before,
             cells_removed,
             ..Default::default()
         },
         types::CommandResponse::Members { members } => v1::CommandResponse {
+            result_kind: Kind::Members as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             values: members,
             ..Default::default()
         },
-        types::CommandResponse::Values { values } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            values: values
+        types::CommandResponse::Values { values } => {
+            let mut present = vec![0; values.len().div_ceil(8)];
+            let values = values
                 .into_iter()
-                .map(|value| value.unwrap_or_default())
-                .collect(),
-            ..Default::default()
-        },
-        types::CommandResponse::HashEntries { entries } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            values: entries.into_iter().map(|(_, value)| value).collect(),
-            ..Default::default()
-        },
+                .enumerate()
+                .map(|(index, value)| {
+                    if value.is_some() {
+                        present[index / 8] |= 1 << (index % 8);
+                    }
+                    value.unwrap_or_default()
+                })
+                .collect();
+            v1::CommandResponse {
+                result_kind: Kind::Values as i32,
+                status: Some(types_status_to_sdk(types::Status::ok())),
+                values,
+                values_present: Some(present),
+                ..Default::default()
+            }
+        }
+        types::CommandResponse::HashEntries { entries } => {
+            let (entry_names, values) = entries.into_iter().unzip();
+            v1::CommandResponse {
+                result_kind: Kind::HashEntries as i32,
+                status: Some(types_status_to_sdk(types::Status::ok())),
+                values,
+                entry_names,
+                ..Default::default()
+            }
+        }
         types::CommandResponse::FeaturePoints { points } => v1::CommandResponse {
+            result_kind: Kind::FeaturePoints as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             feature_points: points.into_iter().map(types_feature_point_to_sdk).collect(),
             ..Default::default()
         },
         types::CommandResponse::SequenceRows { rows } => v1::CommandResponse {
+            result_kind: Kind::SequenceRows as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             sequence_rows: rows
                 .into_iter()
@@ -1695,6 +1860,16 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             ))),
             ..Default::default()
         },
+    }
+}
+
+fn sdk_integer_response(value: i64, kind: v1::CommandResultKind) -> v1::CommandResponse {
+    v1::CommandResponse {
+        status: Some(types_status_to_sdk(types::Status::ok())),
+        count: value.max(0) as u64,
+        integer: Some(value),
+        result_kind: kind as i32,
+        ..Default::default()
     }
 }
 
@@ -1778,7 +1953,7 @@ fn client_error_status(err: ClientError) -> types::Status {
     types::Status::error(code, err.to_string())
 }
 
-fn client_error_code(err: &ClientError) -> &'static str {
+pub(crate) fn client_error_code(err: &ClientError) -> &'static str {
     match err {
         ClientError::Http(_) => "http_error",
         ClientError::Status(_) => "status_error",
@@ -1788,6 +1963,7 @@ fn client_error_code(err: &ClientError) -> &'static str {
         // apply from one that may have. Retrying the first is free; retrying the second is how
         // a write gets applied twice.
         ClientError::WriteOutcomeUnknown(_) => "write_outcome_unknown",
+        ClientError::WriteNotStarted(_) => "raft_write_not_started",
     }
 }
 
@@ -1806,10 +1982,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn binary_responses_preserve_empty_and_missing_values() {
+        for (value, present) in [(None, false), (Some(vec![]), true)] {
+            let response = types_command_response_to_sdk(types::CommandResponse::Bytes { value });
+            assert_eq!(response.value_present, Some(present));
+            assert!(response.value.is_empty());
+        }
+        let mut values = vec![None; 10];
+        values[0] = Some(vec![]);
+        values[2] = Some(vec![0, 255]);
+        values[9] = Some(vec![]);
+        let response = types_command_response_to_sdk(types::CommandResponse::Values { values });
+        assert_eq!(response.values_present, Some(vec![5, 2]));
+        assert!(response.values[0].is_empty());
+        assert_eq!(response.values[2], vec![0, 255]);
+        let empty_projection = types_command_response_to_sdk(types::CommandResponse::Values {
+            values: Vec::new(),
+        });
+        assert_eq!(empty_projection.values_present, Some(vec![]));
+        let response = types_command_response_to_sdk(types::CommandResponse::HashEntries {
+            entries: vec![("empty".into(), vec![]), ("other".into(), vec![255])],
+        });
+        assert_eq!(response.entry_names, ["empty", "other"]);
+        assert_eq!(response.values, [vec![], vec![255]]);
+    }
+
+    #[test]
+    fn integer_responses_preserve_negative_values() {
+        for (input, expected) in [
+            (types::CommandResponse::Integer { value: -2 }, -2),
+            (types::CommandResponse::Aggregate { value: -4 }, -4),
+        ] {
+            let response = types_command_response_to_sdk(input);
+            assert_eq!(response.integer, Some(expected));
+            assert_eq!(response.count, 0);
+        }
+    }
+
+    #[test]
     fn generated_sdk_bindings_cover_required_client_surface() {
         let execute = ExecuteRequest {
             shard_id: 7,
             trace_id: 42,
+            load_version: None,
             command: Some(Command {
                 kind: Some(super::v1::command::Kind::StringGet(super::v1::StringGet {
                     key: "sdk-key".to_string(),
@@ -1822,6 +2037,7 @@ mod tests {
         let batch = BatchExecuteRequest {
             shard_id: 7,
             trace_id: 43,
+            load_version: None,
             commands: vec![execute.command.expect("command")],
         };
         assert_eq!(batch.commands.len(), 1);
@@ -1859,6 +2075,7 @@ mod tests {
         let set = ExecuteRequest {
             shard_id: 1,
             trace_id: 10,
+            load_version: None,
             command: Some(Command {
                 kind: Some(v1::command::Kind::StringSet(v1::StringSet {
                     key: "sdk-adapter-key".to_string(),
@@ -1877,6 +2094,7 @@ mod tests {
         let get = ExecuteRequest {
             shard_id: 1,
             trace_id: 11,
+            load_version: None,
             command: Some(Command {
                 kind: Some(v1::command::Kind::StringGet(v1::StringGet {
                     key: "sdk-adapter-key".to_string(),
@@ -1900,6 +2118,7 @@ mod tests {
             .batch_execute(Request::new(BatchExecuteRequest {
                 shard_id: 1,
                 trace_id: 12,
+                load_version: None,
                 commands: vec![
                     Command {
                         kind: Some(v1::command::Kind::StringSet(v1::StringSet {
@@ -1979,3 +2198,7 @@ mod tests {
         assert_eq!(preflight.table_cache_entries, 1);
     }
 }
+
+#[cfg(test)]
+#[path = "sdk_window_reduce_wire_tests.rs"]
+mod window_reduce_wire_tests;

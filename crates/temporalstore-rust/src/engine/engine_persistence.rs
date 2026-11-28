@@ -4,6 +4,14 @@
 //! Index/manifest persistence + load/flush helper methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+#[cfg(test)]
+#[path = "catalog_checkpoint_retirement_tests.rs"]
+mod catalog_checkpoint_retirement_tests;
+
+#[cfg(test)]
+#[path = "ordered_restore_tests.rs"]
+mod ordered_restore_tests;
+
 /// WHICH WAY A LOAD OF THE PERSISTED INDEX WENT.
 ///
 /// # WHY THIS IS NOT TEST SCAFFOLDING
@@ -71,6 +79,17 @@ pub fn reset_index_load_path_counts() {
     INDEX_LOADS_UNDECODABLE.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[cfg(test)]
+thread_local! {
+    // Report an ambiguous error after the real durable writer has already published.
+    static FAIL_CLOSED_INSTALL_AFTER_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) fn fail_closed_install_after_rename_for_test() {
+    FAIL_CLOSED_INSTALL_AFTER_RENAME.with(|fail| fail.set(true));
+}
+
 impl TemporalEngine {
     /// Raft state images move materialized state into a fresh engine-WAL namespace.
     /// The source engine's sequence does not identify any record in that new log.
@@ -80,7 +99,7 @@ impl TemporalEngine {
         bytes: &[u8],
         routing_range: crate::engine::routing_range_stamp::RoutingRangeStamp,
     ) -> Result<(), std::io::Error> {
-        if self.shards.read().expect("engine lock poisoned").contains_key(&shard_id)
+        if self.shards.handle(shard_id).is_some()
             || self.wal_store.stats_without_rescan(shard_id).last_sequence != 0
         {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
@@ -105,13 +124,14 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> Option<(ShardState, checkpoint_publication::CheckpointPublication)> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&shard_id)?;
-        let anchor = shard.checkpoint_wal_sequence()?;
-        let publication = self.checkpoint_publications.capture(shard_id);
-        let mut snapshot = shard.clone();
-        snapshot.applied_wal_sequence = Some(anchor);
-        drop(shards);
+        let (mut snapshot, publication) = self.shards.with_state(shard_id, |shard| {
+            let shard = shard?;
+            let anchor = shard.checkpoint_wal_sequence()?;
+            let publication = self.checkpoint_publications.capture(shard_id);
+            let mut snapshot = shard.clone();
+            snapshot.applied_wal_sequence = Some(anchor);
+            Some((snapshot, publication))
+        })?;
         // Release markers are memory-only. Persist complete block indexes in the owned
         // image without undoing eviction in the live shard or holding its read guard.
         storage_bucket_internals::restore_released_buckets_in_checkpoint(&mut snapshot, shard_id);
@@ -168,21 +188,34 @@ impl TemporalEngine {
         shard_id: ShardId,
     ) -> Result<Vec<u8>, std::io::Error> {
         if !bulk_ingest_mode() {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            if let Some(shard) = shards.get(&shard_id) {
+            // Encode resident indexes under the owner read lock. A released image
+            // needs reconstruction, which can run on an owned copy after unlocking.
+            enum ServedIndex {
+                Bytes(Vec<u8>),
+                Released(ShardState),
+            }
+            let served = self.shards.with_state(shard_id, |shard| {
+                let Some(shard) = shard else { return Ok(None); };
                 if shard.checkpoint_wal_sequence().is_none() {
                     return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
                         "checkpoint state has an unapplied WAL prefix"));
                 }
-                if shard.bucket_index.released_buckets.is_empty() {
-                    return Ok(serialize_index(shard));
+                let image = if shard.bucket_index.released_buckets.is_empty() {
+                    ServedIndex::Bytes(serialize_index(shard))
+                } else {
+                    ServedIndex::Released(shard.clone())
+                };
+                Ok(Some(image))
+            })?;
+            match served {
+                Some(ServedIndex::Bytes(bytes)) => return Ok(bytes),
+                Some(ServedIndex::Released(mut snapshot)) => {
+                    storage_bucket_internals::restore_released_buckets_in_checkpoint(
+                        &mut snapshot, shard_id,
+                    );
+                    return Ok(serialize_index(&snapshot));
                 }
-                let mut snapshot = shard.clone();
-                drop(shards);
-                storage_bucket_internals::restore_released_buckets_in_checkpoint(
-                    &mut snapshot, shard_id,
-                );
-                return Ok(serialize_index(&snapshot));
+                None => {}
             }
         }
         fs::read(self.index_path(shard_id))
@@ -192,6 +225,14 @@ impl TemporalEngine {
         &self,
         manifest: &BucketDumpManifest,
     ) -> Result<(), std::io::Error> {
+        self.persist_bucket_dump_manifest_metadata(manifest, false).map(|_| ())
+    }
+
+    pub(super) fn persist_bucket_dump_manifest_metadata(
+        &self,
+        manifest: &BucketDumpManifest,
+        capture_metadata: bool,
+    ) -> Result<Option<fs::Metadata>, std::io::Error> {
         let path =
             bucket_dump_manifest_path(&self.index_dir, manifest.shard_id, &manifest.manifest_id);
         // A bare protobuf body. This document carries one summary per bucket -- thousands of
@@ -206,7 +247,7 @@ impl TemporalEngine {
         // lost the records in between (the dumped index must be committed before
         // advancing the dumped-log id; both are waited on together). Atomic temp+rename
         // also prevents a torn manifest from hiding the whole listing on load.
-        atomic_write_bytes(&path, &bytes)
+        atomic_write_bytes_synced_metadata(&path, &bytes, true, capture_metadata)
     }
 
     pub(super) fn persist_bucket_dump_install_marker(
@@ -329,13 +370,33 @@ impl TemporalEngine {
         warm_cache: bool,
         fold_deltas: bool,
     ) -> Result<Option<ShardState>, Status> {
+        let Some((mut shard, base_present)) = self.read_index_base(shard_id) else {
+            return Ok(None);
+        };
+        if fold_deltas {
+            self.fold_index_log_deltas(shard_id, &mut shard, false)?;
+        } else {
+            self.fold_relocation_records(shard_id, &mut shard, true);
+        }
+        Ok(self.finish_index_load(shard_id, shard, base_present, warm_cache))
+    }
+
+    fn read_index_base(&self, shard_id: ShardId) -> Option<(ShardState, bool)> {
+        self.read_index_base_with(shard_id, crate::engine::decode_index_bytes)
+    }
+
+    fn read_index_base_with(
+        &self,
+        shard_id: ShardId,
+        decode: fn(&[u8]) -> Result<ShardState, String>,
+    ) -> Option<(ShardState, bool)> {
         let read = fs::read(self.index_path(shard_id));
         let base_present = read.is_ok();
         // The base snapshot is materialized only at compaction/unload, so a crash before the
         // first compaction leaves no base -- start empty and rebuild from the index-log
         // deltas below.
-        let mut shard = match read {
-            Ok(bytes) => match crate::engine::decode_index_bytes(&bytes) {
+        let shard = match read {
+            Ok(bytes) => match decode(&bytes) {
                 Ok(shard) => {
                     note_index_load(IndexLoadPath::Accepted);
                     shard
@@ -355,7 +416,7 @@ impl TemporalEngine {
                 // a caller cannot tell a refusal from an absence. See `index_load_path_counts`.
                 Err(_) => {
                     note_index_load(IndexLoadPath::Undecodable);
-                    return Ok(None);
+                    return None;
                 }
             },
             Err(_) => {
@@ -363,15 +424,16 @@ impl TemporalEngine {
                 ShardState::default()
             }
         };
-        // Fold the index-log deltas beyond the base snapshot's anchor into the bucket index
-        // (reconstructing the exact on-disk block layout at the ORIGINAL addresses) and apply
-        // the captured per-key non-block state, BEFORE reconcile. This is what lets a crash
-        // reload reconstruct the served index WITHOUT re-executing the WAL -- re-execution
-        // would write fresh blocks and relocate them to the active slab, doubling physical
-        // block counts and losing the recorded slab layout.
-        if fold_deltas {
-            self.fold_index_log_deltas(shard_id, &mut shard)?;
-        }
+        Some((shard, base_present))
+    }
+
+    fn finish_index_load(
+        &self,
+        shard_id: ShardId,
+        mut shard: ShardState,
+        base_present: bool,
+        warm_cache: bool,
+    ) -> Option<ShardState> {
         // object_*_lookup is a derived serving accelerator and is no longer persisted -- and it
         // is MAINTAINED now rather than rebuilt here. The decoder files each block as it decodes,
         // and the delta fold above files what it places and un-files what it drops, so by this
@@ -389,7 +451,7 @@ impl TemporalEngine {
             && shard.bucket_index.bucket_map.is_empty()
             && shard.applied_wal_sequence.is_none()
         {
-            return Ok(None);
+            return None;
         }
         // Fold disk->memory cache promotion into reconcile's block reads on a warming
         // load (normal restart): the blocks reconcile reads to rebuild the secondary
@@ -415,7 +477,131 @@ impl TemporalEngine {
             }
         }
         refresh_bucket_runtime_flags(&mut shard);
-        Ok(Some(shard))
+        Some(shard)
+    }
+
+    pub(super) fn load_durable_index_with_catalog(
+        &self,
+        shard_id: ShardId,
+        warm_cache: bool,
+    ) -> (Option<ShardState>, u64, Option<crate::index_log::MetaItem>) {
+        let base = self.read_index_base_with(shard_id, crate::engine::decode_index_bytes_inner);
+        let mut watermark = base.as_ref().and_then(|(state, _)| state.applied_wal_sequence).unwrap_or(0);
+        let mut selected = base.map(|(state, present)| (state, present, false));
+        // Use the highest durable WAL frontier, not the last manifest in index-log order:
+        // WAL reclamation can already have removed records covered by an earlier manifest.
+        if let Some(manifest) = durable_recovery_bucket_dump_manifest_shared_at(&self.index_dir, shard_id)
+            .filter(|manifest| manifest.wal_sequence > watermark)
+        {
+            match installable_image(&manifest).map_err(|error| error.to_string())
+                .and_then(crate::engine::decode_index_bytes_inner)
+            {
+                Ok(state) => {
+                    watermark = manifest.wal_sequence;
+                    selected = Some((state, true, true));
+                }
+                Err(_) => note_index_load(IndexLoadPath::Undecodable),
+            }
+        }
+        let Some((mut state, present, from_manifest)) = selected else {
+            let catalog = self.index_log_store.recover_delta_records(shard_id, |_| {}).ok().flatten();
+            return (None, watermark, catalog);
+        };
+        if present {
+            crate::engine::state::repack_decoded_btrees(&mut state);
+        }
+        let catalog = self.fold_relocations_and_catalog(shard_id, &mut state);
+        let loaded = if from_manifest {
+            rebuild_unserialized_model_maps_from_bucket_index(&mut state);
+            rebuild_bucket_block_ownership(shard_id, &mut state, 0, u32::MAX);
+            Some(state)
+        } else {
+            self.finish_index_load(shard_id, state, present, warm_cache)
+        };
+        (loaded, watermark, catalog)
+    }
+
+    pub(super) fn load_index_checked_with_catalog(
+        &self,
+        shard_id: ShardId,
+        warm_cache: bool,
+    ) -> Result<(Option<ShardState>, Option<crate::index_log::MetaItem>), Status> {
+        let Some((mut state, present)) = self.read_index_base(shard_id) else {
+            let catalog = self.index_log_store.recover_delta_records(shard_id, |_| {}).ok().flatten();
+            return Ok((None, catalog));
+        };
+        let catalog = self.fold_index_log_deltas(shard_id, &mut state, true)?;
+        Ok((self.finish_index_load(shard_id, state, present, warm_cache), catalog))
+    }
+
+    fn fold_relocations_and_catalog(
+        &self,
+        shard_id: ShardId,
+        shard: &mut ShardState,
+    ) -> Option<crate::index_log::MetaItem> {
+        let base_anchor = shard.applied_wal_sequence.unwrap_or(0);
+        let mut applied = 0;
+        let result = self.index_log_store.recover_delta_records(shard_id, |record| {
+            if !record.relocated_from.is_empty()
+                && !crate::index_log::delta_record_is_reflected_by(record, base_anchor)
+            {
+                applied += fold_relocation_record(shard, &record.relocated_from,
+                    &record.items, &record.relocated_elements, true);
+            }
+        });
+        if applied > 0 {
+            self.refresh_relocated_layouts(shard_id, shard);
+        }
+        // A valid base remains usable after a failed optional relocation scan. Never install
+        // a catalog recovered from only a prefix of a corrupt stream.
+        result.ok().flatten()
+    }
+
+    /// Apply the durable relocation records above the base to a state loaded from the base image
+    /// alone. See `IndexDeltaRecord::relocated_from` and `fold_relocation_record`.
+    ///
+    /// NEVER FAILS THE LOAD. A relocation only repoints a block the base already names, so skipping
+    /// one (a corrupt or holed log, a record that does not pair its items) leaves the base's own
+    /// address, which is where the block was when the base was cut and stays readable while the old
+    /// slab is pinned. Refusing the load instead would throw away a good base over a log it does not
+    /// need.
+    pub(super) fn fold_relocation_records(
+        &self,
+        shard_id: ShardId,
+        shard: &mut ShardState,
+        repoint_blocks: bool,
+    ) {
+        let base_anchor = shard.applied_wal_sequence.unwrap_or(0);
+        let mut applied = 0usize;
+        let _ = self
+            .index_log_store
+            .for_each_delta_record_above_anchor(shard_id, 0, base_anchor, |record| {
+                if record.relocated_from.is_empty() {
+                    return;
+                }
+                applied += fold_relocation_record(
+                    shard,
+                    &record.relocated_from,
+                    &record.items,
+                    &record.relocated_elements,
+                    repoint_blocks,
+                );
+            });
+        if applied == 0 {
+            return;
+        }
+        self.refresh_relocated_layouts(shard_id, shard);
+    }
+
+    fn refresh_relocated_layouts(&self, shard_id: ShardId, shard: &mut ShardState) {
+        let index = &mut shard.bucket_index;
+        let keys = crate::engine::state::BlockKeysByPosition::from_parts(
+            &index.objects,
+            &index.object_block_lookup,
+        );
+        for bucket in index.bucket_map.values_mut() {
+            update_bucket_layout(shard_id, bucket, &keys);
+        }
     }
 
     /// Fold the append-only index-log deltas onto a (possibly empty) base `ShardState`,
@@ -430,7 +616,8 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         shard: &mut ShardState,
-    ) -> Result<(), Status> {
+        recover_catalog: bool,
+    ) -> Result<Option<crate::index_log::MetaItem>, Status> {
         // Propagate a corrupt/holed delta stream instead of silently folding a prefix. A
         // silently-skipped delta advances the reconstructed anchor past a removal/eviction that
         // lives ONLY in the delta (not the WAL), so it is recovered from neither source -- a
@@ -467,9 +654,7 @@ impl TemporalEngine {
         // local of `load_shard_with`, the `?` at that call site returns before it is published,
         // and the load then falls back to replay exactly as a refusal always did. A caller that
         // folded into something it did not own would not have this property.
-        if let Err(err) = self
-            .index_log_store
-            .for_each_delta_record_above_anchor(shard_id, 0, base_anchor, |record| {
+        let mut fold_record = |record: &crate::index_log::IndexDeltaRecord| {
                 // A present base already reflects everything at/below its anchor; fold only
                 // the suffix. An absent base (anchor 0) folds the whole log. This read
                 // `applied_wal_sequence.unwrap_or(0) <= base_anchor` inline, which made a
@@ -482,6 +667,23 @@ impl TemporalEngine {
                 if crate::index_log::delta_record_is_reflected_by(&record, base_anchor) {
                     return;
                 }
+                // A RELOCATION RECORD IS NOT AN UPSERT OF ITS ITEMS. Folded as one it would file the new
+                // block beside the old (the upsert supersedes the block at the NEW address, which does
+                // not exist yet), so it goes through the conditional relocation fold, in log order
+                // with the ordinary records around it.
+                if !record.relocated_from.is_empty() {
+                    if fold_relocation_record(
+                        shard,
+                        &record.relocated_from,
+                        &record.items,
+                        &record.relocated_elements,
+                        true,
+                    ) > 0
+                    {
+                        applied = true;
+                    }
+                    return;
+                }
                 let covered = delta_record_covered_keys(&record);
                 fold_delta_block_items(
                     &mut shard.bucket_index,
@@ -489,6 +691,29 @@ impl TemporalEngine {
                     &record.items,
                     record.upsert,
                 );
+                // An upsert can append feature points without a full key-state snapshot.
+                // Recover those points before applying this record's explicit drops and edits.
+                if record.upsert {
+                    for item in &record.items {
+                        if item.kind != crate::index_log::IndexItemKind::Block
+                            || item.deleted
+                            || item.model_id != "feature"
+                        {
+                            continue;
+                        }
+                        if let Some(address) = &item.entry {
+                            storage_bucket_internals::insert_timestamped_secondary_view(
+                                &self.block_store,
+                                None,
+                                &mut Vec::new(),
+                                shard.features_mut(),
+                                item.object_key.to_string(),
+                                address.clone(),
+                                None,
+                            );
+                        }
+                    }
+                }
                 apply_key_states(shard, &record.key_states);
                 // The carried container elements are COLLECTED here and applied once the fold has
                 // finished, not folded in as they arrive. A fold replays a suffix of the log, so one
@@ -515,15 +740,25 @@ impl TemporalEngine {
                 #[cfg(test)]
                 crate::index_log::probe::note_fold_applied(shard_id, record.sequence);
                 applied = true;
-            })
-        {
-            return Err(Status::error(
-                "index_log_delta_corruption",
-                format!(
-                    "served-index delta log for shard {shard_id} is corrupt; refusing load: {err}"
-                ),
-            ));
-        }
+            };
+        let read = if recover_catalog {
+            self.index_log_store.recover_delta_records(shard_id, &mut fold_record)
+        } else {
+            self.index_log_store.for_each_delta_record_above_anchor(shard_id, 0, base_anchor,
+                |record| fold_record(&record)).map(|_| None)
+        };
+        drop(fold_record);
+        let catalog = match read {
+            Ok(catalog) => catalog,
+            Err(err) => {
+                return Err(Status::error(
+                    "index_log_delta_corruption",
+                    format!(
+                        "served-index delta log for shard {shard_id} is corrupt; refusing load: {err}"
+                    ),
+                ));
+            }
+        };
         if applied {
             // THE LOOKUP IS REBUILT BEFORE THE LAYOUT PASS NOW, NOT AFTER IT.
             //
@@ -552,7 +787,7 @@ impl TemporalEngine {
             fold_carried_container_elements(shard, &carried_container_elements);
             shard.applied_wal_sequence = Some(max_anchor);
         }
-        Ok(())
+        Ok(catalog)
     }
 
     /// Persist the in-memory shard index to disk once (used by bulk backfill
@@ -563,14 +798,15 @@ impl TemporalEngine {
         // the two numbers out and drops the guard before it returns, so no path ever HOLDS one of
         // these locks while acquiring the other.
         let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
-        let (mut snapshot, previous_anchor, anchor, publication) = {
+        let Some(owner) = self.shards.handle(shard_id) else { return; };
+        let Some((mut snapshot, previous_anchor, anchor, publication)) =
+            self.shards.with_handle_state_mut(&owner, |shard| {
             // Reconstruct everything the per-command bulk path deferred: promote
             // model-map blocks into bucket_index, rebuild the secondary views, refresh
             // runtime flags, then clone for encoding outside the write lock.
-            let mut shards = self.shards.write().expect("engine lock poisoned");
-            match shards.get_mut(&shard_id) {
+            match shard {
                 Some(shard) => {
-                    let Some(applied_anchor) = shard.checkpoint_wal_sequence() else { return; };
+                    let applied_anchor = shard.checkpoint_wal_sequence()?;
                     if promote_model_maps_to_bucket_index_authority(
                         shard_id,
                         shard,
@@ -611,11 +847,11 @@ impl TemporalEngine {
                         })
                         .unwrap_or(default_anchor);
                     let publication = self.checkpoint_publications.capture(shard_id);
-                    (shard.clone(), shard.applied_wal_sequence, anchor, publication)
+                    Some((shard.clone(), shard.applied_wal_sequence, anchor, publication))
                 }
-                None => return,
+                None => None,
             }
-        };
+        }) else { return; };
         snapshot.applied_wal_sequence = Some(anchor);
         let index_bytes = serialize_index(&snapshot);
         drop(snapshot);
@@ -632,11 +868,13 @@ impl TemporalEngine {
         if !matches!(published, Ok(Some(()))) {
             return;
         }
-        if let Some(shard) = self.shards.write().expect("engine lock poisoned").get_mut(&shard_id) {
-            if shard.applied_wal_sequence == previous_anchor {
-                shard.applied_wal_sequence = Some(anchor);
+        self.shards.with_handle_state_mut(&owner, |shard| {
+            if let Some(shard) = shard {
+                if shard.applied_wal_sequence == previous_anchor {
+                    shard.applied_wal_sequence = Some(anchor);
+                }
             }
-        }
+        });
     }
 
     /// MANIFEST-CONFORMANCE FOLD threshold check: dump the index catalog when the undumped index-log
@@ -701,21 +939,63 @@ impl TemporalEngine {
     /// below the anchor, index-log records whose own anchor is at or below it) is redundant,
     /// while the folded anchor record itself must survive.
     pub(super) fn dump_index_catalog_anchored(&self, shard_id: ShardId) -> Option<(u64, u64)> {
+        self.dump_index_catalog_with_relocations(shard_id)
+            .map(|(anchor, meta_sequence, _)| (anchor, meta_sequence))
+    }
+
+    fn dump_index_catalog_with_relocations(
+        &self,
+        shard_id: ShardId,
+    ) -> Option<(u64, u64, crate::index_log::CapturedRelocations)> {
         // A dump for a shard this engine does not serve is a no-op; check BEFORE the durability
         // barrier so a background caller polling an unloaded shard does not pay (or issue) an
         // fsync for nothing.
-        if !self
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .contains_key(&shard_id)
-        {
+        if self.shards.handle(shard_id).is_none() {
             return None;
         }
         // Capture an immutable image and its anchor before syncing their backing storage.
         // Writers during the barrier belong to the next checkpoint, not to this image.
-        let (snapshot, publication) = self.capture_shard_checkpoint(shard_id)?;
+        let (mut snapshot, publication) = self.capture_shard_checkpoint(shard_id)?;
         let anchor = snapshot.applied_wal_sequence.unwrap_or(0);
+        let mut relocated = 0;
+        let relocations = self.index_log_store.capture_checkpoint_relocations(
+            shard_id,
+            anchor,
+            |record| {
+                relocated += fold_relocation_record(
+                    &mut snapshot,
+                    &record.relocated_from,
+                    &record.items,
+                    &record.relocated_elements,
+                    true,
+                );
+            },
+        ).ok()?;
+        if relocated > 0 {
+            self.refresh_relocated_layouts(shard_id, &mut snapshot);
+        }
+        snapshot.captured_relocation_sequence = relocations.through_sequence();
+        // Folding can change the owned image without changing the served state. Such a capture
+        // is not proof that the served state stopped using its registrations.
+        let retirements = if relocated == 0
+            && block_in_wal::has_registrations(&self.block_store, shard_id)
+        {
+            let mut retained_objects = std::collections::HashSet::new();
+            let mut described_wal_blocks = 0;
+            visit_live_block_entries(&snapshot, |entry| {
+                if crate::wal_record::is_wal_resident(entry.address.block_slab_id()) {
+                    retained_objects.insert(expected_live_block_object_id(shard_id, &entry));
+                    if !snapshot.bucket_index.released_buckets.contains(&entry.filed_routing_bucket) {
+                        described_wal_blocks += 1;
+                    }
+                }
+            });
+            self.prepare_checkpoint_wal_retirements(
+                shard_id, &mut snapshot, retained_objects, described_wal_blocks,
+            )
+        } else {
+            Vec::new()
+        };
         let index_bytes = serialize_index(&snapshot);
         drop(snapshot);
         if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
@@ -742,7 +1022,8 @@ impl TemporalEngine {
             self.index_log_store.mark_catalog_dumped(shard_id);
             Ok(sequence)
         }).ok()??;
-        Some((anchor, meta_sequence))
+        self.finish_checkpoint_wal_retirements(shard_id, &publication, anchor, retirements);
+        Some((anchor, meta_sequence, relocations))
     }
 
     /// Embedded-path log maintenance: when the undumped index-log gap has crossed
@@ -793,29 +1074,24 @@ impl TemporalEngine {
         shard_id: ShardId,
         min_reclaimable_bytes: u64,
     ) -> Option<super::reports::CatalogDumpReclaimReport> {
-        let (wal_anchor, meta_sequence) = self.dump_index_catalog_anchored(shard_id)?;
+        let (wal_anchor, meta_sequence, relocations) =
+            self.dump_index_catalog_with_relocations(shard_id)?;
         // Index-log first: drop every record the durable base already reflects (per-record WAL
         // anchor at or below the dump's), keeping the folded catalog anchor and any delta a
         // concurrent writer landed after the dump serialized.
         let index_gc = self
             .index_log_store
-            .gc_reflected_before_anchor(shard_id, wal_anchor, meta_sequence, min_reclaimable_bytes)
+            .gc_reflected_after_relocations(
+                shard_id, wal_anchor, meta_sequence, min_reclaimable_bytes, &relocations,
+            )
             .ok();
         // The sweep rewrote (shrank) the log file; re-mark the dumped watermark so the next
         // threshold measures growth from the POST-reclaim length. Without this the gap signal
         // would read `current - pre_reclaim_length`, saturating to zero until the file regrew
         // past its old size -- silently suspending the cadence right after its first success.
         self.index_log_store.mark_catalog_dumped(shard_id);
-        // Blocks at or below the anchor are in the durable base now, so a log id is no longer
-        // the only way to find their bytes. Dropping those entries is what keeps this from
-        // growing with the log -- they cost index bytes, and a dumped block will never need one.
-        if let Ok(mut shards) = self.shards.write() {
-            if let Some(shard) = shards.get_mut(&shard_id) {
-                shard
-                    .wal_resident_blocks
-                    .retain(|_, placement| placement.sequence > wal_anchor);
-            }
-        }
+        // Publishing an index does not relocate WAL-backed values. Keep their locators
+        // until materialization or registration retirement makes the records unnecessary.
         // Pin the WAL floor to the lowest sequence a live block-in-WAL registration still
         // depends on: such a record holds the ONLY copy of a block the served index points at
         // (the write was acked off a synthetic address), so truncating it turns an acked write
@@ -874,6 +1150,22 @@ impl TemporalEngine {
             wal_bytes_after: wal_gc
                 .as_ref()
                 .map(|report| report.bytes_after)
+                .unwrap_or_default(),
+            wal_segments_dropped: wal_gc
+                .as_ref()
+                .map(|report| report.dropped_segments)
+                .unwrap_or_default(),
+            wal_segment_bytes_dropped: wal_gc
+                .as_ref()
+                .map(|report| report.dropped_segment_bytes)
+                .unwrap_or_default(),
+            wal_bytes_copied: wal_gc
+                .as_ref()
+                .map(|report| report.bytes_copied)
+                .unwrap_or_default(),
+            wal_rewrite_skipped: wal_gc
+                .as_ref()
+                .map(|report| report.skipped_not_worth_rewrite)
                 .unwrap_or_default(),
             // The `.ok()` above is kept -- a failed sweep must not fail the dump, which has
             // already completed and is what bounds the index log. What changes is that the
@@ -995,7 +1287,27 @@ impl TemporalEngine {
         })
     }
 
-    pub(super) fn validate_load_version(
+    // The caller owns the shard lifecycle reservation. A drained token proves
+    // the old publishers have quiesced and no new one can enter this incarnation.
+    pub(super) fn persist_index_bytes_during_close(
+        &self,
+        bytes: &[u8],
+        drained: &checkpoint_publication::DrainedPublication,
+    ) -> Result<(), std::io::Error> {
+        if !self.checkpoint_publications.is_current_close(drained) {
+            return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock,
+                "checkpoint publication changed during shard install"));
+        }
+        fs::create_dir_all(&self.index_dir)?;
+        atomic_write_bytes(&self.index_path(drained.shard_id()), bytes)?;
+        #[cfg(test)]
+        if FAIL_CLOSED_INSTALL_AFTER_RENAME.with(|fail| fail.replace(false)) {
+            return Err(std::io::Error::other("injected failure after served index rename"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_load_version(
         &self,
         shard_id: ShardId,
         load_version: u64,
@@ -1045,16 +1357,20 @@ impl TemporalEngine {
     }
 
     pub(super) fn shard_stats(&self, shard_id: ShardId) -> Option<ShardStats> {
-        let shards = self.shards.read().expect("engine lock poisoned");
+        // THE BLOCK STORE IS ASKED BEFORE THE SHARD TABLE IS TAKEN. Both reads take the store's
+        // mutex; asked from inside the shard guard, every scrape nested that mutex in the shard
+        // lock and a writer (which takes them in the same order) queued behind both.
         let info = self
             .infos
             .read()
             .expect("info lock poisoned")
             .get(&shard_id)
             .cloned();
-        shards.get(&shard_id).map(|state| {
-            let block_store = self.block_store.stats();
-            let block_store_slabs = self.block_store.slab_summary();
+        let block_store = self.block_store.stats();
+        let block_store_slabs = self.block_store.slab_summary();
+        let write_ahead_log = self.wal_store.stats_without_rescan(shard_id);
+        let resident_visits_before = crate::engine::storage_bucket_internals::bucket_index_resident_bytes_visits();
+        self.shards.with_shard(shard_id, |state, visited| state.map(|state| {
             let string_records = state.strings().len();
             let hash_records = state.bucket_index.hashes.len();
             let set_records = state.bucket_index.sets.len();
@@ -1344,7 +1660,7 @@ impl TemporalEngine {
                 append_watermark: block_store.writes,
                 compaction_watermark: block_store_slabs.reclaimable_physical_bytes,
             };
-            ShardStats {
+            let stats = ShardStats {
                 shard_id,
                 loaded,
                 readonly,
@@ -1369,8 +1685,16 @@ impl TemporalEngine {
                 // whole log, which `what_one_stats_read_allocates` measures at 99.3% of everything
                 // this function allocates -- and this function is what a node answers a stats
                 // request with, so it was paid on every read. See `stats_without_rescan`.
-                write_ahead_log: self.wal_store.stats_without_rescan(shard_id),
-            }
-        })
+                write_ahead_log,
+            };
+            // What this hold walked: the slab tally (O(slabs)) plus the bucket nodes the resident
+            // bytes term had to visit when its cached total was cold.
+            visited.add(state.bucket_index.block_slab_live.iter().count() as u64);
+            visited.add(
+                crate::engine::storage_bucket_internals::bucket_index_resident_bytes_visits()
+                    .saturating_sub(resident_visits_before),
+            );
+            stats
+        }))
     }
 }

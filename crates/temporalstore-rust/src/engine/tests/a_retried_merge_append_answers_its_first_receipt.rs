@@ -8,7 +8,7 @@
 //! landed, and the same token again answers that receipt, marked as a replay, and writes nothing.
 //!
 //! WHAT EACH GUARD CAN ONLY PASS ON THE NEW PATH.
-//!   * the retry answers `(1 snapshot, 1 cell created, 0 merged)` with `replayed` set. A merge that
+//!   * the retry answers `(1 sample, 1 cell created, 0 merged)` with `replayed` set. A merge that
 //!     ran again would say `(1, 0, 1)`: the cell exists by then. Only the stored first receipt says
 //!     "created", and only the replay path sets the flag.
 //!   * the stored series is byte-identical before and after the retry, and the `Sum` lane holds the
@@ -98,8 +98,8 @@ fn send(engine: &TemporalEngine, key: &str, points: Vec<FeaturePoint>, token: Op
 fn receipt(response: &ExecuteResponse) -> (u64, u64, u64, bool) {
     assert!(response.status.ok, "the request was refused: {:?}", response.status);
     match &response.response {
-        CommandResponse::CellMergeReceipt { snapshots_written, cells_created, cells_merged, replayed } => {
-            (*snapshots_written, *cells_created, *cells_merged, *replayed)
+        CommandResponse::CellMergeReceipt { samples_written, cells_created, cells_merged, replayed } => {
+            (*samples_written, *cells_created, *cells_merged, *replayed)
         }
         other => panic!("a merge-reduce append answers a receipt, got {other:?}"),
     }
@@ -136,13 +136,15 @@ fn lanes(engine: &TemporalEngine, key: &str) -> Vec<i64> {
 
 /// The tokens the SHARD holds for a key, oldest first. Read directly, not through a command.
 fn ring_tokens(engine: &TemporalEngine, key: &str) -> Option<Vec<u64>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards.get(&1).expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.tokens())
+    engine.shards.with_state(1, |owner| {
+        owner.expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.tokens())
+    })
 }
 
 fn ring_bytes(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards.get(&1).expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.encode())
+    engine.shards.with_state(1, |owner| {
+        owner.expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.encode())
+    })
 }
 
 #[test]
@@ -292,9 +294,10 @@ fn a_delete_an_expiry_and_a_trim_to_nothing_each_forget_the_ring() {
     let expiring = key_for(8);
     assert!(!receipt(&send(&engine, &expiring, vec![adds(1)], Some(5))).3);
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        crate::engine::set_expiry(shard, expiring.clone(), 1);
+        engine.shards.with_state_mut(1, |owner| {
+            let shard = owner.expect("shard 1 is loaded");
+            crate::engine::set_expiry(shard, expiring.clone(), 1);
+        });
     }
     assert_eq!((1, 1, 0, false), receipt(&send(&engine, &expiring, vec![adds(1)], Some(5))));
     assert_eq!(vec![1, 1], lanes(&engine, &expiring), "the expired key's value came back");
@@ -399,11 +402,12 @@ fn an_append_without_a_token_stores_what_it_always_stored() {
     // The tokenless shard's image names no ring table and the tokened one does: the table costs a
     // key that never uses a token nothing.
     let image = |engine: &TemporalEngine| {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
-        let plain_json = String::from_utf8(crate::engine::encode_index_bytes_as_plain_json(shard)).expect("utf-8");
-        let decoded = crate::engine::decode_index_bytes(&crate::engine::encode_index_bytes(shard)).expect("decodes");
-        (plain_json, decoded.retry_ring(&key).map(|ring| ring.encode()))
+        engine.shards.with_state(1, |owner| {
+            let shard = owner.expect("shard 1 is loaded");
+            let plain_json = String::from_utf8(crate::engine::encode_index_bytes_as_plain_json(shard)).expect("utf-8");
+            let decoded = crate::engine::decode_index_bytes(&crate::engine::encode_index_bytes(shard)).expect("decodes");
+            (plain_json, decoded.retry_ring(&key).map(|ring| ring.encode()))
+        })
     };
     let (plain_image, plain_ring) = image(&plain);
     let (tokened_image, tokened_ring) = image(&tokened);
@@ -459,7 +463,7 @@ fn the_token_rides_the_command_bytes_and_a_tokenless_command_is_unchanged_on_eve
     assert!(!serde_json::to_string(&tokenless).unwrap().contains("retry_token"));
     assert!(serde_json::to_string(&tokened(300)).unwrap().contains("\"retry_token\":300"));
     let receipt_of = |replayed: bool| CommandResponse::CellMergeReceipt {
-        snapshots_written: 1,
+        samples_written: 1,
         cells_created: 2,
         cells_merged: 3,
         replayed,
@@ -468,8 +472,12 @@ fn the_token_rides_the_command_bytes_and_a_tokenless_command_is_unchanged_on_eve
     assert!(serde_json::to_string(&receipt_of(true)).unwrap().contains("\"replayed\":true"));
     // The response proto: a plain receipt writes no `replayed` field, a replay writes field 15.
     let wire = |replayed: bool| crate::sdk::types_command_response_to_sdk(receipt_of(replayed)).encode_to_vec();
-    assert_eq!(wire(false).len() + 2, wire(true).len());
-    assert!(wire(true).ends_with(&[0x78, 0x01]), "{:?}", wire(true));
+    let plain = wire(false);
+    let replayed = wire(true);
+    assert_eq!(plain.len() + 2, replayed.len());
+    // Field 23 encodes the result kind after the optional replay flag.
+    assert!(plain.ends_with(&[0xb8, 0x01, 0x09]), "{plain:?}");
+    assert!(replayed.ends_with(&[0x78, 0x01, 0xb8, 0x01, 0x09]), "{replayed:?}");
 }
 
 #[test]

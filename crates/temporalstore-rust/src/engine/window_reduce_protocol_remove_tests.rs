@@ -57,9 +57,9 @@ fn filter(label: i32) -> Option<KeyFilter> {
     Some(KeyFilter { label, kind: 3, channel: 4 })
 }
 
-fn spec_of(command: Command) -> CellRemoveSpec {
+fn spec_of(command: Command) -> WindowReduceRemoveSpec {
     match command {
-        Command::CellRemove { spec, .. } => spec,
+        Command::WindowReduceRemove { spec, .. } => spec,
         other => panic!("not a removal: {other:?}"),
     }
 }
@@ -73,9 +73,9 @@ fn a_remove_names_its_key_its_span_in_whole_milliseconds_and_its_label_predicate
     let table = profile(&["slot"]);
     let command = translate_remove(&table, &request(Some((1_500, 2_999)), filter(5))).unwrap();
     // 1 500 us is 1.5 ms and rounds up to the stamp 2; 2 999 us rounds down to the stamp 2.
-    let Command::CellRemove { key: named, spec } = command else { panic!("not a removal") };
+    let Command::WindowReduceRemove { key: named, spec } = command else { panic!("not a removal") };
     assert_eq!(named, key(&table, 7, 4, 3));
-    assert_eq!(spec, CellRemoveSpec { start_ms: Some(2), end_ms: Some(2), members: Default::default(), filters: vec![slot(5)] });
+    assert_eq!(spec, WindowReduceRemoveSpec { start_ms: Some(2), end_ms: Some(2), members: Default::default(), filters: vec![slot(5)] });
 
     // An exact millisecond on both ends is that one stamp; a span of two is two.
     let one = spec_of(translate_remove(&table, &request(Some((1_000, 1_000)), filter(5))).unwrap());
@@ -134,7 +134,7 @@ fn member_lists_are_accepted_at_1024_and_refused_at_1025() {
 }
 
 #[test]
-fn a_delete_is_a_removal_by_label_and_member_over_every_snapshot_and_never_of_the_key() {
+fn a_delete_is_a_removal_by_label_and_member_over_every_sample_and_never_of_the_key() {
     let table = profile(&["slot"]);
     let delete = |selector: WindowReduceSelector| WindowReduceDeleteRequest {
         entity: 7,
@@ -142,7 +142,7 @@ fn a_delete_is_a_removal_by_label_and_member_over_every_snapshot_and_never_of_th
         table: b"stats".to_vec(),
     };
     let selector = WindowReduceSelector { channel: 4, kind: 3, label: 5, members: vec![11, 12], excluded_members: vec![12], ..Default::default() };
-    let Command::CellRemove { key: named, spec } = translate_delete(&table, &delete(selector)).unwrap() else { panic!() };
+    let Command::WindowReduceRemove { key: named, spec } = translate_delete(&table, &delete(selector)).unwrap() else { panic!() };
     assert_eq!(named, key(&table, 7, 4, 3));
     assert_eq!((spec.start_ms, spec.end_ms), (None, None));
     assert_eq!(spec.filters, vec![slot(5)]);
@@ -152,10 +152,14 @@ fn a_delete_is_a_removal_by_label_and_member_over_every_snapshot_and_never_of_th
     // The label alone restricts, at 0 too, as it does on a read.
     let label_only = WindowReduceSelector { channel: 4, kind: 3, ..Default::default() };
     assert_eq!(spec_of(translate_delete(&table, &delete(label_only.clone())).unwrap()).filters, vec![slot(0)]);
-    // A table with no label and a selector with no member would empty the key.
+    // A table with no label and a selector with no member leaves every part open: the whole key.
     let unlabelled = profile(&[]);
-    let err = translate_delete(&unlabelled, &delete(label_only.clone())).unwrap_err();
-    assert!(err.message.contains("would empty the key"), "{err:?}");
+    let whole = spec_of(translate_delete(&unlabelled, &delete(label_only.clone())).unwrap());
+    assert!(crate::engine::window_reduce_remove::removes_the_whole_key(&whole), "{whole:?}");
+    // A delete of a key that held nothing answers NO_DATA; one that held samples answers OK.
+    let receipt = |samples_before| Receipt { samples_before, samples_after: 0, cells_before: 0, cells_removed: 0 };
+    assert_eq!(delete_response(receipt(0)).code, WindowReduceStatusCode::NoData as i32);
+    assert_eq!(delete_response(receipt(3)).code, WindowReduceStatusCode::Ok as i32);
     let named_members = WindowReduceSelector { members: vec![1], ..label_only.clone() };
     assert!(translate_delete(&unlabelled, &delete(named_members)).is_ok());
     // A label the table cannot carry, a missing selector and an oversize list are refused.
@@ -168,7 +172,7 @@ fn a_delete_is_a_removal_by_label_and_member_over_every_snapshot_and_never_of_th
 
 #[test]
 fn the_responses_carry_the_receipt_on_the_additive_fields_and_the_established_ones_unchanged() {
-    let receipt = Receipt { snapshots_before: 5, snapshots_after: 4, cells_before: 30, cells_removed: 7 };
+    let receipt = Receipt { samples_before: 5, samples_after: 4, cells_before: 30, cells_removed: 7 };
     let asked = request(Some((1_000, 9_000)), filter(1));
     let ok = remove_response(&asked, receipt);
     assert_eq!(ok.code, WindowReduceStatusCode::Ok as i32);

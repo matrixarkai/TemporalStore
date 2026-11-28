@@ -39,6 +39,17 @@ __all__ = [
     "encode_bytes",
 ]
 
+_READ_ONLY_COMMAND_KINDS = frozenset({
+    "common_exists", "string_get", "string_len", "hash_get", "hash_multi_get", "set_members", "set_scan",
+    "feature_query", "feature_query_filtered", "feature_agg_query",
+    "feature_proto_agg_query", "sequence_query", "window_reduce_rank",
+})
+_CLOSED_CONNECTION_ERRORS = (
+    BrokenPipeError, ConnectionResetError, ConnectionAbortedError,
+    http.client.RemoteDisconnected, http.client.CannotSendRequest,
+    http.client.ResponseNotReady, http.client.IncompleteRead,
+)
+
 
 class TemporalStoreCommandError(RuntimeError):
     """A command reached the node and the node refused it.
@@ -89,7 +100,8 @@ def _binary_command(command: Dict[str, Any]) -> Dict[str, Any]:
             for name, value in encoded.get("entries", [])
         ]
     elif kind in {"string_set", "string_set_ex", "string_set_conditional", "hash_set"}:
-        encoded["value"] = _required_binary(encoded["value"])
+        value = encoded["value"]
+        encoded["value"] = value if isinstance(value, memoryview) else _required_binary(value)
     elif kind in {"set_add", "set_remove", "zset_add", "zset_score", "zset_remove"}:
         encoded["member"] = _required_binary(encoded["member"])
     elif kind == "set_scan":
@@ -159,6 +171,8 @@ class TemporalStoreClient:
         max_batch_commands: int = 512,
         max_batch_request_bytes: int = 4 * 1024 * 1024,
         max_write_batch_commands: Optional[int] = None,
+        max_async_read_batches: int = 1,
+        require_binary_batch: bool = False,
     ) -> None:
         write_batch_commands = (
             max_batch_commands
@@ -171,6 +185,13 @@ class TemporalStoreClient:
             or max_batch_request_bytes < 1
         ):
             raise ValueError("batch limits must be positive")
+        if (isinstance(max_async_read_batches, bool)
+                or not isinstance(max_async_read_batches, int)
+                or not 1 <= max_async_read_batches <= 32):
+            raise ValueError("async read batch concurrency must be between 1 and 32")
+        if require_binary_batch and msgpack is None:
+            raise ValueError("binary command batches require msgpack")
+        self._require_binary_batch = require_binary_batch
         self.host = host
         self.port = port
         self.shard_id = shard_id
@@ -178,17 +199,21 @@ class TemporalStoreClient:
         self.max_batch_commands = max_batch_commands
         self.max_write_batch_commands = write_batch_commands
         self.max_batch_request_bytes = max_batch_request_bytes
+        self.max_async_read_batches = max_async_read_batches
         self._local = threading.local()
         # EVERY connection this client ever opened, not just this thread's.
         # `threading.local` is the right place to KEEP a connection and the
         # wrong place to find one from another thread, so `close()` could only
         # ever release the socket belonging to whoever happened to call it.
-        # Under the async methods the work runs on an executor's threads, so
-        # the caller closing the store is never the thread holding the
-        # connections, and every one of them would leak. This registry is what
+        # Worker-backed methods may open sockets on executor threads, so the
+        # caller closing the store need not be the thread holding the
+        # connections. This registry is what
         # makes `close()` mean closed.
         self._all_connections: List[http.client.HTTPConnection] = []
         self._registry_lock = threading.Lock()
+        self._async_lock = threading.Lock()
+        self._async_read_transport = None
+        self._async_read_available: Optional[bool] = None
         self._batch_write_supported: Optional[bool] = None
         self._binary_batch_supported: Optional[bool] = False if msgpack is None else None
         self._binary_write_supported: Optional[bool] = False if msgpack is None else None
@@ -208,6 +233,9 @@ class TemporalStoreClient:
             False if msgpack is None else None
         )
         self._conditional_shared_field_ttl_write_supported: Optional[bool] = (
+            False if msgpack is None else None
+        )
+        self._interleaved_conditional_write_supported: Optional[bool] = (
             False if msgpack is None else None
         )
 
@@ -257,14 +285,13 @@ class TemporalStoreClient:
             self._local.conn = None
 
     def close(self) -> None:
-        """Close every connection this client opened, on any thread.
+        """Close blocking connections and initiate async pool shutdown.
 
         Idempotent, and safe to call from a thread that never issued a request.
-        A connection closed here that some thread still has in its
-        `threading.local` is reopened on that thread's next call, because
-        :meth:`_connection` builds one whenever its slot is empty -- and a
-        closed `HTTPConnection` raises on reuse, which `_post` already treats
-        as a dropped pooled connection and retries once.
+        Clearing the thread-local registry makes the next call open a fresh
+        connection. Known read-only requests also reconnect once when a pooled
+        socket closes; writes are never automatically resent.
+        Await aclose() instead when async shutdown must complete before returning.
         """
         with self._registry_lock:
             connections = list(self._all_connections)
@@ -275,6 +302,34 @@ class TemporalStoreClient:
             except Exception:
                 pass
         self._local = threading.local()
+
+        with self._async_lock:
+            transport, self._async_read_transport = self._async_read_transport, None
+        if transport is not None:
+            transport.close()
+
+    async def aclose(self) -> None:
+        """Release blocking connections and await all loop-owned read pools."""
+        with self._async_lock:
+            transport = self._async_read_transport
+        self.close()
+        if transport is not None:
+            await transport.aclose()
+
+    def _get_async_read_transport(self):
+        from .async_transport import AsyncReadTransport
+
+        with self._async_lock:
+            if self._async_read_available is None:
+                self._async_read_available = AsyncReadTransport.available()
+            if not self._async_read_available:
+                return None
+            if self._async_read_transport is None:
+                self._async_read_transport = AsyncReadTransport(
+                    self.host, self.port, self.timeout_seconds,
+                    max_pending_bytes=max(64 * 1024 * 1024, self.max_batch_request_bytes),
+                )
+            return self._async_read_transport
 
     def _request_encoded(
         self, path: str, body: bytes, content_type: str = "application/json"
@@ -298,11 +353,30 @@ class TemporalStoreClient:
             )
         return raw
 
+    def _request_read_encoded(
+        self, path: str, body: bytes, content_type: str = "application/json"
+    ) -> bytes:
+        try:
+            return self._request_encoded(path, body, content_type)
+        except _CLOSED_CONNECTION_ERRORS:
+            self._drop_connection()
+        # Leave the handler before retrying so IncompleteRead releases its partial body.
+        return self._request_encoded(path, body, content_type)
+
     def _post_encoded(self, path: str, body: bytes) -> Dict[str, Any]:
         return json.loads(self._request_encoded(path, body))
 
+    def _post_read_encoded(self, path: str, body: bytes) -> Dict[str, Any]:
+        try:
+            return self._post_encoded(path, body)
+        except _CLOSED_CONNECTION_ERRORS:
+            self._drop_connection()
+        return self._post_encoded(path, body)
+
     def _post(self, path: str, document: Dict[str, Any]) -> Dict[str, Any]:
         body = json.dumps(document, separators=(",", ":")).encode("utf-8")
+        if path == "/execute" and document.get("command", {}).get("kind") in _READ_ONLY_COMMAND_KINDS:
+            return self._post_read_encoded(path, body)
         return self._post_encoded(path, body)
 
     # -- commands ------------------------------------------------------------
@@ -337,13 +411,16 @@ class TemporalStoreClient:
                 for chunk, body in self._binary_batches(
                     commands, self.max_batch_commands
                 ):
-                    raw = self._request_encoded(
+                    request = self._request_read_encoded if all(
+                        command.get("kind") in _READ_ONLY_COMMAND_KINDS for command in chunk
+                    ) else self._request_encoded
+                    raw = request(
                         "/batch_execute_msgpack", body, "application/msgpack"
                     )
                     envelope = msgpack.unpackb(raw, raw=False)
                     results.extend(self._decode_batch_envelope(envelope, chunk))
             except TemporalStoreCommandError as error:
-                if error.code != "http_404" or results:
+                if self._require_binary_batch or error.code != "http_404" or results:
                     raise
                 self._binary_batch_supported = False
             except (ValueError, msgpack.UnpackException) as error:
@@ -378,7 +455,7 @@ class TemporalStoreClient:
             compact_results: List[List[Any]] = []
             try:
                 for chunk, body in self._shared_field_read_batches(keys, fields):
-                    raw = self._request_encoded(
+                    raw = self._request_read_encoded(
                         "/batch_hash_multi_get_compact_msgpack",
                         body,
                         "application/msgpack",
@@ -403,7 +480,7 @@ class TemporalStoreClient:
             results: List[List[Any]] = []
             try:
                 for chunk, body in self._shared_field_read_batches(keys, fields):
-                    raw = self._request_encoded(
+                    raw = self._request_read_encoded(
                         "/batch_hash_multi_get_msgpack",
                         body,
                         "application/msgpack",
@@ -434,6 +511,133 @@ class TemporalStoreClient:
                 ]
             )
         ]
+
+    async def batch_hash_multi_get_async(self, keys: List[str], fields: List[str]) -> List[List[Any]]:
+        """Read shared projections without occupying one worker per socket."""
+        import asyncio
+        from .async_transport import AsyncReadClosedError, AsyncReadHttpError, AsyncReadLimitError
+
+        if not keys:
+            return []
+        transport = self._get_async_read_transport() if msgpack is not None else None
+        if transport is None:
+            return await asyncio.to_thread(self.batch_hash_multi_get, keys, fields)
+        routes = (
+            ("/batch_hash_multi_get_compact_msgpack", "_compact_shared_field_read_supported", True),
+            ("/batch_hash_multi_get_msgpack", "_shared_field_read_supported", False),
+        )
+        for path, supported, compact in routes:
+            if getattr(self, supported) is False:
+                continue
+            results: List[List[Any]] = []
+            progress = None
+            try:
+                batches = iter(self._shared_field_read_batches(keys, fields))
+                first = next(batches, None)
+                if first is None:
+                    return []
+                second = next(batches, None)
+                if second is None:
+                    chunk, body = first
+                    raw = await transport.read(path, body)
+                    if len(raw) > 1024 * 1024:
+                        results = await asyncio.to_thread(self._decode_async_hash_payload, raw, chunk, compact)
+                    else:
+                        results = self._decode_async_hash_payload(raw, chunk, compact)
+                else:
+                    from itertools import chain
+                    progress = [False]
+                    batches = chain((first, second), batches)
+                    first = second = None
+                    async for decoded in self._read_hash_batches_async(
+                        transport, path, batches, compact,
+                        getattr(self, supported) is True, progress,
+                    ):
+                        results.extend(decoded)
+            except AsyncReadHttpError as error:
+                if error.status != 404 or results or progress is not None and progress[0]:
+                    raise TemporalStoreCommandError(f"http_{error.status}", str(error)) from error
+                setattr(self, supported, False)
+            except AsyncReadLimitError as error:
+                raise TemporalStoreCommandError("async_read_overloaded", str(error)) from error
+            except AsyncReadClosedError as error:
+                raise TemporalStoreCommandError("client_closed", str(error)) from error
+            except (ValueError, msgpack.UnpackException) as error:
+                raise TemporalStoreCommandError("invalid_binary_response", str(error)) from error
+            else:
+                setattr(self, supported, True)
+                return results
+        return await asyncio.to_thread(self.batch_hash_multi_get, keys, fields)
+
+    async def _read_hash_batches_async(self, transport, path, batches, compact,
+                                      known_supported, progress):
+        import asyncio
+        from collections import deque
+        from itertools import chain
+
+        async def read_batch(chunk, body):
+            raw = await transport.read(path, body)
+            if len(raw) > 1024 * 1024:
+                decoded = await asyncio.to_thread(self._decode_async_hash_payload, raw, chunk, compact)
+            else:
+                decoded = self._decode_async_hash_payload(raw, chunk, compact)
+            # A later batch can finish before the first. Its success also forbids fallback.
+            progress[0] = True
+            return decoded
+
+        batches = iter(batches)
+        if not known_supported:
+            first = next(batches, None)
+            if first is None:
+                return
+            yield await read_batch(*first)
+        if self.max_async_read_batches == 1:
+            for chunk, body in batches:
+                yield await read_batch(chunk, body)
+            return
+        first = next(batches, None)
+        if first is None:
+            return
+        second = next(batches, None)
+        if second is None:
+            yield await read_batch(*first)
+            return
+        batches = iter(chain((first, second), batches))
+        first = second = None
+        pending = deque()
+        pending_bytes = 0
+        waiting = None
+        try:
+            while True:
+                while len(pending) < self.max_async_read_batches:
+                    if waiting is None:
+                        waiting = next(batches, None)
+                    if waiting is None:
+                        break
+                    size = len(waiting[1])
+                    if pending and pending_bytes + size > self.max_batch_request_bytes:
+                        break
+                    pending.append((asyncio.create_task(read_batch(*waiting)), size))
+                    pending_bytes += size
+                    waiting = None
+                if not pending:
+                    break
+                task, size = pending.popleft()
+                rows = await task
+                pending_bytes -= size
+                yield rows
+        finally:
+            for task, _size in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*(task for task, _size in pending), return_exceptions=True)
+
+    def _decode_async_hash_payload(self, raw: bytes, chunk: List[str], compact: bool) -> List[List[Any]]:
+        envelope = msgpack.unpackb(raw, raw=False)
+        if compact:
+            return self._decode_compact_hash_read_envelope(envelope, len(chunk))
+        return [(response.get("values") or [])
+                for response in self._decode_batch_envelope(envelope, chunk)]
 
     @staticmethod
     def _decode_compact_hash_read_envelope(
@@ -468,7 +672,9 @@ class TemporalStoreClient:
         # Packer buffer and a second assembled request of the same size.
         if encoded_upper_bound > self.max_batch_request_bytes:
             return None
-        body = msgpack.packb(document, use_bin_type=True)
+        # Small requests do not need a 256 KiB initial encoding arena.
+        initial_buffer_bytes = min(256 * 1024, max(256, encoded_upper_bound))
+        body = msgpack.packb(document, use_bin_type=True, buf_size=initial_buffer_bytes)
         return body if len(body) <= self.max_batch_request_bytes else None
 
     def _shared_field_read_batches(
@@ -672,6 +878,37 @@ class TemporalStoreClient:
         request_upper_bound: Optional[int] = None,
         ttl_ms: Optional[int] = None,
     ) -> Optional[Tuple[int, int]]:
+        """Write timestamp-conditioned rows through the atomic batch route."""
+        return self._batch_hash_timestamp_set(
+            fields, timestamp_field, rows, request_upper_bound, ttl_ms, False
+        )
+
+    def batch_hash_timestamp_set_interleaved(
+        self,
+        fields: List[str],
+        timestamp_field: str,
+        rows: List[Tuple[str, int, int, List[bytes]]],
+        request_upper_bound: Optional[int] = None,
+        ttl_ms: Optional[int] = None,
+    ) -> Optional[Tuple[int, int]]:
+        """Keep rows atomic, allow readers between groups, and await durability.
+
+        A failed call may have applied a prefix. Only an unattempted route-level
+        404 permits fallback; an application error or unknown result does not.
+        """
+        return self._batch_hash_timestamp_set(
+            fields, timestamp_field, rows, request_upper_bound, ttl_ms, True
+        )
+
+    def _batch_hash_timestamp_set(
+        self,
+        fields: List[str],
+        timestamp_field: str,
+        rows: List[Tuple[str, int, int, List[bytes]]],
+        request_upper_bound: Optional[int] = None,
+        ttl_ms: Optional[int] = None,
+        interleaved: bool = False,
+    ) -> Optional[Tuple[int, int]]:
         """Atomically write rows whose stored timestamp is older.
 
         ``None`` means the node does not expose the route and no row was
@@ -682,10 +919,16 @@ class TemporalStoreClient:
         """
         if not rows:
             return (0, 0)
+        if interleaved and self._interleaved_conditional_write_supported is False:
+            interleaved = False
         capability = (
-            self._conditional_shared_field_ttl_write_supported
-            if ttl_ms is not None
-            else self._conditional_shared_field_write_supported
+            self._interleaved_conditional_write_supported
+            if interleaved
+            else (
+                self._conditional_shared_field_ttl_write_supported
+                if ttl_ms is not None
+                else self._conditional_shared_field_write_supported
+            )
         )
         if msgpack is None or capability is False:
             return None
@@ -698,15 +941,20 @@ class TemporalStoreClient:
                 fields, timestamp_field, rows, request_upper_bound, ttl_ms
             ):
                 path = (
-                    "/batch_hash_timestamp_set_ttl_msgpack"
-                    if ttl_ms is not None
-                    else "/batch_hash_timestamp_set_msgpack"
+                    "/batch_hash_timestamp_set_interleaved_msgpack"
+                    if interleaved
+                    else (
+                        "/batch_hash_timestamp_set_ttl_msgpack"
+                        if ttl_ms is not None
+                        else "/batch_hash_timestamp_set_msgpack"
+                    )
                 )
                 raw = self._request_encoded(
                     path,
                     body,
                     "application/msgpack",
                 )
+                processed_any = True
                 envelope = msgpack.unpackb(raw, raw=False)
                 status = envelope.get("status") or {}
                 if not status.get("ok", False):
@@ -732,10 +980,14 @@ class TemporalStoreClient:
                     )
                 applied += chunk_applied
                 skipped += chunk_skipped
-                processed_any = True
         except TemporalStoreCommandError as error:
             if error.code != "http_404" or processed_any:
                 raise
+            if interleaved:
+                self._interleaved_conditional_write_supported = False
+                return self._batch_hash_timestamp_set(
+                    fields, timestamp_field, rows, request_upper_bound, ttl_ms, False
+                )
             if ttl_ms is None:
                 self._conditional_shared_field_write_supported = False
             else:
@@ -746,7 +998,9 @@ class TemporalStoreClient:
                 "invalid_binary_response", str(error)
             ) from error
 
-        if ttl_ms is None:
+        if interleaved:
+            self._interleaved_conditional_write_supported = True
+        elif ttl_ms is None:
             self._conditional_shared_field_write_supported = True
         else:
             self._conditional_shared_field_ttl_write_supported = True
@@ -947,7 +1201,10 @@ class TemporalStoreClient:
         commands: List[Dict[str, Any]],
         body: bytes,
     ) -> List[Dict[str, Any]]:
-        envelope = self._post_encoded("/batch_execute", body)
+        post = self._post_read_encoded if commands and all(
+            command.get("kind") in _READ_ONLY_COMMAND_KINDS for command in commands
+        ) else self._post_encoded
+        envelope = post("/batch_execute", body)
         return self._decode_batch_envelope(envelope, commands)
 
     def _decode_batch_envelope(

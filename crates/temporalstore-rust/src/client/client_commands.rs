@@ -49,6 +49,8 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::StringIncrBy { key, .. }
         | Command::StringAppend { key, .. }
         | Command::StringGet { key }
+        | Command::StringLen { key }
+        | Command::StringGetRange { key, .. }
         | Command::StringDelete { key }
         | Command::HashSet { key, .. }
         | Command::HashGet { key, .. }
@@ -62,21 +64,27 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::HashFieldExists { key, .. }
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
+        | Command::SetAddMany { key, .. }
         | Command::SetMembers { key }
         | Command::SetCard { key }
         | Command::SetIsMember { key, .. }
         | Command::SetScan { key, .. }
         | Command::SetRemove { key, .. }
+        | Command::SetRemoveMany { key, .. }
         | Command::ListPush { key, .. }
         | Command::ListPop { key, .. }
+        | Command::ListPushMany { key, .. }
+        | Command::ListPopMany { key, .. }
         | Command::ListRange { key, .. }
         | Command::ListLen { key }
         | Command::ListSet { key, .. }
         | Command::ListRemove { key, .. }
         | Command::ListTrim { key, .. }
         | Command::ZSetAdd { key, .. }
+        | Command::ZSetAddMany { key, .. }
         | Command::ZSetScore { key, .. }
         | Command::ZSetRemove { key, .. }
+        | Command::ZSetRemoveMany { key, .. }
         | Command::ZSetCard { key }
         | Command::ZSetRange { key, .. }
         | Command::ZSetRangeByScore { key, .. }
@@ -95,14 +103,14 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::FeatureQuery { key, .. }
         | Command::FeatureQueryFiltered { key, .. }
         | Command::FeatureReplace { key, .. }
-        | Command::CellRollup { key, .. }
-        | Command::CellRemove { key, .. }
+        | Command::WindowReduceRollup { key, .. }
+        | Command::WindowReduceRemove { key, .. }
         | Command::FeatureDelete { key }
         | Command::FeatureAggQuery { key, .. }
         | Command::FeatureProtoAggQuery { key, .. }
         | Command::SequenceAdd { key, .. }
         | Command::SequenceQuery { key, .. }
-        | Command::CellRankQuery { key, .. }
+        | Command::WindowReduceRank { key, .. }
         | Command::ControlStateIncrement { key, .. }
         | Command::ControlStateIncrementWithOptions { key, .. }
         | Command::ControlStateChangeAdd { key, .. }
@@ -119,8 +127,8 @@ pub(super) fn command_key(command: &Command) -> Option<&str> {
         | Command::ControlStateDebug { key, .. } => Some(key),
         // Several keys that must live together: routed by the first, as the other reads that
         // name many ids are.
-        Command::CellFanInRankQuery { keys, .. } => keys.first().map(String::as_str),
-        Command::CellRankBatchQuery { queries } => queries.first().map(|query| query.key.as_str()),
+        Command::WindowReduceFanInRank { keys, .. } => keys.first().map(String::as_str),
+        Command::WindowReduceRankBatch { queries } => queries.first().map(|query| query.key.as_str()),
         Command::SequenceBatchQuery { .. }
         | Command::ContextUpsertNode { .. }
         | Command::ContextGetNode { .. }

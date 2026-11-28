@@ -113,118 +113,119 @@ fn a_key_held_by_several_maps_is_one_allocation() {
         }
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
 
-    // (text, address of its characters) from every map keyed by the raw key. A `String` key and an
-    // `Arc<str>` key both expose `as_ptr()`, so this needs no list of which map is keyed by what --
-    // and an allowlist of map NAMES is what went stale the first time this guard was written.
-    let mut held: std::collections::BTreeMap<&str, Vec<(&str, usize)>> =
-        std::collections::BTreeMap::new();
-    for (name, keys) in [
-        (
-            "strings",
-            shard
-                .strings()
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect::<Vec<_>>(),
-        ),
-        (
-            "features",
-            shard
-                .features()
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "control_state_selection",
-            shard
-                .control_state_selection
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "seen",
-            shard
-                .seen
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "buckets",
-            shard
-                .buckets
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        // Only the RAW-keyed entries of this map can ever share. The family operators file a
-        // decorated `control_state:<family>:<key>` that no other map holds, so those are
-        // filtered out rather than counted as holders that failed to share.
-        (
-            "control_state",
-            shard
-                .control_state()
-                .keys()
-                .filter(|k| !k.contains(':'))
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "control_state_changes",
-            shard
-                .control_state_changes
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-    ] {
-        for (text, ptr) in keys {
-            held.entry(text).or_default().push((name, ptr));
+        // (text, address of its characters) from every map keyed by the raw key. A `String` key and an
+        // `Arc<str>` key both expose `as_ptr()`, so this needs no list of which map is keyed by what --
+        // and an allowlist of map NAMES is what went stale the first time this guard was written.
+        let mut held: std::collections::BTreeMap<&str, Vec<(&str, usize)>> =
+            std::collections::BTreeMap::new();
+        for (name, keys) in [
+            (
+                "strings",
+                shard
+                    .strings()
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "features",
+                shard
+                    .features()
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "control_state_selection",
+                shard
+                    .control_state_selection
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "seen",
+                shard
+                    .seen
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "buckets",
+                shard
+                    .buckets
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            // Only the RAW-keyed entries of this map can ever share. The family operators file a
+            // decorated `control_state:<family>:<key>` that no other map holds, so those are
+            // filtered out rather than counted as holders that failed to share.
+            (
+                "control_state",
+                shard
+                    .control_state()
+                    .keys()
+                    .filter(|k| !k.contains(':'))
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "control_state_changes",
+                shard
+                    .control_state_changes
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+        ] {
+            for (text, ptr) in keys {
+                held.entry(text).or_default().push((name, ptr));
+            }
         }
-    }
 
-    // --- DENOMINATORS, because every claim below divides by them. ---
-    let multi: Vec<_> = held.iter().filter(|(_, h)| h.len() > 1).collect();
-    assert_eq!(
-        KEYS,
-        multi.len(),
-        "the fixture wrote {KEYS} keys through seven families but only {} ended up in more than \
-         one map, so this run could not have detected a duplicate at all. Held: {:?}",
-        multi.len(),
-        held
-    );
-    assert!(
-        multi.iter().all(|(_, h)| h.len() == 7),
-        "a key reached fewer than seven maps, so one of the seven commands stopped writing its \
-         map and this guard silently stopped covering it: {:?}",
-        multi
-    );
+        // --- DENOMINATORS, because every claim below divides by them. ---
+        let multi: Vec<_> = held.iter().filter(|(_, h)| h.len() > 1).collect();
+        assert_eq!(
+            KEYS,
+            multi.len(),
+            "the fixture wrote {KEYS} keys through seven families but only {} ended up in more than \
+             one map, so this run could not have detected a duplicate at all. Held: {:?}",
+            multi.len(),
+            held
+        );
+        assert!(
+            multi.iter().all(|(_, h)| h.len() == 7),
+            "a key reached fewer than seven maps, so one of the seven commands stopped writing its \
+             map and this guard silently stopped covering it: {:?}",
+            multi
+        );
 
-    // --- THE INVARIANT. ---
-    let duplicated: Vec<_> = held
-        .iter()
-        .filter(|(_, h)| {
-            h.iter()
-                .map(|(_, p)| *p)
-                .collect::<std::collections::HashSet<_>>()
-                .len()
-                > 1
-        })
-        .collect();
-    assert!(
-        duplicated.is_empty(),
-        "{} key texts are stored more than once -- their holders report different addresses for \
-         the same characters: {:?}. A map holding a key another map already holds must take a \
-         `ModelKey` and join `ShardState::adopt_object_key_allocations`; nothing else fails when \
-         it does not, because cloning an `Arc` is a refcount bump.",
-        duplicated.len(),
-        &duplicated[..duplicated.len().min(3)]
-    );
+        // --- THE INVARIANT. ---
+        let duplicated: Vec<_> = held
+            .iter()
+            .filter(|(_, h)| {
+                h.iter()
+                    .map(|(_, p)| *p)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len()
+                    > 1
+            })
+            .collect();
+        assert!(
+            duplicated.is_empty(),
+            "{} key texts are stored more than once -- their holders report different addresses for \
+             the same characters: {:?}. A map holding a key another map already holds must take a \
+             `ModelKey` and join `ShardState::adopt_object_key_allocations`; nothing else fails when \
+             it does not, because cloning an `Arc` is a refcount bump.",
+            duplicated.len(),
+            &duplicated[..duplicated.len().min(3)]
+        );
+    })
 }
 
 /// EVERY ADOPTED CONTEXT MAP HOLDS THE BLOCK INDEX'S OWN KEY -- the other half of the invariant,
@@ -409,251 +410,252 @@ fn every_adopted_context_map_holds_the_block_index_own_key() {
         }
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
 
-    // Every map named in `adopt_object_key_allocations`'s context half, with the address of each
-    // key's characters. A `ModelKey` exposes `as_ptr()` through its deref, so this needs no
-    // knowledge of what any map is keyed by -- which is what kept the first guard from going
-    // stale when a map changed key type.
-    let holders: Vec<(&str, Vec<(&str, usize)>)> = vec![
-        (
-            "context_nodes",
-            shard
-                .context_nodes()
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "context_events_series",
-            shard
-                .context_events()
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "context_event_timeline",
-            shard
-                .context_event_timeline
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "context_indexes",
-            shard
-                .context_indexes()
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "context_audits",
-            shard
-                .context_audits()
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "context_entities",
-            shard
-                .context_entities()
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "context_children",
-            shard
-                .context_children()
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "context_summaries",
-            shard
-                .context_summaries()
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "context_compressions",
-            shard
-                .context_compressions()
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-        (
-            "context_compression_watermark",
-            shard
-                .context_compression_watermark()
-                .keys()
-                .map(|k| (&**k, k.as_ptr() as usize))
-                .collect(),
-        ),
-    ];
+        // Every map named in `adopt_object_key_allocations`'s context half, with the address of each
+        // key's characters. A `ModelKey` exposes `as_ptr()` through its deref, so this needs no
+        // knowledge of what any map is keyed by -- which is what kept the first guard from going
+        // stale when a map changed key type.
+        let holders: Vec<(&str, Vec<(&str, usize)>)> = vec![
+            (
+                "context_nodes",
+                shard
+                    .context_nodes()
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "context_events_series",
+                shard
+                    .context_events()
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "context_event_timeline",
+                shard
+                    .context_event_timeline
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "context_indexes",
+                shard
+                    .context_indexes()
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "context_audits",
+                shard
+                    .context_audits()
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "context_entities",
+                shard
+                    .context_entities()
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "context_children",
+                shard
+                    .context_children()
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "context_summaries",
+                shard
+                    .context_summaries()
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "context_compressions",
+                shard
+                    .context_compressions()
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+            (
+                "context_compression_watermark",
+                shard
+                    .context_compression_watermark()
+                    .keys()
+                    .map(|k| (&**k, k.as_ptr() as usize))
+                    .collect(),
+            ),
+        ];
 
-    // --- WHAT THIS RUN ACTUALLY FILED, printed before anything divides by it. ---
-    #[derive(Default)]
-    struct Tally {
-        keys: usize,
-        borrowed: usize,
-        minted: usize,
-        unfiled: usize,
-    }
-    let mut tally: std::collections::BTreeMap<&str, Tally> = std::collections::BTreeMap::new();
-    let mut minted: Vec<(&str, &str)> = Vec::new();
-    for (name, keys) in &holders {
-        let row = tally.entry(name).or_default();
-        row.keys = keys.len();
-        for (text, ptr) in keys {
-            match shard
-                .bucket_index
-                .object_block_lookup
-                .any_shared_object_key(text)
-            {
-                None => row.unfiled += 1,
-                Some(canonical) if canonical.as_ptr() as usize == *ptr => row.borrowed += 1,
-                Some(_) => {
-                    row.minted += 1;
-                    minted.push((name, text));
+        // --- WHAT THIS RUN ACTUALLY FILED, printed before anything divides by it. ---
+        #[derive(Default)]
+        struct Tally {
+            keys: usize,
+            borrowed: usize,
+            minted: usize,
+            unfiled: usize,
+        }
+        let mut tally: std::collections::BTreeMap<&str, Tally> = std::collections::BTreeMap::new();
+        let mut minted: Vec<(&str, &str)> = Vec::new();
+        for (name, keys) in &holders {
+            let row = tally.entry(name).or_default();
+            row.keys = keys.len();
+            for (text, ptr) in keys {
+                match shard
+                    .bucket_index
+                    .object_block_lookup
+                    .any_shared_object_key(text)
+                {
+                    None => row.unfiled += 1,
+                    Some(canonical) if canonical.as_ptr() as usize == *ptr => row.borrowed += 1,
+                    Some(_) => {
+                        row.minted += 1;
+                        minted.push((name, text));
+                    }
                 }
             }
         }
-    }
-    println!();
-    println!("    map                              keys   borrowed   minted   no block entry");
-    for (name, row) in &tally {
-        println!(
-            "    {name:<32} {:>4}   {:>8}   {:>6}   {:>13}",
-            row.keys, row.borrowed, row.minted, row.unfiled
+        println!();
+        println!("    map                              keys   borrowed   minted   no block entry");
+        for (name, row) in &tally {
+            println!(
+                "    {name:<32} {:>4}   {:>8}   {:>6}   {:>13}",
+                row.keys, row.borrowed, row.minted, row.unfiled
+            );
+        }
+
+        // --- THE TWO MAPS THIS FIXTURE CANNOT SPEAK FOR, AND WHY. ---
+        //
+        // Each is excused for a reason that was MEASURED, and each excuse is checked below so that it
+        // cannot outlive the fact it rests on.
+        //
+        // `context_nodes`: there is no production write to it at all. Grepped from the crate root for
+        //   every `insert`, `entry(`, `remove`, `retain` and `clear` naming it: one test fixture in
+        //   `storage_bucket_internals.rs`, and one `remove` in the expiry path. `ContextUpsertNode`
+        //   files the node into `hashes` under `CONTEXT_NODE_FIELD`; this map is the PRE-HASHES
+        //   location, still read so a stored image written before that change still serves, and filled
+        //   only by `Deserialize`. Its sharing is therefore a decode-path question, which
+        //   `adopt_canonical_key_allocations_in_hashed` and the reload tests answer, not a write-path
+        //   one this fixture could ask.
+        //
+        // `context_entities`: the write arm files NO block entry under the key this map holds. The map
+        //   is keyed by the node's COLLECTION key (`ctx:entity:{tenant}:{node}`) while the block is
+        //   addressed per entity, so the staged outcome and the stored block entry both carry
+        //   `ctx:entity:{tenant}:{node}:{entity_hash}`. `any_shared_object_key` on a collection key
+        //   therefore answers None, there is no handle to borrow, and -- checked -- no other resident
+        //   structure holds that text either, so the minted key is the ONLY copy rather than a second
+        //   one. The `adopt_key_in` line for this map cannot fire in either direction.
+        //
+        // `context_compression_watermark`: its only writer is `maybe_auto_compress_context_node`, on
+        //   the event-write path, behind `MATRIXARK_CONTEXT_COMPRESSION_ENABLED` --
+        //   `ContextCompressionPolicy::default()` has `enabled: false`, so the trigger does not run.
+        //   A default-run test cannot turn it on: `set_var` is process-global and every other test in
+        //   this binary would inherit it. `Command::ContextCompressEvents` is a DIFFERENT path and
+        //   files the series, not the watermark -- checked by putting it in this fixture and watching
+        //   the map stay empty, which is why it is not here.
+        const NOT_REACHABLE: &[&str] = &[
+            "context_nodes",
+            "context_entities",
+            "context_compression_watermark",
+        ];
+
+        let nodes = tally.get("context_nodes").expect("named above");
+        assert_eq!(
+            0, nodes.keys,
+            "`context_nodes` now holds {} keys after a write-only fixture, so the reason it is excused \
+             -- that no production write files it -- has stopped being true. Move it into the checked \
+             set rather than leaving it excused.",
+            nodes.keys
         );
-    }
 
-    // --- THE TWO MAPS THIS FIXTURE CANNOT SPEAK FOR, AND WHY. ---
-    //
-    // Each is excused for a reason that was MEASURED, and each excuse is checked below so that it
-    // cannot outlive the fact it rests on.
-    //
-    // `context_nodes`: there is no production write to it at all. Grepped from the crate root for
-    //   every `insert`, `entry(`, `remove`, `retain` and `clear` naming it: one test fixture in
-    //   `storage_bucket_internals.rs`, and one `remove` in the expiry path. `ContextUpsertNode`
-    //   files the node into `hashes` under `CONTEXT_NODE_FIELD`; this map is the PRE-HASHES
-    //   location, still read so a stored image written before that change still serves, and filled
-    //   only by `Deserialize`. Its sharing is therefore a decode-path question, which
-    //   `adopt_canonical_key_allocations_in_hashed` and the reload tests answer, not a write-path
-    //   one this fixture could ask.
-    //
-    // `context_entities`: the write arm files NO block entry under the key this map holds. The map
-    //   is keyed by the node's COLLECTION key (`ctx:entity:{tenant}:{node}`) while the block is
-    //   addressed per entity, so the staged outcome and the stored block entry both carry
-    //   `ctx:entity:{tenant}:{node}:{entity_hash}`. `any_shared_object_key` on a collection key
-    //   therefore answers None, there is no handle to borrow, and -- checked -- no other resident
-    //   structure holds that text either, so the minted key is the ONLY copy rather than a second
-    //   one. The `adopt_key_in` line for this map cannot fire in either direction.
-    //
-    // `context_compression_watermark`: its only writer is `maybe_auto_compress_context_node`, on
-    //   the event-write path, behind `MATRIXARK_CONTEXT_COMPRESSION_ENABLED` --
-    //   `ContextCompressionPolicy::default()` has `enabled: false`, so the trigger does not run.
-    //   A default-run test cannot turn it on: `set_var` is process-global and every other test in
-    //   this binary would inherit it. `Command::ContextCompressEvents` is a DIFFERENT path and
-    //   files the series, not the watermark -- checked by putting it in this fixture and watching
-    //   the map stay empty, which is why it is not here.
-    const NOT_REACHABLE: &[&str] = &[
-        "context_nodes",
-        "context_entities",
-        "context_compression_watermark",
-    ];
+        let entities = tally.get("context_entities").expect("named above");
+        assert_eq!(
+            entities.keys,
+            entities.unfiled,
+            "{} of `context_entities`'s {} keys now HAVE a block entry, so the reason it is excused -- \
+             that the block is addressed per entity while the map is keyed per collection -- has \
+             stopped being true. It can borrow now, so move it into the checked set.",
+            entities.keys - entities.unfiled,
+            entities.keys
+        );
+        assert!(
+            entities.keys > 0,
+            "`context_entities` is empty, so the fixture stopped writing entities and neither the \
+             exclusion above nor anything else was actually checked"
+        );
 
-    let nodes = tally.get("context_nodes").expect("named above");
-    assert_eq!(
-        0, nodes.keys,
-        "`context_nodes` now holds {} keys after a write-only fixture, so the reason it is excused \
-         -- that no production write files it -- has stopped being true. Move it into the checked \
-         set rather than leaving it excused.",
-        nodes.keys
-    );
+        let watermark = tally
+            .get("context_compression_watermark")
+            .expect("named above");
+        assert_eq!(
+            0, watermark.keys,
+            "`context_compression_watermark` now holds {} keys without the environment flag that gates its only writer, so the reason it is excused has stopped being true. Move it into the checked set.",
+            watermark.keys
+        );
 
-    let entities = tally.get("context_entities").expect("named above");
-    assert_eq!(
-        entities.keys,
-        entities.unfiled,
-        "{} of `context_entities`'s {} keys now HAVE a block entry, so the reason it is excused -- \
-         that the block is addressed per entity while the map is keyed per collection -- has \
-         stopped being true. It can borrow now, so move it into the checked set.",
-        entities.keys - entities.unfiled,
-        entities.keys
-    );
-    assert!(
-        entities.keys > 0,
-        "`context_entities` is empty, so the fixture stopped writing entities and neither the \
-         exclusion above nor anything else was actually checked"
-    );
-
-    let watermark = tally
-        .get("context_compression_watermark")
-        .expect("named above");
-    assert_eq!(
-        0, watermark.keys,
-        "`context_compression_watermark` now holds {} keys without the environment flag that gates its only writer, so the reason it is excused has stopped being true. Move it into the checked set.",
-        watermark.keys
-    );
-
-    // --- DENOMINATORS for the maps that ARE checked. ---
-    let checked: Vec<(&&str, &Tally)> = tally
-        .iter()
-        .filter(|(name, _)| !NOT_REACHABLE.contains(name))
-        .collect();
-    assert_eq!(
-        7,
-        checked.len(),
-        "the checked set is {} maps, not the 7 this fixture drives -- a map was added to or \
-         removed from the list above without the count following it",
-        checked.len()
-    );
-    let empty: Vec<&&str> = checked
-        .iter()
-        .filter(|(_, row)| row.keys == 0)
-        .map(|(name, _)| *name)
-        .collect();
-    assert!(
-        empty.is_empty(),
-        "these maps are EMPTY after one write per family, so this run could not have checked them \
-         at all -- either the command that files one stopped doing so, or it was never in this \
-         fixture: {empty:?}"
-    );
-    let unfiled: Vec<(&&str, usize)> = checked
-        .iter()
-        .filter(|(_, row)| row.unfiled > 0)
-        .map(|(name, row)| (*name, row.unfiled))
-        .collect();
-    assert!(
-        unfiled.is_empty(),
-        "these maps hold keys with no block entry, so the adoption had no handle to take and this \
-         run proves nothing about them: {unfiled:?}. A map that CANNOT borrow belongs in \
-         NOT_REACHABLE with the reason, not in the checked set reporting a pass."
-    );
-
-    // --- THE INVARIANT. ---
-    assert!(
-        minted
+        // --- DENOMINATORS for the maps that ARE checked. ---
+        let checked: Vec<(&&str, &Tally)> = tally
             .iter()
-            .all(|(name, _)| NOT_REACHABLE.contains(name)),
-        "{} keys are a SECOND copy of characters the block index already holds -- the map's key and \
-         the block index's handle report different addresses for the same text: {:?}. A map keyed \
-         by a `ModelKey` must take its handle from \
-         `object_block_lookup::any_shared_object_key`, which is what \
-         `ShardState::adopt_object_key_allocations` does; nothing else fails when it does not, \
-         because the data is correct either way.",
-        minted.len(),
-        &minted[..minted.len().min(4)]
-    );
+            .filter(|(name, _)| !NOT_REACHABLE.contains(name))
+            .collect();
+        assert_eq!(
+            7,
+            checked.len(),
+            "the checked set is {} maps, not the 7 this fixture drives -- a map was added to or \
+             removed from the list above without the count following it",
+            checked.len()
+        );
+        let empty: Vec<&&str> = checked
+            .iter()
+            .filter(|(_, row)| row.keys == 0)
+            .map(|(name, _)| *name)
+            .collect();
+        assert!(
+            empty.is_empty(),
+            "these maps are EMPTY after one write per family, so this run could not have checked them \
+             at all -- either the command that files one stopped doing so, or it was never in this \
+             fixture: {empty:?}"
+        );
+        let unfiled: Vec<(&&str, usize)> = checked
+            .iter()
+            .filter(|(_, row)| row.unfiled > 0)
+            .map(|(name, row)| (*name, row.unfiled))
+            .collect();
+        assert!(
+            unfiled.is_empty(),
+            "these maps hold keys with no block entry, so the adoption had no handle to take and this \
+             run proves nothing about them: {unfiled:?}. A map that CANNOT borrow belongs in \
+             NOT_REACHABLE with the reason, not in the checked set reporting a pass."
+        );
+
+        // --- THE INVARIANT. ---
+        assert!(
+            minted
+                .iter()
+                .all(|(name, _)| NOT_REACHABLE.contains(name)),
+            "{} keys are a SECOND copy of characters the block index already holds -- the map's key and \
+             the block index's handle report different addresses for the same text: {:?}. A map keyed \
+             by a `ModelKey` must take its handle from \
+             `object_block_lookup::any_shared_object_key`, which is what \
+             `ShardState::adopt_object_key_allocations` does; nothing else fails when it does not, \
+             because the data is correct either way.",
+            minted.len(),
+            &minted[..minted.len().min(4)]
+        );
+    })
 }
 
 /// ONE FIELD NAME, ONE ALLOCATION -- across every object that uses it, and across a decode.
@@ -720,22 +722,23 @@ fn one_field_name_is_one_allocation_across_objects_and_across_a_decode() {
     // allocation reports 1 however many objects carry it; a text each object owns reports one per
     // object. Contents cannot tell those apart.
     let per_text = |engine: &TemporalEngine| -> std::collections::BTreeMap<String, usize> {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let mut addresses: std::collections::BTreeMap<String, std::collections::HashSet<usize>> =
-            std::collections::BTreeMap::new();
-        for (_, fields) in shard.bucket_index.hashes.iter() {
-            for name in fields.keys() {
-                addresses
-                    .entry(name.to_string())
-                    .or_default()
-                    .insert(name.as_ptr() as usize);
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let mut addresses: std::collections::BTreeMap<String, std::collections::HashSet<usize>> =
+                std::collections::BTreeMap::new();
+            for (_, fields) in shard.bucket_index.hashes.iter() {
+                for name in fields.keys() {
+                    addresses
+                        .entry(name.to_string())
+                        .or_default()
+                        .insert(name.as_ptr() as usize);
+                }
             }
-        }
-        addresses
-            .into_iter()
-            .map(|(text, ptrs)| (text, ptrs.len()))
-            .collect()
+            addresses
+                .into_iter()
+                .map(|(text, ptrs)| (text, ptrs.len()))
+                .collect()
+        })
     };
 
     let field = crate::engine::constants::CONTEXT_NODE_FIELD;
@@ -745,9 +748,10 @@ fn one_field_name_is_one_allocation_across_objects_and_across_a_decode() {
     println!();
     println!("  fresh:  {fresh:?}");
     let total_fields: usize = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard.bucket_index.hashes.iter().map(|(_, fields)| fields.len()).sum()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            shard.bucket_index.hashes.iter().map(|(_, fields)| fields.len()).sum()
+        })
     };
     assert_eq!(
         NODES as usize, total_fields,
@@ -800,9 +804,10 @@ fn one_field_name_is_one_allocation_across_objects_and_across_a_decode() {
         "the install did not run the decode pass, so nothing here measures what a recovery holds"
     );
     let total_after: usize = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard.bucket_index.hashes.iter().map(|(_, fields)| fields.len()).sum()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            shard.bucket_index.hashes.iter().map(|(_, fields)| fields.len()).sum()
+        })
     };
     assert_eq!(
         NODES as usize, total_after,
@@ -827,20 +832,21 @@ fn one_field_name_is_one_allocation_across_objects_and_across_a_decode() {
     // string sorts identically, which is why this holds; reasoning of that shape is worth one
     // assertion, and `adopt_field_names`'s own doc says this caller makes it.
     {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let unsorted: Vec<String> = shard
-            .bucket_index.hashes
-            .iter()
-            .filter(|(_, fields)| !fields.is_sorted_by_field())
-            .map(|(key, _)| key.to_string())
-            .collect();
-        assert!(
-            unsorted.is_empty(),
-            "the field map of {} object(s) is no longer in field-name order after the adoption, \
-             so a binary search in it can miss a field that is present: {unsorted:?}",
-            unsorted.len()
-        );
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let unsorted: Vec<String> = shard
+                .bucket_index.hashes
+                .iter()
+                .filter(|(_, fields)| !fields.is_sorted_by_field())
+                .map(|(key, _)| key.to_string())
+                .collect();
+            assert!(
+                unsorted.is_empty(),
+                "the field map of {} object(s) is no longer in field-name order after the adoption, \
+                 so a binary search in it can miss a field that is present: {unsorted:?}",
+                unsorted.len()
+            );
+        })
     }
 }
 
@@ -1095,24 +1101,25 @@ fn the_auto_compression_trigger_folds_a_window_and_keeps_the_raw_events() {
 
     // --- WHAT THE TRIGGER LEFT BEHIND. ---
     let (watermark, compressions, raw_points) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let event_key = format!("ctx:event:{TENANT}:{NODE}");
-        let watermark = shard
-            .context_compression_watermark()
-            .get(&event_key[..])
-            .copied();
-        let compressions: usize = shard
-            .context_compressions()
-            .values()
-            .map(|series| series.owned_element_count())
-            .sum();
-        let raw_points = shard
-            .context_events()
-            .get(&event_key[..])
-            .map(|series| series.len())
-            .unwrap_or(0);
-        (watermark, compressions, raw_points)
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let event_key = format!("ctx:event:{TENANT}:{NODE}");
+            let watermark = shard
+                .context_compression_watermark()
+                .get(&event_key[..])
+                .copied();
+            let compressions: usize = shard
+                .context_compressions()
+                .values()
+                .map(|series| series.owned_element_count())
+                .sum();
+            let raw_points = shard
+                .context_events()
+                .get(&event_key[..])
+                .map(|series| series.len())
+                .unwrap_or(0);
+            (watermark, compressions, raw_points)
+        })
     };
 
     println!();

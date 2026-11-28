@@ -45,7 +45,8 @@ use crate::engine::reports::{
 };
 use crate::engine::TemporalEngine;
 use crate::meta::{
-    ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState, TableTopologyResponse,
+    ServerHeartbeatResponse, ServerRuntimeLoad, ServerShardServingState, ShardCacheBudget,
+    TableTopologyResponse,
 };
 use crate::rebalance::SchedulerLifecycleToken;
 use crate::types::{
@@ -63,6 +64,9 @@ mod shard_lifecycle;
 mod task_execution;
 mod runtime_reports;
 mod runtime_storage;
+mod stage_io_probe;
+mod compaction_stage;
+mod round_budget;
 mod task_output;
 #[path = "data_node/data_node_worker.rs"]
 mod worker;
@@ -80,6 +84,7 @@ enum SharedWriteExecution {
 }
 
 pub use lifecycle::{decode_lifecycle_snapshot_file, encode_lifecycle_snapshot_file};
+pub use round_budget::storage_manager_tick_ms;
 use lifecycle::{
     final_loaded_lifecycle_state, lifecycle_persistence_report_for_path, lifecycle_snapshot_inner,
     lifecycle_snapshot_path_from_env, persist_lifecycle_snapshot_inner,
@@ -857,6 +862,8 @@ pub struct DataNodeMetaHeartbeatReport {
     pub last_server_state: String,
     pub forbid_auto_register: bool,
     pub consecutive_failures: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_budgets: Vec<ShardCacheBudget>,
 }
 
 impl Default for DataNodeMetaHeartbeatReport {
@@ -868,6 +875,7 @@ impl Default for DataNodeMetaHeartbeatReport {
             last_server_state: String::new(),
             forbid_auto_register: false,
             consecutive_failures: 0,
+            cache_budgets: Vec::new(),
         }
     }
 }
@@ -984,6 +992,21 @@ pub struct GcRequest {
     pub block_gc_checkpoint_floor_slab_id: Option<u64>,
     #[serde(default)]
     pub block_gc_raft_install_floor_slab_id: Option<u64>,
+    /// Candidate slabs this collection examines before it yields. 0 examines every candidate.
+    #[serde(default)]
+    pub block_gc_max_scan_slabs_per_round: usize,
+    /// Examine only candidates with a slab id above this one: where the previous bounded
+    /// collection stopped.
+    #[serde(default)]
+    pub block_gc_scan_after_slab_id: Option<u64>,
+    /// Build the shard's lifecycle plan after the reclaim and return it in the response.
+    ///
+    /// Off by default. The plan is a survey of the whole shard, and building it at the end of every
+    /// round put a pass over every index entry after work that had often found nothing to do. The
+    /// periodic loop surveys the shard once per round for its own decisions and does not read this
+    /// one; an operator who wants the post-reclaim picture asks for it.
+    #[serde(default)]
+    pub include_lifecycle_plan: bool,
     /// Slabs one round may destroy. 0 means NO BOUND.
     ///
     /// THREE BOUNDS THAT EXISTED ONLY ON THE OTHER PIPELINE. `StorageManagerCycleRequest` has
@@ -1056,6 +1079,16 @@ pub struct GcResponse {
     /// addresses a served index is rebuilt from, so a premature drop loses where data lives.
     #[serde(default)]
     pub index_log_gc_clamped_by_durable_index: bool,
+    /// Candidate slabs this collection examined.
+    #[serde(default)]
+    pub block_gc_scan_examined_slabs: usize,
+    /// The highest candidate slab id it examined, when it examined any.
+    #[serde(default)]
+    pub block_gc_scan_last_block_slab_id: Option<u64>,
+    /// Every candidate above the starting point was examined. False means a bounded
+    /// collection stopped with more to look at.
+    #[serde(default = "default_true")]
+    pub block_gc_scan_complete: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lifecycle_plan: Option<StorageLifecyclePlan>,
 }
@@ -1090,12 +1123,14 @@ pub struct StorageManagerOptions {
     pub cache_disk_bytes_pressure: u64,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_prepare: bool,
+    /// Publish dirty-slot dumps. Physical log retirement is controlled by `enable_block_gc`.
     #[serde(rename = "enable_wal_reclaim", default = "default_storage_manager_stage_enabled")]
     pub enable_wal_reclaim: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_memory_reclaim: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_expire: bool,
+    /// Collect page-store garbage and published log prefixes, subject to retention fences.
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_block_gc: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
@@ -1109,32 +1144,10 @@ pub struct StorageManagerOptions {
     /// Zero turns the per-bucket gauges off and leaves the rest of the reap running.
     #[serde(default = "default_reap_metrics_max_buckets_per_round")]
     pub reap_metrics_max_buckets_per_round: usize,
-    /// Whether the periodic loop may EVICT, not merely invalidate cached blocks.
-    ///
-    /// DEFAULTS TO TRUE, with the other eight stage flags, and what changed is not an appetite for
-    /// eviction -- it is that the stage now has a bound to run under. Until this field existed the
-    /// eviction machinery -- `apply_storage_eviction`, with dump-before-evict, delete-drop, a batch
-    /// limit and a pressure threshold -- was reachable only from the on-demand cycle, so the loop
-    /// the server actually starts could not evict at ANY setting. Wiring it made it reachable; this
-    /// default makes it live.
-    ///
-    /// WHY ON IS SAFE, AND IT IS NOT THIS FLAG THAT MAKES IT SO. `eviction_memory_pressure_threshold`
-    /// below is still 0, and 0 is documented as "evicts whenever it runs": the wide gate is
-    /// `pressure_before < threshold`, which no shard that has ever held a record can satisfy. On its
-    /// own, therefore, flipping this flag is an ALWAYS-OPEN gate -- every loaded shard releasing
-    /// buckets on every round of
-    /// `start_storage_manager_scheduler_for_all_shards`.
-    /// `the_change_that_moves_only_this_flag_cannot_close_its_gate` measures exactly that.
-    ///
-    /// What makes the shipped pair safe is `index_resident_limit_bytes`, which in the same change
-    /// stops being 0. The loop takes the HIGHER BAR of the two (`runtime_storage.rs`), so a bound of
-    /// 64 MiB over a threshold of 0 means the round that actually runs is
-    /// `apply_index_resident_bound` -- one per-shard quantity, this shard's own resident index --
-    /// and the wide arm is unreachable at the shipped settings. The two defaults are one decision
-    /// and neither should be moved without the other.
+    /// Enable pressure-driven eviction. With no nonzero memory limit configured, it does no work.
     #[serde(default)]
     pub enable_evict: bool,
-    /// Bytes above which the evict stage acts. 0 evicts whenever it runs.
+    /// Resident-index bytes above which eviction acts. Zero disables this limit.
     ///
     /// THE QUANTITY IS `bucket_index_resident_bytes(shard_id)`, and nothing else. One term, and it
     /// belongs to the shard this setting is gating. `StorageManagerPressureSnapshot::\
@@ -1153,18 +1166,12 @@ pub struct StorageManagerOptions {
     /// gate that keeps the node-wide terms out.
     #[serde(default)]
     pub eviction_memory_pressure_threshold: u64,
-    /// How many buckets one evict stage may take. 0 means no limit.
-    #[serde(default)]
+    /// Victims per batch. Zero selects no victims and performs no eviction work.
+    #[serde(default = "default_storage_manager_eviction_batch_limit")]
     pub eviction_batch_limit: usize,
-    /// Dump a bucket before freeing it, so eviction relieves log pressure as well as memory.
-    ///
-    /// Defaults TRUE. "Without it an evicted dirty bucket still pins the log" is what this said and
-    /// it understates the case: without it the bucket is not freed at all. A release requires every
-    /// block clean and undeleted, a written-and-undumped bucket is dirty, so the actuator REFUSES
-    /// every candidate -- 16 of 16 refused and 0 released, measured in
-    /// `data_node::tests::evict_live::what_the_dump_costs_and_which_half_recovers_the_index`, against
-    /// 4 released with the dump on. Turning this off therefore does not make eviction cheaper; it
-    /// makes the round pay its whole-store release walk and give nothing back.
+    /// Dump fallback for dirty owners whose exact page state cannot be retained inline.
+    /// Single-page string owners retain their address and flags without a checkpoint. Other
+    /// dirty owners require a dump before release. Defaults TRUE.
     #[serde(default)]
     pub eviction_dump_before_evict: bool,
     // `eviction_delete_drop` WAS HERE, AND IT IS RETIRED RATHER THAN DEFAULTED AWAY. An operator
@@ -1204,60 +1211,11 @@ pub struct StorageManagerOptions {
     // `data_node::tests::evict_dump_drop` holds both measurements, and
     // `the_memory_pressure_stage_cannot_route_into_the_arm_that_deletes` is what FAILS if a route
     // to that arm is wired back. A retired default is a value; a missing route is a property.
-    /// How many victims one evict STAGE may take in total, across repeated batches.
-    ///
-    /// The stage took a single batch of `eviction_batch_limit` and returned, however far the
-    /// pressure still was from the threshold. Measured: 16 victims freeing about 4,800 bytes a
-    /// round against a 1,775,000-byte overage -- roughly 370 rounds, or three hours at a round
-    /// every thirty seconds.
-    ///
-    /// The design being followed keeps taking batches until usage is back under the limit,
-    /// stopping on a per-call COUNT budget rather than after the first batch, and logs that it hit
-    /// the budget rather than that it finished. This is that budget. 0 keeps the old behaviour of
-    /// exactly one batch.
+    /// Maximum victims across all batches of one eviction stage. Zero permits no victim work.
     #[serde(default = "default_storage_manager_eviction_count_limit")]
     pub eviction_count_limit: usize,
-    /// A bound on THIS shard's resident bucket index, in bytes. 0 means DISABLED.
-    ///
-    /// `apply_index_resident_bound` is the eviction gate that reads one per-shard quantity and
-    /// gates on ITSELF rather than on `enable_evict`. Until this field existed it was reachable
-    /// only from `run_storage_manager_cycle`, which runs on an inbound
-    /// `TaskRequest::StorageManager` -- so on the periodic loop a server actually starts
-    /// (`start_storage_manager_scheduler_for_all_shards`) there was no route to it at any setting,
-    /// and a gate nothing calls bounds nothing.
-    ///
-    /// WHICH GATE WINS WHEN BOTH ARE SET. Since the evict stage's own signal was narrowed, this and
-    /// `eviction_memory_pressure_threshold` bound the SAME quantity -- `bucket_index_resident_bytes`
-    /// for this shard. Two settings cannot both gate one number, so the HIGHER BAR opens the stage
-    /// and `StorageEvictionReport::mode` says which one did: `index_resident_bound` or
-    /// `evict_cache`/`delete_drop`. One decision, one report, which is the shape
-    /// `run_storage_manager_cycle` already uses for the same reason.
-    ///
-    /// WHAT IT GIVES UP WHEN IT IS THE GATE: `apply_index_resident_bound` releases with the dump on
-    /// unconditionally, so `eviction_dump_before_evict` does not reach it. It matches its own
-    /// default, so this only matters to an operator who changed it. Neither arm can delete: both
-    /// stage entry points pass `delete_drop` false, so the two now differ only in which gate
-    /// opened.
-    ///
-    /// DEFAULTS TO `DEFAULT_INDEX_RESIDENT_LIMIT_BYTES`, the same value the cycle request has
-    /// always shipped, and in the same change as `enable_evict`. That pairing is the whole point:
-    /// the flag alone is an always-open gate at a threshold of 0, and this is the bar that closes
-    /// it. See `enable_evict` above for the pair.
-    ///
-    /// WHAT THE NUMBER IS DERIVED FROM: 64 MiB of `bucket_index_resident_bytes` for one shard. On
-    /// the shipped `0..1023` routing range the resident index runs about 39 B a key once the bucket
-    /// nodes exist -- the marginal cost, not the ratio at a fixture size, which carries the fixed
-    /// node term and reads several times higher. 64 MiB is therefore crossed somewhere around 1.7 M
-    /// keys in ONE shard. `the_default_bound_is_far_above_any_fixture_and_reached_at_a_known_scale`
-    /// re-derives both from a two-point slope rather than quoting them.
-    ///
-    /// WHICH FIXTURES THIS MOVED, because a non-zero default becomes the higher bar in every
-    /// fixture that forces the gate open at a threshold of 0 or 1. Each such fixture now pins
-    /// `index_resident_limit_bytes: 0` for itself, so it keeps exercising the wide arm it was
-    /// written for; the pins are in `data_node::tests::evict_live` and `data_node::tests::part3`.
-    /// The three round-cost measurements whose run time puts them out of reach of a gate --
-    /// `round_stage_cost`, `round_walk_scope`, `round_backlog_cost` -- build
-    /// `StorageManagerCycleRequest`, not this struct, so they are untouched by this default.
+    /// Resident bucket-index limit in bytes. Zero disables this limit.
+    /// Requires `enable_evict`; the lower nonzero memory limit controls the stage.
     #[serde(default)]
     pub index_resident_limit_bytes: u64,
     /// How many hot buckets one expire stage may take. 0 means NO LIMIT, which is what this
@@ -1343,6 +1301,13 @@ pub struct StorageManagerOptions {
     /// Garbage floor for the block-GC stage, in basis points. 0 collects every eligible slab.
     #[serde(default = "default_storage_manager_block_gc_min_slab_garbage_basis_points")]
     pub block_gc_min_slab_garbage_basis_points: u64,
+    /// Candidate slabs one periodic block-GC round examines before it yields; the next round
+    /// resumes behind it. 0 examines every candidate in one round.
+    #[serde(default = "default_storage_manager_block_gc_max_scan_slabs_per_round")]
+    pub block_gc_max_scan_slabs_per_round: usize,
+    /// Set by the stage for the one round it is about to run; never configured.
+    #[serde(skip)]
+    pub block_gc_scan_window: Option<BlockGcScanWindow>,
     /// Shared-store readers whose replay position still names block slabs. A slab at or above a
     /// cursor's `retain_from_block_slab_id` is neither set aside nor destroyed by the loop. Empty
     /// means no such reader, which is the behaviour before this field existed.
@@ -1365,6 +1330,10 @@ pub const DEFAULT_EVICTION_COUNT_LIMIT: usize = 100;
 
 fn default_storage_manager_eviction_count_limit() -> usize {
     DEFAULT_EVICTION_COUNT_LIMIT
+}
+
+fn default_storage_manager_eviction_batch_limit() -> usize {
+    crate::engine::reports::DEFAULT_EVICTION_BATCH_LIMIT
 }
 
 fn default_storage_manager_index_gc_max_entries_per_round() -> usize {
@@ -1553,6 +1522,9 @@ impl Default for StorageManagerOptions {
                 crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND,
             block_gc_min_slab_garbage_basis_points:
                 crate::engine::reports::DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
+            block_gc_max_scan_slabs_per_round:
+                crate::engine::reports::DEFAULT_BLOCK_GC_MAX_SCAN_SLABS_PER_ROUND,
+            block_gc_scan_window: None,
             block_gc_shared_store_cursors: Vec::new(),
             block_gc_checkpoint_floor_slab_id: None,
             block_gc_raft_install_floor_slab_id: None,
@@ -1609,6 +1581,17 @@ fn default_storage_manager_block_gc_max_destroy_slabs_per_round() -> usize {
 
 fn default_storage_manager_block_gc_max_destroy_physical_bytes_per_round() -> u64 {
     crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND
+}
+
+fn default_storage_manager_block_gc_max_scan_slabs_per_round() -> usize {
+    crate::engine::reports::DEFAULT_BLOCK_GC_MAX_SCAN_SLABS_PER_ROUND
+}
+
+/// The candidate window one bounded block-GC round examines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct BlockGcScanWindow {
+    pub after_block_slab_id: Option<u64>,
+    pub max_slabs: usize,
 }
 
 fn default_storage_manager_block_gc_min_slab_garbage_basis_points() -> u64 {
@@ -1853,6 +1836,26 @@ pub struct StorageManagerLoopReport {
     /// sum never exceeds it; the remainder is the bookkeeping after the last stage.
     #[serde(default)]
     pub duration_us: u64,
+    /// What the WAL reclaim stage did this round, as the loop knew it. All zero when the stage did
+    /// not run or answered from the quiet-reclaim memo, which is the loop's own statement that a
+    /// previous round found nothing and nothing it reads has moved since.
+    #[serde(default)]
+    pub wal_reclaim_round: StorageManagerWalReclaimRound,
+    /// Physical log collection performed by the page stage, including its retention fences.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_log_reclaim: Option<crate::engine::reports::StorageWalReclaimReport>,
+}
+
+/// The three things a WAL reclaim round does, named so a round that stays busy on an idle shard
+/// says which of them keeps it busy.
+#[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct StorageManagerWalReclaimRound {
+    /// The round took a bucket dump.
+    pub dumped: bool,
+    /// Blocks moved out of WAL records into the block store.
+    pub moved_blocks: usize,
+    /// Records retired by this stage. Physical page-stage retirement is reported separately.
+    pub wal_records_removed: u64,
 }
 
 /// What one stage of the periodic loop cost: how long its work took and how much of the store
@@ -1865,6 +1868,13 @@ pub struct StorageManagerLoopReport {
 pub struct StorageManagerLoopStageSpan {
     pub stage: String,
     pub executed: bool,
+    /// Where this row's interval begins, in microseconds after the start of the round, on the same
+    /// clock as `duration_us`. The rows tile the round, so row `i` covers
+    /// `[start_offset_us, start_offset_us + duration_us)` and the next row starts where it ends. A
+    /// reader who knows when the round began can place any other timestamped event, such as a
+    /// writer's acknowledgement, inside the stage that was running.
+    #[serde(default)]
+    pub start_offset_us: u64,
     #[serde(default)]
     pub duration_us: u64,
     #[serde(default)]
@@ -2144,6 +2154,39 @@ impl Drop for StorageManagerRuntime {
 pub trait SharedWalSink: std::fmt::Debug + Send + Sync {
     /// Record a single successfully-applied write `command` for `shard_id`.
     fn record_write(&self, shard_id: ShardId, command: &Command);
+
+    fn record_owned_write(&self, shard_id: ShardId, command: Command) {
+        self.record_write(shard_id, &command);
+    }
+
+    fn record_owned_writes(&self, shard_id: ShardId, commands: Vec<Command>) {
+        for command in commands {
+            self.record_owned_write(shard_id, command);
+        }
+    }
+
+    /// Report whether the serving path confirmed publication of an applied command.
+    fn publish_owned_write(&self, shard_id: ShardId, command: Command) -> bool {
+        self.record_owned_write(shard_id, command);
+        true
+    }
+
+    /// On failure, return the confirmed prefix length within this request.
+    fn publish_owned_writes(&self, shard_id: ShardId, commands: Vec<Command>) -> Result<(), usize> {
+        self.record_owned_writes(shard_id, commands);
+        Ok(())
+    }
+
+    /// Record one successfully applied maintenance frame without widening its record scope.
+    fn record_outcomes(&self, shard_id: ShardId, outcomes: &[crate::wal::WalOutcomeItem]);
+}
+
+fn mark_shared_write_unconfirmed(response: &mut ExecuteResponse) {
+    response.status = Status::error(
+        "write_durability_unconfirmed",
+        "Write applied locally but shared WAL publication was not confirmed",
+    );
+    response.response = CommandResponse::Empty;
 }
 
 /// What this node knows about its own role for one shard. THREE states, not two.
@@ -2197,7 +2240,22 @@ impl ShardLeadership {
 /// the next round, and every round before that sees `Unknown`.
 pub trait ShardLeadershipSource: std::fmt::Debug + Send + Sync {
     fn shard_leadership(&self, shard_id: ShardId) -> ShardLeadership;
+
+    fn shard_storage_engine(&self, _shard_id: ShardId) -> Option<TemporalEngine> {
+        None
+    }
+
+    fn reclaim_cache_budget(
+        &self,
+        _budget: ShardCacheBudget,
+        _limit: usize,
+        _authorized: &dyn Fn() -> bool,
+    ) -> Option<(u64, usize)> {
+        None
+    }
 }
+
+const SHARD_GENERATION_LOCKS: usize = 64;
 
 #[derive(Debug)]
 struct DataNodeRuntimeInner {
@@ -2207,10 +2265,11 @@ struct DataNodeRuntimeInner {
     queue_signal: Condvar,
     jobs: Mutex<HashMap<u64, DataNodeTaskStatus>>,
     canceled: Mutex<BTreeSet<u64>>,
-    dirty: Mutex<DirtyTracker>,
+    dirty: DirtyTracker,
     stats: Mutex<MutableRuntimeStats>,
     meta_heartbeat: Mutex<DataNodeMetaHeartbeatReport>,
     lifecycle: Mutex<HashMap<ShardId, DataNodeShardLifecycleState>>,
+    shard_generation_locks: [RwLock<()>; SHARD_GENERATION_LOCKS],
     /// What the loop's WAL-reclaim stage saw the last time it found nothing to reclaim, per shard.
     ///
     /// A quiet shard asks the same question every round and gets the same answer; this is how the
@@ -2232,10 +2291,56 @@ struct DataNodeRuntimeInner {
     /// Optional durable shared-storage sink; when set, accepted writes are
     /// mirrored to shared storage for cross-restart / local-loss recovery.
     /// A read guard spans unmirrored execution so attachment cannot race a moved request.
-    shared_wal_sink: RwLock<Option<Arc<dyn SharedWalSink>>>,
+    shared_wal_sink: std::sync::OnceLock<Arc<dyn SharedWalSink>>,
     /// Who answers "do I lead this shard". `None` means nobody has been told to answer, which
     /// reads as [`ShardLeadership::Unknown`] and NOT as "not the leader".
     shard_leadership: Mutex<Option<Arc<dyn ShardLeadershipSource>>>,
+}
+
+impl DataNodeRuntimeInner {
+    fn reclaim_cache_budget(
+        &self,
+        shard_id: ShardId,
+        limit: usize,
+    ) -> Option<(ShardCacheBudget, u64, usize)> {
+        let budget = self
+            .meta_heartbeat
+            .lock()
+            .expect("meta heartbeat lock poisoned")
+            .cache_budgets
+            .iter()
+            .find(|budget| budget.shard_id == shard_id)
+            .copied()?;
+        let leadership = self
+            .shard_leadership
+            .lock()
+            .expect("shard leadership lock poisoned")
+            .clone()?;
+        let _generation = self
+            .shard_generation_lock(shard_id)
+            .read()
+            .expect("shard generation lock poisoned");
+        self.engine.validate_load_version(shard_id, budget.load_version).ok()?;
+        let authorized = || {
+            let heartbeat = self.meta_heartbeat.lock().expect("meta heartbeat lock poisoned");
+            heartbeat.last_status.ok
+                && now_ms().saturating_sub(heartbeat.last_heartbeat_at_ms) <= 10_000
+                && heartbeat.cache_budgets.contains(&budget)
+        };
+        let (bytes, reclaimed) = leadership.reclaim_cache_budget(budget, limit, &authorized)?;
+        Some((budget, bytes, reclaimed))
+    }
+
+    fn storage_engine(&self, shard_id: ShardId) -> TemporalEngine {
+        let source = self
+            .shard_leadership
+            .lock()
+            .expect("shard leadership lock poisoned")
+            .clone();
+        source
+            .and_then(|source| source.shard_storage_engine(shard_id))
+            .unwrap_or_else(|| self.engine.clone())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -2503,12 +2608,6 @@ impl ShardTaskQueues {
     }
 }
 
-#[derive(Debug, Default)]
-struct DirtyTracker {
-    next_object_id: u64,
-    by_key: HashMap<(ShardId, String), DirtyObjectState>,
-}
-
 #[derive(Debug)]
 struct DirtyObjectState {
     object_id: u64,
@@ -2548,10 +2647,11 @@ impl DataNodeRuntime {
             queue_signal: Condvar::new(),
             jobs: Mutex::default(),
             canceled: Mutex::default(),
-            dirty: Mutex::default(),
+            dirty: DirtyTracker::default(),
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
+            shard_generation_locks: std::array::from_fn(|_| RwLock::new(())),
             quiet_wal_reclaim: Mutex::default(),
             reap_cursors: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
@@ -2561,7 +2661,7 @@ impl DataNodeRuntime {
             lifecycle_snapshot_path,
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
-            shared_wal_sink: RwLock::new(None),
+            shared_wal_sink: std::sync::OnceLock::new(),
             shard_leadership: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
@@ -2612,53 +2712,55 @@ impl DataNodeRuntime {
     }
 
     pub fn set_shared_wal_sink(&self, sink: Arc<dyn SharedWalSink>) {
-        let mut shared_wal_sink = self
-            .inner
-            .shared_wal_sink
-            .write()
-            .expect("shared wal sink lock poisoned");
+        // SET ONCE, READ WITHOUT A LOCK. The sink used to sit behind an `RwLock`, and every write
+        // command held its READ guard across the whole engine call -- including the durable
+        // barrier -- so the one setter at startup could queue behind a write in flight and every
+        // later reader queued behind that setter. The sink is installed at startup and never
+        // replaced; a second install is a defect, so it is refused rather than swapped.
+        //
         // The engine emits deletions of its own -- eviction drops, expiry sweeps -- that never
         // pass through this layer. Give it the same sink, or those deletions reach the local
         // log alone and a successor replaying the shared log resurrects the keys.
         self.inner.engine.set_maintenance_wal_mirror(Arc::clone(&sink));
-        *shared_wal_sink = Some(sink);
-    }
-
-    fn mirror_write(&self, shard_id: ShardId, command: &Command) {
-        if !is_write_command(command) {
-            return;
-        }
-        let sink = self
-            .inner
-            .shared_wal_sink
-            .read()
-            .expect("shared wal sink lock poisoned")
-            .clone();
-        if let Some(sink) = sink {
-            sink.record_write(shard_id, command);
-        }
+        assert!(
+            self.inner.shared_wal_sink.set(sink).is_ok(),
+            "the shared WAL sink is installed once"
+        );
     }
 
     fn mirror_writes(
         &self,
         shard_id: ShardId,
-        commands: &[Command],
-        responses: &[ExecuteResponse],
+        mut commands: Vec<Command>,
+        responses: &mut [ExecuteResponse],
     ) {
-        let sink = self
-            .inner
-            .shared_wal_sink
-            .read()
-            .expect("shared wal sink lock poisoned")
-            .clone();
-        let Some(sink) = sink else {
+        let Some(sink) = self.inner.shared_wal_sink.get() else {
             return;
         };
-        for (command, response) in commands.iter().zip(responses.iter()) {
-            if command_was_applied(command, response) {
-                sink.record_write(shard_id, command);
+        let mut applied = Vec::new();
+        let mut position = 0;
+        commands.retain(|command| {
+            let current = position;
+            position += 1;
+            let did_apply = responses.get(current)
+                .is_some_and(|response| command_was_applied(command, response));
+            if did_apply {
+                applied.push(current);
+            }
+            did_apply
+        });
+        if let Err(confirmed) = sink.publish_owned_writes(shard_id, commands) {
+            for index in applied.into_iter().skip(confirmed) {
+                mark_shared_write_unconfirmed(&mut responses[index]);
             }
         }
+    }
+
+    pub fn storage_cache_inspection_report(
+        &self,
+        shard_id: ShardId,
+    ) -> crate::engine::reports::StorageCacheInspectionReport {
+        self.inner.storage_engine(shard_id).storage_cache_inspection_report(shard_id)
     }
 
     pub fn last_storage_manager_cycle_report(&self) -> Option<StorageManagerCycleReport> {
@@ -2682,7 +2784,7 @@ impl DataNodeRuntime {
     }
 
     #[cfg(test)]
-    fn new_without_workers_with_options(
+    pub(crate) fn new_without_workers_with_options(
         engine: TemporalEngine,
         options: DataNodeRuntimeOptions,
     ) -> Self {
@@ -2706,10 +2808,11 @@ impl DataNodeRuntime {
             queue_signal: Condvar::new(),
             jobs: Mutex::default(),
             canceled: Mutex::default(),
-            dirty: Mutex::default(),
+            dirty: DirtyTracker::default(),
             stats: Mutex::default(),
             meta_heartbeat: Mutex::default(),
             lifecycle: Mutex::default(),
+            shard_generation_locks: std::array::from_fn(|_| RwLock::new(())),
             quiet_wal_reclaim: Mutex::default(),
             reap_cursors: Mutex::default(),
             lifecycle_tokens: Mutex::default(),
@@ -2719,7 +2822,7 @@ impl DataNodeRuntime {
             lifecycle_snapshot_path,
             last_storage_manager_cycle: Mutex::default(),
             next_job_id: AtomicU64::new(1),
-            shared_wal_sink: RwLock::new(None),
+            shared_wal_sink: std::sync::OnceLock::new(),
             shard_leadership: Mutex::new(None),
         });
         restore_lifecycle_snapshot_from_path_inner(&inner);
@@ -2728,6 +2831,15 @@ impl DataNodeRuntime {
 
     pub fn load_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
         load_shard_with_inner(&self.inner, request)
+    }
+
+    /// Keep the shard off the serving path until its shared WAL tail is recovered.
+    pub fn load_shard_with_shared_tail(
+        &self,
+        request: LoadShardRequest,
+        replay_tail: impl FnOnce() -> Result<(), Status>,
+    ) -> LoadShardResponse {
+        shard_lifecycle::load_shard_with_shared_tail_inner(&self.inner, request, replay_tail)
     }
 
     pub fn reload_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
@@ -2816,6 +2928,20 @@ impl DataNodeRuntime {
         )
     }
 
+    /// Execute work under the same generation guard held by load, reload, and unload.
+    pub fn with_load_version<T>(
+        &self,
+        shard_id: ShardId,
+        load_version: u64,
+        execute: impl FnOnce() -> T,
+    ) -> Result<T, Status> {
+        let _generation = self.inner.shard_generation_lock(shard_id)
+            .read()
+            .expect("shard generation lock poisoned");
+        self.inner.engine.validate_load_version(shard_id, load_version)?;
+        Ok(execute())
+    }
+
     pub fn validate_foreground_write_allowed(
         &self,
         shard_id: ShardId,
@@ -2835,11 +2961,7 @@ impl DataNodeRuntime {
                 response: CommandResponse::Empty,
             };
         }
-        let shared_wal_sink = self
-            .inner
-            .shared_wal_sink
-            .read()
-            .expect("shared wal sink lock poisoned");
+        let shared_wal_sink = self.inner.shared_wal_sink.get();
         if shared_wal_sink.is_none() {
             let shard_id = request.shard_id;
             let conditional = matches!(
@@ -2863,20 +2985,26 @@ impl DataNodeRuntime {
             }
             return response;
         }
-        drop(shared_wal_sink);
-        let response = self.inner.engine.execute(request.clone());
+        let mut response = self.inner.engine.execute(request.clone());
         if command_was_applied(&request.command, &response) {
             mark_dirty(
                 &self.inner.dirty,
                 request.shard_id,
                 command_key(&request.command).as_deref(),
             );
-            self.mirror_write(request.shard_id, &request.command);
+            if let Some(sink) = shared_wal_sink {
+                if !sink.publish_owned_write(request.shard_id, request.command) {
+                    mark_shared_write_unconfirmed(&mut response);
+                }
+            }
         }
         response
     }
 
     pub fn execute_checked(&self, request: CheckedExecuteRequest) -> CheckedExecuteResponse {
+        let _generation = self.inner.shard_generation_lock(request.shard_id)
+            .read()
+            .expect("shard generation lock poisoned");
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
             request.shard_id,
@@ -2890,11 +3018,7 @@ impl DataNodeRuntime {
                 },
             };
         }
-        let shared_wal_sink = self
-            .inner
-            .shared_wal_sink
-            .read()
-            .expect("shared wal sink lock poisoned");
+        let shared_wal_sink = self.inner.shared_wal_sink.get();
         if shared_wal_sink.is_none() {
             let shard_id = request.shard_id;
             let conditional = matches!(
@@ -2918,15 +3042,19 @@ impl DataNodeRuntime {
             }
             return response;
         }
-        drop(shared_wal_sink);
-        let response = self.inner.engine.execute_checked(request.clone());
+        let mut response = self.inner.engine.execute_checked(request.clone());
         if response.status.ok && command_was_applied(&request.command, &response.response) {
             mark_dirty(
                 &self.inner.dirty,
                 request.shard_id,
                 command_key(&request.command).as_deref(),
             );
-            self.mirror_write(request.shard_id, &request.command);
+            if let Some(sink) = shared_wal_sink {
+                if !sink.publish_owned_write(request.shard_id, request.command) {
+                    mark_shared_write_unconfirmed(&mut response.response);
+                    response.status = response.response.status.clone();
+                }
+            }
         }
         response
     }
@@ -2965,11 +3093,7 @@ impl DataNodeRuntime {
             .collect::<BTreeSet<_>>()
             .len()
             == request.fields.len();
-        let shared_wal_sink = self
-            .inner
-            .shared_wal_sink
-            .read()
-            .expect("shared wal sink lock poisoned");
+        let shared_wal_sink = self.inner.shared_wal_sink.get();
         if shared_wal_sink.is_none()
             && crate::wal::wal_data_only_enabled()
             && unique_fields
@@ -2980,7 +3104,6 @@ impl DataNodeRuntime {
             mark_dirty_keys(&self.inner.dirty, shard_id, applied_keys);
             return SharedWriteExecution::Compact(response);
         }
-        drop(shared_wal_sink);
 
         let fields = request.fields;
         let timestamp_field = request.timestamp_field;
@@ -3032,11 +3155,7 @@ impl DataNodeRuntime {
             .collect::<BTreeSet<_>>()
             .len()
             == request.fields.len();
-        let shared_wal_sink = self
-            .inner
-            .shared_wal_sink
-            .read()
-            .expect("shared wal sink lock poisoned");
+        let shared_wal_sink = self.inner.shared_wal_sink.get();
         if shared_wal_sink.is_none()
             && crate::wal::wal_data_only_enabled()
             && unique_fields
@@ -3047,7 +3166,6 @@ impl DataNodeRuntime {
             mark_dirty_keys(&self.inner.dirty, shard_id, applied_keys);
             return SharedWriteExecution::Compact(response);
         }
-        drop(shared_wal_sink);
 
         if request.ttl_ms.is_some() {
             return SharedWriteExecution::Expanded(BatchExecuteResponse {
@@ -3088,11 +3206,7 @@ impl DataNodeRuntime {
                 responses: Vec::new(),
             };
         }
-        let shared_wal_sink = self
-            .inner
-            .shared_wal_sink
-            .read()
-            .expect("shared wal sink lock poisoned");
+        let shared_wal_sink = self.inner.shared_wal_sink.get();
         if shared_wal_sink.is_none() {
             let shard_id = request.shard_id;
             let dirty_keys = write_command_keys(&request.commands);
@@ -3105,15 +3219,14 @@ impl DataNodeRuntime {
             );
             return response;
         }
-        drop(shared_wal_sink);
-        let response = self.inner.engine.batch_execute(request.clone());
+        let mut response = self.inner.engine.batch_execute(request.clone());
         mark_dirty_for_successful_commands(
             &self.inner.dirty,
             request.shard_id,
             &request.commands,
             &response.responses,
         );
-        self.mirror_writes(request.shard_id, &request.commands, &response.responses);
+        self.mirror_writes(request.shard_id, request.commands, &mut response.responses);
         response
     }
 
@@ -3353,6 +3466,9 @@ impl DataNodeRuntime {
         &self,
         request: CheckedBatchExecuteRequest,
     ) -> CheckedBatchExecuteResponse {
+        let _generation = self.inner.shard_generation_lock(request.shard_id)
+            .read()
+            .expect("shard generation lock poisoned");
         if let Err(status) = validate_foreground_write_allowed_inner(
             &self.inner,
             request.shard_id,
@@ -3366,11 +3482,7 @@ impl DataNodeRuntime {
                 },
             };
         }
-        let shared_wal_sink = self
-            .inner
-            .shared_wal_sink
-            .read()
-            .expect("shared wal sink lock poisoned");
+        let shared_wal_sink = self.inner.shared_wal_sink.get();
         if shared_wal_sink.is_none() {
             let shard_id = request.shard_id;
             let dirty_keys = write_command_keys(&request.commands);
@@ -3385,8 +3497,7 @@ impl DataNodeRuntime {
             }
             return response;
         }
-        drop(shared_wal_sink);
-        let response = self.inner.engine.batch_execute_checked(request.clone());
+        let mut response = self.inner.engine.batch_execute_checked(request.clone());
         if response.status.ok {
             mark_dirty_for_successful_commands(
                 &self.inner.dirty,
@@ -3396,8 +3507,8 @@ impl DataNodeRuntime {
             );
             self.mirror_writes(
                 request.shard_id,
-                &request.commands,
-                &response.response.responses,
+                request.commands,
+                &mut response.response.responses,
             );
         }
         response
@@ -3538,19 +3649,7 @@ impl DataNodeRuntime {
     }
 
     pub fn dirty_objects(&self) -> Vec<DirtyObjectInfo> {
-        self.inner
-            .dirty
-            .lock()
-            .expect("dirty tracker lock poisoned")
-            .by_key
-            .iter()
-            .map(|((shard_id, key), state)| DirtyObjectInfo {
-                shard_id: *shard_id,
-                key: key.clone(),
-                object_id: state.object_id,
-                last_dirty_at_ms: state.last_dirty_at_ms,
-            })
-            .collect()
+        self.inner.dirty.objects()
     }
 
     pub fn dirty_shards(&self) -> Vec<ShardId> {
@@ -3817,3 +3916,7 @@ pub fn validate_multi_process_lifecycle_reports(
 #[cfg(test)]
 #[path = "data_node/data_node_regression_tests.rs"]
 mod tests;
+
+fn default_true() -> bool {
+    true
+}

@@ -4,6 +4,40 @@
 //! LocalRaftWal WAL persistence/recovery methods, split from raft.rs.
 use super::*;
 
+/// The container byte in front of a segment runtime state: a protobuf message follows.
+///
+/// THE ONLY PLACE THAT DECIDES. A file that does not open with it -- the JSON this file used to
+/// hold, a torn write, anything else -- is not read as a state at all.
+const SEGMENT_RUNTIME_STATE_CONTAINER_PROTOBUF: u8 = 0x01;
+
+fn encode_segment_runtime_state(state: &RaftWalSegmentRuntimeState) -> Vec<u8> {
+    let proto = crate::sdk::v1::DurableRaftWalSegmentRuntimeState {
+        released_segment_count: state.released_segment_count,
+        last_fsync_elapsed_ms: state.last_fsync_elapsed_ms,
+        slow_fsync_backpressure_observed: state.slow_fsync_backpressure_observed,
+    };
+    let mut out = Vec::with_capacity(1 + prost::Message::encoded_len(&proto));
+    out.push(SEGMENT_RUNTIME_STATE_CONTAINER_PROTOBUF);
+    prost::Message::encode(&proto, &mut out).expect("a Vec sink cannot run out of room");
+    out
+}
+
+fn decode_segment_runtime_state(bytes: &[u8]) -> Option<RaftWalSegmentRuntimeState> {
+    match bytes.split_first() {
+        Some((&SEGMENT_RUNTIME_STATE_CONTAINER_PROTOBUF, body)) => {
+            let proto =
+                <crate::sdk::v1::DurableRaftWalSegmentRuntimeState as prost::Message>::decode(body)
+                    .ok()?;
+            Some(RaftWalSegmentRuntimeState {
+                released_segment_count: proto.released_segment_count,
+                last_fsync_elapsed_ms: proto.last_fsync_elapsed_ms,
+                slow_fsync_backpressure_observed: proto.slow_fsync_backpressure_observed,
+            })
+        }
+        _ => None,
+    }
+}
+
 /// An append whose bytes are in the file but whose durability barrier has not been taken.
 ///
 /// Writing and flushing are separated so a caller can hold a lock across the write -- record
@@ -124,6 +158,7 @@ impl LocalRaftWal {
                     .map(|slab| crate::sdk::v1::WalStateImageSlab {
                         block_slab_id: slab.block_slab_id,
                         slab: slab.bytes.clone(),
+                        owner_shard_id: slab.owner_shard_id,
                     })
                     .collect(),
             };
@@ -213,6 +248,7 @@ impl LocalRaftWal {
                 .map(|slab| RaftSnapshotStateImageSlab {
                     block_slab_id: slab.block_slab_id,
                     bytes: slab.slab,
+                    owner_shard_id: slab.owner_shard_id,
                 })
                 .collect(),
         });
@@ -271,10 +307,32 @@ impl LocalRaftWal {
             shard_id,
             node_id,
             record,
+            &record.entries,
             max_segment_bytes,
             min_keep_segments,
             u64::MAX,
             wal_sync,
+        )
+    }
+
+    pub(super) fn stage_node_segmented_with_log(
+        &self,
+        shard_id: ShardId,
+        node_id: RaftNodeId,
+        metadata: &RaftWalRecord,
+        entries: &[RaftLogEntry],
+        config: &RaftConfig,
+    ) -> io::Result<StagedWalAppend> {
+        debug_assert!(metadata.entries.is_empty());
+        self.stage_node_segmented_with_options(
+            shard_id,
+            node_id,
+            metadata,
+            entries,
+            config.max_segment_bytes,
+            config.min_keep_segment_num as usize,
+            u64::MAX,
+            config.wal_sync,
         )
     }
 
@@ -318,6 +376,7 @@ impl LocalRaftWal {
             shard_id,
             node_id,
             record,
+            &record.entries,
             max_segment_bytes,
             min_keep_segments,
             slow_fsync_threshold_ms,
@@ -330,6 +389,7 @@ impl LocalRaftWal {
         shard_id: ShardId,
         node_id: RaftNodeId,
         record: &RaftWalRecord,
+        entries: &[RaftLogEntry],
         max_segment_bytes: u64,
         min_keep_segments: usize,
         slow_fsync_threshold_ms: u64,
@@ -371,42 +431,33 @@ impl LocalRaftWal {
         // which shows up as write latency that climbs with the log. Write the entries
         // that are actually new instead, and re-base with a full record only when a
         // delta could not be folded back (start of a segment, or the log moved under us).
-        let log_first_index = record
-            .entries
+        let log_first_index = entries
             .first()
             .map(|entry| entry.index)
             .unwrap_or_default();
-        let log_last_index = record
-            .entries
+        let log_last_index = entries
             .last()
             .map(|entry| entry.index)
             .unwrap_or_default();
-        let log_last_term = record
-            .entries
+        let log_last_term = entries
             .last()
             .map(|entry| entry.term)
             .unwrap_or_default();
-        // A delta is only sound while the log still contains the exact entry we last
-        // wrote, at the same term. A conflict overwrite (raft truncating a divergent
-        // suffix) or a snapshot compaction (dropping a prefix) breaks that.
+        // Check the previously persisted tail at its original position. A filled
+        // hole shifts it, and compaction moves the first index. Either needs a base
+        // record so replay does not lose changes below the old tail.
+        let tail_start = cursor.persisted_entry_count;
         let delta_safe = cursor.has_base
-            && cursor.persisted_last_index > 0
-            && log_last_index >= cursor.persisted_last_index
-            && log_first_index > 0
-            && log_first_index <= cursor.persisted_last_index
-            && record.entries.iter().any(|entry| {
-                entry.index == cursor.persisted_last_index && entry.term == cursor.persisted_last_term
+            && tail_start > 0
+            && cursor.persisted_first_index == log_first_index
+            && entries.get(tail_start - 1).is_some_and(|entry| {
+                entry.index == cursor.persisted_last_index
+                    && entry.term == cursor.persisted_last_term
             });
 
         let encode = |as_delta: bool| -> io::Result<Vec<u8>> {
             let envelope = if as_delta {
                 let from_index = cursor.persisted_last_index;
-                // Only the entries above `from_index`, taken as a slice. Cloning the record
-                // and filtering afterwards allocated the whole log on every append, which is
-                // the cost incremental records exist to remove.
-                let tail_start = record
-                    .entries
-                    .partition_point(|entry| entry.index <= from_index);
                 let delta_record = RaftWalRecord {
                     hard_state: record.hard_state.clone(),
                     membership: record.membership.clone(),
@@ -433,7 +484,7 @@ impl LocalRaftWal {
                     pipeline_state: RaftPeerPipelineRuntimeState::default(),
                     read_safety_state: RaftReadSafetyRuntimeState::default(),
                     membership_evidence: record.membership_evidence.clone(),
-                    entries: record.entries[tail_start..].to_vec(),
+                    entries: entries[tail_start..].to_vec(),
                 };
                 RaftWalEnvelope {
                     sequence,
@@ -446,10 +497,14 @@ impl LocalRaftWal {
                     }),
                 }
             } else {
+                let mut base = record.clone();
+                if base.entries.is_empty() {
+                    base.entries = entries.to_vec();
+                }
                 RaftWalEnvelope {
                     sequence,
-                    checksum: raft_wal_checksum(record)?,
-                    record: record.clone(),
+                    checksum: raft_wal_checksum(&base)?,
+                    record: base,
                     delta: None,
                 }
             };
@@ -469,11 +524,14 @@ impl LocalRaftWal {
             .last()
             .map(|segment| segment.bytes)
             .unwrap_or_default();
-        // Every segment opens with a full base record, so pruning whole segments can
-        // never orphan a delta. Rotation still honours `max_segment_bytes`; it is only
-        // clamped up to one base record so a segment can always hold the record that
-        // opens it.
-        let rotate_threshold = max_segment_bytes.max(cursor.base_bytes);
+        // Every segment opens with a full base record so pruning can keep deltas recoverable.
+        // Give an oversized base one segment's worth of append space. Rotating at the base's
+        // own size would rewrite the entire retained log on every subsequent delta.
+        let rotate_threshold = if cursor.base_bytes >= max_segment_bytes {
+            cursor.base_bytes.saturating_add(max_segment_bytes)
+        } else {
+            max_segment_bytes
+        };
         // Size-based rotation as before -- plus: a COMPACTING base opens a segment. When the
         // snapshot boundary advanced, the base supersedes the history in the current segment,
         // and only at a segment boundary can pruning reclaim it. Ordinary re-bases (an empty
@@ -520,8 +578,10 @@ impl LocalRaftWal {
                 last_log_index: 0,
             });
         }
-        let (record_first_log_index, record_last_log_index) =
-            Self::record_log_index_bounds(record);
+        let record_first_log_index = entries.first()
+            .map_or(record.hard_state.commit_index, |entry| entry.index);
+        let record_last_log_index = entries.last()
+            .map_or(record.hard_state.commit_index, |entry| entry.index);
         {
             let active = cursor
                 .segments
@@ -546,8 +606,10 @@ impl LocalRaftWal {
             cursor.base_bytes = encoded.len() as u64;
             cursor.has_base = true;
         }
+        cursor.persisted_first_index = log_first_index;
         cursor.persisted_last_index = log_last_index;
         cursor.persisted_last_term = log_last_term;
+        cursor.persisted_entry_count = entries.len();
         cursor.persisted_marker_index = record
             .installed_snapshot
             .as_ref()
@@ -671,24 +733,12 @@ impl LocalRaftWal {
             // append re-bases. That keeps recovery independent of whatever the previous
             // process had in memory.
             base_bytes: 0,
+            persisted_first_index: 0,
             persisted_last_index: 0,
             persisted_last_term: 0,
+            persisted_entry_count: 0,
             has_base: false,
         })
-    }
-
-    fn record_log_index_bounds(record: &RaftWalRecord) -> (u64, u64) {
-        let first = record
-            .entries
-            .first()
-            .map(|entry| entry.index)
-            .unwrap_or(record.hard_state.commit_index);
-        let last = record
-            .entries
-            .last()
-            .map(|entry| entry.index)
-            .unwrap_or(record.hard_state.commit_index);
-        (first, last)
     }
 
     fn segment_report_from_segments(segments: &[RaftWalSegmentInfo]) -> RaftWalSegmentReport {
@@ -764,6 +814,23 @@ impl LocalRaftWal {
                 if envelope.checksum != raft_wal_checksum(&envelope.record)? {
                     break;
                 }
+                let entries = &envelope.record.entries;
+                let overlaps_base = envelope.delta.is_some_and(|delta| {
+                    entries
+                        .first()
+                        .is_some_and(|entry| entry.index <= delta.from_index)
+                });
+                if overlaps_base || entries.windows(2).any(|pair| pair[0].index >= pair[1].index) {
+                    // A complete frame with a valid checksum is different from a
+                    // torn tail. Leave its bytes intact for recovery from a peer.
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "out-of-order Raft WAL entries at byte {offset} in {}",
+                            segment.path
+                        ),
+                    ));
+                }
                 valid_records += 1;
                 last_record = match envelope.delta {
                     // A base record replaces everything before it outright.
@@ -796,12 +863,6 @@ impl LocalRaftWal {
                         let mut entries = base
                             .map(|base| base.entries)
                             .unwrap_or_default();
-                        // A raft log is in ascending index order, and both trims below depend on
-                        // that: each is a prefix or a suffix, never a scattered subset.
-                        debug_assert!(
-                            entries.windows(2).all(|pair| pair[0].index <= pair[1].index),
-                            "replay assumes the accumulated log is ordered by index"
-                        );
                         // Drop what a conflict superseded. Testing the LAST entry first makes the
                         // ordinary case -- an append that supersedes nothing -- O(1) instead of a
                         // scan of everything accumulated so far. Scanning every time is what made
@@ -1026,10 +1087,9 @@ impl LocalRaftWal {
             last_fsync_elapsed_ms: report.last_fsync_elapsed_ms,
             slow_fsync_backpressure_observed: report.slow_fsync_backpressure_observed,
         };
-        let encoded = serde_json::to_vec_pretty(&state).map_err(io::Error::other)?;
         fs::write(
             self.node_segment_runtime_state_path(shard_id, node_id),
-            encoded,
+            encode_segment_runtime_state(&state),
         )
     }
 
@@ -1040,7 +1100,7 @@ impl LocalRaftWal {
     ) -> RaftWalSegmentRuntimeState {
         fs::read(self.node_segment_runtime_state_path(shard_id, node_id))
             .ok()
-            .and_then(|bytes| serde_json::from_slice::<RaftWalSegmentRuntimeState>(&bytes).ok())
+            .and_then(|bytes| decode_segment_runtime_state(&bytes))
             .unwrap_or_default()
     }
 
@@ -1319,5 +1379,76 @@ fn decompress_state_image(payload: &[u8]) -> io::Result<std::borrow::Cow<'_, [u8
             .map(std::borrow::Cow::Owned)
             .map_err(|err| io::Error::other(format!("state image decompress failed: {err}"))),
         None => Ok(std::borrow::Cow::Borrowed(payload)),
+    }
+}
+
+#[cfg(test)]
+mod segment_runtime_state_tests {
+    use super::*;
+
+    fn a_state() -> RaftWalSegmentRuntimeState {
+        RaftWalSegmentRuntimeState {
+            released_segment_count: 7,
+            last_fsync_elapsed_ms: 1_234,
+            slow_fsync_backpressure_observed: true,
+        }
+    }
+
+    /// A state the file carries comes back as written, through the file and not just the codec.
+    #[test]
+    fn a_state_in_the_file_reads_back_as_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal = LocalRaftWal::new(dir.path());
+        fs::create_dir_all(wal.node_segment_dir(1, 1)).unwrap();
+        let written = a_state();
+        let bytes = encode_segment_runtime_state(&written);
+        assert_eq!(bytes[0], SEGMENT_RUNTIME_STATE_CONTAINER_PROTOBUF);
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&bytes).is_err(),
+            "the binary shape must not parse as JSON, or the container byte proves nothing"
+        );
+        fs::write(wal.node_segment_runtime_state_path(1, 1), &bytes).unwrap();
+        assert_eq!(wal.read_segment_runtime_state(1, 1), written);
+        // DENOMINATOR: the fixture moves every field off its default, so a dropped field reads
+        // as a mismatch and not as a pass.
+        assert_ne!(written, RaftWalSegmentRuntimeState::default());
+    }
+
+    /// The JSON this file used to hold is not read: it reads as the default, never as its numbers.
+    #[test]
+    fn the_retired_json_shape_reads_as_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal = LocalRaftWal::new(dir.path());
+        fs::create_dir_all(wal.node_segment_dir(1, 1)).unwrap();
+        let json = br#"{"released_segment_count": 7, "last_fsync_elapsed_ms": 1234, "slow_fsync_backpressure_observed": true}"#;
+        assert!(decode_segment_runtime_state(json).is_none());
+        fs::write(wal.node_segment_runtime_state_path(1, 1), json).unwrap();
+        assert_eq!(wal.read_segment_runtime_state(1, 1), RaftWalSegmentRuntimeState::default());
+    }
+
+    /// The container byte cannot be mistaken for the start of a JSON document, and a body that is
+    /// not a message reads as the default rather than as a partial state.
+    #[test]
+    fn the_container_byte_is_not_json_and_a_damaged_body_is_refused() {
+        assert_ne!(SEGMENT_RUNTIME_STATE_CONTAINER_PROTOBUF, b'{');
+        for whitespace in [b' ', b'\t', b'\r', b'\n'] {
+            assert_ne!(SEGMENT_RUNTIME_STATE_CONTAINER_PROTOBUF, whitespace);
+        }
+        // A field header promising a varint, then nothing: a torn write.
+        assert!(decode_segment_runtime_state(&[SEGMENT_RUNTIME_STATE_CONTAINER_PROTOBUF, 0x08]).is_none());
+        assert!(decode_segment_runtime_state(&[]).is_none());
+        // An empty body is the all-default message, and it IS a valid state.
+        assert_eq!(
+            decode_segment_runtime_state(&[SEGMENT_RUNTIME_STATE_CONTAINER_PROTOBUF]),
+            Some(RaftWalSegmentRuntimeState::default())
+        );
+    }
+
+    /// An absent file reads as the default, as it always has.
+    #[test]
+    fn an_absent_file_reads_as_the_default() {
+        let dir = tempfile::tempdir().unwrap();
+        let wal = LocalRaftWal::new(dir.path());
+        assert_eq!(wal.read_segment_runtime_state(1, 1), RaftWalSegmentRuntimeState::default());
     }
 }

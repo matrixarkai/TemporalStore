@@ -10,7 +10,7 @@
 //!
 //! ```text
 //! // BISECT: prune disabled.
-//! // self.prune_refs_to_the_pages_the_index_holds();
+//! // self.prune_refs_to_the_blocks_the_index_holds();
 //! ```
 //!
 //! -- and the scaffold was COMMITTED, in the same change that moved each object's refs into its

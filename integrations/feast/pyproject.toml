@@ -13,9 +13,10 @@ license = { text = "Apache-2.0" }
 requires-python = ">=3.9"
 # `feast` is NOT a hard dependency: the wire layer is tested without it, and pinning Feast here
 # would force a version on a user who already has one.
-dependencies = ["redis>=4.6.0", "msgpack>=1.0"]
+dependencies = ["redis>=4.6.0", "msgpack>=1.0", "aiohttp>=3.9,<4"]
 
 [project.optional-dependencies]
+grpc = ["temporalstore-sdk>=0.1,<0.2"]
 feast = ["feast>=0.40"]
 dev = ["pytest>=7"]
 

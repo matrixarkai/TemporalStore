@@ -29,7 +29,7 @@
 //!   * A BLOCK CARRIED IN THE RECORD, or NO BLOCK AT ALL. There is no third option in production:
 //!     every `append_value` call site passes `Some(object_id)`, and `append_value_inner` stages
 //!     unconditionally for those, so a block that reaches a slab is always also in its record. The
-//!     cell "block in the block store but not in the record" does not exist, and the no-page cell
+//!     cell "block in the block store but not in the record" does not exist, and the no-block cell
 //!     is a REMOVAL.
 //!
 //! # Why the count is per RESULT and not per record
@@ -213,7 +213,7 @@ fn carried_since(root: &Path, before: &HashSet<u64>) -> Carried {
             counts.records_with_an_operation += 1;
         }
         counts.blocks_in_the_record += record.staged_blocks.len();
-        // Which pages this record carries, keyed as the page itself spells its identity.
+        // Which blocks this record carries, keyed as the block itself spells its identity.
         let mut blocks: HashMap<(u64, Option<String>), usize> = HashMap::new();
         for block in &record.staged_blocks {
             *blocks

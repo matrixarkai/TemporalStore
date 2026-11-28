@@ -10,6 +10,21 @@ impl DataNodeRuntime {
         &self,
         request: BorrowedHashTimestampRequest<'_>,
     ) -> BatchConditionalWriteResponse {
+        self.batch_hash_timestamp_set_borrowed_inner(request, false)
+    }
+
+    pub fn batch_hash_timestamp_set_borrowed_interleaved(
+        &self,
+        request: BorrowedHashTimestampRequest<'_>,
+    ) -> BatchConditionalWriteResponse {
+        self.batch_hash_timestamp_set_borrowed_inner(request, true)
+    }
+
+    fn batch_hash_timestamp_set_borrowed_inner(
+        &self,
+        request: BorrowedHashTimestampRequest<'_>,
+        interleaved: bool,
+    ) -> BatchConditionalWriteResponse {
         // The existing path owns malformed, duplicate-schema, and mirrored requests.
         if !request.fields.iter().any(|field| field == &request.timestamp_field)
             || request.rows.iter().any(|row| row.3.len() != request.fields.len())
@@ -27,13 +42,17 @@ impl DataNodeRuntime {
         {
             return BatchConditionalWriteResponse { status, applied: 0, skipped: 0, errors: Vec::new() };
         }
-        let shared_wal_sink = self.inner.shared_wal_sink.read().expect("shared wal sink lock poisoned");
+        let shared_wal_sink = self.inner.shared_wal_sink.get();
         if shared_wal_sink.is_some() {
-            drop(shared_wal_sink);
             return self.batch_hash_timestamp_set(request.into_owned());
         }
         let shard = request.shard_id;
-        let (response, keys) = self.inner.engine.batch_execute_borrowed_hash_rows(request);
+        let (response, keys) = if interleaved {
+            self.inner.engine.batch_execute_interleaved_hash_rows(request, ||
+                validate_foreground_write_allowed_inner(&self.inner, shard, std::slice::from_ref(&marker)))
+        } else {
+            self.inner.engine.batch_execute_borrowed_hash_rows(request)
+        };
         mark_dirty_keys(&self.inner.dirty, shard, keys);
         response
     }

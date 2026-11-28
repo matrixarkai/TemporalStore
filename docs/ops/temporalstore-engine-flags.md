@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 308 of them, read by 97 functions.
+There are 304 of them, read by 97 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -96,10 +96,10 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 | `TS_INDEX_DIR` | — | config, launch, script | 1 | — |
 | `TS_MATRIXOBJECT_BUCKET` | — | config, launch | 1 | — |
 | `TS_MATRIXOBJECT_ENDPOINT` | — | config | 1 | — |
-| `TS_MATRIXOBJECT_STORE_DIR` | — | config | 1 | — |
+| `TS_MATRIXOBJECT_STORE_DIR` | — | nothing | 1 | — |
 | `TS_META_BIND_ADDR` | — | config, launch | 1 | — |
 | `TS_META_RAFT_NODE_ID` | 1 | nothing | 1 | — |
-| `TS_PAGE_STORE_DIR` | — | config | 1 | previous spelling of `TS_BLOCK_STORE_DIR`, still accepted |
+| `TS_PAGE_STORE_DIR` | — | test | 1 | retired spelling of `TS_BLOCK_STORE_DIR`; not read, a test asserts it is ignored |
 | `TS_PROXY_ADVERTISED_ADDR` | — | config, launch | 1 | — |
 | `TS_PROXY_BIND_ADDR` | — | config, launch | 1 | — |
 | `TS_PROXY_LOCATION` | — | nothing | 1 | — |
@@ -263,7 +263,6 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_INDEX_DUMP_OPLOG_GAP_BYTES` | — | config | 1 | — |
 | `TS_INDEX_LOG_COMPRESSION_MIN_BYTES` | 256 | nothing | 1 | — |
 | `TS_INDEX_LOG_SEGMENT_BYTES` | 65536 | nothing | 1 | — |
-| `TS_MATRIXOBJECT_FLUSH_INTERVAL_MS` | 100 | nothing | 1 | — |
 | `TS_MATRIXOBJECT_PROBE_TIMEOUT_MS` | — | nothing | 1 | — |
 | `TS_MAX_RETAINED_FINISHED_JOBS` | 64 | portal | 1 | — |
 | `TS_META_AUTO_REBALANCE_INTERVAL_MS` | — | nothing | 1 | — |
@@ -418,10 +417,7 @@ Everything else that changes what the engine does.
 | `TS_EVICT_SCAN_TURNS` | — | nothing | 1 | — |
 | `TS_INDEX_LOG_COMPRESSION_ENABLED` | off | nothing | 1 | — |
 | `TS_MALLOC_TRIM` | on | test, portal | 1 | — |
-| `TS_MATRIXOBJECT_CHECKPOINT_ON_START` | on | nothing | 1 | — |
-| `TS_MATRIXOBJECT_FLUSH_BATCH` | 256 | nothing | 1 | — |
 | `TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START` | on | nothing | 1 | — |
-| `TS_MATRIXOBJECT_SYNC_FLUSH` | off | nothing | 1 | — |
 | `TS_PROXY_BACKEND_CONTINUOUS_FAILED_TIME_MS` | — | nothing | 1 | — |
 | `TS_PROXY_CONFIG_VERSION` | — | nothing | 1 | — |
 | `TS_PROXY_ENFORCE_INGESTION_ACCOUNT` | — | nothing | 1 | — |

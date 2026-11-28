@@ -51,7 +51,9 @@ fn refuse(key: &str, message: impl std::fmt::Display) -> Status {
     Status::error("invalid_argument", format!("{key}: {message}"))
 }
 
-/// The value stored at `timestamp_ms`, read the way a feature query reads it.
+/// The value stored at `timestamp_ms`: the one copy of it the merge keeps. It is read where it sits
+/// in the cached block, so the block's other points are not decoded into vectors of their own and
+/// the block is not held in a table for a second read.
 fn stored_value(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -60,22 +62,23 @@ fn stored_value(
     key: &str,
     timestamp_ms: u64,
     routing_bucket: u32,
+    block_keys: &mut BlockKeys,
 ) -> Result<Option<Vec<u8>>, Status> {
     let Some(address) = series.get(timestamp_ms) else {
         return Ok(None);
     };
-    let mut scratch = HashMap::new();
-    read_feature_point_cached(
+    read_feature_value_with(
         cache,
         block_store,
         shard_id,
         timestamp_ms,
         address,
         BlockIdentity::of(shard_id, "feature", key, None),
-        &mut scratch,
         Some(routing_bucket),
+        block_keys,
+        |value| value.to_vec(),
     )
-    .map(|point| Some(point.value))
+    .map(Some)
     .ok_or_else(|| {
         Status::error(
             "data_loss",
@@ -119,6 +122,8 @@ pub(super) fn plan_cell_merge(
     if points.is_empty() {
         return Err(refuse(key, "a merge-reduce append needs at least one point"));
     }
+    // Every read of a stored sample in this plan shares one key for the block it sits in.
+    let mut block_keys = BlockKeys::new();
     // The newest stored sample is read ONCE: its header is the one every request is checked
     // against, and a request point at that timestamp merges into its cells.
     let newest_stored: Option<NewestStored> = match series.and_then(|s| s.range(..).next_back()) {
@@ -132,6 +137,7 @@ pub(super) fn plan_cell_merge(
                 key,
                 timestamp_ms,
                 routing_bucket,
+                &mut block_keys,
             )?
             .expect("the newest timestamp has an address");
             let (header_bytes, _) = cell_set::split_value_raw(&value).map_err(|err| {
@@ -165,9 +171,9 @@ pub(super) fn plan_cell_merge(
                 None => cell_set::Existing::Nothing,
                 Some(series) => match newest_stored.as_ref().filter(|n| n.timestamp_ms == timestamp_ms) {
                     Some(stored) => {
-                        let (_, snapshot) = cell_set::split_value_raw(&stored.value)
+                        let (_, sample) = cell_set::split_value_raw(&stored.value)
                             .map_err(|err| refuse(key, format!("point at {timestamp_ms}: {err}")))?;
-                        cell_set::Existing::Stored { header: &*stored.header, snapshot }
+                        cell_set::Existing::Stored { header: &*stored.header, sample }
                     }
                     None => {
                         loaded = stored_value(
@@ -178,14 +184,15 @@ pub(super) fn plan_cell_merge(
                             key,
                             timestamp_ms,
                             routing_bucket,
+                            &mut block_keys,
                         )?;
                         match loaded.as_deref() {
                             None => cell_set::Existing::Nothing,
                             Some(value) => {
-                                let (header, snapshot) = cell_set::split_value(value)
+                                let (header, sample) = cell_set::split_value(value)
                                     .map_err(|err| refuse(key, format!("point at {timestamp_ms}: {err}")))?;
                                 own = header;
-                                cell_set::Existing::Stored { header: &own, snapshot }
+                                cell_set::Existing::Stored { header: &own, sample }
                             }
                         }
                     }

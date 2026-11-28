@@ -454,14 +454,16 @@ fn reclaim_before_the_dump_keeps_the_records_that_hold_the_values() {
     }
 }
 
-/// The shipped default stays OFF until a sustained test (ten or more loop rounds with a write rate
-/// above `max_dump_buckets_per_round`) shows the log-resident registry and the log bounded. Flipping
-/// it must be a deliberate edit of this test, not a side effect.
+/// The shipped default is ON: a synchronous string write keeps its value in its log record alone.
+/// This was a deliberate decision by the project owner, taken with the known cost stated: the loop
+/// materialises at most `max_dump_buckets_per_round` log-resident blocks per round, so a sustained
+/// write rate above that grows the registry and the log until the cap is lifted. The ignored test
+/// `log_resident_values_stay_bounded_when_writes_outrun_the_per_round_cap` is the open condition
+/// for removing that cost. Changing the default again must be a deliberate edit of this test.
 #[test]
-fn the_shipped_default_is_off_until_a_sustained_test_shows_the_log_bounded() {
+fn the_shipped_default_is_on_by_an_owner_decision_with_the_log_growth_cost_known() {
     assert!(
-        !crate::engine::SYNC_VALUE_ONCE_DEFAULT_ON,
-        "TS_SYNC_VALUE_ONCE must default off: the loop materialises at most max_dump_buckets_per_round \
-         log-resident blocks per round, so a faster write rate pins the log floor without bound"
+        crate::engine::SYNC_VALUE_ONCE_DEFAULT_ON,
+        "TS_SYNC_VALUE_ONCE defaults on; turn it off per process with TS_SYNC_VALUE_ONCE=0"
     );
 }

@@ -10,7 +10,7 @@ use super::*;
 use crate::engine::cell_set::{
     decode_sample, encode_value, split_value, DimSpec, DimType, EntityType, KeySpec, LaneSpec, HEADER_VERSION,
 };
-use crate::types::{CellLaneQuota, CellMemberFilter, CellQuota};
+use crate::types::{WindowReduceLaneQuota, CellMemberFilter, WindowReduceQuota};
 
 fn xorshift(state: &mut u64) -> u64 {
     *state ^= *state << 13;
@@ -75,25 +75,25 @@ fn decoded_both(header: &CellHeader, snaps: &[(u64, Vec<Cell>)]) -> (Vec<(u64, V
     (plain, flat)
 }
 
-fn specs() -> Vec<CellRankSpec> {
-    let all = CellWindow::Between { start_ms: 0, end_ms: u64::MAX };
-    let lane = |name: &str| CellScore::Lane { lane: name.to_string() };
+fn specs() -> Vec<WindowReduceRankSpec> {
+    let all = WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX };
+    let lane = |name: &str| WindowReduceScore::Lane { lane: name.to_string() };
     let mut out = vec![
-        CellRankSpec::new(all.clone(), lane("a"), 8),
-        CellRankSpec::new(all.clone(), lane("b"), 100),
-        CellRankSpec::new(all.clone(), CellScore::Member, 5),
-        CellRankSpec::new(all.clone(), CellScore::Time, 5),
-        CellRankSpec::new(all.clone(), CellScore::Ratio { numerator: "a".to_string(), denominator: "c".to_string() }, 7),
-        CellRankSpec::new(
+        WindowReduceRankSpec::new(all.clone(), lane("a"), 8),
+        WindowReduceRankSpec::new(all.clone(), lane("b"), 100),
+        WindowReduceRankSpec::new(all.clone(), WindowReduceScore::Member, 5),
+        WindowReduceRankSpec::new(all.clone(), WindowReduceScore::Time, 5),
+        WindowReduceRankSpec::new(all.clone(), WindowReduceScore::Ratio { numerator: "a".to_string(), denominator: "c".to_string() }, 7),
+        WindowReduceRankSpec::new(
             all.clone(),
-            CellScore::Weighted { lanes: vec!["a".to_string(), "e".to_string()], weights: vec![1.5, -0.25] },
+            WindowReduceScore::Weighted { lanes: vec!["a".to_string(), "e".to_string()], weights: vec![1.5, -0.25] },
             9,
         ),
-        CellRankSpec::new(all.clone(), CellScore::Decay { lane: "a".to_string(), half_life_ms: 250 }, 6),
-        CellRankSpec::new(CellWindow::LastN { n: 3 }, lane("f"), 10),
-        CellRankSpec::new(CellWindow::Between { start_ms: 200, end_ms: 500 }, lane("d"), 10),
+        WindowReduceRankSpec::new(all.clone(), WindowReduceScore::Decay { lane: "a".to_string(), half_life_ms: 250 }, 6),
+        WindowReduceRankSpec::new(WindowReduceWindow::LastN { n: 3 }, lane("f"), 10),
+        WindowReduceRankSpec::new(WindowReduceWindow::Between { start_ms: 200, end_ms: 500 }, lane("d"), 10),
     ];
-    let mut filtered = CellRankSpec::new(all.clone(), lane("a"), 10);
+    let mut filtered = WindowReduceRankSpec::new(all.clone(), lane("a"), 10);
     filtered.filters = vec![
         FeatureFilter { field: "g2".to_string(), op: FeatureFilterOp::GreaterOrEqual, value: 2 },
         FeatureFilter { field: "b".to_string(), op: FeatureFilterOp::LessThan, value: 20 },
@@ -101,7 +101,7 @@ fn specs() -> Vec<CellRankSpec> {
     ];
     filtered.project = vec!["g3".to_string(), "e".to_string(), "a".to_string()];
     out.push(filtered);
-    let mut members = CellRankSpec::new(all.clone(), lane("a"), 20);
+    let mut members = WindowReduceRankSpec::new(all.clone(), lane("a"), 20);
     members.members = CellMemberFilter {
         include: Some(vec![
             CellMemberId::U64(3),
@@ -113,21 +113,32 @@ fn specs() -> Vec<CellRankSpec> {
         exclude: vec![CellMemberId::U64(11)],
     };
     out.push(members);
-    let mut open_exclude = CellRankSpec::new(all.clone(), lane("c"), 12);
+    let mut open_exclude = WindowReduceRankSpec::new(all.clone(), lane("c"), 12);
     open_exclude.members =
         CellMemberFilter { include: None, exclude: vec![CellMemberId::Bytes(b"zzz".to_vec()), CellMemberId::U64(0)] };
     out.push(open_exclude);
-    let mut quota = CellRankSpec::new(all, lane("a"), 12);
-    quota.quota = CellQuota {
-        lanes: vec![CellLaneQuota { lane: "b".to_string(), count: 2 }],
+    let mut quota = WindowReduceRankSpec::new(all, lane("a"), 12);
+    quota.quota = WindowReduceQuota {
+        lanes: vec![WindowReduceLaneQuota { lane: "b".to_string(), count: 2 }],
         others: 3,
     };
     out.push(quota);
+    // The answer that says which samples it used: both forms count the same cells in each.
+    let mut info = WindowReduceRankSpec::new(WindowReduceWindow::LastN { n: 3 }, lane("a"), 6);
+    info.sample_info = true;
+    out.push(info);
+    let mut info_recent = WindowReduceRankSpec::new(all_window(), WindowReduceScore::Recent, 7);
+    info_recent.sample_info = true;
+    out.push(info_recent);
     out
 }
 
+fn all_window() -> WindowReduceWindow {
+    WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX }
+}
+
 #[test]
-fn a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers() {
+fn a_read_over_flat_samples_answers_what_a_read_over_plain_samples_answers() {
     let header = wide_header();
     let mut state = 0x9e37_79b9_7f4a_7c15u64;
     let mut compared = 0;
@@ -163,7 +174,46 @@ fn a_read_over_flat_snapshots_answers_what_a_read_over_plain_snapshots_answers()
 }
 
 #[test]
-fn a_fan_in_over_flat_snapshots_answers_what_a_fan_in_over_plain_snapshots_answers() {
+fn a_sample_read_without_its_first_cells_ranks_as_the_plain_sample_without_them() {
+    let header = wide_header();
+    let mut state = 0xfeed_f00d_dead_beefu64;
+    let mut compared = 0;
+    let mut rows_seen = 0;
+    let mut cut_cells = 0;
+    for count in [1usize, 3, 8] {
+        let snaps = random_samples(&mut state, count);
+        let (_, flat) = decoded_both(&header, &snaps);
+        // Every sample gives up a different number of its first cells, from none to all of them.
+        let skips: Vec<usize> = flat.iter().map(|(_, cells)| (xorshift(&mut state) as usize) % (cells.len() + 1)).collect();
+        cut_cells += skips.iter().sum::<usize>();
+        // The statement of the cut: the same cells with the first `skip` dropped, in the plain form.
+        let plain_cut: Vec<(u64, Vec<Cell>)> =
+            snaps.iter().zip(&skips).map(|((stamp, cells), &skip)| (*stamp, cells[skip..].to_vec())).collect();
+        let plain_views: Vec<SampleView<'_>> =
+            plain_cut.iter().map(|(timestamp_ms, cells)| SampleView { timestamp_ms: *timestamp_ms, cells }).collect();
+        let cut_views: Vec<CutView<'_>> = flat
+            .iter()
+            .zip(&skips)
+            .map(|((timestamp_ms, cells), &skip)| CutView { timestamp_ms: *timestamp_ms, cells, skip })
+            .collect();
+        for spec in specs() {
+            let plan = Plan::compile(&header, &spec).unwrap();
+            let want = plan.run(1_000, &plain_views);
+            let got = plan.run(1_000, &cut_views);
+            assert_eq!(want, got, "{count} samples, skips {skips:?}, spec {spec:?}");
+            if let Ok(ranked) = &got {
+                rows_seen += ranked.rows.len();
+            }
+            compared += 1;
+        }
+    }
+    assert!(compared >= 36, "{compared}");
+    assert!(cut_cells > 20, "the comparison cut only {cut_cells} cells, too few to mean anything");
+    assert!(rows_seen > 150, "the reads ranked only {rows_seen} rows in all");
+}
+
+#[test]
+fn a_fan_in_over_flat_samples_answers_what_a_fan_in_over_plain_samples_answers() {
     let header = wide_header();
     let mut state = 0x1234_5678_9abc_def1u64;
     let keys: Vec<Vec<(u64, Vec<Cell>)>> = (0..4).map(|_| random_samples(&mut state, 5)).collect();
@@ -194,14 +244,14 @@ fn a_fan_in_over_flat_snapshots_answers_what_a_fan_in_over_plain_snapshots_answe
 }
 
 #[test]
-fn a_flat_snapshot_out_of_order_is_refused_as_a_plain_one_is() {
+fn a_flat_sample_out_of_order_is_refused_as_a_plain_one_is() {
     let header = wide_header();
     let unordered = vec![
         Cell { member: Member::U64(5), labels: vec![0; 4], lanes: vec![1; 6] },
         Cell { member: Member::U64(2), labels: vec![0; 4], lanes: vec![1; 6] },
     ];
     let (plain, flat) = decoded_both(&header, &[(100, unordered)]);
-    let spec = CellRankSpec::new(CellWindow::Between { start_ms: 0, end_ms: u64::MAX }, CellScore::Member, 5);
+    let spec = WindowReduceRankSpec::new(WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX }, WindowReduceScore::Member, 5);
     let plan = Plan::compile(&header, &spec).unwrap();
     let plain_views = [SampleView { timestamp_ms: plain[0].0, cells: &plain[0].1 }];
     let flat_views = [FlatView { timestamp_ms: flat[0].0, cells: &flat[0].1 }];

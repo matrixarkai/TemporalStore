@@ -5,6 +5,42 @@
 
 use super::*;
 
+fn raft_reports(states: &[ServerShardServingState])
+    -> impl Iterator<Item = (ShardId, u64, &str, bool, bool, DataRaftShardRole)> + '_
+{
+    states.iter().filter_map(|shard| Some((
+        shard.shard_id, shard.load_version, shard.table_name.as_str(),
+        shard.loaded, shard.readonly, shard.raft_role?,
+    )))
+}
+
+pub(super) fn update_data_raft_reporters(
+    state: &mut MetaState,
+    addr: &str,
+    previous: &[ShardId],
+    current: &[ShardId],
+) {
+    for shard_id in previous {
+        if let Some(servers) = state.data_raft_reporters.get_mut(shard_id) {
+            servers.remove(addr);
+            if servers.is_empty() {
+                state.data_raft_reporters.remove(shard_id);
+            }
+        }
+    }
+    for &shard_id in current {
+        state.data_raft_reporters.entry(shard_id).or_default().insert(addr.to_string());
+    }
+    let version = record_topology_event(state, "data_raft_role", format!("server:{addr}"), "");
+    for &shard_id in previous.iter().chain(current) {
+        let key = table_for_shard(state, shard_id)
+            .map(|table| table_key(&table.info.namespace, &table.info.table_name));
+        if let Some(table) = key.and_then(|key| state.tables.get_mut(&key)) {
+            table.info.topology_version = version;
+        }
+    }
+}
+
 impl SingleNodeMeta {
     pub fn register_server(&self, mut request: RegisterServerRequest) -> AckResponse {
         if let Some(status) = self.meta_change_refusal() {
@@ -55,7 +91,12 @@ impl SingleNodeMeta {
             .map(|server| server.registered_at_ms)
             .filter(|first| *first != 0)
             .unwrap_or(request.registered_at_ms);
+        let grpc_changed = state.servers.get(&request.server_addr)
+            .and_then(|server| server.grpc_addr.as_ref()) != request.grpc_addr.as_ref();
         let server_addr = request.server_addr.clone();
+        let previous_raft_shards = state.servers.get(&server_addr)
+            .map(|server| raft_reports(&server.shard_states).map(|report| report.0).collect::<Vec<_>>())
+            .unwrap_or_default();
         state.servers.insert(
             server_addr.clone(),
             ServerMetaInfo {
@@ -66,6 +107,7 @@ impl SingleNodeMeta {
                 worst_shard_state_penalty: 0,
                 freeze_reason: FreezeReason::Unspecified,
                 server_addr: request.server_addr,
+                grpc_addr: request.grpc_addr,
                 node_id: request.node_id,
                 location: request.location,
                 // Re-declared on every registration rather than merged: a
@@ -109,6 +151,15 @@ impl SingleNodeMeta {
             format!("server:{server_addr}"),
             "state=normal",
         );
+        if !previous_raft_shards.is_empty() {
+            update_data_raft_reporters(&mut state, &server_addr, &previous_raft_shards, &[]);
+        }
+        if grpc_changed {
+            let topology_version = state.topology_version;
+            for table in state.tables.values_mut() {
+                table.info.topology_version = topology_version;
+            }
+        }
         AckResponse {
             status: Status::ok(),
         }
@@ -178,7 +229,7 @@ impl SingleNodeMeta {
         }
     }
 
-    pub fn server_heartbeat(&self, request: ServerHeartbeatRequest) -> ServerHeartbeatResponse {
+    pub fn server_heartbeat(&self, mut request: ServerHeartbeatRequest) -> ServerHeartbeatResponse {
         // Folded before the lock is taken. These are summaries of the lists the
         // request carries, and they used to be computed inside the critical
         // section -- so every topology read waited behind a walk of one
@@ -216,6 +267,7 @@ impl SingleNodeMeta {
                 forbid_auto_register: false,
                 topology_version,
                 server_state: "unknown".to_string(),
+                cache_budgets: Vec::new(),
             };
         };
         if server.state == MetaEntityState::Frozen {
@@ -224,6 +276,7 @@ impl SingleNodeMeta {
                 forbid_auto_register: true,
                 topology_version,
                 server_state: MetaEntityState::Frozen.as_str().to_string(),
+                cache_budgets: Vec::new(),
             };
         }
         server.last_heartbeat_ms = now_ms();
@@ -260,6 +313,32 @@ impl SingleNodeMeta {
         // an old build that never sends them.
         server.reports_shard_states =
             server.reports_shard_states || !request.shard_states.is_empty();
+        if !server.reboot_detected {
+            for incoming in &mut request.shard_states {
+                let Some(role) = incoming.raft_role else { continue };
+                let newer = server.shard_states.iter().find(|previous| {
+                    previous.shard_id == incoming.shard_id
+                        && previous.table_name == incoming.table_name
+                        && previous.raft_role.is_some_and(|old| {
+                            (previous.load_version, old.term) > (incoming.load_version, role.term)
+                        })
+                });
+                if let Some(previous) = newer {
+                    incoming.raft_role = previous.raft_role;
+                    incoming.load_version = previous.load_version;
+                    incoming.loaded = previous.loaded;
+                    incoming.readonly = previous.readonly;
+                }
+            }
+        }
+        let changed_raft_reports = if !raft_reports(&server.shard_states).eq(raft_reports(&request.shard_states)) {
+            Some((
+                raft_reports(&server.shard_states).map(|report| report.0).collect::<Vec<_>>(),
+                raft_reports(&request.shard_states).map(|report| report.0).collect::<Vec<_>>(),
+            ))
+        } else {
+            None
+        };
         server.shard_states = request.shard_states;
         // Summarised so the read path does not have to walk the lists. Folded
         // above, before the lock, over the same values these fields now hold.
@@ -281,11 +360,18 @@ impl SingleNodeMeta {
                 ),
             );
         }
+        if let Some((previous, current)) = changed_raft_reports {
+            update_data_raft_reporters(&mut state, &request.server_addr, &previous, &current);
+        }
         ServerHeartbeatResponse {
             status: Status::ok(),
             forbid_auto_register: false,
-            topology_version,
+            topology_version: state.topology_version,
             server_state,
+            cache_budgets: super::partitioning::cache_budgets_for_server(
+                &state,
+                &request.server_addr,
+            ),
         }
     }
 

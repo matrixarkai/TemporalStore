@@ -10,7 +10,7 @@ use crate::types::ShardId;
 use matrixcache::MultiLayerCache;
 
 use super::hashing::BlockIdentity;
-use super::read_block_bytes;
+use super::{read_block_bytes, read_block_shared};
 use super::state::{
     object_element_name_lookup_key, object_block_lookup_key, ShardState, BucketLayoutState,
 };
@@ -358,6 +358,50 @@ fn released_element_name_block_addresses(
     super::storage_bucket_internals::released_bucket_block_address(shard, model_id, object_key, None)
         .map(|address| vec![(None, address)])
         .unwrap_or_default()
+}
+
+/// [`read_bucket_index_value`] for a caller that only inspects the bytes: the cache's shared bytes
+/// are handed back as they are, not copied into a `Vec`. Same address lookup, same identity, same
+/// miss fallbacks.
+pub(super) fn read_bucket_index_value_shared(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    model_id: &str,
+    object_key: &str,
+    element_name: Option<&str>,
+) -> Option<Arc<[u8]>> {
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    bucket_index_block_address(shard, model_id, object_key, element_name).and_then(|address| {
+        super::read_block_shared(
+            cache,
+            block_store,
+            shard_id,
+            &address,
+            BlockIdentity::of(shard_id, model_id, object_key, element_name),
+            Some(crate::engine::hashing::block_routing_bucket(
+                object_key,
+                start_routing_bucket,
+                end_routing_bucket,
+            )),
+        )
+    })
+}
+
+pub(super) fn read_bucket_index_string_length(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    shard: &ShardState,
+    key: &str,
+) -> i64 {
+    let (start, end) = shard.routing_range();
+    let Some(address) = bucket_index_block_address(shard, "string", key, None) else {
+        return 0;
+    };
+    let bucket = super::block_routing_bucket(key, start, end);
+    super::read_string_length(cache, block_store, shard_id, &address, key, bucket).unwrap_or(0)
 }
 
 pub(super) fn read_bucket_index_value(

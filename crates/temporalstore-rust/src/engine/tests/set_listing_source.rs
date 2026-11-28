@@ -119,32 +119,33 @@ fn block_and_entry_counts(
     engine: &TemporalEngine,
     object_key: &str,
 ) -> (usize, usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut blocks = std::collections::BTreeSet::new();
-    let mut live = 0usize;
-    let mut tombstoned = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-            {
-                continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut blocks = std::collections::BTreeSet::new();
+        let mut live = 0usize;
+        let mut tombstoned = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                {
+                    continue;
+                }
+                if block.deleted() {
+                    tombstoned += 1;
+                    continue;
+                }
+                live += 1;
+                blocks.insert((
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                ));
             }
-            if block.deleted() {
-                tombstoned += 1;
-                continue;
-            }
-            live += 1;
-            blocks.insert((
-                block.address.block_slab_id(),
-                block.address.offset(),
-                block.address.length(),
-            ));
         }
-    }
-    (blocks.len(), live, tombstoned)
+        (blocks.len(), live, tombstoned)
+    })
 }
 
 /// Every element key a live block of this object still states as PRESENT, read off the bytes.
@@ -154,63 +155,65 @@ fn element_names_the_blocks_still_state(
     engine: &TemporalEngine,
     object_key: &str,
 ) -> std::collections::BTreeSet<String> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut stated = std::collections::BTreeSet::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-            {
-                continue;
-            }
-            let Ok(bytes) = engine.block_store.read(&block.address) else {
-                continue;
-            };
-            if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
-                spelling,
-                items,
-                ..
-            } = crate::engine::container_blocks::decode_container_block(&bytes)
-            {
-                for item in items {
-                    if item.deleted {
-                        continue;
-                    }
-                    if let Some(element_name) =
-                        crate::engine::container_blocks::element_name_from_element_key(
-                            spelling, &item.key,
-                        )
-                    {
-                        stated.insert(element_name);
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut stated = std::collections::BTreeSet::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                {
+                    continue;
+                }
+                let Ok(bytes) = engine.block_store.read(&block.address) else {
+                    continue;
+                };
+                if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
+                    spelling,
+                    items,
+                    ..
+                } = crate::engine::container_blocks::decode_container_block(&bytes)
+                {
+                    for item in items {
+                        if item.deleted {
+                            continue;
+                        }
+                        if let Some(element_name) =
+                            crate::engine::container_blocks::element_name_from_element_key(
+                                spelling, &item.key,
+                            )
+                        {
+                            stated.insert(element_name);
+                        }
                     }
                 }
             }
         }
-    }
-    stated
+        stated
+    })
 }
 
 /// The addresses of this object's LIVE blocks, captured so they can still be read after the index
 /// entry that names them is gone.
 fn live_block_addresses(engine: &TemporalEngine, object_key: &str) -> Vec<ElementEntry> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut addresses = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-                || block.deleted()
-            {
-                continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut addresses = Vec::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                    || block.deleted()
+                {
+                    continue;
+                }
+                addresses.push(block.address.clone());
             }
-            addresses.push(block.address.clone());
         }
-    }
-    addresses
+        addresses
+    })
 }
 
 /// Every element key a given set of BLOCK ADDRESSES still states as present, read straight off the
@@ -253,32 +256,33 @@ fn element_names_at(
 
 /// Drop `how_many` of this object's live set entries, leaving their BLOCK untouched.
 fn drop_live_entries(engine: &TemporalEngine, object_key: &str, how_many: usize) -> usize {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-    // TAKEN BEFORE THE `retain`, AND OWNING ITS KEYS SO IT CAN BE. The keys live in a sibling
-    // field of the index whose bucket map this holds mutably; a map that borrowed would be
-    // refused here.
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut dropped = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values_mut() {
-        let routing_bucket = bucket.routing_bucket;
-        bucket
-            .block_index
-            .retain(
-                &mut shard.bucket_index.block_slab_live,
-                crate::engine::state::StaleCause::Removed,
-                |handle, block| {
-                let mine = block.model_id().as_str() == "set"
-                    && &**named.at(routing_bucket, *handle) == object_key
-                    && !block.deleted();
-                if mine && dropped < how_many {
-                    dropped += 1;
-                    return false;
-                }
-                true
-            });
-    }
-    dropped
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        // TAKEN BEFORE THE `retain`, AND OWNING ITS KEYS SO IT CAN BE. The keys live in a sibling
+        // field of the index whose bucket map this holds mutably; a map that borrowed would be
+        // refused here.
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut dropped = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values_mut() {
+            let routing_bucket = bucket.routing_bucket;
+            bucket
+                .block_index
+                .retain(
+                    &mut shard.bucket_index.block_slab_live,
+                    crate::engine::state::StaleCause::Removed,
+                    |handle, block| {
+                    let mine = block.model_id().as_str() == "set"
+                        && &**named.at(routing_bucket, *handle) == object_key
+                        && !block.deleted();
+                    if mine && dropped < how_many {
+                        dropped += 1;
+                        return false;
+                    }
+                    true
+                });
+        }
+        dropped
+    })
 }
 
 fn listed_members(engine: &TemporalEngine, object_key: &str) -> Vec<Vec<u8>> {
@@ -489,7 +493,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
     let listed = listed_members(&engine, "listing/one-name-gone");
     assert!(
         listed.is_empty(),
-        "the listing returned {} member(s) with no live entry naming their page, while those \
+        "the listing returned {} member(s) with no live entry naming their block, while those \
          blocks still state all {MEMBERS}. A reader enumerating the payload answers exactly that \
          way, which is the defect this arm exists for and the reason identity stays with the \
          entries",

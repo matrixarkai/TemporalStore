@@ -109,12 +109,13 @@ fn indexed_points_select_exact_blocks_with_bounded_warm_reads() {
         }
     }
     assert!(cold < encoded.len() as u64 / 2);
-    assert_eq!(cache.entries.len(), 1);
-    assert!(cache.bytes < 16 * 1024);
+    let state = cache.state.lock().unwrap();
+    assert_eq!(state.entries.len(), 1);
+    assert!(state.bytes < 16 * 1024);
     println!(
         "INDEXED_READ frame_bytes={} cold_bytes={cold} metadata_bytes={}",
         encoded.len(),
-        cache.bytes
+        state.bytes
     );
 }
 
@@ -231,13 +232,40 @@ fn indexed_directory_cache_is_bounded_and_scoped_to_each_store() {
     let mut cache = Cache::default();
     for id in 0..600 {
         read(&mut opened, 0, &mut cache, 7, id, 11, 0, 0, None, &mut 0).unwrap();
+        let state = cache.state.lock().unwrap();
         assert!(
-            cache.bytes + cache.entries.capacity() * std::mem::size_of::<Cached>() <= CACHE_BYTES
+            state.bytes + state.entries.capacity() * std::mem::size_of::<Cached>() <= CACHE_BYTES
         );
     }
-    assert!(cache.entries.len() < 600);
-    let mut other = Cache::default();
+    assert!(cache.state.lock().unwrap().entries.len() < 600);
+    let other = Cache::default();
     assert!(other.get(7, 599, 0, 0).is_none());
+}
+
+#[test]
+fn concurrent_directory_readers_share_one_bounded_entry() {
+    let record = Arc::new(record(500, 1320));
+    let encoded: Arc<[u8]> = Arc::from(encode_record(&record));
+    let cache = Arc::new(Cache::default());
+    let ready = Arc::new(std::sync::Barrier::new(8));
+    let threads: Vec<_> = (0..8).map(|index| {
+        let record = Arc::clone(&record);
+        let encoded = Arc::clone(&encoded);
+        let cache = Arc::clone(&cache);
+        let ready = Arc::clone(&ready);
+        std::thread::spawn(move || {
+            let mut source = std::io::Cursor::new(encoded);
+            ready.wait();
+            let value = read(&mut source, 0, &cache, record.shard_id, 0, record.sequence,
+                index, record.staged_blocks[index].object_id,
+                record.staged_blocks[index].element_name.as_deref(), &mut 0).unwrap().unwrap();
+            assert_eq!(value, record.staged_blocks[index].bytes);
+        })
+    }).collect();
+    for thread in threads { thread.join().unwrap(); }
+    let state = cache.state.lock().unwrap();
+    assert_eq!(state.entries.len(), 1);
+    assert!(state.bytes + state.entries.capacity() * std::mem::size_of::<Cached>() <= CACHE_BYTES);
 }
 
 #[test]

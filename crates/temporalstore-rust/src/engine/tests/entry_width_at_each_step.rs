@@ -477,7 +477,7 @@ fn the_width_of_the_entry_at_each_step_toward_the_target_shape() {
     // slack check in `blocks_per_bucket` had to be REPLACED rather than renumbered: it read
     // `rounded_tail - tail`, and once the tail reached zero both sides derived from the same term,
     // so round_up(0, 8) - 0 was 0 for every structure that could exist and it could not fail.
-    // Same shape on the page, opposite verdict -- the question is whether the two sides can move
+    // Same shape on the block, opposite verdict -- the question is whether the two sides can move
     // apart, not whether the number is small.
     //
     // WHAT THE ZERO MEANS: the entry is exactly its address. It had five bytes standing empty, so

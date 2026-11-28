@@ -4,6 +4,24 @@
 //! RaftCluster membership-change / joint-consensus / catch-up methods, split from raft.rs.
 use super::*;
 
+/// Test switch: copy the whole leader log in `catch_up` whatever the follower holds, which is
+/// what every call did before it copied only the missing tail. A guard that the cost no longer
+/// grows with the log needs the growing behaviour in the same harness to prove it can see it.
+#[cfg(test)]
+pub(super) static TEST_COPY_WHOLE_LOG: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+fn copy_whole_log() -> bool {
+    #[cfg(test)]
+    {
+        TEST_COPY_WHOLE_LOG.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    #[cfg(not(test))]
+    {
+        false
+    }
+}
+
 impl RaftCluster {
     pub fn add_node(&self, node_id: RaftNodeId) -> Result<(), RaftError> {
         self.add_node_with_role(node_id, RaftReplicaRole::Voter)
@@ -31,7 +49,7 @@ impl RaftCluster {
             leader.installed_snapshot.clone(),
             leader.log.clone(),
             leader.commit_index,
-        );
+        )?;
         inner.nodes.insert(node_id, node);
         match replica_role {
             RaftReplicaRole::Learner => {
@@ -315,8 +333,34 @@ impl RaftCluster {
             .nodes
             .get(&leader_id)
             .ok_or(RaftError::LeaderUnavailable)?;
-        let leader_log = leader.log.clone();
         let leader_commit_index = leader.commit_index;
+        // The follower's log is normally the leader's log up to its own last entry, so only what
+        // lies beyond that is copied: copying the whole log per follower per write made a write
+        // cost more the longer the log. It is the whole log whenever the two do not demonstrably
+        // agree (a different start, a last entry the leader does not hold, a longer log).
+        let node_ends = inner.nodes.get(&node_id).map(|node| {
+            (
+                node.log.first().map(|entry| entry.index),
+                node.log.last().map(|entry| (entry.index, entry.term)),
+            )
+        });
+        let agreed_at = match node_ends {
+            Some((first, Some((last_index, last_term))))
+                if !copy_whole_log() && first == leader.log.first().map(|entry| entry.index) =>
+            {
+                let at = leader.log.partition_point(|entry| entry.index < last_index);
+                leader
+                    .log
+                    .get(at)
+                    .filter(|entry| entry.index == last_index && entry.term == last_term)
+                    .map(|_| at)
+            }
+            _ => None,
+        };
+        let (whole_log, log_tail) = match agreed_at {
+            Some(at) => (None, leader.log[at + 1..].to_vec()),
+            None => (Some(leader.log.clone()), Vec::new()),
+        };
         // P6: in a deployed cluster each process owns ONE node, and the peers held here are
         // shadows -- the real followers catch up over AppendEntries in their own processes.
         // Applying into a shadow drives that node's engine WAL and costs a durability barrier
@@ -330,7 +374,10 @@ impl RaftCluster {
             .nodes
             .get_mut(&node_id)
             .ok_or(RaftError::NodeNotFound(node_id))?;
-        node.log = leader_log;
+        match whole_log {
+            Some(log) => node.log = log,
+            None => node.log.extend(log_tail),
+        }
         node.commit_index = leader_commit_index;
         if node.replica_role.can_serve_data() && !skip_shadow_apply {
             apply_committed(node);

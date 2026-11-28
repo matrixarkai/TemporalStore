@@ -106,7 +106,7 @@
 //! the question was worth asking. #2005's resurrection came from `fold_carried_container_elements`
 //! putting an element into the durable map that a later record's block removal then contradicted --
 //! an input BUILT during the load. #2017's comes from the PERSISTED map itself,
-//! `set_index_serde`'s `(member bytes, address)` pairs, being older than the page index it is merged
+//! `set_index_serde`'s `(member bytes, address)` pairs, being older than the block index it is merged
 //! with -- an input READ off disk. One is a fold ordering bug and it is fixed; the other is a
 //! snapshot-age property of the durable map and `fill_absent_elements` had no filter for it at all.
 //! `both_inputs_to_the_merge_now_answer_the_same_live_block_question` drives the two side by side.
@@ -285,13 +285,14 @@ fn exists(engine: &TemporalEngine, key: &str) -> i64 {
 
 /// The members `shard.bucket_index.sets` holds for one key, straight off the resident map.
 fn resident_members(engine: &TemporalEngine, key: &str) -> BTreeSet<Vec<u8>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    shard
-        .bucket_index.sets
-        .get(key)
-        .map(|members| members.keys().cloned().collect())
-        .unwrap_or_default()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        shard
+            .bucket_index.sets
+            .get(key)
+            .map(|members| members.keys().cloned().collect())
+            .unwrap_or_default()
+    })
 }
 
 /// The members the SERVING PATH answers for one set key -- the population a listing hands back.
@@ -607,13 +608,14 @@ fn build_divergence(
     // What `set_index_serde` would have serialized at this moment: the map as it stands, before any
     // removal. Captured off the live map, which is exactly what it serializes.
     let persisted_before_removal = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
-        shard
-            .bucket_index.sets
-            .get(key)
-            .expect("the seeded key is in the resident map")
-            .clone()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            shard
+                .bucket_index.sets
+                .get(key)
+                .expect("the seeded key is in the resident map")
+                .clone()
+        })
     };
     assert_eq!(
         population,
@@ -692,239 +694,240 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
     let control = build_divergence(&engine, "control", 4, 0);
 
     let (rows, emitted_set_entries) = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
 
-        // The load path's input: the durable map as an index snapshot predating the removals.
-        shard
-            .bucket_index.sets
-            .insert_elements_for_test(&ghost.key, ghost.persisted_before_removal.clone());
-        shard
-            .bucket_index.sets
-            .insert_elements_for_test(&control.key, control.persisted_before_removal.clone());
-
-        let live_blocks: usize = shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .map(|bucket| {
-                bucket
-                    .block_index
-                    .values()
-                    .filter(|block| !block.deleted())
-                    .count()
-            })
-            .sum();
-        assert!(
-            live_blocks >= 6,
-            "DENOMINATOR: {live_blocks} live block(s), so the derived view is too thin for the merge \
-             below to be doing anything"
-        );
-
-        crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
-            &engine.block_store,
-            shard,
-            None,
-        );
-
-        let mut rows: Vec<(&str, BTreeSet<Vec<u8>>)> = Vec::new();
-        for divergence in [&ghost, &control] {
-            let in_map = shard
+            // The load path's input: the durable map as an index snapshot predating the removals.
+            shard
                 .bucket_index.sets
-                .get(&divergence.key)
-                .map(|members| members.keys().cloned().collect::<BTreeSet<_>>())
-                .unwrap_or_default();
-            rows.push((
-                if divergence.key == "ghost" {
-                    "ghost"
-                } else {
-                    "control"
-                },
-                in_map,
-            ));
-        }
+                .insert_elements_for_test(&ghost.key, ghost.persisted_before_removal.clone());
+            shard
+                .bucket_index.sets
+                .insert_elements_for_test(&control.key, control.persisted_before_removal.clone());
 
-        // -----------------------------------------------------------------------------------------
-        // READER 1: record_exists_exact -- KEY granularity, so an extra MEMBER cannot move it.
-        // -----------------------------------------------------------------------------------------
-        assert!(
-            crate::engine::record_exists_exact(shard, "ghost"),
-            "the ghost key has a live member and a live block, so EXISTS must be true here -- if \
-             this fails the fixture is not the over-complete state this module is about"
-        );
-        println!(
-            "  reader record_exists_exact       LATENT: key granularity \
-             (`shard.bucket_index.sets.contains_key`), the key is in both populations"
-        );
-
-        // -----------------------------------------------------------------------------------------
-        // READER 2: visit_model_live_blocks -- walks the map and re-renders the element name.
-        // -----------------------------------------------------------------------------------------
-        let emitted_set_entries =
-            crate::engine::storage_bucket_internals::collect_model_live_block_entries(shard)
-                .into_iter()
-                .filter(|entry| entry.kind.as_str() == "set" && &*entry.object_key == "ghost")
-                .count();
-        println!(
-            "  reader visit_model_live_blocks   emitted {emitted_set_entries} live set entr(ies) \
-             for `ghost`"
-        );
-
-        // -----------------------------------------------------------------------------------------
-        // READER 3: collect_live_block_slab_ids -- walks the model maps directly.
-        // -----------------------------------------------------------------------------------------
-        crate::snapshot_probe::reset();
-        let _ = crate::engine::collect_live_block_slab_ids(shard);
-        let map_walk_addresses = crate::snapshot_probe::counts().live_slab_scan_addresses;
-        println!(
-            "  reader collect_live_block_slab_ids visited {map_walk_addresses} model-map \
-             address(es) over {live_blocks} live block(s)"
-        );
-
-        // -----------------------------------------------------------------------------------------
-        // READER 4: compact_shard_blocks_relocating -- it relocates WHAT THE MODEL MAPS NAME.
-        //
-        // Its relocation loop is `for (key, members) in shard.bucket_index.sets.iter_mut()` (and one arm per
-        // other model), handing each address to `compact_block_addresses` to be read off the old
-        // slab, appended to the fresh one and rewritten IN PLACE. The preamble's
-        // `collect_live_block_entries` reports are a different walk and do not bound it. So the map
-        // IS compaction's work list, and a member whose block is gone is a block compaction reads,
-        // copies onto every new slab it rolls, and keeps alive for good.
-        //
-        // THE PROPERTY THAT MAKES THAT SAFE IS THE ONE ASSERTED BELOW: every address the resident
-        // maps name is a live block in the index. It holds even though the merge resurrects, because
-        // what the merge keeps is precisely the elements whose BLOCKS are still live -- so the
-        // resurrection costs a wrong answer only to a reader that trusts the map for MEMBERSHIP,
-        // never a relocation of a block that is not there. Checked over all five element-bearing
-        // models, not just the set arm, because the relocation loop has an arm for each.
-        // -----------------------------------------------------------------------------------------
-        let live_addresses: BTreeSet<(u64, u64, u64)> = shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .flat_map(|bucket| bucket.block_index.values())
-            .filter(|block| !block.deleted())
-            .map(|block| {
-                (
-                    block.address.block_slab_id(),
-                    block.address.offset(),
-                    block.address.length(),
-                )
-            })
-            .collect();
-        let mut named_by_map = 0usize;
-        let mut named_but_not_live: Vec<String> = Vec::new();
-        {
-            let mut check = |model: &str, key: &str, address: &ElementEntry| {
-                named_by_map += 1;
-                let identity = (
-                    address.block_slab_id(),
-                    address.offset(),
-                    address.length(),
-                );
-                if !live_addresses.contains(&identity) {
-                    named_but_not_live.push(format!("{model}/{key}"));
-                }
-            };
-            for (key, slot) in shard.strings() {
-                check("string", key, &slot.address());
-            }
-            for (key, fields) in &shard.bucket_index.hashes {
-                for address in fields.values() {
-                    check("hash", key, address);
-                }
-            }
-            for (key, members) in &shard.bucket_index.sets {
-                for address in members.values() {
-                    check("set", key, address);
-                }
-            }
-            for (key, elements) in &shard.bucket_index.lists {
-                for address in elements.values() {
-                    check("list", key, address);
-                }
-            }
-            for (key, members) in &shard.bucket_index.zsets {
-                for (_, address) in members.values() {
-                    check("zset", key, address);
-                }
-            }
-        }
-        println!(
-            "  reader compact_shard_blocks_relocating relocates from the model maps: \
-             {named_by_map} address(es) named, {} naming no live block",
-            named_but_not_live.len()
-        );
-        // DENOMINATOR, RE-ATTRIBUTED TO THE FIXTURE THAT OWNS IT. This read 6 on the arithmetic "8
-        // written, 2 removed"; the merge restores the 2 now, so the maps name all 8. It is written
-        // as the two populations the fixture built rather than as a literal, because a floor below
-        // it would let a fixture that wrote nothing pass and a literal goes stale with the fixture.
-        let written_population = ghost.members.len() + control.members.len();
-        assert_eq!(
-            written_population, named_by_map,
-            "DENOMINATOR: the resident maps name {named_by_map} address(es), not the \
-             {written_population} this fixture wrote. The merge keeps every persisted element whose \
-             block is still live, and one entry a block keeps all of them live, so nothing is dropped"
-        );
-        assert!(
-            named_but_not_live.is_empty(),
-            "the resident maps name {} address(es) that are not live blocks in the index ({:?}). \
-             `compact_shard_blocks_relocating` iterates those maps to build its relocation work \
-             list, so each of these is a block compaction reads off the old slab, copies onto the \
-             fresh one and keeps alive for good",
-            named_but_not_live.len(),
-            named_but_not_live
-        );
-
-        // -----------------------------------------------------------------------------------------
-        // READER 5: collect_upsert_index_items -- would resolve a ghost, and nothing asks it to.
-        // -----------------------------------------------------------------------------------------
-        // Nothing asks: every arm of `command_upsert_element_names` is an ADD/SET. A removal's
-        // element name goes down `collect_command_index_items_for` instead.
-        for removal in [
-            Command::SetRemove {
-                key: "ghost".to_string(),
-                member: ghost.removed[0].clone(),
-            },
-            Command::ZSetRemove {
-                key: "ghost-z".to_string(),
-                member: b"m".to_vec(),
-            },
-            Command::ListPop {
-                key: "ghost-l".to_string(),
-                left: true,
-            },
-            Command::HashDelete {
-                key: "ghost-h".to_string(),
-                field: "f".to_string(),
-            },
-        ] {
+            let live_blocks: usize = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|bucket| {
+                    bucket
+                        .block_index
+                        .values()
+                        .filter(|block| !block.deleted())
+                        .count()
+                })
+                .sum();
             assert!(
-                crate::engine::command_upsert_element_names(&removal, shard).is_none(),
-                "`command_upsert_element_names` now names an element name for a REMOVAL. \
-                 `collect_upsert_index_items` resolves that element name's address out of the resident \
-                 map, so a removal reaching it would build a WAL index item pinning a block the \
-                 removal dropped -- and a replay would re-install it"
+                live_blocks >= 6,
+                "DENOMINATOR: {live_blocks} live block(s), so the derived view is too thin for the merge \
+                 below to be doing anything"
             );
-        }
-        // Asked outright, it does resolve one: the mechanism is live, only unreached. Driven with
-        // the ADD command's own element name spelling, so this is the item a reachable caller would get.
-        let ghost_element_name = hex::encode(&ghost.removed[0]);
-        let items_for_a_ghost = crate::engine::collect_upsert_index_items(
-            shard,
-            1,
-            &[("set", "ghost".to_string(), Some(ghost_element_name.clone()))],
-            0,
-            1023,
-        );
-        println!(
-            "  reader collect_upsert_index_items LATENT: no removal reaches it (4 removal commands \
-             answer None from `command_upsert_element_names`); asked outright with the ghost's \
-             element name it builds {} item(s)",
-            items_for_a_ghost.len()
-        );
 
-        (rows, emitted_set_entries)
+            crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
+                &engine.block_store,
+                shard,
+                None,
+            );
+
+            let mut rows: Vec<(&str, BTreeSet<Vec<u8>>)> = Vec::new();
+            for divergence in [&ghost, &control] {
+                let in_map = shard
+                    .bucket_index.sets
+                    .get(&divergence.key)
+                    .map(|members| members.keys().cloned().collect::<BTreeSet<_>>())
+                    .unwrap_or_default();
+                rows.push((
+                    if divergence.key == "ghost" {
+                        "ghost"
+                    } else {
+                        "control"
+                    },
+                    in_map,
+                ));
+            }
+
+            // -----------------------------------------------------------------------------------------
+            // READER 1: record_exists_exact -- KEY granularity, so an extra MEMBER cannot move it.
+            // -----------------------------------------------------------------------------------------
+            assert!(
+                crate::engine::record_exists_exact(shard, "ghost"),
+                "the ghost key has a live member and a live block, so EXISTS must be true here -- if \
+                 this fails the fixture is not the over-complete state this module is about"
+            );
+            println!(
+                "  reader record_exists_exact       LATENT: key granularity \
+                 (`shard.bucket_index.sets.contains_key`), the key is in both populations"
+            );
+
+            // -----------------------------------------------------------------------------------------
+            // READER 2: visit_model_live_blocks -- walks the map and re-renders the element name.
+            // -----------------------------------------------------------------------------------------
+            let emitted_set_entries =
+                crate::engine::storage_bucket_internals::collect_model_live_block_entries(shard)
+                    .into_iter()
+                    .filter(|entry| entry.kind.as_str() == "set" && &*entry.object_key == "ghost")
+                    .count();
+            println!(
+                "  reader visit_model_live_blocks   emitted {emitted_set_entries} live set entr(ies) \
+                 for `ghost`"
+            );
+
+            // -----------------------------------------------------------------------------------------
+            // READER 3: collect_live_block_slab_ids -- walks the model maps directly.
+            // -----------------------------------------------------------------------------------------
+            crate::snapshot_probe::reset();
+            let _ = crate::engine::collect_live_block_slab_ids(shard);
+            let map_walk_addresses = crate::snapshot_probe::counts().live_slab_scan_addresses;
+            println!(
+                "  reader collect_live_block_slab_ids visited {map_walk_addresses} model-map \
+                 address(es) over {live_blocks} live block(s)"
+            );
+
+            // -----------------------------------------------------------------------------------------
+            // READER 4: compact_shard_blocks_relocating -- it relocates WHAT THE MODEL MAPS NAME.
+            //
+            // Its relocation loop is `for (key, members) in shard.bucket_index.sets.iter_mut()` (and one arm per
+            // other model), handing each address to `compact_block_addresses` to be read off the old
+            // slab, appended to the fresh one and rewritten IN PLACE. The preamble's
+            // `collect_live_block_entries` reports are a different walk and do not bound it. So the map
+            // IS compaction's work list, and a member whose block is gone is a block compaction reads,
+            // copies onto every new slab it rolls, and keeps alive for good.
+            //
+            // THE PROPERTY THAT MAKES THAT SAFE IS THE ONE ASSERTED BELOW: every address the resident
+            // maps name is a live block in the index. It holds even though the merge resurrects, because
+            // what the merge keeps is precisely the elements whose BLOCKS are still live -- so the
+            // resurrection costs a wrong answer only to a reader that trusts the map for MEMBERSHIP,
+            // never a relocation of a block that is not there. Checked over all five element-bearing
+            // models, not just the set arm, because the relocation loop has an arm for each.
+            // -----------------------------------------------------------------------------------------
+            let live_addresses: BTreeSet<(u64, u64, u64)> = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .flat_map(|bucket| bucket.block_index.values())
+                .filter(|block| !block.deleted())
+                .map(|block| {
+                    (
+                        block.address.block_slab_id(),
+                        block.address.offset(),
+                        block.address.length(),
+                    )
+                })
+                .collect();
+            let mut named_by_map = 0usize;
+            let mut named_but_not_live: Vec<String> = Vec::new();
+            {
+                let mut check = |model: &str, key: &str, address: &ElementEntry| {
+                    named_by_map += 1;
+                    let identity = (
+                        address.block_slab_id(),
+                        address.offset(),
+                        address.length(),
+                    );
+                    if !live_addresses.contains(&identity) {
+                        named_but_not_live.push(format!("{model}/{key}"));
+                    }
+                };
+                for (key, slot) in shard.strings() {
+                    check("string", key, &slot.address());
+                }
+                for (key, fields) in &shard.bucket_index.hashes {
+                    for address in fields.values() {
+                        check("hash", key, address);
+                    }
+                }
+                for (key, members) in &shard.bucket_index.sets {
+                    for address in members.values() {
+                        check("set", key, address);
+                    }
+                }
+                for (key, elements) in &shard.bucket_index.lists {
+                    for address in elements.values() {
+                        check("list", key, address);
+                    }
+                }
+                for (key, members) in &shard.bucket_index.zsets {
+                    for (_, address) in members.values() {
+                        check("zset", key, address);
+                    }
+                }
+            }
+            println!(
+                "  reader compact_shard_blocks_relocating relocates from the model maps: \
+                 {named_by_map} address(es) named, {} naming no live block",
+                named_but_not_live.len()
+            );
+            // DENOMINATOR, RE-ATTRIBUTED TO THE FIXTURE THAT OWNS IT. This read 6 on the arithmetic "8
+            // written, 2 removed"; the merge restores the 2 now, so the maps name all 8. It is written
+            // as the two populations the fixture built rather than as a literal, because a floor below
+            // it would let a fixture that wrote nothing pass and a literal goes stale with the fixture.
+            let written_population = ghost.members.len() + control.members.len();
+            assert_eq!(
+                written_population, named_by_map,
+                "DENOMINATOR: the resident maps name {named_by_map} address(es), not the \
+                 {written_population} this fixture wrote. The merge keeps every persisted element whose \
+                 block is still live, and one entry a block keeps all of them live, so nothing is dropped"
+            );
+            assert!(
+                named_but_not_live.is_empty(),
+                "the resident maps name {} address(es) that are not live blocks in the index ({:?}). \
+                 `compact_shard_blocks_relocating` iterates those maps to build its relocation work \
+                 list, so each of these is a block compaction reads off the old slab, copies onto the \
+                 fresh one and keeps alive for good",
+                named_but_not_live.len(),
+                named_but_not_live
+            );
+
+            // -----------------------------------------------------------------------------------------
+            // READER 5: collect_upsert_index_items -- would resolve a ghost, and nothing asks it to.
+            // -----------------------------------------------------------------------------------------
+            // Nothing asks: every arm of `command_upsert_element_names` is an ADD/SET. A removal's
+            // element name goes down `collect_command_index_items_for` instead.
+            for removal in [
+                Command::SetRemove {
+                    key: "ghost".to_string(),
+                    member: ghost.removed[0].clone(),
+                },
+                Command::ZSetRemove {
+                    key: "ghost-z".to_string(),
+                    member: b"m".to_vec(),
+                },
+                Command::ListPop {
+                    key: "ghost-l".to_string(),
+                    left: true,
+                },
+                Command::HashDelete {
+                    key: "ghost-h".to_string(),
+                    field: "f".to_string(),
+                },
+            ] {
+                assert!(
+                    crate::engine::command_upsert_element_names(&removal, shard).is_none(),
+                    "`command_upsert_element_names` now names an element name for a REMOVAL. \
+                     `collect_upsert_index_items` resolves that element name's address out of the resident \
+                     map, so a removal reaching it would build a WAL index item pinning a block the \
+                     removal dropped -- and a replay would re-install it"
+                );
+            }
+            // Asked outright, it does resolve one: the mechanism is live, only unreached. Driven with
+            // the ADD command's own element name spelling, so this is the item a reachable caller would get.
+            let ghost_element_name = hex::encode(&ghost.removed[0]);
+            let items_for_a_ghost = crate::engine::collect_upsert_index_items(
+                shard,
+                1,
+                &[("set", "ghost".to_string(), Some(ghost_element_name.clone()))],
+                0,
+                1023,
+            );
+            println!(
+                "  reader collect_upsert_index_items LATENT: no removal reaches it (4 removal commands \
+                 answer None from `command_upsert_element_names`); asked outright with the ghost's \
+                 element name it builds {} item(s)",
+                items_for_a_ghost.len()
+            );
+
+            (rows, emitted_set_entries)
+        })
     };
 
     // ---------------------------------------------------------------------------------------------
@@ -1086,127 +1089,128 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
         },
     );
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
 
-    // A block address that is in NO bucket: an offset far past anything this fixture wrote, on a
-    // slab id nothing uses. This is the shape of a persisted entry whose block has been removed.
-    let live_control_address = shard
-        .bucket_index.sets
-        .get("s")
-        .and_then(|members| members.values().next())
-        .cloned()
-        .expect("the control set member is in the resident map");
-    // A block address in NO bucket, built off a real one so every field is in range by construction
-    // (`try_from_parts` refuses an out-of-range slab or offset, and a refusal here would read as a
-    // test bug rather than as the state being modelled). Only the slab id moves, far past anything
-    // this fixture rolled: this is the shape of a persisted entry whose block has been removed.
-    let dead_address = ElementEntry::try_from_parts(
-        live_control_address.block_slab_id().saturating_add(4_096),
-        live_control_address.offset(),
-        live_control_address.length(),
-        None,
-        None,
-    )
-    .expect("the fabricated address is in range");
-    assert!(
-        !shard.bucket_index.bucket_map.values().any(|bucket| bucket
-            .block_index
-            .values()
-            .any(|block| !block.deleted()
-                && block.address.block_slab_id() == dead_address.block_slab_id()
-                && block.address.offset() == dead_address.offset())),
-        "the fabricated address matches a live block, so the subjects below would be kept for the \
-         honest reason"
-    );
+        // A block address that is in NO bucket: an offset far past anything this fixture wrote, on a
+        // slab id nothing uses. This is the shape of a persisted entry whose block has been removed.
+        let live_control_address = shard
+            .bucket_index.sets
+            .get("s")
+            .and_then(|members| members.values().next())
+            .cloned()
+            .expect("the control set member is in the resident map");
+        // A block address in NO bucket, built off a real one so every field is in range by construction
+        // (`try_from_parts` refuses an out-of-range slab or offset, and a refusal here would read as a
+        // test bug rather than as the state being modelled). Only the slab id moves, far past anything
+        // this fixture rolled: this is the shape of a persisted entry whose block has been removed.
+        let dead_address = ElementEntry::try_from_parts(
+            live_control_address.block_slab_id().saturating_add(4_096),
+            live_control_address.offset(),
+            live_control_address.length(),
+            None,
+            None,
+        )
+        .expect("the fabricated address is in range");
+        assert!(
+            !shard.bucket_index.bucket_map.values().any(|bucket| bucket
+                .block_index
+                .values()
+                .any(|block| !block.deleted()
+                    && block.address.block_slab_id() == dead_address.block_slab_id()
+                    && block.address.offset() == dead_address.offset())),
+            "the fabricated address matches a live block, so the subjects below would be kept for the \
+             honest reason"
+        );
 
-    // The stale-snapshot entries: one subject per merged kind, beside each kind's real element.
-    shard
-        .bucket_index.sets
-        .elements_mut_for_test("s")
-        .expect("set key")
-        .insert(b"set-subject".to_vec(), dead_address.clone());
-    shard
-        .bucket_index.zsets
-        .elements_mut_for_test("z")
-        .expect("zset key")
-        .insert(b"zset-subject".to_vec(), (9, dead_address.clone()));
-    shard
-        .bucket_index.lists
-        .elements_mut_for_test("l")
-        .expect("list key")
-        .insert(i64::MAX - 3, dead_address.clone());
+        // The stale-snapshot entries: one subject per merged kind, beside each kind's real element.
+        shard
+            .bucket_index.sets
+            .elements_mut_for_test("s")
+            .expect("set key")
+            .insert(b"set-subject".to_vec(), dead_address.clone());
+        shard
+            .bucket_index.zsets
+            .elements_mut_for_test("z")
+            .expect("zset key")
+            .insert(b"zset-subject".to_vec(), (9, dead_address.clone()));
+        shard
+            .bucket_index.lists
+            .elements_mut_for_test("l")
+            .expect("list key")
+            .insert(i64::MAX - 3, dead_address.clone());
 
-    crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
-        &engine.block_store,
-        shard,
-        None,
-    );
+        crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
+            &engine.block_store,
+            shard,
+            None,
+        );
 
-    let set_members: BTreeSet<Vec<u8>> = shard
-        .bucket_index.sets
-        .get("s")
-        .map(|members| members.keys().cloned().collect())
-        .unwrap_or_default();
-    let zset_members: BTreeSet<Vec<u8>> = shard
-        .bucket_index.zsets
-        .get("z")
-        .map(|members| members.keys().cloned().collect())
-        .unwrap_or_default();
-    let list_seqs: BTreeSet<i64> = shard
-        .bucket_index.lists
-        .get("l")
-        .map(|entries| entries.keys().copied().collect())
-        .unwrap_or_default();
+        let set_members: BTreeSet<Vec<u8>> = shard
+            .bucket_index.sets
+            .get("s")
+            .map(|members| members.keys().cloned().collect())
+            .unwrap_or_default();
+        let zset_members: BTreeSet<Vec<u8>> = shard
+            .bucket_index.zsets
+            .get("z")
+            .map(|members| members.keys().cloned().collect())
+            .unwrap_or_default();
+        let list_seqs: BTreeSet<i64> = shard
+            .bucket_index.lists
+            .get("l")
+            .map(|entries| entries.keys().copied().collect())
+            .unwrap_or_default();
 
-    println!(
-        "\n=== a persisted entry naming a block that is gone ===\n  set   {:?}\n  zset  {:?}\n  \
-         list  {:?}",
-        set_members
-            .iter()
-            .map(|member| String::from_utf8_lossy(member).to_string())
-            .collect::<Vec<_>>(),
-        zset_members
-            .iter()
-            .map(|member| String::from_utf8_lossy(member).to_string())
-            .collect::<Vec<_>>(),
-        list_seqs
-    );
+        println!(
+            "\n=== a persisted entry naming a block that is gone ===\n  set   {:?}\n  zset  {:?}\n  \
+             list  {:?}",
+            set_members
+                .iter()
+                .map(|member| String::from_utf8_lossy(member).to_string())
+                .collect::<Vec<_>>(),
+            zset_members
+                .iter()
+                .map(|member| String::from_utf8_lossy(member).to_string())
+                .collect::<Vec<_>>(),
+            list_seqs
+        );
 
-    // THE CONTROLS, all three: an element whose block IS live survives the merge. This is #1989's
-    // rule and the filter must not touch it.
-    assert!(
-        set_members.contains(&b"set-control".to_vec()),
-        "the set control was dropped, so the filter is keeping nothing rather than keeping live \
-         blocks"
-    );
-    assert!(
-        zset_members.contains(&b"zset-control".to_vec()),
-        "the zset control was dropped"
-    );
-    assert_eq!(
-        1,
-        list_seqs
-            .iter()
-            .filter(|seq| **seq != i64::MAX - 3)
-            .count(),
-        "the list control was dropped"
-    );
+        // THE CONTROLS, all three: an element whose block IS live survives the merge. This is #1989's
+        // rule and the filter must not touch it.
+        assert!(
+            set_members.contains(&b"set-control".to_vec()),
+            "the set control was dropped, so the filter is keeping nothing rather than keeping live \
+             blocks"
+        );
+        assert!(
+            zset_members.contains(&b"zset-control".to_vec()),
+            "the zset control was dropped"
+        );
+        assert_eq!(
+            1,
+            list_seqs
+                .iter()
+                .filter(|seq| **seq != i64::MAX - 3)
+                .count(),
+            "the list control was dropped"
+        );
 
-    // THE SUBJECTS: an element whose block is gone is not resurrected.
-    assert!(
-        !set_members.contains(&b"set-subject".to_vec()),
-        "`fill_absent_elements` resurrected a set member whose block is in no bucket"
-    );
-    assert!(
-        !zset_members.contains(&b"zset-subject".to_vec()),
-        "`fill_absent_elements` resurrected a zset member whose block is in no bucket"
-    );
-    assert!(
-        !list_seqs.contains(&(i64::MAX - 3)),
-        "`fill_absent_elements` resurrected a list element whose block is in no bucket"
-    );
-    println!("  all three subjects dropped, all three controls kept");
+        // THE SUBJECTS: an element whose block is gone is not resurrected.
+        assert!(
+            !set_members.contains(&b"set-subject".to_vec()),
+            "`fill_absent_elements` resurrected a set member whose block is in no bucket"
+        );
+        assert!(
+            !zset_members.contains(&b"zset-subject".to_vec()),
+            "`fill_absent_elements` resurrected a zset member whose block is in no bucket"
+        );
+        assert!(
+            !list_seqs.contains(&(i64::MAX - 3)),
+            "`fill_absent_elements` resurrected a list element whose block is in no bucket"
+        );
+        println!("  all three subjects dropped, all three controls kept");
+    })
 }
 
 /// A BUCKET HOLDING A CONTAINER BLOCK IS NEVER RELEASED, WHICH IS WHAT KEEPS THE FILTER FROM LOSING
@@ -1279,39 +1283,40 @@ fn a_bucket_holding_a_container_block_is_never_released() {
     let _ = engine.dump_index_catalog(1);
 
     let (released_count, kind_refusals, set_blocks_still_indexed, set_bucket_released) = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        shard.dirty_objects.clear();
-        for bucket in shard.bucket_index.bucket_map.values_mut() {
-            bucket.set_dirty(false);
-            for block in bucket.block_index.blocks_mut_unaccounted() {
-                block.set_dirty(false);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            shard.dirty_objects.clear();
+            for bucket in shard.bucket_index.bucket_map.values_mut() {
+                bucket.set_dirty(false);
+                for block in bucket.block_index.blocks_mut_unaccounted() {
+                    block.set_dirty(false);
+                }
             }
-        }
-        crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags(shard);
-        // The bucket the set's blocks are filed in, before anything is released.
-        let (start, end) = shard.routing_range();
-        let set_bucket = crate::engine::block_routing_bucket("released", start, end);
-        let candidates: Vec<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
-        assert!(
-            !candidates.is_empty(),
-            "no bucket to release, so this fixture wrote nothing into the index"
-        );
-        let outcome =
-            crate::engine::storage_bucket_internals::release_bucket_blocks(shard, &candidates);
-        let set_blocks: usize = shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .flat_map(|bucket| bucket.block_index.values())
-            .filter(|block| !block.deleted() && block.model_id().as_str() == "set")
-            .count();
-        (
-            outcome.released_buckets.len(),
-            outcome.refusals.block_kind_not_addressable,
-            set_blocks,
-            shard.bucket_index.released_buckets.contains(&set_bucket),
-        )
+            crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags(shard);
+            // The bucket the set's blocks are filed in, before anything is released.
+            let (start, end) = shard.routing_range();
+            let set_bucket = crate::engine::block_routing_bucket("released", start, end);
+            let candidates: Vec<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
+            assert!(
+                !candidates.is_empty(),
+                "no bucket to release, so this fixture wrote nothing into the index"
+            );
+            let outcome =
+                crate::engine::storage_bucket_internals::release_bucket_blocks(shard, &candidates);
+            let set_blocks: usize = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .flat_map(|bucket| bucket.block_index.values())
+                .filter(|block| !block.deleted() && block.model_id().as_str() == "set")
+                .count();
+            (
+                outcome.released_buckets.len(),
+                outcome.refusals.block_kind_not_addressable,
+                set_blocks,
+                shard.bucket_index.released_buckets.contains(&set_bucket),
+            )
+        })
     };
 
     println!(
@@ -1350,13 +1355,14 @@ fn a_bucket_holding_a_container_block_is_never_released() {
 
     // Now the reconcile, on a shard whose block index is deliberately missing the released blocks.
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
-            &engine.block_store,
-            shard,
-            None,
-        );
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
+                &engine.block_store,
+                shard,
+                None,
+            );
+        })
     }
 
     let survived = resident_members(&engine, "released");
@@ -1450,9 +1456,10 @@ fn the_merge_runs_even_when_no_set_block_survived() {
             );
         }
         let persisted = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 is loaded");
-            shard.bucket_index.sets.get("s").expect("set key").clone()
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard 1 is loaded");
+                shard.bucket_index.sets.get("s").expect("set key").clone()
+            })
         };
         let removed_count = if keep_one_member { 2 } else { 3 };
         for member in members.iter().take(removed_count) {
@@ -1467,22 +1474,23 @@ fn the_merge_runs_even_when_no_set_block_survived() {
 
         // THE LOCK IS SCOPED so the serving path can be asked once the reconcile has run.
         let in_map = {
-            let mut shards = engine.shards.write().expect("engine lock poisoned");
-            let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-            shard.bucket_index.sets.insert_elements_for_test("s", persisted);
-            assert!(
-                !shard.bucket_index.bucket_map.is_empty(),
-                "{label}: the bucket index is empty, so the reconcile returns before any arm and \
-                 this says nothing about `saw_sets`"
-            );
+            engine.shards.with_state_mut(1, |state| {
+                let shard = state.expect("shard 1 is loaded");
+                shard.bucket_index.sets.insert_elements_for_test("s", persisted);
+                assert!(
+                    !shard.bucket_index.bucket_map.is_empty(),
+                    "{label}: the bucket index is empty, so the reconcile returns before any arm and \
+                     this says nothing about `saw_sets`"
+                );
 
-            crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
-                &engine.block_store,
-                shard,
-                None,
-            );
+                crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
+                    &engine.block_store,
+                    shard,
+                    None,
+                );
 
-            shard.bucket_index.sets.get("s").map_or(0, |members| members.len())
+                shard.bucket_index.sets.get("s").map_or(0, |members| members.len())
+            })
         };
 
         let served = served_members(&engine, "s").len();

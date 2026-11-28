@@ -499,28 +499,26 @@ fn read_via_server_raft(
     state: &ServerRaftState,
     command: Command,
 ) -> Result<CommandResponse, temporalstore_rust::RaftError> {
+    let (cluster, target_node_id) = read_target_for_server_raft(state)?;
+    cluster.read_from_replica(target_node_id, command)
+}
+
+fn read_target_for_server_raft(
+    state: &ServerRaftState,
+) -> Result<(RaftCluster, RaftNodeId), temporalstore_rust::RaftError> {
+    let cluster = state.runtime.cluster();
     let target_node_id = match state.read_policy.mode {
-        DataRaftReadMode::Leader | DataRaftReadMode::Linearizable => {
-            state.runtime.status().leader_id
-        }
+        DataRaftReadMode::Leader | DataRaftReadMode::Linearizable => cluster.leader_id(),
         DataRaftReadMode::BoundedStale | DataRaftReadMode::UnsafeAnyReplica => state.local_node_id,
     };
-    let cluster = state.runtime.cluster();
-    let read_index_response = cluster.check_data_raft_read_policy(target_node_id, state.read_policy)?;
-    // R3: the read-index round returns the frontier this read must observe, but the previous
-    // code discarded it and served immediately — so a replica that had COMMITTED but not yet
-    // APPLIED up to that index could answer with stale/half-applied state. Wait for the target
-    // to apply through the returned read_index before serving. Gated so default behavior is
-    // unchanged.
-    // R3: a replica can hold commit_index == leader_commit while its state machine has applied
-    // only a prefix of that. Wait for apply to reach the read index before serving, so the read
-    // never returns half-applied state as fresh.
+    let read_index = cluster.check_data_raft_read_policy(target_node_id, state.read_policy)?;
+    // A committed entry is not visible until the selected replica has applied it.
     cluster.wait_for_applied_index(
         target_node_id,
-        read_index_response.read_index,
+        read_index.read_index,
         state.read_policy.read_index_timeout_ms,
     )?;
-    cluster.read_from_replica(target_node_id, command)
+    Ok((cluster, target_node_id))
 }
 
 fn command_response(
@@ -553,6 +551,8 @@ fn is_raft_read_command(command: &Command) -> bool {
         Command::CommonTtl { .. }
             | Command::CommonExists { .. }
             | Command::StringGet { .. }
+            | Command::StringLen { .. }
+            | Command::StringGetRange { .. }
             | Command::HashGet { .. }
             | Command::HashMultiGet { .. }
             | Command::HashGetAll { .. }
@@ -569,9 +569,9 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::FeatureProtoAggQuery { .. }
             | Command::SequenceQuery { .. }
             | Command::SequenceBatchQuery { .. }
-            | Command::CellRankQuery { .. }
-            | Command::CellFanInRankQuery { .. }
-            | Command::CellRankBatchQuery { .. }
+            | Command::WindowReduceRank { .. }
+            | Command::WindowReduceFanInRank { .. }
+            | Command::WindowReduceRankBatch { .. }
             | Command::ControlStateCount { .. }
             | Command::ControlStateQuery { .. }
             | Command::ControlStateDetail { .. }

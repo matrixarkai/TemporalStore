@@ -24,6 +24,7 @@ enum Fault {
 #[derive(Default)]
 struct Observed {
     batches: AtomicUsize,
+    count_adjusts: AtomicUsize,
     ready_writes: AtomicUsize,
     engine: Option<Arc<crate::engine::TemporalEngine>>,
 }
@@ -161,6 +162,8 @@ fn fixture(
                     return json_response(200,&result);
                 }
                 let ordinal = seen.batches.fetch_add(1,Ordering::Relaxed)+1;
+                seen.count_adjusts.fetch_add(batch.commands.iter().filter(|command|
+                    matches!(command, Command::ZSetCountAdjust { .. })).count(), Ordering::Relaxed);
                 if matches!(fault, Fault::DeleteNoop)
                     && batch.commands.iter().all(|command| matches!(command,
                         Command::HashDelete { key, .. } if key == &memory_catalog_key(tenant))) {
@@ -348,6 +351,8 @@ fn batch_delete_pages_share_mutation_calls_and_keep_unrelated_records() {
         assert_eq!(body["deleted"], count, "{body}");
         assert!(body["failed"].as_array().unwrap().is_empty(), "{body}");
         assert_eq!(seen.batches.load(Ordering::Relaxed), 2 * count.div_ceil(MEMORY_UPDATE_PAGE_SIZE));
+        assert_eq!(seen.count_adjusts.load(Ordering::Relaxed), 2 * count.div_ceil(MEMORY_UPDATE_PAGE_SIZE),
+            "each page updates the total and shared user counters once");
         assert!(proxy.memory_read_many_checked(tenant, &ids).unwrap().iter().all(Option::is_none));
         let bob = format!("{tenant:016x}-0000000000000002");
         assert!(proxy.memory_read_one_checked(tenant, &bob).unwrap().is_some());
@@ -361,6 +366,126 @@ fn batch_delete_pages_share_mutation_calls_and_keep_unrelated_records() {
         let (status, history) = call(&proxy, "GET", format!("/memories/{id}/history"), json!({}));
         assert_eq!(status, 200);
         assert_eq!(history["results"][0]["event"], "DELETE");
+    }
+}
+
+#[test]
+fn delete_cleanup_coalesces_shared_counts_and_keeps_each_history() {
+    let record = |ordinal, user: &str, agent: &str, run: &str| {
+        let id = format!("{:016x}-{ordinal:016x}", 42);
+        MemoryRecord {
+            context_ref: id.clone(),
+            id,
+            memory: "retained memory".into(),
+            metadata: Value::Null,
+            tenant_id: "tenant".into(),
+            account_id: "account".into(),
+            user_id: user.into(),
+            agent_id: agent.into(),
+            run_id: run.into(),
+            created_at_ms: 1,
+            updated_at_ms: 1,
+        }
+    };
+    let records = vec![
+        record(1, "alice", "shared", "s1"),
+        record(2, "alice", "shared", "s2"),
+        record(3, "bob", "shared", "s1"),
+        record(4, "", "", ""),
+    ];
+    let commands = memory_delete_cleanup_commands(42, &records, 123);
+    let mut counts = BTreeMap::new();
+    let mut histories = HashSet::new();
+    for command in &commands {
+        match command {
+            Command::ZSetCountAdjust {
+                key,
+                member,
+                increment,
+            } => {
+                assert_eq!(key, &memory_identity_key(42));
+                assert!(counts.insert(member.clone(), *increment).is_none());
+            }
+            Command::HashSet { key, value, .. } => {
+                let entry = LlmMemoryHistoryRecord::decode(value.as_slice()).unwrap();
+                assert_eq!(entry.event, "DELETE");
+                assert_eq!(entry.at_ms, 123);
+                assert_eq!(key, &memory_history_key(42, &entry.id));
+                assert!(histories.insert(entry.id));
+            }
+            _ => {}
+        }
+    }
+    assert_eq!(
+        counts,
+        BTreeMap::from([
+            (MEMORY_TOTAL_MEMBER.to_vec(), -4),
+            (b"ualice".to_vec(), -2),
+            (b"ubob".to_vec(), -1),
+            (b"ashared".to_vec(), -3),
+            (b"rs1".to_vec(), -2),
+            (b"rs2".to_vec(), -1),
+        ])
+    );
+    assert_eq!(commands.len(), records.len() * 3 + counts.len());
+    assert_eq!(
+        histories,
+        records.iter().map(|record| record.id.clone()).collect()
+    );
+    assert!(memory_delete_cleanup_commands(42, &[], 123).is_empty());
+
+    let dir = tempfile::tempdir().unwrap();
+    let open = |cache: &str| crate::engine::TemporalEngine::with_local_dirs(
+        16 << 20, dir.path().join(cache), dir.path().join("blocks"), dir.path().join("index"));
+    let engine = open("cache");
+    engine.load_shard(1);
+    engine.load_shard(2);
+    let score = |engine: &crate::engine::TemporalEngine, shard_id, member: &Vec<u8>| {
+        let response = engine.execute(ExecuteRequest { shard_id, command: Command::ZSetScore {
+            key: memory_identity_key(42), member: member.clone(),
+        }});
+        assert!(response.status.ok, "{:?}", response.status);
+        let CommandResponse::Bytes { value } = response.response else { panic!("score bytes expected") };
+        value
+    };
+    let mut expected = BTreeMap::new();
+    for initial in [0, 1, 10] {
+        for shard_id in [1, 2] {
+            let result = engine.batch_execute(BatchExecuteRequest { shard_id,
+                commands: counts.keys().filter(|member| member.as_slice() != b"ubob")
+                    .map(|member| Command::ZSetAdd {
+                        key: memory_identity_key(42), member: member.clone(), score: initial as f64,
+                    }).collect(),
+            });
+            assert!(result.status.ok && result.responses.iter().all(|row| row.status.ok));
+        }
+        let legacy = records.iter().flat_map(|record| {
+            std::iter::once(MEMORY_TOTAL_MEMBER.to_vec()).chain(memory_identity_members(record))
+                .map(|member| Command::ZSetCountAdjust {
+                    key: memory_identity_key(42), member, increment: -1,
+                })
+        }).collect();
+        for (shard_id, commands) in [(1, commands.clone()), (2, legacy)] {
+            let response = engine.batch_execute(BatchExecuteRequest { shard_id, commands });
+            assert!(response.status.ok && response.responses.iter().all(|row| row.status.ok));
+        }
+        for (member, decrement) in &counts {
+            let actual = score(&engine, 1, member);
+            assert_eq!(actual, score(&engine, 2, member), "initial={initial} member={member:?}");
+            let numeric = actual.as_ref().map_or(0, |bytes|
+                std::str::from_utf8(bytes).unwrap().parse::<i64>().unwrap());
+            let seeded = if member.as_slice() == b"ubob" { 0 } else { initial };
+            assert_eq!(numeric, (seeded + decrement).max(0));
+            expected.insert(member.clone(), actual);
+        }
+    }
+    drop(engine);
+    let recovered = open("cold-cache");
+    recovered.load_shard(1);
+    recovered.load_shard(2);
+    for (member, expected) in expected {
+        assert_eq!(score(&recovered, 1, &member), expected);
+        assert_eq!(score(&recovered, 2, &member), expected);
     }
 }
 

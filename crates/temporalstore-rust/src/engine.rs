@@ -17,6 +17,7 @@ pub mod golden;
 pub mod reports;
 
 mod admin_report;
+mod base_checkpoint_anchor;
 #[path = "engine/engine_constants.rs"]
 pub(crate) mod constants;
 mod container_membership;
@@ -33,6 +34,7 @@ mod product_model;
 mod cell_merge_append;
 // The per-key retry ring of a merge-reduce append.
 mod cell_retry_ring;
+mod sample_tail;
 mod window;
 mod window_aggregate;
 mod window_reduce_rank;
@@ -77,7 +79,10 @@ mod wal_application;
 mod maintenance_log;
 #[path = "engine/portable_checkpoint.rs"]
 mod portable_checkpoint;
+pub(crate) use portable_checkpoint::{translate_portable_checkpoint_index, PortableCheckpointImage};
+pub(crate) use packed_blocks::decode_feature_block as decode_shared_wal_packed_block;
 mod storage_lifecycle_methods;
+pub(crate) use storage_lifecycle_methods::dump_gate_delays;
 pub use storage_lifecycle_methods::{
     eviction_sampler_buckets_scanned, reset_eviction_sampler_buckets_scanned,
     reset_storage_plan_build_counts, storage_plan_build_counts,
@@ -88,6 +93,7 @@ mod storage_reports;
 mod prometheus_metrics;
 mod stream_batch_methods;
 mod recovery_sweep_compact;
+mod bucket_owners;
 #[path = "engine/engine_persistence.rs"]
 mod persistence;
 pub(crate) mod bucket_dump_codec;
@@ -98,19 +104,44 @@ pub use self::sequence_row_value::sequence_rows_unreadable;
 mod bucket_dump_io;
 pub use self::bucket_dump_io::{
     bucket_dump_manifest_io_counts, bucket_dump_manifest_listing_sites,
-    bucket_dump_manifest_memo_len, manifest_digest_memo_counts,
-    reset_bucket_dump_manifest_io_counts, reset_manifest_digest_memo_counts,
+    bucket_dump_manifest_memo_len, manifest_digest_memo_counts, reset_retained_ids_memo_counts,
+    retained_ids_memo_counts, reset_bucket_dump_manifest_io_counts,
+    reset_manifest_digest_memo_counts,
     BucketDumpManifestIoCounts,
 };
 mod command_validation;
 pub mod resource_blobs;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_FAST_READ_OWNER: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
+}
 #[path = "engine/engine_quota.rs"]
 pub mod quota;
 pub(crate) mod eviction_sampler;
+/// How many times this thread read the shard info row for a routing range, so a test can say that a
+/// loop over many keys read it once and not once per key.
+#[cfg(test)]
+pub(crate) mod routing_range_reads {
+    use std::cell::Cell;
+    thread_local! {
+        static READS: Cell<u64> = const { Cell::new(0) };
+    }
+    pub(crate) fn bump() {
+        READS.with(|reads| reads.set(reads.get() + 1));
+    }
+    pub(crate) fn count() -> u64 {
+        READS.with(Cell::get)
+    }
+}
 // Single source of truth for write-command classification (shared with the data_node layer,
 // which previously kept a drifted subset that mis-classified context/control-state writes
 // as reads -> lifecycle-write-barrier bypass + missing dump scheduling).
 pub(crate) use command_validation::{command_object_keys, is_write_command};
+pub(crate) use recovery_sweep_compact::{SliceProgress, COMPACTION_SLICE_KEYS};
+#[cfg(test)]
+pub(crate) use recovery_sweep_compact::set_slice_boundary_for_test;
 #[cfg(test)]
 pub(crate) use storage_bucket_internals::uncovered_maintenance;
 mod storage_bucket_internals;
@@ -124,6 +155,8 @@ pub use storage_bucket_internals::{
     reset_stage_walk_charges, take_stage_walk_charges,
     BLOCK_SLAB_LIVE_DRIFTS, BLOCK_SLAB_LIVE_RECONCILES,
 };
+#[cfg(test)]
+pub use storage_bucket_internals::{live_block_walk_times_snapshot, set_walk_timing};
 pub use storage_reports::{
     reset_storage_cache_inspection_listings, storage_cache_inspection_listing_entries,
     storage_cache_inspection_listings,
@@ -135,6 +168,9 @@ pub use shard_write_guard::{
     reset_index_encode_counts, reset_maintenance_mirror_sink_lookups,
     reset_maintenance_block_read_counts, IndexEncodeCounts, MaintenanceBlockReadCounts,
 };
+#[path = "engine/shard_guard.rs"]
+pub mod shard_guard;
+mod shard_state_registry;
 #[path = "engine/engine_compaction.rs"]
 mod compaction;
 // The maintenance round in `data_node` asks this before compacting; see the function's doc.
@@ -152,6 +188,8 @@ mod hll;
 mod block_in_wal;
 pub(crate) use block_in_wal::clear_store_registrations;
 mod checkpoint_publication;
+mod retention_registry;
+pub use retention_registry::ReplayReaderLease;
 #[cfg(test)]
 mod replay_scratch;
 #[cfg(test)]
@@ -202,7 +240,7 @@ use self::bucket_dump_io::*;
 use self::control_state_block::*;
 use self::sequence_row_value::*;
 use self::bucket_dump_codec::*;
-use self::bucket_store::{read_bucket_index_value, bucket_index_element_name_block_addresses};
+use self::bucket_store::{read_bucket_index_value, read_bucket_index_value_shared, bucket_index_element_name_block_addresses};
 use self::state::*;
 use crate::block_store::BlockAppendRecord;
 // FOR `set` ON A SLOT. A migrated series map's writer records a point through the write
@@ -245,13 +283,14 @@ use crate::engine::timestamped_series::TimestampedSeries as _;
 
 #[derive(Debug, Clone)]
 pub struct TemporalEngine {
-    shards: Arc<RwLock<HashMap<ShardId, ShardState>>>,
+    shards: Arc<shard_guard::ShardsLock>,
     cache: MultiLayerCache,
     block_store: BlockStore,
     wal_store: LocalWriteAheadLogStore,
     index_log_store: LocalIndexLogStore,
     index_dir: PathBuf,
     checkpoint_publications: Arc<checkpoint_publication::CheckpointPublications>,
+    retention_registry: Arc<retention_registry::RetentionRegistry>,
     // Set only when the engine minted its own index_dir (no caller-supplied one): the
     // engine owns that scratch directory, and the last clone's drop removes it.
     index_scratch: Option<Arc<crate::scratch::ScratchDirGuard>>,
@@ -290,6 +329,15 @@ pub struct TemporalEngine {
     /// Not durable: a restart loses at most the knowledge that a round was open, and the next
     /// round then rolls, which is correct if wasteful once.
     compaction_rounds: Arc<RwLock<HashMap<ShardId, (u64, u64)>>>,
+    /// The sliced compaction pass each shard has in flight, if any. One slot per shard so a slice
+    /// holds only its own shard's lock; see `compaction_slices.rs`.
+    compaction_passes: Arc<std::sync::Mutex<HashMap<ShardId, recovery_sweep_compact::PassSlot>>>,
+    /// Metrics-only directory of incarnation-bound summary caches. Each entry
+    /// coalesces its own refresh; no listing runs under this directory mutex.
+    /// Lifecycle retirement detaches the matching entry without waiting for refresh.
+    scrape_bucket_summaries: Arc<
+        std::sync::Mutex<BTreeMap<ShardId, Arc<prometheus_metrics::ScrapeBucketEntry>>>,
+    >,
     /// Slabs a compaction round vacated in MEMORY but whose new index never reached disk.
     ///
     /// Compaction advances no applied sequence and emits no record, so the durable index is the
@@ -426,25 +474,36 @@ pub struct TemporalEngine {
 pub(crate) static RESIDENT_SWEEPS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// Optional foreground relocation threshold. Both spellings remain supported; zero or an
-/// unset setting leaves log-backed values in their existing durable records.
+/// Optional foreground relocation threshold. Zero or an unset setting leaves log-backed values
+/// in their existing durable records.
 ///
 /// Registrations contain locations, not retained payloads. Their count follows indexed live
 /// identities, while the payload cache enforces its byte capacity independently. Moving every
 /// old location to a slab just because the index grew duplicates needed log data without
 /// freeing a reclaimable record. Maintenance handles relocation pressure separately.
 fn wal_resident_block_limit() -> usize {
-    crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"], 0)
+    crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS"], 0)
 }
+
+/// Two tests set and clear `TS_WAL_RESIDENT_BLOCKS` for the whole process while the harness runs
+/// tests on parallel threads. Each holds this lock for its whole body, so neither reads the other's
+/// value or clears it from under it.
+#[cfg(test)]
+pub(crate) static WAL_RESIDENT_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 #[cfg(test)]
 mod wal_resident_env_name_tests {
-    /// The previous spelling of this bound must keep configuring it.
+    /// THE ONE SPELLING BOUNDS THE SET, AND A RETIRED ONE DOES NOT.
     ///
-    /// An operator's explicit relocation policy must keep working under either spelling.
-    /// Unset is different from an explicit limit, and the current spelling wins over the alias.
+    /// The bound used to be read under an older spelling as well. A lookup list that gains that
+    /// name back would make every deployment still exporting it run with a relocation policy it
+    /// was not given, silently. The value set under the retired name differs from the default,
+    /// so "ignored" cannot be confused with "read and equal".
     #[test]
-    fn the_previous_wal_resident_env_name_still_bounds_the_set() {
+    fn only_the_current_wal_resident_env_name_bounds_the_set() {
+        let _env = super::WAL_RESIDENT_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
         let keys = ["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"];
         for key in keys {
             std::env::remove_var(key);
@@ -455,20 +514,12 @@ mod wal_resident_env_name_tests {
         std::env::set_var("TS_WAL_RESIDENT_PAGES", "64");
         assert_eq!(
             super::wal_resident_block_limit(),
-            64,
-            "the previous spelling must still bound the resident set, not fall back to the default"
-        );
-        assert_ne!(
-            super::wal_resident_block_limit(), default_limit,
-            "a value read from the previous name must differ from the default, or this proves nothing"
+            default_limit,
+            "a retired spelling bounded the resident set"
         );
 
         std::env::set_var("TS_WAL_RESIDENT_BLOCKS", "128");
-        assert_eq!(
-            super::wal_resident_block_limit(),
-            128,
-            "the current spelling must win when both are set, or a deployment mid-migration gets whichever the lookup tried first"
-        );
+        assert_eq!(super::wal_resident_block_limit(), 128);
 
         for key in keys {
             std::env::remove_var(key);
@@ -483,6 +534,14 @@ mod log_backed_string_tests;
 #[cfg(test)]
 #[path = "engine/expiry_residency_tests.rs"]
 mod expiry_residency_tests;
+
+#[cfg(test)]
+#[path = "engine/ttl_index_maintenance_tests.rs"]
+mod ttl_index_maintenance_tests;
+
+#[cfg(test)]
+#[path = "engine/writer_stall_probe.rs"]
+pub(crate) mod writer_stall_probe;
 
 /// How far below the limit a sweep goes, so a shard sitting exactly at the ceiling does not
 /// materialise on every single append.
@@ -529,10 +588,8 @@ impl TemporalEngine {
             .get(&shard_id)
             .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
             .unwrap_or((0, u32::MAX));
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return;
-        };
+        self.shards.with_state_mut(shard_id, |state| {
+        let Some(shard) = state else { return; };
         storage_bucket_internals::rebuild_bucket_first_index(
             shard_id,
             shard,
@@ -544,24 +601,9 @@ impl TemporalEngine {
         // source, with nothing in between that could change the answer -- so the flags refresh,
         // and the duplicate scan does not.
         storage_bucket_internals::refresh_bucket_runtime_flags_after_reconstruct(shard);
+        });
     }
 
-    /// Take the shard table's write lock, marking the region for the lock-hold measurement.
-    ///
-    /// Identical to `self.shards.write()` in every observable way except that the served-index
-    /// encode can tell whether it is running inside the region. Maintenance paths take this one
-    /// so a guard can state what they do while holding it.
-    fn shards_write_marked(&self) -> MarkedShardWriteGuard<'_> {
-        MarkedShardWriteGuard::new(self.shards.write().expect("engine lock poisoned"))
-    }
-
-    /// Take the shard table's read lock, marking the region for the lock-hold measurement.
-    ///
-    /// Identical to `self.shards.read()` in every observable way except that the block-read
-    /// counter can tell whether it is running inside the region.
-    fn shards_read_marked(&self) -> MarkedShardReadGuard<'_> {
-        MarkedShardReadGuard::new(self.shards.read().expect("engine lock poisoned"))
-    }
 
     /// Read one live block off the block store, counted against the shard-table guard.
     ///
@@ -650,13 +692,13 @@ impl TemporalEngine {
     /// Every shard in one pass. Callers that already hold a read lock on the shard table must not
     /// ask per shard: a second read on the same lock, with a writer queued between them, deadlocks.
     pub fn shard_index_lags(&self) -> Vec<(ShardId, u64)> {
-        let applied: Vec<(ShardId, u64)> = {
-            let shards = self.shards.read().expect("engine lock poisoned");
+        let applied: Vec<(ShardId, u64)> = self.shards.with_all_shards_read(|shards, visited| {
+            visited.add(shards.len() as u64);
             shards
                 .iter()
                 .map(|(shard_id, shard)| (*shard_id, shard.applied_wal_sequence.unwrap_or(0)))
                 .collect()
-        };
+        });
         applied
             .into_iter()
             .map(|(shard_id, applied)| {
@@ -676,11 +718,13 @@ impl TemporalEngine {
     /// Every shard in one pass, for the same reason as the trailing distance: a caller inside the
     /// metrics loop already holds a read lock on the shard table.
     pub fn shard_expiry_backlogs(&self) -> Vec<(ShardId, u64)> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        shards
-            .iter()
-            .map(|(shard_id, shard)| (*shard_id, shard.expires_at_ms().len() as u64))
-            .collect()
+        self.shards.with_all_shards_read(|shards, visited| {
+            visited.add(shards.len() as u64);
+            shards
+                .iter()
+                .map(|(shard_id, shard)| (*shard_id, shard.expires_at_ms().len() as u64))
+                .collect()
+        })
     }
 
     /// What a shard's rate limit has allowed and refused, if it has one.
@@ -742,10 +786,10 @@ impl TemporalEngine {
     }
 
     pub fn execute(&self, request: ExecuteRequest) -> ExecuteResponse {
-        self.execute_with_storage_override(request, None, Vec::new())
+        self.execute_with_storage_override(request, None, Vec::new(), false)
     }
 
-    /// Apply `request`, attaching `pages` to its log record instead of whatever this node
+    /// Apply `request`, attaching `blocks` to its log record instead of whatever this node
     /// would derive for it.
     ///
     /// For replaying a write that was already acked somewhere else. A block can be derived
@@ -754,17 +798,36 @@ impl TemporalEngine {
     /// original bytes travelled with the command, they are the truth, and re-deriving would
     /// quietly substitute a reconstruction for what was actually acknowledged.
     ///
-    /// An empty `pages` is exactly [`execute`](Self::execute).
+    /// An empty `blocks` is exactly [`execute`](Self::execute).
     pub fn execute_with_carried_blocks(
         &self,
         request: ExecuteRequest,
         blocks: Vec<crate::wal::StagedBlock>,
     ) -> ExecuteResponse {
-        self.execute_with_storage_override(request, None, blocks)
+        self.execute_with_storage_override(request, None, blocks, false)
+    }
+
+    pub(crate) fn execute_shared_wal_command(
+        &self,
+        request: ExecuteRequest,
+        blocks: Vec<crate::wal::StagedBlock>,
+    ) -> ExecuteResponse {
+        self.execute_with_storage_override(request, None, blocks, true)
+    }
+
+    pub(crate) fn stage_shared_wal_command_for_file_restore(
+        &self,
+        request: ExecuteRequest,
+        blocks: Vec<crate::wal::StagedBlock>,
+    ) -> ExecuteResponse {
+        let _restoring = WalReplayGuard::enter();
+        // The remote WAL remains the recovery source until the entire tail has
+        // been installed and one complete local image has been committed.
+        self.execute_with_storage_override(request, Some(false), blocks, true)
     }
 
     pub fn execute_durable(&self, request: ExecuteRequest) -> ExecuteResponse {
-        self.execute_with_storage_override(request, Some(false), Vec::new())
+        self.execute_with_storage_override(request, Some(false), Vec::new(), false)
     }
 
     /// Apply a committed raft entry to the state machine, durably (fsync'd WAL) but with a
@@ -792,7 +855,7 @@ impl TemporalEngine {
     ) -> ExecuteResponse {
         let _guard = RaftApplyGuard::enter();
         let _clock = ReplayClockGuard::enter(leader_time_ms);
-        self.execute_with_storage_override(request, Some(false), Vec::new())
+        self.execute_with_storage_override(request, Some(false), Vec::new(), false)
     }
 
     /// Apply a batch of committed raft entries to the state machine. Under
@@ -837,7 +900,7 @@ impl TemporalEngine {
         let mut responses = Vec::with_capacity(requests.len());
         for (request, leader_time_ms) in requests {
             let _clock = ReplayClockGuard::enter(leader_time_ms);
-            responses.push(self.execute_with_storage_override(request, Some(false), Vec::new()));
+            responses.push(self.execute_with_storage_override(request, Some(false), Vec::new(), false));
         }
         let barrier = batch_guard.take_barrier();
         drop(batch_guard);
@@ -909,10 +972,10 @@ impl TemporalEngine {
         };
         match replication_mode {
             EventReplicationMode::SyncStorage => {
-                self.execute_with_storage_override(request, Some(false), Vec::new())
+                self.execute_with_storage_override(request, Some(false), Vec::new(), false)
             }
             EventReplicationMode::AsyncStorage => {
-                self.execute_with_storage_override(request, Some(true), Vec::new())
+                self.execute_with_storage_override(request, Some(true), Vec::new(), false)
             }
             EventReplicationMode::Raft | EventReplicationMode::Inherit => self.execute(request),
         }
@@ -993,15 +1056,39 @@ impl TemporalEngine {
             }
             std::mem::take(&mut *stamps)
         };
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        for ((shard_id, routing_bucket), stamped_ms) in pending {
-            if let Some(shard) = shards.get_mut(&shard_id) {
-                let slot = shard.bucket_recency.entry(routing_bucket).or_insert(0);
-                if *slot < stamped_ms {
-                    *slot = stamped_ms;
+        let mut pending: Vec<_> = pending.into_iter().collect();
+        pending.sort_unstable_by_key(|((shard_id, _), _)| *shard_id);
+        let mut pending = pending.into_iter().peekable();
+        while let Some(&((shard_id, _), _)) = pending.peek() {
+            self.shards.with_state_mut(shard_id, |mut state| {
+                while pending.peek().is_some_and(|((id, _), _)| *id == shard_id) {
+                    let ((_, routing_bucket), stamped_ms) = pending.next().expect("pending stamp");
+                    if let Some(shard) = state.as_deref_mut() {
+                        let slot = shard.bucket_recency.entry(routing_bucket).or_insert(0);
+                        *slot = (*slot).max(stamped_ms);
+                    }
+                }
+            });
+        }
+    }
+
+    pub(crate) fn fold_fast_read_recency_for_shard(&self, shard_id: ShardId) {
+        let Some(owner) = self.shards.handle(shard_id) else { return; };
+        let pending: Vec<_> = {
+            let mut stamps = self.fast_read_recency.lock().expect("fast read recency lock poisoned");
+            stamps.extract_if(|(id, _), _| *id == shard_id)
+                .map(|((_, bucket), stamp)| (bucket, stamp)).collect()
+        };
+        if pending.is_empty() { return; }
+        // A delayed fold must not look up the ID again and mutate a replacement.
+        self.shards.with_handle_state_mut(&owner, |state| {
+            if let Some(shard) = state {
+                for (bucket, stamp) in pending {
+                    let slot = shard.bucket_recency.entry(bucket).or_insert(0);
+                    *slot = (*slot).max(stamp);
                 }
             }
-        }
+        });
     }
 
     fn execute_with_storage_override(
@@ -1009,7 +1096,11 @@ impl TemporalEngine {
         request: ExecuteRequest,
         async_storage_override: Option<bool>,
         mut carried_blocks: Vec<crate::wal::StagedBlock>,
+        shared_wal_replay: bool,
     ) -> ExecuteResponse {
+        // The flags every write asks about are read from the environment once for this operation:
+        // see `env_flag::OperationEnv`.
+        let _env = crate::env_flag::OperationEnv::begin();
         // Charged before anything else, including the read-only fast path -- a read served without
         // taking the shard lock still costs the shard, and a limit the cheapest reads slip past is
         // not a limit.
@@ -1054,12 +1145,13 @@ impl TemporalEngine {
                 return response;
             }
         }
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&request.shard_id) else {
-            return ExecuteResponse {
+        let shard_id = request.shard_id;
+        let mutation = self.shards.with_state_mut(shard_id, |state| {
+        let Some(shard) = state else {
+            return Err(ExecuteResponse {
                 status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
                 response: CommandResponse::Empty,
-            };
+            });
         };
         let command = request.command;
         let write_command = is_write_command(&command);
@@ -1081,16 +1173,25 @@ impl TemporalEngine {
         if let Some(async_storage) = async_storage_override {
             config.async_storage = async_storage;
         }
-        // A synchronous string write stores its value once, in the record it acks on. From here
-        // on it takes the same storage placement an asynchronous write does (value in the log,
-        // no block-store copy, no per-write index delta) while `sync` below stays true, so the ack
-        // still waits for the WAL barrier. Not under replay or a replicated apply, whose
-        // placement is decided elsewhere.
+        // Synchronous writes still wait on the engine WAL. A replicated cache
+        // insert can keep its bytes there until normal storage maintenance
+        // materializes them, just like a standalone synchronous string write.
+        let raft_insert_uses_wal_placement = || {
+            matches!(
+                &command,
+                Command::StringSetConditional {
+                    condition: crate::types::StringSetCondition::IfNotExists,
+                    return_old: false,
+                    keep_ttl: false,
+                    ..
+                }
+            ) && crate::wal::wal_data_only_enabled()
+        };
         let value_once = writes_string_block
             && !config.async_storage
             && !bulk_ingest_mode()
             && !replaying_wal()
-            && !raft_applying()
+            && (!raft_applying() || raft_insert_uses_wal_placement())
             && sync_value_once_enabled();
         let defer_storage = config.async_storage || value_once;
         let table_admission_enabled = (if write_command {
@@ -1108,20 +1209,20 @@ impl TemporalEngine {
         // a retryable status so a concurrent write cannot interleave with replay -- which
         // would regress the WAL anchor and double-apply on the next restart. The replay
         // thread re-drives records under replaying_wal(), which bypasses this gate.
-        if !replaying_wal() && info.recovering {
-            return ExecuteResponse {
+        if !replaying_wal() && !shared_wal_replay && info.recovering {
+            return Err(ExecuteResponse {
                 status: Status::error(
                     "shard_not_loaded",
                     "shard is recovering (WAL replay in progress)",
                 ),
                 response: CommandResponse::Empty,
-            };
+            });
         }
         if info.readonly && write_command {
-            return ExecuteResponse {
+            return Err(ExecuteResponse {
                 status: Status::error("readonly_shard", "readonly shard rejects write command"),
                 response: CommandResponse::Empty,
-            };
+            });
         }
         let start_routing_bucket = info.start_routing_bucket;
         let end_routing_bucket = info.end_routing_bucket;
@@ -1138,7 +1239,8 @@ impl TemporalEngine {
         // flag is `#[serde(skip)]` (false on any fresh load), so the first live command after a
         // reload still pays one full reconcile. Gate OFF -> the scan runs every command as before.
         if !defer_bucket_index_reconstruct()
-            && !(self.wal_store.flat_append() && shard.promote_scan_done)
+            && !(self.wal_store.flat_append() && shard.promote_scan_done
+                && !shard.bucket_index.bucket_map.is_empty())
         {
             self.promote_scans
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -1174,10 +1276,10 @@ impl TemporalEngine {
                 info.table_name.as_deref(),
             )
             {
-                return ExecuteResponse {
+                return Err(ExecuteResponse {
                     status,
                     response: CommandResponse::Empty,
-                };
+                });
             }
         }
         // Exempt under raft apply and under replay, with the admission limits just above. The
@@ -1199,13 +1301,13 @@ impl TemporalEngine {
                 .map(|limit| self.block_store.slab_summary().total_known_physical_bytes >= limit)
                 .unwrap_or(false)
         {
-            return ExecuteResponse {
+            return Err(ExecuteResponse {
                 status: Status::error(
                     "storage_quota_exceeded",
                     "shard maxmemory_bytes limit has been reached",
                 ),
                 response: CommandResponse::Empty,
-            };
+            });
         }
         // Command preconditions are a LEADER-time gate: a command only reaches the WAL after
         // passing them on the leader. WAL replay re-applies already-committed effects (like
@@ -1222,10 +1324,10 @@ impl TemporalEngine {
                 shard,
                 &command,
             ) {
-                return ExecuteResponse {
+                return Err(ExecuteResponse {
                     status,
                     response: CommandResponse::Empty,
-                };
+                });
             }
         }
         // Start this write with nothing staged, so a block put aside by a command that never
@@ -1246,6 +1348,16 @@ impl TemporalEngine {
             shard,
             config.feature_max_size,
         );
+        // A WRITE THAT REPLACES A RANGE OF A SERIES takes points out and puts others in, so the size
+        // after it can equal or exceed the size before while the MEMBERSHIP is not the one the blocks
+        // give back: `delta_key_state_change` compares sizes and misses it. These commands state the
+        // series they leave.
+        let feature_range_replaced = matches!(
+            &command,
+            Command::FeatureReplace { .. }
+                | Command::WindowReduceRollup { .. }
+                | Command::WindowReduceRemove { .. }
+        );
         let context_embedding_command =
             Self::command_updates_context_embedding(&command).then(|| command.clone());
         let read_recency_bucket = if object_keys.is_empty() {
@@ -1265,23 +1377,53 @@ impl TemporalEngine {
             (command, None)
         };
 
-        let outcome = execute_on_shard(
-            &self.cache,
-            &self.block_store,
-            config.feature_max_size,
-            defer_storage,
-            config.control_rollup_enabled(),
-            config.control_coalesce_persist_enabled(),
-            config.control_state_max_size(),
-            config.control_distinct_sketch_enabled(),
-                config.trim_boundary_record_enabled(),
-            config.set_listing_from_map_enabled(),
-            request.shard_id,
-            start_routing_bucket,
-            end_routing_bucket,
-            shard,
-            execution_command,
-        );
+        let hash_was_dirty = match &execution_command {
+            Command::HashMultiSet { key, .. } => shard.dirty_objects.contains(key),
+            _ => false,
+        };
+        // Preserve the writer's proof so maintenance does not file its fields twice.
+        shard.feature_max_age_ms = config.feature_max_age_ms();
+        let (outcome, hash_index_filed) = match execution_command {
+            Command::HashMultiSet { key, entries } => {
+                shard.control_coalesce_persist = config.control_coalesce_persist_enabled();
+                shard.control_state_max_size = config.control_state_max_size();
+                shard.control_distinct_sketch = config.control_distinct_sketch_enabled();
+                shard.set_listing_from_map = config.set_listing_from_map_enabled();
+                let (outcome, _, filed) = execute_on_shard::execute_hash_multi_set_reusing_metadata(
+                    &self.cache,
+                    &self.block_store,
+                    request.shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    defer_storage,
+                    false,
+                    key,
+                    entries,
+                );
+                (outcome, filed)
+            }
+            command => (
+                execute_on_shard(
+                    &self.cache,
+                    &self.block_store,
+                    config.feature_max_size,
+                    defer_storage,
+                    config.control_rollup_enabled(),
+                    config.control_coalesce_persist_enabled(),
+                    config.control_state_max_size(),
+                    config.control_distinct_sketch_enabled(),
+                    config.trim_boundary_record_enabled(),
+                    config.set_listing_from_map_enabled(),
+                    request.shard_id,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    shard,
+                    command,
+                ),
+                None,
+            ),
+        };
         // LRU recency: record that this command touched its
         // bucket(s), read or write, so eviction can prefer least-recently-used buckets.
         {
@@ -1348,12 +1490,23 @@ impl TemporalEngine {
                     // did, which is why a synchronous write leaves as much pending as an async one
                     // (measured: 64 of 64 either way). Writing through is still to be built; this
                     // removes the branch that suggested it already had been.
-                    mark_object_dirty(
-                        shard,
-                        object_key,
-                        start_routing_bucket,
-                        end_routing_bucket,
-                    );
+                    if hash_index_filed.is_some() && hash_was_dirty {
+                        // Older blocks already carry the mark; the writer dirtied its
+                        // new/replaced blocks. Keep the bucket generation without a walk.
+                        let routing_bucket = block_routing_bucket(
+                            object_key, start_routing_bucket, end_routing_bucket,
+                        );
+                        storage_bucket_internals::mark_object_dirty_at_bucket_deferred(
+                            shard, object_key, routing_bucket,
+                        );
+                    } else {
+                        mark_object_dirty(
+                            shard,
+                            object_key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        );
+                    }
                 }
             }
             // Rebuild the first-index only outside the deferred-reconstruct windows
@@ -1384,7 +1537,8 @@ impl TemporalEngine {
             // write at 100. The batch path has filed only what a command wrote since it existed.
             // A command not named here takes the whole-object sync exactly as before, so a new
             // hash command costs more rather than leaving a field unfiled.
-            let narrow_hash_sync = !shard.bucket_index.bucket_map.is_empty()
+            let narrow_hash_sync = hash_index_filed.is_none()
+                && !shard.bucket_index.bucket_map.is_empty()
                 && match &command {
                     Command::HashSet { key, field, .. } | Command::HashIncrBy { key, field, .. } => {
                         storage_bucket_internals::sync_written_hash_fields(
@@ -1408,17 +1562,18 @@ impl TemporalEngine {
                     Command::HashDelete { .. } => storage_bucket_internals::hash_delete_maintained(),
                     _ => false,
                 };
-            let maintained_bucket_index = !shard.bucket_index.bucket_map.is_empty()
-                && !object_keys.is_empty()
-                && (matches!(&command, Command::SetAdd { .. })
-                    || narrow_hash_sync
-                    || object_keys.iter().all(|object_key| {
-                        storage_bucket_internals::sync_context_blocks_for_object(
-                            shard,
-                            request.shard_id,
-                            object_key,
-                        )
-                    }));
+            let maintained_bucket_index = hash_index_filed.is_some()
+                || (!shard.bucket_index.bucket_map.is_empty()
+                    && !object_keys.is_empty()
+                    && (matches!(&command, Command::SetAdd { .. } | Command::SetAddMany { .. })
+                        || narrow_hash_sync
+                        || object_keys.iter().all(|object_key| {
+                            storage_bucket_internals::sync_context_blocks_for_object(
+                                shard,
+                                request.shard_id,
+                                object_key,
+                            )
+                        })));
             let rebuilt_bucket_index = !maintained_bucket_index
                 && !defer_bucket_index_reconstruct()
                 // A command that writes no block cannot have changed the block index, so rebuilding it
@@ -1635,13 +1790,13 @@ impl TemporalEngine {
                         // a fire-and-forget commit, so its append errors stay best-effort and do
                         // not fail the command.) We also skip the index anchor + persist below, so
                         // durable state never advances past a write the WAL did not accept.
-                        return ExecuteResponse {
+                        return Err(ExecuteResponse {
                             status: Status::error(
                                 "wal_commit_failed",
                                 format!("durable WAL commit failed: {err}"),
                             ),
                             response: CommandResponse::Empty,
-                        };
+                        });
                     } else {
                         // Async / bulk mode is a fire-and-forget commit, so an append error does
                         // NOT fail the command (the ack path is intentionally best-effort here).
@@ -1712,6 +1867,7 @@ impl TemporalEngine {
                 // the 8,838 allocations a message write cost, and the reason filling a node cost
                 // the square of its length.
                 let key_state_changed = feature_trimmed_membership
+                    || feature_range_replaced
                     || delta_key_state_change(
                         shard,
                         &delta_command_keys,
@@ -1732,10 +1888,11 @@ impl TemporalEngine {
                 //
                 // It costs one blob per touched key holding one entry per touched element, so it
                 // does not reintroduce the whole-collection capture that gate exists to avoid.
-                key_states.extend(capture_container_element_states(
-                    shard,
-                    &touched_container_elements,
-                ));
+                key_states.extend(
+                    capture_container_element_states(shard, &touched_container_elements)
+                        .into_iter()
+                        .map(crate::index_log::KeyState::from),
+                );
                 // `durable` fsyncs the delta record before returning. Deferred on the raft
                 // apply path (raft log is the durability source) and, under the single-barrier
                 // default, on the single-node path too: the record is still written (so the
@@ -1780,7 +1937,15 @@ impl TemporalEngine {
                 }
             }
         }
-        // Release the `shards` write lock BEFORE the durable barrier. A concurrent same-shard
+        Ok((pending_barrier_seq,
+            writes_string_block, context_embedding_command, outcome.response))
+        });
+        let (pending_barrier_seq,
+            writes_string_block, context_embedding_command, response) = match mutation {
+            Ok(deferred) => deferred,
+            Err(response) => return response,
+        };
+        // Release the shard owner before the durable barrier. A concurrent same-shard
         // writer can now acquire it, mutate + reserve its own WAL sequence, and enter the
         // group-commit queue WHILE this writer's fdatasync is in flight -- the coalescing window
         // that makes group commit engage (fewer fsyncs than writes). The in-memory mutation and
@@ -1788,7 +1953,6 @@ impl TemporalEngine {
         // order holds regardless of how the (order-independent) barriers interleave. When the
         // concurrent-commit gate is OFF, `pending_barrier_seq` is None and the barrier below is a
         // no-op, so this is byte-identical to the prior in-lock append_with_sync path.
-        drop(shards);
         if let Some(barrier_seq) = pending_barrier_seq {
             if coalesced_apply_batch_active() {
                 // Defer to the single coalesced barrier issued for the whole batch by
@@ -1830,33 +1994,72 @@ impl TemporalEngine {
         }
         ExecuteResponse {
             status: Status::ok(),
-            response: outcome.response,
+            response,
         }
+    }
+
+    /// The read bound a feature range takes when the request names no count: the shard's configured
+    /// series bound, as the ordinary path reads it.
+    fn feature_read_bound(&self, shard_id: ShardId) -> usize {
+        self.configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .map(|config| config.feature_max_size)
+            .unwrap_or_else(|| Config::default().feature_max_size)
+    }
+
+    fn fast_string_address(shard: &ShardState, key: &str) -> Option<ElementEntry> {
+        shard.string_address(key).or_else(|| {
+            // A secondary row may be absent while the primary locator still names it.
+            shard.bucket_index.object_block_lookup.get("string", key)?;
+            bucket_store::bucket_index_block_address(shard, "string", key, None)
+        })
+    }
+
+    /// Whether the shard has the counter rollup on: its windowed sum is the ordinary arm's, so the
+    /// fast path leaves those reads to it.
+    fn control_rollup_on(&self, shard_id: ShardId) -> bool {
+        self.configs
+            .read()
+            .expect("config lock poisoned")
+            .get(&shard_id)
+            .map(|config| config.control_rollup_enabled())
+            .unwrap_or(false)
     }
 
     fn execute_read_only_fast_path(&self, request: &ExecuteRequest) -> Option<ExecuteResponse> {
         let read_command = matches!(
             request.command,
-            Command::StringGet { .. } | Command::HashGetAll { .. }
+            Command::StringGet { .. }
+                | Command::HashGetAll { .. }
+                | Command::StringLen { .. }
+                | Command::StringGetRange { .. }
+                | Command::HashGet { .. }
+                | Command::HashLen { .. }
+                | Command::HashFieldExists { .. }
+                | Command::SequenceQuery { .. }
+                | Command::FeatureQuery { .. }
+                | Command::FeatureQueryFiltered { .. }
+                | Command::WindowReduceRank { .. }
+                | Command::ZSetScore { .. }
+                | Command::ZSetCard { .. }
+                | Command::ZSetScan { .. }
+                | Command::ListLen { .. }
+                | Command::SetScan { .. }
+                | Command::SetCard { .. }
+                | Command::SetIsMember { .. }
+                | Command::WindowReduceRankBatch { .. }
+                | Command::WindowReduceFanInRank { .. }
+                | Command::ControlStateCount { .. }
+                | Command::ControlStateQuery { .. }
+                | Command::ControlStateSelectionQuery { .. }
+                | Command::SeenCard { .. }
+                | Command::ZSetRange { .. }
+                | Command::SetMembers { .. }
+                | Command::ListRange { .. }
         );
         if !read_command {
-            return None;
-        }
-        // A shard replaying its WAL on load is present but not yet serving (keeps it in
-        // PartitionLoadStage::LOADING). The durable / replicated read routes reach this fast
-        // path BEFORE execute_with_storage_override's recovering gate, so without this a read
-        // would be served from half-reconstructed state (and skip admission). Decline the fast
-        // path while recovering so the slow path rejects uniformly with a retryable
-        // shard_not_loaded. The replay thread reads under replaying_wal(), which bypasses this.
-        if !replaying_wal()
-            && self
-                .infos
-                .read()
-                .expect("info lock poisoned")
-                .get(&request.shard_id)
-                .map(|info| info.recovering)
-                .unwrap_or(false)
-        {
             return None;
         }
         // The addresses come from the shard index and the BYTES come from the block store, so
@@ -1865,14 +2068,31 @@ impl TemporalEngine {
         // stopped all writes on the shard for as many reads as the value had fields. See
         // `FastPathRead` for why releasing first is safe and what the one scope still buys.
         let hold_guard_across_reads = shard_write_guard::serving_holds_guard_across_reads();
-        let (plan, _held_across_reads) = {
-            let shards = self.shards_read_marked();
-            let Some(shard) = shards.get(&request.shard_id) else {
-                return Some(ExecuteResponse {
+        // The error arm is a final fast-path outcome, including a diagnostic read
+        // served with the owner held or a command that must fall back.
+        #[cfg(test)]
+        if let Some(before_owner) = BEFORE_FAST_READ_OWNER.with(|slot| slot.borrow_mut().take()) {
+            before_owner();
+        }
+        let captured = self.shards.with_state(request.shard_id, |shard| {
+            let Some(shard) = shard else {
+                return Err(Some(ExecuteResponse {
                     status: Status::error("shard_not_loaded", "shard is not loaded on this server"),
                     response: CommandResponse::Empty,
-                });
+                }));
             };
+            // Check readiness while holding the owner. Unload publishes recovering
+            // under that owner before dropping it to drain publication. Replay keeps
+            // its bypass, while other recovering reads fall through to the slow gate.
+            if !replaying_wal()
+                && self.infos.read().expect("info lock poisoned")
+                    .get(&request.shard_id).is_some_and(|info| info.recovering)
+            {
+                return Err(None);
+            }
+            if shard.bucket_index.bucket_map.is_empty() && shard_has_model_entries(shard) {
+                return Err(None);
+            }
             let plan = match &request.command {
                 Command::StringGet { key } => {
                     if shard
@@ -1881,12 +2101,12 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::String {
                         key: key.as_str(),
-                        address: shard.string_address(key.as_str()),
+                        address: Self::fast_string_address(shard, key.as_str()),
                         routing_bucket: block_routing_bucket(
                             key,
                             start_routing_bucket,
@@ -1901,7 +2121,7 @@ impl TemporalEngine {
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
                     {
-                        return None;
+                        return Err(None);
                     }
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::Hash {
@@ -1923,18 +2143,428 @@ impl TemporalEngine {
                         ),
                     }
                 }
-                _ => return None,
+                Command::StringLen { key } | Command::StringGetRange { key, .. } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::StringShared {
+                        key: key.as_str(),
+                        address: Self::fast_string_address(shard, key.as_str()),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        range: match &request.command {
+                            Command::StringGetRange { start, end, .. } => Some((*start, *end)),
+                            _ => None,
+                        },
+                    }
+                }
+                Command::HashGet { key, field } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::HashField {
+                        key: key.as_str(),
+                        field: field.as_str(),
+                        address: shard
+                            .bucket_index
+                            .hashes
+                            .get(key)
+                            .and_then(|fields| fields.get(field))
+                            .cloned(),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::FeatureQuery { key, start_ms, end_ms, count } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    let bound = self.feature_read_bound(request.shard_id);
+                    FastPathRead::FeatureRange {
+                        key: key.as_str(),
+                        window: shard
+                            .features()
+                            .get(key.as_str())
+                            .map(|series| {
+                                series
+                                    .range(timestamp_range_bounds(*start_ms, *end_ms))
+                                    .take(count.unwrap_or(bound))
+                                    .map(|(instant, address)| (instant, address.clone()))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default(),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        filters: None,
+                        rows: false,
+                    }
+                }
+                Command::FeatureQueryFiltered { key, start_ms, end_ms, count, filters } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    let bound = self.feature_read_bound(request.shard_id);
+                    FastPathRead::FeatureRange {
+                        key: key.as_str(),
+                        window: shard
+                            .features()
+                            .get(key.as_str())
+                            .map(|series| {
+                                series
+                                    .range(timestamp_range_bounds(*start_ms, *end_ms))
+                                    .take(count.unwrap_or(bound).min(bound))
+                                    .map(|(instant, address)| (instant, address.clone()))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default(),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        filters: Some(filters.as_slice()),
+                        rows: false,
+                    }
+                }
+                Command::SequenceQuery { key, start_ms, end_ms, count, filters } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::FeatureRange {
+                        key: key.as_str(),
+                        window: shard
+                            .features()
+                            .get(key.as_str())
+                            .map(|series| {
+                                series
+                                    .range(timestamp_range_bounds(*start_ms, *end_ms))
+                                    .take(*count)
+                                    .map(|(instant, address)| (instant, address.clone()))
+                                    .collect::<Vec<_>>()
+                            })
+                            .unwrap_or_default(),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                        filters: Some(filters.as_slice()),
+                        rows: true,
+                    }
+                }
+                Command::WindowReduceRank { key, spec } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return Err(None);
+                    }
+                    // A spec admission would refuse is answered by the ordinary path, with its
+                    // status; this one only serves what the ordinary path would have served.
+                    if crate::engine::window_reduce_rank::validate_spec(spec).is_err() {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    let now_ms = resolve_now_ms();
+                    // THE ENTRIES ARE COPIED OUT UNDER THE GUARD and every block is read after it
+                    // drops, as a feature range read does: a ranked read decodes up to a window
+                    // bound of samples, and holding the guard across that stopped every writer.
+                    FastPathRead::WindowReduceRank {
+                        key: key.as_str(),
+                        spec,
+                        held: shard
+                            .features()
+                            .get(key.as_str())
+                            .map(|series| window_reduce_rank_read::snapshot(series, spec, now_ms))
+                            .unwrap_or_default(),
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        now_ms,
+                    }
+                }
+                Command::WindowReduceRankBatch { queries } => {
+                    let now_ms = resolve_now_ms();
+                    if queries.iter().any(|query| {
+                        shard
+                            .expires_at_ms()
+                            .get(query.key.as_str())
+                            .map(|expires_at| *expires_at <= now_ms)
+                            .unwrap_or(false)
+                    }) {
+                        return Err(None);
+                    }
+                    // A batch admission would refuse is answered by the ordinary path, with its status.
+                    if window_reduce_fan_in::validate_batch(queries).is_err() {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::WindowReduceRankBatch {
+                        queries: queries.as_slice(),
+                        held: queries
+                            .iter()
+                            .map(|query| {
+                                shard
+                                    .features()
+                                    .get(query.key.as_str())
+                                    .map(|series| window_reduce_rank_read::snapshot(series, &query.spec, now_ms))
+                                    .unwrap_or_default()
+                            })
+                            .collect(),
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        now_ms,
+                    }
+                }
+                Command::WindowReduceFanInRank { keys, spec } => {
+                    let now_ms = resolve_now_ms();
+                    if keys.iter().any(|key| {
+                        shard
+                            .expires_at_ms()
+                            .get(key.as_str())
+                            .map(|expires_at| *expires_at <= now_ms)
+                            .unwrap_or(false)
+                    }) {
+                        return Err(None);
+                    }
+                    if window_reduce_fan_in::validate_keys(keys).is_err()
+                        || crate::engine::window_reduce_rank::validate_spec(spec).is_err()
+                    {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::WindowReduceFanIn {
+                        keys: keys.as_slice(),
+                        spec,
+                        held: window_reduce_rank_read::snapshot_many(shard, keys, spec, now_ms),
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        now_ms,
+                    }
+                }
+                Command::HashLen { key } | Command::HashFieldExists { key, .. } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    let fields = shard.bucket_index.hashes.get(key);
+                    // ANSWERED UNDER THE GUARD: both are one lookup in the field map, with no block
+                    // to read afterwards.
+                    let value = match &request.command {
+                        Command::HashFieldExists { field, .. } => {
+                            i64::from(fields.is_some_and(|fields| fields.contains_key(field)))
+                        }
+                        _ => fields.map(|fields| fields.len()).unwrap_or(0) as i64,
+                    };
+                    FastPathRead::Answer {
+                        value,
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::ZSetScore { key, .. }
+                | Command::ZSetCard { key }
+                | Command::ZSetScan { key, .. }
+                | Command::ListLen { key }
+                | Command::SetScan { key, .. }
+                | Command::SetCard { key }
+                | Command::SetIsMember { key, .. }
+                | Command::ZSetRange { key, .. }
+                | Command::SetMembers { key } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    // ANSWERED UNDER THE GUARD: each of these is a lookup or a bounded walk of a
+                    // resident map, with no block to read afterwards, so there is nothing to pin.
+                    // A key the map does not name, or a set read the map is not allowed to serve,
+                    // is left to the ordinary path, which knows the fallbacks.
+                    let response = index_only_read(shard, &request.command).ok_or(None)?;
+                    FastPathRead::Response {
+                        response,
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                // THE COUNTER, DISTINCT, SELECTION AND SEEN READS: pure reads of resident maps, answered
+                // under the guard with the reductions the ordinary arms use. Declined wherever the
+                // ordinary arm mutates or consults something a reader may not -- a key (or a family
+                // key of it) whose deadline lapsed, which the ordinary path drops, and a shard with
+                // the counter rollup on, whose windowed sum is the ordinary arm's own.
+                Command::ControlStateCount { key, start_ms, end_ms }
+                | Command::ControlStateQuery { key, start_ms, end_ms, .. } => {
+                    if control_key_lapsed(shard, key) || self.control_rollup_on(request.shard_id) {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    let value = match &request.command {
+                        Command::ControlStateQuery { aggregator, .. }
+                            if is_control_state_change_aggregator(aggregator) =>
+                        {
+                            count_control_state_changes(shard, key, *start_ms, *end_ms)
+                        }
+                        Command::ControlStateQuery { aggregator, .. } => {
+                            control_state_window_value(shard, key, *start_ms, *end_ms, aggregator)
+                        }
+                        _ => shard
+                            .control_state()
+                            .get(key.as_str())
+                            .map(|series| {
+                                window_aggregate::sum_legacy(
+                                    series
+                                        .range(timestamp_range_bounds(*start_ms, *end_ms))
+                                        .map(|(_, value)| *value),
+                                )
+                            })
+                            .unwrap_or_default(),
+                    };
+                    FastPathRead::Answer {
+                        value,
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::SeenCard { key } => {
+                    if control_key_lapsed(shard, key) {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::Answer {
+                        value: shard
+                            .seen
+                            .get(key.as_str())
+                            .map_or(0, |seen| seen.by_member.len()) as i64,
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::ControlStateSelectionQuery { key } => {
+                    if control_key_lapsed(shard, key) {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    FastPathRead::Value {
+                        value: shard
+                            .control_state_selection
+                            .get(key.as_str())
+                            .map(|stored| stored.value.clone()),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                Command::ListRange { key, start, stop } => {
+                    if shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .map(|expires_at| *expires_at <= resolve_now_ms())
+                        .unwrap_or(false)
+                    {
+                        return Err(None);
+                    }
+                    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+                    // THE ADDRESSES ARE TAKEN UNDER THE GUARD AND THE BLOCKS ARE READ AFTER IT DROPS,
+                    // as a hash read does: the window is copied, and pinned if any of it is still in
+                    // the log.
+                    FastPathRead::List {
+                        key: key.as_str(),
+                        window: execute_on_shard::list_range_window(shard, key, *start, *stop),
+                        routing_bucket: block_routing_bucket(
+                            key,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        ),
+                    }
+                }
+                _ => return Err(None),
             };
-            // The measurement's control arm carries the guard out of this block so the reads
-            // below still happen inside the region. `None` in every shipped build, which is what
-            // makes the guard drop here.
-            let held = if hold_guard_across_reads {
-                Some(shards)
-            } else {
-                None
-            };
-            (plan, held)
+            let wal_snapshot = plan.pin_log_locations(&self.block_store, request.shard_id);
+            let slab_snapshot = plan.pin_feature_slabs(&self.block_store);
+            if hold_guard_across_reads {
+                return Err(self.serve_fast_path_read(request, plan));
+            }
+            Ok((plan, wal_snapshot, slab_snapshot))
+        });
+        let (plan, _wal_snapshot, _slab_snapshot) = match captured {
+            Ok(capture) => capture,
+            Err(response) => return response,
         };
+        self.serve_fast_path_read(request, plan)
+    }
+
+    fn serve_fast_path_read(
+        &self,
+        request: &ExecuteRequest,
+        plan: FastPathRead<'_>,
+    ) -> Option<ExecuteResponse> {
+        #[cfg(test)]
+        if let Some(after) = AFTER_FAST_READ_PLAN.with(|slot| slot.borrow_mut().take()) {
+            after();
+        }
 
         match plan {
             FastPathRead::String {
@@ -1948,9 +2578,8 @@ impl TemporalEngine {
                 self.note_fast_read_recency(request.shard_id, routing_bucket);
                 // THE SHARD HAS ALREADY SAID NO, SO NOTHING BELOW IT IS ASKED.
                 //
-                // `address` is `shard.string_address(key)` -- one map get against `shard.strings`,
-                // taken under the shard lock in the block above -- and it is the ONLY thing the
-                // source closure below consults. `None` from it is the answer this arm returns
+                // `address` comes from the string row or its named primary bucket locator,
+                // resolved under the shard lock above. `None` from both is the answer this arm returns
                 // whatever any cache tier holds. Letting the cache be asked first therefore paid
                 // for a question the authority that owns it had already answered.
                 //
@@ -2001,7 +2630,7 @@ impl TemporalEngine {
                 Some(ExecuteResponse {
                     status: Status::ok(),
                     response: CommandResponse::Bytes {
-                        value: read_block_bytes(
+                        value: Some(read_block_bytes(
                             &self.cache,
                             &self.block_store,
                             request.shard_id,
@@ -2009,8 +2638,303 @@ impl TemporalEngine {
                             // A string block IS its whole object, so the element is `None`.
                             BlockIdentity::of(request.shard_id, "string", key, None),
                             Some(routing_bucket),
-                        ),
+                        )?),
                     },
+                })
+            }
+            FastPathRead::FeatureRange {
+                key,
+                window,
+                routing_bucket,
+                filters,
+                rows,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                if rows {
+                    // A SEQUENCE READ: each row is decoded where it sits in the block, and the rows
+                    // every filter holds for are answered. The window is capped before the filters,
+                    // as the ordinary arm does.
+                    let identity = BlockIdentity::of(request.shard_id, "feature", key, None);
+                    let mut reader = crate::engine::product_model::SequenceBlockReader::new();
+                    let rows = window
+                        .iter()
+                        .filter_map(|(instant, address)| {
+                            crate::engine::product_model::read_sequence_row_in_place(
+                                &self.cache,
+                                &self.block_store,
+                                request.shard_id,
+                                *instant,
+                                address,
+                                identity,
+                                Some(routing_bucket),
+                                &mut reader,
+                            )
+                        })
+                        .filter(|row| {
+                            filters
+                                .unwrap_or(&[])
+                                .iter()
+                                .all(|filter| sequence_filter_matches(row, filter))
+                        })
+                        .collect::<Vec<_>>();
+                    return Some(ExecuteResponse {
+                        status: Status::ok(),
+                        response: CommandResponse::SequenceRows { rows },
+                    });
+                }
+                // NO RESPONSE-CACHE ENTRY IS READ OR WRITTEN HERE. A reader that fills the cache
+                // after the guard drops could store an answer older than a write that has already
+                // invalidated the key, and nothing in the entry says so. The window is read off
+                // the blocks each time, as the ordinary path does on a miss.
+                let identity = BlockIdentity::of(request.shard_id, "feature", key, None);
+                let mut reader = crate::engine::packed_blocks::FeatureRangeReader::new();
+                let points = window
+                    .iter()
+                    .filter_map(|(instant, address)| {
+                        let instant = *instant;
+                        reader
+                            .with_point(
+                                &self.cache,
+                                &self.block_store,
+                                request.shard_id,
+                                instant,
+                                address,
+                                identity,
+                                Some(routing_bucket),
+                                |value| match filters {
+                                    None => Some(FeaturePoint {
+                                        timestamp_ms: instant,
+                                        value: value.to_vec(),
+                                    }),
+                                    Some(filters) => {
+                                        let row = crate::engine::decode_or_count_sequence_row(
+                                            instant, value,
+                                        )?;
+                                        filters
+                                            .iter()
+                                            .all(|filter| sequence_filter_matches(&row, filter))
+                                            .then(|| FeaturePoint {
+                                                timestamp_ms: instant,
+                                                value: value.to_vec(),
+                                            })
+                                    }
+                                },
+                            )
+                            .flatten()
+                    })
+                    .collect::<Vec<_>>();
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::FeaturePoints { points },
+                })
+            }
+            FastPathRead::WindowReduceRank {
+                key,
+                spec,
+                held,
+                start_routing_bucket,
+                end_routing_bucket,
+                now_ms,
+            } => {
+                self.note_fast_read_recency(
+                    request.shard_id,
+                    block_routing_bucket(key, start_routing_bucket, end_routing_bucket),
+                );
+                let ranked = window_reduce_rank_read::serve_snapshot(
+                    &self.cache,
+                    &self.block_store,
+                    request.shard_id,
+                    key,
+                    spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    now_ms,
+                    held,
+                );
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::WindowReduceRanking { ranked },
+                })
+            }
+            FastPathRead::List {
+                key,
+                window,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                // A block that cannot be read declines the fast path, so the ordinary path answers
+                // instead of this one answering short.
+                let members = execute_on_shard::read_list_window(
+                    &self.cache,
+                    &self.block_store,
+                    request.shard_id,
+                    key,
+                    &window,
+                    routing_bucket,
+                )
+                .into_iter()
+                .collect::<Option<Vec<_>>>()?;
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Members { members },
+                })
+            }
+            FastPathRead::Response {
+                response,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response,
+                })
+            }
+            FastPathRead::WindowReduceRankBatch {
+                queries,
+                held,
+                start_routing_bucket,
+                end_routing_bucket,
+                now_ms,
+            } => {
+                let mut rankings = Vec::with_capacity(queries.len());
+                for (query, taken) in queries.iter().zip(held) {
+                    self.note_fast_read_recency(
+                        request.shard_id,
+                        block_routing_bucket(&query.key, start_routing_bucket, end_routing_bucket),
+                    );
+                    rankings.push(window_reduce_rank_read::serve_snapshot(
+                        &self.cache,
+                        &self.block_store,
+                        request.shard_id,
+                        &query.key,
+                        &query.spec,
+                        start_routing_bucket,
+                        end_routing_bucket,
+                        now_ms,
+                        taken,
+                    ));
+                }
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::WindowReduceRankings { rankings },
+                })
+            }
+            FastPathRead::WindowReduceFanIn {
+                keys,
+                spec,
+                held,
+                start_routing_bucket,
+                end_routing_bucket,
+                now_ms,
+            } => {
+                for key in keys {
+                    self.note_fast_read_recency(
+                        request.shard_id,
+                        block_routing_bucket(key, start_routing_bucket, end_routing_bucket),
+                    );
+                }
+                let ranked = window_reduce_rank_read::serve_many_snapshots(
+                    &self.cache,
+                    &self.block_store,
+                    request.shard_id,
+                    keys,
+                    spec,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    now_ms,
+                    held,
+                );
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::WindowReduceRanking { ranked },
+                })
+            }
+            FastPathRead::Answer {
+                value,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Integer { value },
+                })
+            }
+            FastPathRead::Value {
+                value,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Bytes { value },
+                })
+            }
+            FastPathRead::StringShared {
+                key,
+                address,
+                routing_bucket,
+                range,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                let response = match range {
+                    None => CommandResponse::Integer {
+                        value: match address {
+                            Some(address) => read_string_length(
+                                &self.cache,
+                                &self.block_store,
+                                request.shard_id,
+                                &address,
+                                key,
+                                routing_bucket,
+                            )?,
+                            None => 0,
+                        },
+                    },
+                    Some((start, end)) => {
+                        let value = match address {
+                            Some(address) => {
+                                let bytes = read_block_shared(
+                                    &self.cache,
+                                    &self.block_store,
+                                    request.shard_id,
+                                    &address,
+                                    BlockIdentity::of(request.shard_id, "string", key, None),
+                                    Some(routing_bucket),
+                                )?;
+                                let (from, to) = crate::redis::normalize_range(start, end, bytes.len());
+                                Some(bytes[from..to].to_vec())
+                            }
+                            None => None,
+                        };
+                        CommandResponse::Bytes { value }
+                    }
+                };
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response,
+                })
+            }
+            FastPathRead::HashField {
+                key,
+                field,
+                address,
+                routing_bucket,
+            } => {
+                self.note_fast_read_recency(request.shard_id, routing_bucket);
+                let value = match address {
+                    Some(address) => Some(read_block_bytes(
+                        &self.cache,
+                        &self.block_store,
+                        request.shard_id,
+                        &address,
+                        BlockIdentity::of(request.shard_id, "hash", key, Some(field)),
+                        Some(routing_bucket),
+                    )?),
+                    None => None,
+                };
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: CommandResponse::Bytes { value },
                 })
             }
             FastPathRead::Hash {
@@ -2019,26 +2943,23 @@ impl TemporalEngine {
                 routing_bucket,
             } => {
                 self.note_fast_read_recency(request.shard_id, routing_bucket);
-                // THE FIELDS OF ONE HASH SIT IN FEW SLABS, so the page keys of a whole-hash read
+                // THE FIELDS OF ONE HASH SIT IN FEW SLABS, so the block keys of a whole-hash read
                 // share their record key: building each from scratch spent three allocations a
                 // field, two of them spelling the same slab name again.
-                let mut page_keys = PageKeys::new();
-                let mut entries = fields
-                    .iter()
-                    .filter_map(|(field, address)| {
-                        let cache_key =
-                            page_keys.key(request.shard_id, address, Some(routing_bucket));
-                        read_block_value_keyed(
-                            &self.cache,
-                            &self.block_store,
-                            request.shard_id,
-                            address,
-                            BlockIdentity::of(request.shard_id, "hash", key, Some(&field[..])),
-                            cache_key,
-                        )
-                        .map(|value| (field.to_string(), value))
-                    })
-                    .collect::<Vec<_>>();
+                let mut block_keys = BlockKeys::new();
+                let mut entries = Vec::with_capacity(fields.len());
+                for (field, address) in &fields {
+                    let cache_key = block_keys.key(request.shard_id, address, Some(routing_bucket));
+                    let value = read_block_value_keyed(
+                        &self.cache,
+                        &self.block_store,
+                        request.shard_id,
+                        address,
+                        BlockIdentity::of(request.shard_id, "hash", key, Some(&field[..])),
+                        cache_key,
+                    )?;
+                    entries.push((field.to_string(), value));
+                }
                 entries.sort_by(|a, b| a.0.cmp(&b.0));
                 Some(ExecuteResponse {
                     status: Status::ok(),
@@ -2321,8 +3242,8 @@ impl TemporalEngine {
 
     #[doc(hidden)]
     pub fn string_block_cache_key_for_test(&self, shard_id: ShardId, key: &str) -> Option<CacheKey> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&shard_id)?;
+        self.shards.with_state(shard_id, |state| {
+        let shard = state?;
         let address = shard.strings().get(key)?;
         let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
         Some(CacheKey::page_with_slot(
@@ -2331,15 +3252,14 @@ impl TemporalEngine {
             address.offset(),
             address.length(),
             Some(block_routing_bucket(key, start_routing_bucket, end_routing_bucket))))
+        })
     }
 
     #[doc(hidden)]
     pub fn clear_string_model_view_for_test(&self, shard_id: ShardId, key: &str) -> bool {
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        shards
-            .get_mut(&shard_id)
+        self.shards.with_state_mut(shard_id, |state| state
             .and_then(|shard| shard.remove_string_row(key))
-            .is_some()
+            .is_some())
     }
 
     pub fn loaded_shard_stats(&self) -> Vec<ShardStats> {
@@ -2350,15 +3270,7 @@ impl TemporalEngine {
     }
 
     pub fn loaded_shard_ids(&self) -> Vec<ShardId> {
-        let mut shard_ids = self
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .keys()
-            .copied()
-            .collect::<Vec<_>>();
-        shard_ids.sort_unstable();
-        shard_ids
+        self.shards.shard_ids()
     }
 
     pub fn bucket_storage_summaries(&self, shard_id: ShardId) -> Vec<BucketStorageSummary> {
@@ -2376,26 +3288,35 @@ impl TemporalEngine {
         Vec<BucketStorageSummary>,
         BTreeMap<u32, BucketFingerprintDigest>,
     ) {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
+        let Some((listing, start, end)) = self.shards.with_state(shard_id, |shard| {
+            let shard = shard?;
+            let info = self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&shard_id)
+                .cloned();
+            let start = info
+                .as_ref()
+                .map(|info| info.start_routing_bucket)
+                .unwrap_or_default();
+            let end = info
+                .as_ref()
+                .map(|info| info.end_routing_bucket)
+                .unwrap_or(u32::MAX);
+            // ONLY THE COPY OUT OF THE SHARD RUNS UNDER ITS READ GUARD. Every writer takes the write
+            // guard for its whole command, so for as long as this guard is held no write is
+            // acknowledged. Building the summaries and the digests reads nothing of the shard, so it
+            // runs after the guard is released, and so does reading the latest manifest off disk.
+            let listing = capture_live_listing(shard);
+            Some((listing, start, end))
+        }) else {
             return (Vec::new(), BTreeMap::new());
         };
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        let start = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
+        #[cfg(test)]
+        storage_reporting::run_listing_released_hook();
         let (summaries, digests) =
-            bucket_summaries_and_digests(shard_id, shard, start, end, with_digests);
+            build_summaries_and_digests(shard_id, listing, start, end, with_digests);
         let summaries =
             if let Some(manifest) = latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id) {
                 merge_last_dump_sequence(summaries, &manifest)
@@ -2405,93 +3326,125 @@ impl TemporalEngine {
         (summaries, digests)
     }
 
-    pub fn storage_physical_index_report(&self, shard_id: ShardId) -> StoragePhysicalIndexReport {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return StoragePhysicalIndexReport {
-                shard_id,
-                bucket_first: true,
-                ..StoragePhysicalIndexReport::default()
-            };
+    /// What the reclaim plan asks of the shard, taken under ONE read of it: the dirty buckets and
+    /// their claims, the summaries and digests of those buckets only, and how many bucket nodes
+    /// the shard has. The copy under the guard is O(dirty buckets); the rest of the shard is not
+    /// listed.
+    pub(crate) fn dirty_bucket_plan_inputs(&self, shard_id: ShardId) -> DirtyBucketPlanInputs {
+        let Some((claims, listing, start, end, bucket_node_count)) = self.shards.with_state(shard_id, |shard| {
+            let shard = shard?;
+            let info = self.infos.read().expect("info lock poisoned").get(&shard_id).cloned();
+            let start = info.as_ref().map(|info| info.start_routing_bucket).unwrap_or_default();
+            let end = info.as_ref().map(|info| info.end_routing_bucket).unwrap_or(u32::MAX);
+            let claims = storage_reporting::dirty_bucket_claims(shard);
+            let dirty: BTreeSet<u32> = claims.keys().copied().collect();
+            let listing = storage_reporting::capture_live_listing_for(shard, &dirty);
+            let bucket_node_count = shard.bucket_index.bucket_map.len();
+            Some((claims, listing, start, end, bucket_node_count))
+        }) else {
+            return DirtyBucketPlanInputs::default();
         };
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        let start = info
-            .as_ref()
-            .map(|info| info.start_routing_bucket)
-            .unwrap_or_default();
-        let end = info
-            .as_ref()
-            .map(|info| info.end_routing_bucket)
-            .unwrap_or(u32::MAX);
-        let summaries = bucket_storage_summaries(shard, start, end);
+        let (summaries, digests) = storage_reporting::build_summaries_and_digests(shard_id, listing, start, end, true);
         let summaries =
             if let Some(manifest) = latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id) {
                 merge_last_dump_sequence(summaries, &manifest)
             } else {
                 summaries
             };
-        storage_physical_index_report(shard_id, shard, summaries)
+        DirtyBucketPlanInputs { claims, summaries, digests, bucket_node_count }
+    }
+
+    pub fn storage_physical_index_report(&self, shard_id: ShardId) -> StoragePhysicalIndexReport {
+        let empty = || StoragePhysicalIndexReport {
+            shard_id,
+            bucket_first: true,
+            ..StoragePhysicalIndexReport::default()
+        };
+        let Some(owner) = self.shards.handle(shard_id) else { return empty() };
+        let manifest = latest_bucket_dump_manifest_shared_at(&self.index_dir, shard_id);
+        self.shards.with_handle_state(&owner, |shard| {
+            let Some(shard) = shard else { return empty() };
+            let info = self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&shard_id)
+                .cloned();
+            let start = info
+                .as_ref()
+                .map(|info| info.start_routing_bucket)
+                .unwrap_or_default();
+            let end = info
+                .as_ref()
+                .map(|info| info.end_routing_bucket)
+                .unwrap_or(u32::MAX);
+            let summaries = bucket_storage_summaries(shard, start, end);
+            let summaries =
+                if let Some(manifest) = manifest {
+                    merge_last_dump_sequence(summaries, &manifest)
+                } else {
+                    summaries
+                };
+            storage_physical_index_report(shard_id, shard, summaries)
+        })
     }
 
     pub fn bucket_object_block_ownership_report(
         &self,
         shard_id: ShardId,
     ) -> BucketObjectBlockOwnershipReport {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return BucketObjectBlockOwnershipReport {
-                shard_id,
-                ..BucketObjectBlockOwnershipReport::default()
+        self.shards.with_state(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return BucketObjectBlockOwnershipReport {
+                    shard_id,
+                    ..BucketObjectBlockOwnershipReport::default()
+                };
             };
-        };
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        bucket_object_block_ownership_report(
-            shard_id,
-            shard,
-            info.as_ref()
-                .map(|info| info.start_routing_bucket)
-                .unwrap_or_default(),
-            info.as_ref()
-                .map(|info| info.end_routing_bucket)
-                .unwrap_or(u32::MAX),
-        )
+            let info = self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&shard_id)
+                .cloned();
+            bucket_object_block_ownership_report(
+                shard_id,
+                shard,
+                info.as_ref()
+                    .map(|info| info.start_routing_bucket)
+                    .unwrap_or_default(),
+                info.as_ref()
+                    .map(|info| info.end_routing_bucket)
+                    .unwrap_or(u32::MAX),
+            )
+        })
     }
 
     pub fn object_manager_runtime_report(&self, shard_id: ShardId) -> ObjectManagerRuntimeReport {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return ObjectManagerRuntimeReport {
-                shard_id,
-                blockers: vec!["shard is not loaded".to_string()],
-                ..ObjectManagerRuntimeReport::default()
+        self.shards.with_state(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return ObjectManagerRuntimeReport {
+                    shard_id,
+                    blockers: vec!["shard is not loaded".to_string()],
+                    ..ObjectManagerRuntimeReport::default()
+                };
             };
-        };
-        let info = self
-            .infos
-            .read()
-            .expect("info lock poisoned")
-            .get(&shard_id)
-            .cloned();
-        object_manager_runtime_report(
-            shard_id,
-            shard,
-            info.as_ref()
-                .map(|info| info.start_routing_bucket)
-                .unwrap_or_default(),
-            info.as_ref()
-                .map(|info| info.end_routing_bucket)
-                .unwrap_or(u32::MAX),
-        )
+            let info = self
+                .infos
+                .read()
+                .expect("info lock poisoned")
+                .get(&shard_id)
+                .cloned();
+            object_manager_runtime_report(
+                shard_id,
+                shard,
+                info.as_ref()
+                    .map(|info| info.start_routing_bucket)
+                    .unwrap_or_default(),
+                info.as_ref()
+                    .map(|info| info.end_routing_bucket)
+                    .unwrap_or(u32::MAX),
+            )
+        })
     }
 
     pub fn storage_data_structure_api_parity_report(
@@ -2672,6 +3625,8 @@ impl TemporalEngine {
     /// behaviour it had, and a shard that IS loaded gets the range it was loaded with. The same
     /// default `routing_bucket_for_key` has always used, now shared rather than restated.
     pub(crate) fn shard_routing_range(&self, shard_id: ShardId) -> (u32, u32) {
+        #[cfg(test)]
+        routing_range_reads::bump();
         let info = self
             .infos
             .read()
@@ -2692,6 +3647,19 @@ impl TemporalEngine {
     pub fn routing_bucket_for_key(&self, shard_id: ShardId, key: &str) -> u32 {
         let (start, end) = self.shard_routing_range(shard_id);
         block_routing_bucket(key, start, end)
+    }
+
+    /// `routing_bucket_for_key` for MANY keys of one shard: the info row is read, and cloned, ONCE
+    /// here instead of once per key.
+    ///
+    /// `routing_bucket_for_key` takes `infos.read()` and clones the shard's info row on every call,
+    /// which is the right price for one key and the wrong one inside a loop over a shard's dirty
+    /// keys. The returned closure holds only the two range ends, so it takes no lock and
+    /// allocates nothing per key, and gives exactly the answer `routing_bucket_for_key` gives for
+    /// the range read at this call.
+    pub fn routing_bucket_resolver(&self, shard_id: ShardId) -> impl Fn(&str) -> u32 {
+        let (start, end) = self.shard_routing_range(shard_id);
+        move |key: &str| block_routing_bucket(key, start, end)
     }
 
     /// THE ONE WAY A `ShardState` ENTERS THE SERVED MAP, and the one place its routing range is
@@ -2718,6 +3686,9 @@ impl TemporalEngine {
         // The id it is being INSERTED UNDER, so the shard and the key the served map routes it by
         // can never be two different numbers.
         state.set_shard_id(shard_id);
+        // THE PER-BUCKET OWNERS, built while the state is still private to this thread, for the
+        // same reason as the deadline view below. Absent, every caller falls back to the walk.
+        state.bucket_index.ensure_bucket_owners();
         // BUILT HERE, BEFORE THE TABLE LOCK, so the first sweep after a load or a manifest
         // install does not pay for it. `expiry_by_deadline` is `serde(skip)`, so every state that
         // arrives from disk has it empty, and `ensure_expiry_order` rebuilt it on the first
@@ -2726,10 +3697,12 @@ impl TemporalEngine {
         // state is still private to this thread here, so the same pass excludes nobody.
         // `ensure_expiry_order` stays at its call sites as the repair for an emptied mirror.
         ensure_expiry_order(&mut state);
-        self.shards
-            .write()
-            .expect("engine lock poisoned")
-            .insert(shard_id, state);
+        state.expiry_scan_positions = [None, None];
+        let previous_owner = self.shards.handle(shard_id);
+        let retired = self.shards.install(shard_id, state);
+        let scrape_cache = previous_owner.as_ref()
+            .and_then(|owner| self.detach_scrape_bucket_summaries(owner));
+        drop((retired, scrape_cache));
     }
 
     /// What the resident bucket index costs on this shard: one node per bucket, plus one entry
@@ -2740,11 +3713,18 @@ impl TemporalEngine {
     /// release keeps. The per-block entries are what grows with the corpus and what a release
     /// frees, so this is the number to gate on and to assert against.
     pub fn bucket_index_resident_bytes(&self, shard_id: ShardId) -> u64 {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&shard_id)
-            .map(crate::engine::storage_bucket_internals::bucket_index_resident_bytes)
-            .unwrap_or_default()
+        let before = crate::engine::storage_bucket_internals::bucket_index_resident_bytes_visits();
+        self.shards.with_shard(shard_id, |shard, visited| {
+            let bytes = shard
+                .map(crate::engine::storage_bucket_internals::bucket_index_resident_bytes)
+                .unwrap_or_default();
+            // Nodes the cold rebuild of the cached total had to visit; zero when it was warm.
+            visited.add(
+                crate::engine::storage_bucket_internals::bucket_index_resident_bytes_visits()
+                    .saturating_sub(before),
+            );
+            bytes
+        })
     }
 
     /// Release the named buckets' resident block lists, keeping each node routable and reloadable.
@@ -2757,11 +3737,14 @@ impl TemporalEngine {
         shard_id: ShardId,
         buckets: Vec<u32>,
     ) -> (usize, usize, usize) {
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return (0, 0, 0);
-        };
-        let outcome = crate::engine::storage_bucket_internals::release_bucket_blocks(shard, &buckets);
+        let mut retired = storage_bucket_internals::RetiredBucketIndexes::with_capacity(buckets.len());
+        let outcome = self.shards.with_state_mut(shard_id, |shard| {
+            shard.map(|shard| storage_bucket_internals::detach_bucket_blocks(
+                shard, &buckets, false, &mut retired,
+            ))
+        });
+        drop(retired);
+        let Some(outcome) = outcome else { return (0, 0, 0) };
         (
             outcome.released_buckets.len(),
             outcome.released_blocks,
@@ -2774,13 +3757,10 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> (usize, usize, usize) {
-        let candidates = {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            shards
-                .get(&shard_id)
-                .map(|shard| shard.bucket_index.bucket_map.keys().copied().collect::<Vec<_>>())
+        let candidates = self.shards.with_state(shard_id, |shard| {
+            shard.map(|shard| shard.bucket_index.bucket_map.keys().copied().collect::<Vec<_>>())
                 .unwrap_or_default()
-        };
+        });
         self.release_bucket_index_blocks(shard_id, candidates)
     }
 
@@ -2790,31 +3770,27 @@ impl TemporalEngine {
         shard_id: ShardId,
         routing_bucket: u32,
     ) -> bool {
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return false;
-        };
-        crate::engine::storage_bucket_internals::reload_released_bucket(
-            shard,
-            shard_id,
-            routing_bucket,
-        )
+        self.shards.with_state_mut(shard_id, |shard| {
+            shard.is_some_and(|shard| {
+                storage_bucket_internals::reload_released_bucket(shard, shard_id, routing_bucket)
+            })
+        })
+    }
+
+    #[cfg(test)]
+    pub(crate) fn match_eviction_test_recency(&self, shard_id: ShardId) {
+        self.fold_fast_read_recency_for_shard(shard_id);
+        self.shards.with_state_mut(shard_id, |state| {
+            state.expect("fixture shard").bucket_recency.clear();
+        });
     }
 
     /// The buckets currently released on this shard, in routing order.
     pub fn released_bucket_index_buckets(&self, shard_id: ShardId) -> Vec<u32> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&shard_id)
-            .map(|shard| {
-                shard
-                    .bucket_index
-                    .released_buckets
-                    .iter()
-                    .copied()
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default()
+        self.shards.with_state(shard_id, |shard| {
+            shard.map(|shard| shard.bucket_index.released_buckets.iter().copied().collect())
+                .unwrap_or_default()
+        })
     }
 
 }
@@ -2846,14 +3822,9 @@ pub(crate) fn timestamp_range_bounds(
 /// themselves and gate their own half of the same decision; a copy that drifted would leave one
 /// subsystem in bulk mode and the rest on the live path.
 pub(crate) fn bulk_ingest_mode() -> bool {
-    matches!(
-        std::env::var("MATRIXARK_BULK_INGEST")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "yes" | "on"
-    )
+    crate::env_flag::cached_flag(crate::env_flag::Slot::BulkIngest, || {
+        crate::env_flag::is_on_word(std::env::var("MATRIXARK_BULK_INGEST").ok().as_deref())
+    })
 }
 
 /// Whether the per-command model-map -> bucket-index promotion and first-index
@@ -3229,9 +4200,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 ///   * A NEW BINARY READING OLD BYTES IS 13'S SHAPE AND NEEDS NO STAMP AT ALL. The stored entry's
 ///     two extra keys are dropped by the named decoder, silently, and the reconstruction reads the
 ///     SAME two values out of the key beside them -- so an old index decodes to exactly the index
-///     it decoded to before. That is not assumed: `block_entry_names`'s `OLD_STORE_INDEX` is bytes a
-///     pre-change binary wrote, and `an_index_written_before_this_change_loads_block_for_block`
-///     compares every block of it field by field against a committed table.
+///     it decoded to before.
 ///   * AN OLD BINARY READING NEW BYTES IS WHAT THE STAMP IS SPENT ON, and the msgpack container
 ///     refuses on EQUALITY in its header before decoding anything -- so 27 makes that refusal
 ///     clean, where without a bump the old binary would reach `StoredBlockEntry` and fail on a
@@ -3291,6 +4260,31 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
 pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 32;
 
+/// Whether `key`, or one of the control-state family keys the ordinary read would also drop with
+/// it, has a deadline that lapsed. The same three families `remove_if_expired_with` examines, asked
+/// without mutating anything: a shard with no deadline at all answers without building a name.
+fn control_key_lapsed(shard: &ShardState, key: &str) -> bool {
+    let deadlines = shard.expires_at_ms();
+    if deadlines.is_empty() {
+        return false;
+    }
+    let now = resolve_now_ms();
+    let lapsed = |candidate: &str| deadlines.get(candidate).is_some_and(|at| *at <= now);
+    if lapsed(key) {
+        return true;
+    }
+    if key.starts_with("control_state:") {
+        return false;
+    }
+    [
+        ControlStateFamily::Counter,
+        ControlStateFamily::Distinct,
+        ControlStateFamily::Selection,
+    ]
+    .into_iter()
+    .any(|family| lapsed(&control_state_family_key(family, key)))
+}
+
 /// What the serving read fast path decided to serve: chosen under the shard-table read guard,
 /// read off the block store after it drops.
 ///
@@ -3298,10 +4292,10 @@ pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 32;
 /// invalidate it into something wrong: compaction relocates a block by APPENDING the new copy and
 /// repointing the index, leaving the old bytes where they were, and slab ids are handed out
 /// strictly monotonically, so a stale address never resolves to a DIFFERENT record. The one path
-/// that destroys bytes quarantines the slab for `DELAYED_DESTROY_MIN_AGE_MS` first -- an hour,
-/// documented as covering exactly "a reader holding a stale address" -- and a read that somehow
-/// lost even that race fails the record's block-id and checksum check and answers ABSENT, which is
-/// what a concurrently deleted key answers anyway.
+/// that destroys bytes quarantines the slab for `DELAYED_DESTROY_MIN_AGE_MS` first. WAL-backed
+/// addresses also capture their locators under the index guard, since an overwrite can retire a
+/// locator before the bytes are loaded. If reclaim still makes a captured record unavailable,
+/// the fast path declines and the ordinary guarded path reads the current index.
 ///
 /// What the single guard scope still buys, and what must not be narrowed away: a `HashGetAll`
 /// snapshots EVERY field's address at one instant. Taking the guard once per field instead would
@@ -3310,7 +4304,7 @@ enum FastPathRead<'a> {
     String {
         key: &'a str,
         address: Option<ElementEntry>,
-        /// The bucket the page cache is keyed by, resolved while the shard guard is HELD.
+        /// The bucket the block cache is keyed by, resolved while the shard guard is HELD.
         ///
         /// It has to be: the bucket is `block_routing_bucket(key, ..)` over the range the shard is
         /// stamped with, and the whole point of this plan is that the reads below happen after the
@@ -3334,6 +4328,242 @@ enum FastPathRead<'a> {
         fields: Vec<(crate::engine::hash_field_map::FieldName, ElementEntry)>,
         routing_bucket: u32,
     },
+    /// A string's length, or a range of it: read as the cache's shared bytes, so only the answer
+    /// is copied.
+    StringShared {
+        key: &'a str,
+        address: Option<ElementEntry>,
+        routing_bucket: u32,
+        range: Option<(i64, i64)>,
+    },
+    /// One hash field's value: the field's address is taken under the guard, the block read after.
+    HashField {
+        key: &'a str,
+        field: &'a str,
+        address: Option<ElementEntry>,
+        routing_bucket: u32,
+    },
+    /// An integer answered from the index alone, with nothing to read afterwards.
+    Answer { value: i64, routing_bucket: u32 },
+    /// The addresses of a list window, taken under the guard; the elements are read after it drops.
+    List {
+        key: &'a str,
+        window: Vec<(i64, ElementEntry)>,
+        routing_bucket: u32,
+    },
+    /// A whole response answered from a resident map under the guard, with nothing to read
+    /// afterwards.
+    Response {
+        response: CommandResponse,
+        routing_bucket: u32,
+    },
+    /// A byte string answered from a resident map alone (the selection's winner), copied out under
+    /// the guard, with nothing to read afterwards.
+    Value { value: Option<Vec<u8>>, routing_bucket: u32 },
+    /// The addresses of a feature window, taken under the guard; the points are read after it drops.
+    FeatureRange {
+        key: &'a str,
+        window: Vec<(u64, ElementEntry)>,
+        routing_bucket: u32,
+        /// `Some` for the filtered read, which keeps the points whose row every filter holds for.
+        filters: Option<&'a [crate::types::FeatureFilter]>,
+        /// A sequence read: the points are decoded as rows and answered as rows.
+        rows: bool,
+    },
+    /// A ranked cell read: the entries it opens, taken under the guard; the samples are read after
+    /// it drops.
+    WindowReduceRank {
+        key: &'a str,
+        spec: &'a crate::types::WindowReduceRankSpec,
+        held: window_reduce_rank_read::RankSnapshot,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+        now_ms: u64,
+    },
+    /// Several ranked reads, each with the entries it opens taken under the guard.
+    WindowReduceRankBatch {
+        queries: &'a [crate::types::WindowReduceRankBatchItem],
+        held: Vec<window_reduce_rank_read::RankSnapshot>,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+        now_ms: u64,
+    },
+    /// One ranked read over several keys, one snapshot of entries per key.
+    WindowReduceFanIn {
+        keys: &'a [String],
+        spec: &'a crate::types::WindowReduceRankSpec,
+        held: Vec<window_reduce_rank_read::RankSnapshot>,
+        start_routing_bucket: u32,
+        end_routing_bucket: u32,
+        now_ms: u64,
+    },
+}
+
+/// The answer to a read that is a lookup or a bounded walk of a resident map, taken under the shard
+/// guard. `None` leaves the read to the ordinary path.
+///
+/// The same answers the ordinary arms give for the same maps: the expiry check is the caller's, and
+/// a set's count and membership are taken from the member map only when it is allowed to serve them
+/// and holds the key, as the ordinary arms do before they fall back to a listing.
+fn index_only_read(shard: &ShardState, command: &Command) -> Option<CommandResponse> {
+    match command {
+        Command::ZSetScore { key, member } => {
+            Some(execute_on_shard::zset_score_answer(shard, key, member))
+        }
+        Command::ZSetCard { key } => Some(execute_on_shard::zset_card_answer(shard, key)),
+        Command::ListLen { key } => Some(execute_on_shard::list_len_answer(shard, key)),
+        Command::ZSetScan { key, after, limit } => {
+            Some(execute_on_shard::zset_scan_answer(shard, key, after, *limit))
+        }
+        Command::SetScan { key, after, limit } => {
+            Some(execute_on_shard::set_scan_answer(shard, key, after, *limit))
+        }
+        Command::SetCard { key } => execute_on_shard::set_card_answer(shard, key),
+        Command::SetIsMember { key, member } => {
+            execute_on_shard::set_is_member_answer(shard, key, member)
+        }
+        Command::ZSetRange { key, start, stop, rev } => {
+            Some(execute_on_shard::zset_range_answer(shard, key, *start, *stop, *rev))
+        }
+        Command::SetMembers { key } => execute_on_shard::set_members_from_map(shard, key),
+        _ => None,
+    }
+}
+
+impl FastPathRead<'_> {
+    /// Every entry a ranked read opens, with the key it belongs to, for pinning what they name.
+    fn rank_entries(&self) -> Vec<(&str, &ElementEntry)> {
+        match self {
+            Self::WindowReduceRank { key, held, .. } => held.entries().map(|entry| (*key, entry)).collect(),
+            Self::WindowReduceRankBatch { queries, held, .. } => queries
+                .iter()
+                .zip(held)
+                .flat_map(|(query, taken)| taken.entries().map(move |entry| (query.key.as_str(), entry)))
+                .collect(),
+            Self::WindowReduceFanIn { keys, held, .. } => keys
+                .iter()
+                .zip(held)
+                .flat_map(|(key, taken)| taken.entries().map(move |entry| (key.as_str(), entry)))
+                .collect(),
+            _ => Vec::new(),
+        }
+    }
+
+    fn pin_feature_slabs(&self, blocks: &BlockStore) -> Option<crate::block_store::BlockStoreReadSnapshot> {
+        let ranked = self.rank_entries();
+        if !ranked.is_empty() {
+            let mut snapshot = None;
+            for (_, address) in ranked {
+                if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                    snapshot.get_or_insert_with(|| crate::block_store::BlockStoreReadSnapshot::new(blocks))
+                        .pin(address.block_slab_id());
+                }
+            }
+            return snapshot;
+        }
+        let Self::FeatureRange { window, .. } = self else { return None; };
+        let mut snapshot = None;
+        for (_, address) in window {
+            if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                snapshot.get_or_insert_with(|| crate::block_store::BlockStoreReadSnapshot::new(blocks))
+                    .pin(address.block_slab_id());
+            }
+        }
+        snapshot
+    }
+
+    fn pin_log_locations(
+        &self,
+        blocks: &BlockStore,
+        shard: ShardId,
+    ) -> Option<block_in_wal::ReadSnapshotGuard> {
+        match self {
+            Self::String { key, address, .. } | Self::StringShared { key, address, .. } => {
+                let address = address.as_ref().filter(|address| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                })?;
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                guard.pin(blocks, stable_block_object_id(shard, "string", key), None, address);
+                Some(guard)
+            }
+            Self::HashField { key, field, address, .. } => {
+                let address = address.as_ref().filter(|address| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                })?;
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                guard.pin(blocks, stable_block_object_id(shard, "hash", key), Some(*field), address);
+                Some(guard)
+            }
+            Self::Hash { key, fields, .. } if fields.iter().any(|(_, address)| {
+                crate::wal_record::is_wal_resident(address.block_slab_id())
+            }) => {
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                let object = stable_block_object_id(shard, "hash", key);
+                for (field, address) in fields {
+                    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                        guard.pin(blocks, object, Some(&field[..]), address);
+                    }
+                }
+                Some(guard)
+            }
+            Self::FeatureRange { key, window, .. } => {
+                let mut snapshot = None;
+                let object = stable_block_object_id(shard, "feature", key);
+                for (_, address) in window {
+                    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                        snapshot.get_or_insert_with(|| {
+                            block_in_wal::ReadSnapshotGuard::retained_batch(blocks, shard, window.len())
+                        }).pin(blocks, object, None, address);
+                    }
+                }
+                snapshot
+            }
+            Self::WindowReduceRank { .. } | Self::WindowReduceRankBatch { .. } | Self::WindowReduceFanIn { .. } => {
+                let entries = self.rank_entries();
+                let mut snapshot = None;
+                for (key, address) in &entries {
+                    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                        snapshot.get_or_insert_with(|| {
+                            block_in_wal::ReadSnapshotGuard::retained_batch(blocks, shard, entries.len())
+                        }).pin(blocks, stable_block_object_id(shard, "feature", key), None, address);
+                    }
+                }
+                snapshot
+            }
+            Self::List { key, window, .. }
+                if window.iter().any(|(_, address)| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                }) =>
+            {
+                let mut guard = block_in_wal::ReadSnapshotGuard::new(blocks, shard);
+                let object = stable_block_object_id(shard, "list", key);
+                for (seq, address) in window {
+                    if crate::wal_record::is_wal_resident(address.block_slab_id()) {
+                        let mut name = [0_u8; 16];
+                        let element_name = execute_on_shard::list_element_name(*seq, &mut name);
+                        guard.pin(blocks, object, Some(element_name), address);
+                    }
+                }
+                Some(guard)
+            }
+            // A READ THAT FETCHES NO BLOCKS HAS NO LOCATION TO PIN. `Answer` is an integer taken
+            // from the index and `Value` is a byte string copied out of a resident map, both under
+            // the guard; nothing is read after it drops, so there is no WAL-resident address a
+            // reclaim could retire out from under the read. See
+            // `a_read_that_fetches_no_blocks_pins_nothing`.
+            Self::Hash { .. }
+            | Self::Answer { .. }
+            | Self::Response { .. }
+            | Self::Value { .. }
+            | Self::List { .. } => None,
+        }
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_FAST_READ_PLAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 /// What the served-index encode did while this thread held the shard-table WRITE guard.
@@ -3534,75 +4764,6 @@ pub mod shard_write_guard {
     }
 }
 
-/// The shard table's write guard, with the region it covers marked for measurement.
-///
-/// Marking at the ACQUISITION rather than around each expensive call is what makes the counter
-/// hard to blind: a call that moves into the region starts being counted because it is in the
-/// region, not because someone remembered to wrap it, and a call that moves out stops for the
-/// same reason. The mark is released by the same `Drop` that releases the lock, so an early
-/// `drop(guard)` shortens the measured region exactly as much as it shortens the real one.
-struct MarkedShardWriteGuard<'a> {
-    guard: std::sync::RwLockWriteGuard<'a, HashMap<ShardId, ShardState>>,
-}
-
-impl<'a> MarkedShardWriteGuard<'a> {
-    fn new(guard: std::sync::RwLockWriteGuard<'a, HashMap<ShardId, ShardState>>) -> Self {
-        shard_write_guard::entered();
-        Self { guard }
-    }
-}
-
-impl std::ops::Deref for MarkedShardWriteGuard<'_> {
-    type Target = HashMap<ShardId, ShardState>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.guard
-    }
-}
-
-impl std::ops::DerefMut for MarkedShardWriteGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.guard
-    }
-}
-
-impl Drop for MarkedShardWriteGuard<'_> {
-    fn drop(&mut self) {
-        shard_write_guard::left();
-    }
-}
-
-/// The shard table's READ guard, with the region it covers marked the same way.
-///
-/// A read guard looks harmless and is not: it admits other readers but excludes every writer, so
-/// a maintenance stage holding one across per-block I/O stops all writes on the shard for as long
-/// as the I/O takes. Marked at the acquisition for the same reason the write guard is -- work
-/// moving out of the region stops being counted because of WHERE IT IS, not because a wrapper
-/// was remembered.
-struct MarkedShardReadGuard<'a> {
-    guard: std::sync::RwLockReadGuard<'a, HashMap<ShardId, ShardState>>,
-}
-
-impl<'a> MarkedShardReadGuard<'a> {
-    fn new(guard: std::sync::RwLockReadGuard<'a, HashMap<ShardId, ShardState>>) -> Self {
-        shard_write_guard::entered_read();
-        Self { guard }
-    }
-}
-
-impl std::ops::Deref for MarkedShardReadGuard<'_> {
-    type Target = HashMap<ShardId, ShardState>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.guard
-    }
-}
-
-impl Drop for MarkedShardReadGuard<'_> {
-    fn drop(&mut self) {
-        shard_write_guard::left_read();
-    }
-}
 
 /// Stamp the shard with the current format version and serialize it.
 ///
@@ -3610,9 +4771,7 @@ impl Drop for MarkedShardReadGuard<'_> {
 /// is set first, for the snapshot callers that keep the shard and want it to read as current.
 pub(super) fn serialize_index_stamped(shard: &mut ShardState) -> Vec<u8> {
     shard.index_format_version = SHARD_INDEX_FORMAT_VERSION;
-    let bytes = encode_index_bytes(shard);
-    shard_write_guard::note_index_encode(bytes.len());
-    bytes
+    serialize_index(shard)
 }
 
 /// The served index of a shard, as bytes. Always the msgpack container, whatever the shard's own
@@ -3627,6 +4786,14 @@ pub(super) fn serialize_index_stamped(shard: &mut ShardState) -> Vec<u8> {
 /// field from it, so a reader gets the current stamp from either shard and the writer has nothing
 /// left to choose.
 fn serialize_index(shard: &ShardState) -> Vec<u8> {
+    // Release markers are memory-only. Complete the owned image without making
+    // evicted buckets resident again in the served shard.
+    let mut complete = (!shard.bucket_index.released_buckets.is_empty()).then(|| shard.clone());
+    if let Some(snapshot) = complete.as_mut() {
+        let shard_id = shard.shard_id().expect("released checkpoint must identify its shard");
+        storage_bucket_internals::restore_released_buckets_in_checkpoint(snapshot, shard_id);
+    }
+    let shard = complete.as_ref().unwrap_or(shard);
     let bytes = encode_index_bytes(shard);
     // Counted at the two production entry points rather than inside `encode_index_bytes`, so the
     // tally is one per served-index encode whichever branch produced it -- and so the handful of
@@ -3676,6 +4843,10 @@ const INDEX_ZSTD_LEVEL: i32 = 1;
 #[cfg(test)]
 #[path = "engine/index_encode_work_tests.rs"]
 mod index_encode_work_tests;
+
+#[cfg(test)]
+#[path = "engine/checkpoint_release_tests.rs"]
+mod checkpoint_release_tests;
 
 /// Does this look like a served index?
 ///
@@ -3835,8 +5006,6 @@ pub(super) fn encode_index_bytes_as_plain_json(shard: &ShardState) -> Vec<u8> {
 /// every leaf. It rides the load rather than a timer or a flag, because the load is the moment the
 /// whole structure is in hand and already paid for.
 pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
-    #[cfg(test)]
-    bucket_dump_manifest_methods::note_checkpoint_decode();
     // WRAPPED RATHER THAN EDITED PER ARM, so that a second payload added later is packed without
     // anyone having to remember to.
     let mut state = decode_index_bytes_inner(bytes)?;
@@ -3844,9 +5013,10 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
     Ok(state)
 }
 
-/// The codec arms themselves. Reached only through `decode_index_bytes` above, which packs what
-/// this fills -- so a second arm added here is covered without being told to be.
+/// Validate and decode the complete image. Recovery can defer packing until it selects an image.
 fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
+    #[cfg(test)]
+    bucket_dump_manifest_methods::note_checkpoint_decode();
     if !bytes.starts_with(INDEX_CONTAINER_MAGIC) {
         return Err("served index is not a container: it does not start with the container magic"
             .to_string());
@@ -4017,6 +5187,14 @@ fn command_upsert_element_names(
             key.clone(),
             Some(crate::engine::execute_on_shard::zset_element_name(member)),
         )]),
+        // Every member the command names, once each: a member named twice writes one element name.
+        Command::ZSetAddMany { key, members } => {
+            let names: std::collections::BTreeSet<String> = members
+                .iter()
+                .map(|member| crate::engine::execute_on_shard::zset_element_name(&member.member))
+                .collect();
+            Some(names.into_iter().map(|name| ("zset", key.clone(), Some(name))).collect())
+        }
         Command::ZSetCountAdjust { key, member, .. }
             if shard.bucket_index.zsets.get(key).is_some_and(|members| members.contains_key(member)) =>
         {
@@ -4034,6 +5212,21 @@ fn command_upsert_element_names(
                 Some(crate::engine::execute_on_shard::set_element_name(member)),
             )])
         }
+        // Every member the command names, in order. A member that was already in the set is
+        // named too: the record then restates its unchanged address, which is what the index
+        // already holds, so the elements a new member writes are exactly the ones `SetAdd` writes.
+        Command::SetAddMany { key, members } => Some(
+            members
+                .iter()
+                .map(|member| {
+                    (
+                        "set",
+                        key.clone(),
+                        Some(crate::engine::execute_on_shard::set_element_name(member)),
+                    )
+                })
+                .collect(),
+        ),
         // A push files its block under its sequence number, which is only knowable once the
         // write has landed: post-apply the pushed element is the list's FIRST entry for a left
         // push and its LAST for a right one. That is why this needs shard state and the other
@@ -4051,6 +5244,28 @@ fn command_upsert_element_names(
                 key.clone(),
                 Some(format!("{:016x}", (seq as u64).wrapping_sub(i64::MIN as u64))),
             )])
+        }
+        // The elements a run of pushes filed: the list's first (left) or last (right) entries, as
+        // many as the command pushed, read back the same way.
+        Command::ListPushMany { key, members, left } => {
+            let list = shard.bucket_index.lists.get(key)?;
+            let sequences: Vec<i64> = if *left {
+                list.keys().take(members.len()).copied().collect()
+            } else {
+                list.keys().rev().take(members.len()).copied().collect()
+            };
+            Some(
+                sequences
+                    .into_iter()
+                    .map(|sequence| {
+                        (
+                            "list",
+                            key.clone(),
+                            Some(format!("{:016x}", (sequence as u64).wrapping_sub(i64::MIN as u64))),
+                        )
+                    })
+                    .collect(),
+            )
         }
         _ => None,
     }
@@ -4155,7 +5370,7 @@ fn collect_upsert_index_items(
             });
         // THE AUTHORITY, CALLED RATHER THAN COPIED. `block_ref_key_from_parts` says of itself:
         // "One definition, called from the block index's serialization and from the replay log, so
-        // the two cannot drift into different spellings of the same page." This site was a hand
+        // the two cannot drift into different spellings of the same block." This site was a hand
         // rolled second copy of exactly those eight parts in exactly that order -- which is how a
         // derivation drifts, and this one did: when `generation` stopped being
         // `block_id.or(object_id)` the two copies began disagreeing for WAL-resident blocks, and
@@ -4212,13 +5427,17 @@ fn command_removed_element_name(command: &Command) -> Option<(&'static str, Opti
             "zset",
             Some(crate::engine::execute_on_shard::zset_element_name(member)),
         )),
-        Command::ListPop { .. } | Command::ListRemove { .. } | Command::ListTrim { .. } => {
+        // Several elements, so no one name: stated as a removal that names none, as a list's pops are.
+        Command::ZSetRemoveMany { .. } => Some(("zset", Some(String::new()))),
+        Command::ListPop { .. } | Command::ListPopMany { .. } | Command::ListRemove { .. } | Command::ListTrim { .. } => {
             Some(("list", Some(String::new())))
         }
         Command::SetRemove { member, .. } => Some((
             "set",
             Some(crate::engine::execute_on_shard::set_element_name(member)),
         )),
+        // Several elements, so no one name: stated as a removal that names none, as a list's pops are.
+        Command::SetRemoveMany { .. } => Some(("set", Some(String::new()))),
         Command::HashDelete { field, .. } => Some(("hash", Some(field.clone()))),
         _ => None,
     }
@@ -4582,6 +5801,13 @@ fn command_touched_container_elements(
             key: key.clone(),
             member: member.clone(),
         }],
+        Command::SetAddMany { key, members } => members
+            .iter()
+            .map(|member| TouchedContainerElement::Set {
+                key: key.clone(),
+                member: member.clone(),
+            })
+            .collect(),
         // The score is deliberately NOT taken from the command. It is read back out of the durable
         // map at capture time, so the record carries the score the map actually holds rather than a
         // second rendering of the `f64` the caller sent -- which is #1989's rule, applied at the
@@ -4591,6 +5817,13 @@ fn command_touched_container_elements(
             key: key.clone(),
             member: member.clone(),
         }],
+        Command::ZSetAddMany { key, members } => members
+            .iter()
+            .map(|member| TouchedContainerElement::ZSet {
+                key: key.clone(),
+                member: member.member.clone(),
+            })
+            .collect(),
         Command::HashSet { key, field, .. } | Command::HashIncrBy { key, field, .. } => {
             vec![TouchedContainerElement::Hash {
                 key: key.clone(),
@@ -4624,6 +5857,22 @@ fn command_touched_container_elements(
                     key: key.clone(),
                     sequence,
                 }]
+            })
+            .unwrap_or_default(),
+        Command::ListPushMany { key, members, left } => shard
+            .bucket_index
+            .lists
+            .get(key)
+            .map(|list| {
+                let sequences: Vec<i64> = if *left {
+                    list.keys().take(members.len()).copied().collect()
+                } else {
+                    list.keys().rev().take(members.len()).copied().collect()
+                };
+                sequences
+                    .into_iter()
+                    .map(|sequence| TouchedContainerElement::List { key: key.clone(), sequence })
+                    .collect::<Vec<_>>()
             })
             .unwrap_or_default(),
         _ => Vec::new(),
@@ -4714,11 +5963,29 @@ fn capture_container_element_states(
         .collect()
 }
 
-fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Value> {
+#[cfg(test)]
+thread_local! {
+    /// Test switch: capture a series by building its `Value`, as every capture did before the
+    /// points were written straight to the encoder. The differential and the growing control.
+    pub(crate) static CAPTURE_SERIES_AS_VALUES: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<crate::index_log::KeyState> {
     keys.iter()
         .map(|key| {
             let mut blob = serde_json::Map::new();
             blob.insert("key".to_string(), serde_json::Value::String(key.clone()));
+            // THE SERIES IS NOT TURNED INTO A `Value`. That built a map, five keys and a node per
+            // point on every write that trimmed one; the points are carried as they are and
+            // written straight to the encoder, in the same bytes (`KeyState`).
+            let features: Option<Vec<(u64, ElementEntry)>> = shard.features().get(&key[..]).map(|series| {
+                let mut points: Vec<(u64, ElementEntry)> =
+                    series.points().map(|(at, address)| (at, address.clone())).collect();
+                points.sort_unstable_by(|left, right| {
+                    crate::index_log::compare_instants_as_text(left.0, right.0)
+                });
+                points
+            });
             let mut put = |name: &str, value: Option<serde_json::Value>| {
                 if let Some(value) = value {
                     if !value.is_null() {
@@ -4729,13 +5996,6 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
             // THE BLOB KEEPS THE STORED SHAPE. The map holds the owned array; the capture field has
         // always been the B-tree object, and changing it here would change the blob format for
         // a representation change that is supposed to be invisible outside the map.
-        put(
-            "features",
-            shard
-                .features()
-                .get(&key[..])
-                .and_then(|v| serde_json::to_value(v.to_btree()).ok()),
-        );
             put("expires_at_ms", shard.expires_at_ms().get(key.as_str()).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_changes", shard.control_state_changes.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_selection", shard.control_state_selection.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
@@ -4805,7 +6065,17 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
             put("context_entities", shard.context_entities().get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
-            serde_json::Value::Object(blob)
+            match features {
+                #[cfg(test)]
+                Some(features) if CAPTURE_SERIES_AS_VALUES.with(std::cell::Cell::get) => {
+                    // The path every capture took before: the series as a `Value`.
+                    let series: std::collections::BTreeMap<u64, ElementEntry> = features.into_iter().collect();
+                    blob.insert("features".to_string(), serde_json::to_value(series).expect("a series is a value"));
+                    crate::index_log::KeyState::Json(serde_json::Value::Object(blob))
+                }
+                Some(features) => crate::index_log::KeyState::Captured { rest: blob, features },
+                None => crate::index_log::KeyState::Json(serde_json::Value::Object(blob)),
+            }
         })
         .collect()
 }
@@ -4814,6 +6084,31 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
 /// pinning the authoritative membership a write produced. Used on reload after WAL replay
 /// to correct the exact touched keys, so reconstruction from physical blocks honors the
 /// evicted/tombstoned membership instead of resurrecting it.
+/// Applies a key-state edit -- `{"removed": [instants], "added": {"<instant>": <address>}}` -- to the
+/// series the fold holds for `key`: the removed instants go, the added points are set, and a series
+/// left empty takes its key with it. An edit that names nothing it can read changes nothing.
+fn apply_features_edit(shard: &mut ShardState, key: &str, edit: &serde_json::Value) {
+    let removed: Vec<u64> = edit
+        .get("removed")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
+    let added: std::collections::BTreeMap<u64, ElementEntry> = edit
+        .get("added")
+        .and_then(|value| serde_json::from_value(value.clone()).ok())
+        .unwrap_or_default();
+    let features = shard.features_mut();
+    let series = features.entry(std::sync::Arc::from(key)).or_default();
+    for at in removed {
+        crate::engine::timestamped_series::TimestampedSeriesWrite::clear(series, at);
+    }
+    for (at, address) in added {
+        crate::engine::timestamped_series::TimestampedSeriesWrite::set(series, at, address);
+    }
+    if crate::engine::timestamped_series::TimestampedSeries::is_empty(series) {
+        features.remove(key);
+    }
+}
+
 fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
     for blob in key_states {
         let Some(key) = blob.get("key").and_then(|value| value.as_str()) else {
@@ -4841,11 +6136,18 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         // The type parameter is named because this map implements `KeyedState` for two value
         // types, exactly as the event map does: the blob carries the B-tree shape and the map
         // holds the array.
-        apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
-            shard.features_mut(),
-            key,
-            blob.get("features"),
-        );
+        // A key-state EDIT names only what left the series and what joined it, and is applied to
+        // the series the fold already holds. It must not go through the whole-series field below,
+        // which reads an absent `features` as "this key had none" and removes the series.
+        if let Some(edit) = blob.get("features_edit") {
+            apply_features_edit(shard, key, edit);
+        } else {
+            apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
+                shard.features_mut(),
+                key,
+                blob.get("features"),
+            );
+        }
         // DIRECT WRITE TO `expires_at_ms` -- the deadline-ordered mirror is invalidated at the
         // end of this function. See the note there.
         apply_key_state_field(shard.expires_at_ms_mut(), key, blob.get("expires_at_ms"));
@@ -4929,6 +6231,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         // that folds a delta onto a shard already in service would land exactly on the
         // never-repaired case.
         shard.expiry_by_deadline.clear();
+        shard.expiry_scan_positions = [None, None];
     }
 }
 
@@ -5281,10 +6584,16 @@ impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
     for std::collections::HashMap<state::ModelKey, object_record::ObjectSlot>
 {
     fn insert_entry(&mut self, key: &str, value: std::collections::BTreeMap<u64, ElementEntry>) {
+        // THE SLOT CARRIES THE BLOCKS OF THE OBJECT'S DATA as well as its points, and this states the
+        // POINTS. Building a new slot and inserting it dropped the refs of every block the fold had
+        // already filed under this key, leaving those blocks in the index with no identity beside
+        // them; a captured series replaces the series and nothing else.
+        let kept_refs = self.get_mut(key).and_then(|old| old.take_refs());
         let mut slot = object_record::ObjectSlot::default();
         for (at, address) in value {
             timestamped_series::TimestampedSeriesWrite::set(&mut slot, at, address);
         }
+        slot.replace_refs(kept_refs);
         self.insert(key.into(), slot);
     }
 
@@ -5323,6 +6632,261 @@ fn fold_delta_block_items(
     items: &[crate::index_log::IndexItem],
     upsert: bool,
 ) {
+    fold_delta_block_items_replacing(bucket_index, covered_keys, items, items, upsert);
+}
+
+/// Whether the base state still names the block `from` describes: a block of the same model and
+/// object, in the same bucket, at EXACTLY `from`'s old address. The identity a relocation is applied
+/// against; see `IndexDeltaRecord::relocated_from`.
+fn relocation_source_is_current(bucket_index: &CoreIndex, from: &crate::index_log::IndexItem) -> bool {
+    let Some(old) = from.entry.as_ref() else {
+        return false;
+    };
+    let Some(bucket) = bucket_index.bucket_map.get(&from.routing_bucket) else {
+        return false;
+    };
+    let names = crate::engine::state::block_identities_in(
+        bucket,
+        &crate::engine::state::BlockKeysByPosition::from_parts_for_keys(
+            &bucket_index.objects,
+            &bucket_index.object_block_lookup,
+            std::iter::once(&*from.object_key),
+        ),
+    );
+    let wanted = live_block_key(old);
+    bucket.block_index.iter().any(|(handle, block)| {
+        block.model_id().as_str() == from.model_id
+            && names.get(handle).is_some_and(|key| &**key == from.object_key.as_ref())
+            && live_block_key(&block.address) == wanted
+    })
+}
+
+/// Apply one relocation record to a state loaded from the base image alone: each `to[i]` replaces
+/// `from[i]`, but ONLY where the state still names `from[i]` (see `relocation_source_is_current`).
+/// A pair whose source is not current is skipped: the key was written after the base and the WAL
+/// tail re-executes that write, so applying the relocation as well would apply it twice.
+/// Items are applied in record order, so a chain a->b->c across records checks each step against the
+/// state the previous one left. Returns how many pairs were applied.
+fn fold_relocation_record(
+    shard: &mut ShardState,
+    from: &[crate::index_log::IndexItem],
+    to: &[crate::index_log::IndexItem],
+    elements: &[String],
+    repoint_blocks: bool,
+) -> usize {
+    // A record that does not pair its items is malformed; apply none of it rather than guess.
+    if from.len() != to.len() || from.len() != elements.len() {
+        return 0;
+    }
+    let mut applied = 0;
+    let no_covered_keys = BTreeSet::new();
+    let series_applied = fold_series_relocations(shard, from, to);
+    for (index, ((old, new), element)) in from.iter().zip(to.iter()).zip(elements.iter()).enumerate() {
+        // THE ELEMENT IS THE IDENTITY, and it is checked in the model map recovery reads back: the
+        // element must still be at the old address. An element rewritten after the base is not, and
+        // the WAL tail re-derives it, so the record is skipped for it.
+        if !series_applied[index] && !repoint_model_element(shard, old, new, element) {
+            continue;
+        }
+        applied += 1;
+        // The bucket index names BLOCKS, and a batched container block carries many elements: the
+        // first element to move it replaces the entry, the rest find it already replaced and only
+        // repoint their own address above. A manifest-chosen base derives its bucket index from the
+        // model maps afterwards, so it asks only for the model maps (`repoint_blocks == false`).
+        if repoint_blocks && relocation_source_is_current(&shard.bucket_index, old) {
+            fold_delta_block_items_replacing(
+                &mut shard.bucket_index,
+                &no_covered_keys,
+                std::slice::from_ref(old),
+                std::slice::from_ref(new),
+                true,
+            );
+        }
+    }
+    applied
+}
+
+/// A series record names blocks, not points. Rewrite all points sharing a moved block in one
+/// owner walk, preserving pair order for chained moves and leaving newer addresses untouched.
+fn fold_series_relocations(
+    shard: &mut ShardState,
+    from: &[crate::index_log::IndexItem],
+    to: &[crate::index_log::IndexItem],
+) -> Vec<bool> {
+    use storage_bucket_internals::StoredModelKind;
+    use timestamped_series::TimestampedSeries;
+
+    let mut applied = vec![false; from.len()];
+    let mut owners = HashMap::<
+        (StoredModelKind, &str),
+        HashMap<ElementEntry, Vec<(usize, &ElementEntry)>>,
+    >::new();
+    for (index, (old, new)) in from.iter().zip(to).enumerate() {
+        let Some(kind) = StoredModelKind::from_stored_name(&old.model_id) else { continue };
+        if !matches!(kind,
+            StoredModelKind::Feature | StoredModelKind::ContextEvent
+                | StoredModelKind::ContextIndex | StoredModelKind::ContextAudit
+                | StoredModelKind::ContextChild | StoredModelKind::ContextSummary
+                | StoredModelKind::ContextCompression
+        ) {
+            continue;
+        }
+        let (Some(source), Some(destination)) = (old.entry.as_ref(), new.entry.as_ref()) else {
+            continue;
+        };
+        owners.entry((kind, old.object_key.as_ref())).or_default()
+            .entry(source.clone()).or_default().push((index, destination));
+    }
+    for ((kind, key), moves) in owners {
+        let Some(series) = shard.bucket_index.objects.get_mut(&kind)
+            .and_then(|objects| objects.get_mut(key)) else { continue };
+        for (_, address) in series.points_mut() {
+            let mut next_index = 0;
+            while let Some((index, destination)) = moves.get(&*address)
+                .and_then(|pairs| pairs.iter().find(|(index, _)| *index >= next_index))
+            {
+                *address = (*destination).clone();
+                applied[*index] = true;
+                next_index = *index + 1;
+            }
+        }
+    }
+    applied
+}
+
+/// The one-object selection `try_visit_element_values_mut` takes.
+fn one_object(key: &str) -> std::collections::HashSet<state::ModelKey> {
+    std::iter::once(std::sync::Arc::<str>::from(key)).collect()
+}
+
+/// Repoint one element's address in the model map recovery reads back, but only if it is still at the
+/// item's OLD address. Returns whether it was. The container maps are the SOLE source of their
+/// elements at load (the derived view for those kinds is empty and the persisted map is filtered
+/// against the live block set), so a bucket-index repoint alone would drop every moved element.
+/// A kind this does not know answers `false`, which skips the record for it.
+fn repoint_model_element(
+    shard: &mut ShardState,
+    from: &crate::index_log::IndexItem,
+    to: &crate::index_log::IndexItem,
+    element: &str,
+) -> bool {
+    let (Some(old), Some(new)) = (from.entry.as_ref(), to.entry.as_ref()) else {
+        return false;
+    };
+    let key: &str = &from.object_key;
+    match from.model_id.as_str() {
+        "string" => match shard.strings_mut().get_mut(key) {
+            Some(slot) if slot.address() == *old => {
+                slot.set_address(new);
+                true
+            }
+            _ => false,
+        },
+        "hash" => {
+            let selected = one_object(key);
+            let mut done = false;
+            let _ = shard.bucket_index.hashes.try_visit_element_values_mut(Some(&selected), |_, mut fields| {
+                for (field, address) in fields.iter_mut() {
+                    if field.as_bytes() == element.as_bytes() && *address == *old {
+                        *address = new.clone();
+                        done = true;
+                    }
+                }
+                Ok::<_, ()>(())
+            });
+            done
+        }
+        "set" => {
+            let Some(member) = container_blocks::member_from_element_name(element) else {
+                return false;
+            };
+            let selected = one_object(key);
+            let mut done = false;
+            let _ = shard.bucket_index.sets.try_visit_element_values_mut(Some(&selected), |_, mut members| {
+                for (name, address) in members.iter_mut() {
+                    if name.as_slice() == member.as_slice() && *address == *old {
+                        *address = new.clone();
+                        done = true;
+                    }
+                }
+                Ok::<_, ()>(())
+            });
+            done
+        }
+        "zset" => {
+            let Some(member) = container_blocks::member_from_element_name(element) else {
+                return false;
+            };
+            let selected = one_object(key);
+            let mut done = false;
+            let _ = shard.bucket_index.zsets.try_visit_element_values_mut(Some(&selected), |_, mut members| {
+                for (name, entry) in members.iter_mut() {
+                    if name.as_slice() == member.as_slice() && entry.1 == *old {
+                        entry.1 = new.clone();
+                        done = true;
+                    }
+                }
+                Ok::<_, ()>(())
+            });
+            done
+        }
+        "list" => {
+            let Some(sequence) = u64::from_str_radix(element, 16)
+                .ok()
+                .map(|biased| biased.wrapping_add(i64::MIN as u64) as i64)
+            else {
+                return false;
+            };
+            let selected = one_object(key);
+            let mut done = false;
+            let _ = shard.bucket_index.lists.try_visit_element_values_mut(Some(&selected), |_, mut entries| {
+                for (seq, address) in entries.iter_mut() {
+                    if *seq == sequence && *address == *old {
+                        *address = new.clone();
+                        done = true;
+                    }
+                }
+                Ok::<_, ()>(())
+            });
+            done
+        }
+        "control_state" => shard.with_control_state_block_mut(key, |record| {
+            if record.address() != *old { return false; }
+            record.set_address(new);
+            true
+        }).unwrap_or(false),
+        "context_node" => match shard.context_nodes_mut().get_mut(key) {
+            Some(address) if *address == *old => {
+                *address = new.clone();
+                true
+            }
+            _ => false,
+        },
+        "context_entity" => {
+            use timestamped_series::{TimestampedSeries, TimestampedSeriesWrite};
+            let Some((collection, encoded_entity)) = key.rsplit_once(':') else { return false };
+            let Ok(entity) = encoded_entity.parse::<u64>() else { return false };
+            if entity.to_string() != encoded_entity { return false; }
+            let Some(series) = shard.context_entities_mut().get_mut(collection) else { return false };
+            if TimestampedSeries::get(series, entity) != Some(old) { return false; }
+            TimestampedSeriesWrite::set(series, entity, new.clone());
+            true
+        }
+        _ => false,
+    }
+}
+
+/// The fold of `items` into the index, where the blocks an upsert SUPERSEDES are named by
+/// `superseded` and the blocks it FILES are `items`. An ordinary delta is both at once (the two are
+/// the same slice); a relocation supersedes the block at its old address and files the one at its
+/// new.
+fn fold_delta_block_items_replacing(
+    bucket_index: &mut CoreIndex,
+    covered_keys: &BTreeSet<String>,
+    superseded: &[crate::index_log::IndexItem],
+    items: &[crate::index_log::IndexItem],
+    upsert: bool,
+) {
     // FILING AND UN-FILING ARE ONE OBLIGATION, AND THIS SITE OWED BOTH.
     //
     // This function writes block entries and NOT the object lookup -- the tree says so in as many
@@ -5344,7 +6908,7 @@ fn fold_delta_block_items(
         // the same replacement the write path performed in memory. The predecessor lives in the
         // same routing bucket (the bucket derives from the object key), so the removal scans one
         // bucket per item and the covered-key wipe below stays untouched for snapshot records.
-        for item in items {
+        for item in superseded {
             let Some(mut bucket) = bucket_index.bucket_map.get_mut(&item.routing_bucket) else {
                 continue;
             };
@@ -5358,7 +6922,12 @@ fn fold_delta_block_items(
             // carrying no address cannot name a block, so it keeps the element-name-keyed behaviour it
             // has always had rather than matching everything.
             let names_a_block =
-                crate::engine::storage_bucket_internals::index_entry_names_a_block(&item.model_id);
+                crate::engine::storage_bucket_internals::index_entry_names_a_block(&item.model_id)
+                // THE FEATURE KIND CONVERGES ON THE BLOCK TOO. Its items are one per block written,
+                // and the live write supersedes nothing of the object: it files what it wrote and
+                // retires the blocks its replaced points left empty. Converging on the object here
+                // dropped every earlier block of the series.
+                || item.model_id == crate::engine::storage_bucket_internals::ModelKind::Feature.as_str();
             let here = item
                 .entry
                 .as_ref()
@@ -5784,6 +7353,15 @@ fn atomic_write_bytes(path: &Path, bytes: &[u8]) -> Result<(), std::io::Error> {
 /// longer WAL suffix -- no acked write is lost. Durability-critical writers (dump
 /// manifest, manifest install-on-load) MUST pass sync=true.
 fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<(), std::io::Error> {
+    atomic_write_bytes_synced_metadata(path, bytes, sync, false).map(|_| ())
+}
+
+fn atomic_write_bytes_synced_metadata(
+    path: &Path,
+    bytes: &[u8],
+    sync: bool,
+    capture_metadata: bool,
+) -> Result<Option<fs::Metadata>, std::io::Error> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     fs::create_dir_all(parent)?;
     let file_name = path
@@ -5801,6 +7379,8 @@ fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<()
         if sync {
             file.sync_all()?;
         }
+        // Capture the inode we wrote, not whichever file occupies the path after rename.
+        let metadata = capture_metadata.then(|| file.metadata().ok()).flatten();
         drop(file);
         fs::rename(&temp_path, path)?;
         if sync {
@@ -5815,7 +7395,7 @@ fn atomic_write_bytes_synced(path: &Path, bytes: &[u8], sync: bool) -> Result<()
             // block_store) already syncs the parent dir here.
             sync_parent_dir(path)?;
         }
-        Ok(())
+        Ok(metadata)
     })();
     if write_result.is_err() {
         let _ = fs::remove_file(&temp_path);
@@ -5888,13 +7468,15 @@ pub(super) fn wal_single_barrier() -> bool {
 /// the value. Writing the same bytes into a block segment as well costs a second write per set
 /// and nothing a recovery or a read uses: the block is served from the record through the
 /// WAL-resident registry until the storage manager's dump moves it into the block store, after
-/// which the log may be reclaimed. Default OFF; `TS_SYNC_VALUE_ONCE=1` turns it on.
+/// which the log may be reclaimed. Default ON; `TS_SYNC_VALUE_ONCE=0` turns it off.
 ///
-/// Why off: every such write holds a log-resident registration, the lowest registration pins the
-/// log's retention floor, and the storage manager's loop materialises at most
-/// `max_dump_buckets_per_round` per pass. A write rate above that grows the registry and the log
-/// without bound (a 1,500 s side-by-side soak left the log at its 128 MiB gate while the two-copy
-/// placement's log shrank). Turn the default on only after a sustained test shows both bounded.
+/// The known cost, accepted by the project owner when the default was turned on: every such write
+/// holds a log-resident registration, the lowest registration pins the log's retention floor, and
+/// the storage manager's loop materialises at most `max_dump_buckets_per_round` per pass. A write
+/// rate above that grows the registry and the log without bound (a 1,500 s side-by-side soak left
+/// the log at its 128 MiB gate while the two-copy placement's log shrank). A deployment with a
+/// sustained write rate above the cap should set `TS_SYNC_VALUE_ONCE=0` until the loop drains
+/// log-resident values at the write rate.
 ///
 /// Only under the single-barrier recovery default: the legacy delta-fold recovery trusts the
 /// index log, and a value-once write records no per-write index delta.
@@ -5908,7 +7490,7 @@ pub(super) fn sync_value_once_enabled() -> bool {
 
 /// The shipped default of `TS_SYNC_VALUE_ONCE`. A test pins it; see the note on
 /// [`sync_value_once_enabled`] before changing it.
-pub(crate) const SYNC_VALUE_ONCE_DEFAULT_ON: bool = false;
+pub(crate) const SYNC_VALUE_ONCE_DEFAULT_ON: bool = true;
 
 #[cfg(test)]
 thread_local! {
@@ -5989,8 +7571,7 @@ fn env_flag_on(name: &str) -> bool {
 ///
 /// A store written with the gate OFF has entries that name their elements, and this binary cannot
 /// read one. It must be REFUSED rather than misread, and that is the stamp's job --
-/// `an_ungated_store_is_refused_before_it_is_served` drives it on a stored golden and reads the
-/// engine's own load-path counters: accepted 0, stale 1, and nothing served. The named decoder drops
+/// `a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded` drives it. The named decoder drops
 /// a key it has no field for SILENTLY, so the refusal is what stands between that drop and an
 /// answer.
 ///
@@ -6522,35 +8103,39 @@ pub(in crate::engine) fn due_window<F>(
 where
     F: Fn(&str) -> bool,
 {
+    due_window_after(shard, now, limit, scan_budget, None, keep).0
+}
+
+pub(in crate::engine) fn due_window_after(
+    shard: &ShardState,
+    now: u64,
+    limit: usize,
+    scan_budget: usize,
+    after: Option<&(u64, std::sync::Arc<str>)>,
+    keep: impl Fn(&str) -> bool,
+) -> (Vec<(String, u64)>, Option<(u64, std::sync::Arc<str>)>) {
+    use std::ops::Bound::{Excluded, Unbounded};
+
     let mut selected = Vec::new();
+    let mut last_inspected: Option<&(u64, std::sync::Arc<str>)> = None;
     let mut walked = 0usize;
-    // A long run of due keys that `keep` rejects -- the other residency class, which a sweep that
-    // does not load cold buckets never removes -- sits at the FRONT of the view round after round.
-    // A walk capped at `scan_budget` ended inside that run and never reached an accepted key
-    // behind it, so one class could starve the other for as long as the run lasted. The walk gets
-    // a multiple of the budget instead: still bounded, and wide enough to step over a run the
-    // size of the budget many times over.
     let walk_cap = scan_budget.saturating_mul(16);
-    for ((expires_at, key), ()) in shard.expiry_by_deadline.iter() {
+    let lower = after.map_or(Unbounded, Excluded);
+    for (entry @ (expires_at, key), ()) in shard.expiry_by_deadline.range((lower, Unbounded)) {
         if *expires_at > now {
             break;
         }
-        if limit > 0 && selected.len() >= limit {
-            break;
+        if (limit > 0 && selected.len() >= limit) || (walk_cap > 0 && walked >= walk_cap) {
+            return (selected, last_inspected.cloned());
         }
-        if scan_budget > 0 && walked >= walk_cap {
-            break;
-        }
-        walked = walked.saturating_add(1);
-        // TRANSIENT, NOT RESIDENT. The returned `String`s leave this function and are dropped by
-        // the sweep that consumes them; the signature is left alone so no caller moves. This is
-        // one allocation per DUE key on a bounded round -- the same cost as the `String` clone it
-        // replaces -- and it is not one of the copies the footprint counts.
-        if keep(&**key) {
+        walked += 1;
+        last_inspected = Some(entry);
+        if keep(key) {
             selected.push((key.to_string(), *expires_at));
         }
     }
-    selected
+    // Reaching the end of the due range lets the next round begin at the front.
+    (selected, None)
 }
 
 fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
@@ -6628,6 +8213,14 @@ fn delete_record(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
+    delete_record_exact_with_identity_batch(shard, key, None)
+}
+
+fn delete_record_exact_with_identity_batch(
+    shard: &mut ShardState,
+    key: &str,
+    identities: Option<&mut maintenance_log::DeletionIdentityBatch>,
+) -> bool {
     let mut removed = false;
     // ONE MARK AUTHORISES EVERY RECORDED CONTAINER'S DROP, and that is why the witness is minted
     // here and handed out rather than minted inside each container's own operation.
@@ -6642,7 +8235,9 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     // one record genuinely authorises several mutations. Everywhere else a recorded container's
     // operation mints its own and the caller never sees it.
     let (marked, deletion) =
-        storage_bucket_internals::mark_bucket_index_object_deleted_filed(shard, key);
+        storage_bucket_internals::mark_bucket_index_object_deleted_filed(
+            shard, key, identities,
+        );
     removed |= marked;
     // ONE MARK, FOUR DROPS, which is now every container kind. The witness is `Clone` precisely
     // so that one recorded object deletion can authorise each of them; minting per kind would file
@@ -6672,6 +8267,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.control_state_selection.remove(key).is_some();
     removed |= shard.context_nodes_mut().remove(key).is_some();
     removed |= shard.context_events_mut().remove(key).is_some();
+    removed |= shard.context_event_timeline.remove(key).is_some();
     removed |= shard.context_indexes_mut().remove(key).is_some();
     removed |= shard.context_audits_mut().remove(key).is_some();
     removed |= shard.context_entities_mut().remove(key).is_some();
@@ -6681,12 +8277,69 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed
 }
 
+const MAX_DELETE_IDENTITY_PROJECTION_REFS: usize = 256;
+
+/// The bucket's bookkeeping when an object's blocks have just left it.
+///
+/// An empty bucket retains the deleted id as a tombstone. A mixed bucket must drop it before any
+/// reconciliation, or a normal delete is reported as divergence.
+fn note_object_left_bucket(bucket: &mut BucketNode, deleted_object_ids: &BTreeSet<u64>) {
+    if bucket.block_index.is_empty() {
+        bucket.object_index.extend(deleted_object_ids.iter().copied());
+    } else {
+        for object_id in deleted_object_ids {
+            bucket.object_index.remove(object_id);
+        }
+    }
+    bucket.set_dirty(true);
+    let next_flag = bucket.block_index.is_empty();
+    bucket.set_deleted(next_flag);
+    bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
+    bucket.set_meta_loaded(true);
+    let next_flag = !bucket.block_index.is_empty();
+    bucket.set_in_memory(next_flag);
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test switch: take the path that names the whole bucket instead of removing by handle.
+    static OBJECT_LOCAL_DELETE_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+fn object_local_delete_disabled() -> bool {
+    OBJECT_LOCAL_DELETE_DISABLED.with(std::cell::Cell::get)
+}
+
+#[cfg(not(test))]
+fn object_local_delete_disabled() -> bool {
+    false
+}
+
+#[cfg(test)]
+fn disable_object_local_delete_for_test(disabled: bool) {
+    OBJECT_LOCAL_DELETE_DISABLED.with(|flag| flag.set(disabled));
+}
+
 fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
+    mark_bucket_index_object_deleted_with_identity_batch(shard, key, None)
+}
+
+fn mark_bucket_index_object_deleted_with_identity_batch(
+    shard: &mut ShardState,
+    key: &str,
+    mut identities: Option<&mut maintenance_log::DeletionIdentityBatch>,
+) -> bool {
     // NO SHARD, NOTHING TO MARK. The ids this removes are derived from (shard, kind, key), and a
     // state with no shard id has no bucket index built under one either.
     let Some(shard_id) = shard.shard_id() else {
         return false;
     };
+    // A state that was cloned or swapped in has no owners until something builds them; build them
+    // here, once, so the bucket below is named from its own objects and not from the shard.
+    shard.bucket_index.ensure_bucket_owners();
+    #[cfg(test)]
+    shard.bucket_index.assert_bucket_owners_cover_every_ref();
     // A RELEASED bucket holds no block entries, so the walk below finds nothing to remove and the
     // object id would stay claimed until some later reload re-derived the set. Settle it here,
     // while the model map this reads the address out of still holds the block.
@@ -6699,20 +8352,103 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         crate::engine::storage_bucket_internals::settle_released_bucket_object_delete(shard, key);
     let mut removed = false;
     let target_buckets = bucket_index_target_buckets_for_object_key(shard, key);
+    let object_ref_count = storage_model_kinds()
+        .iter()
+        .filter_map(|kind| shard.bucket_index.object_block_refs(kind, key))
+        .fold(0usize, |count, refs| count.saturating_add(refs.len()));
+    let needs_key_projection = identities.as_deref().map_or(true, |batch| {
+        target_buckets.iter().any(|bucket| !batch.reuses_bucket(*bucket))
+    });
+    let object_keys =
+        (needs_key_projection && object_ref_count <= MAX_DELETE_IDENTITY_PROJECTION_REFS).then(|| {
+            crate::engine::state::BlockKeysByPosition::from_parts_for_keys(
+                &shard.bucket_index.objects,
+                &shard.bucket_index.object_block_lookup,
+                [key],
+            )
+        });
+    // THE OBJECT'S OWN REFS NAME ITS OWN BLOCKS. With the lookup retained, the handles of this key's
+    // blocks in a bucket are exactly the refs the key holds there, so the blocks are removed by
+    // handle and nothing else in the bucket is read. Without the lookup the key's blocks can only be
+    // found by naming the whole bucket, which is the path below.
+    let object_local = !shard.bucket_index.names_no_object_blocks() && !object_local_delete_disabled();
     for routing_bucket in target_buckets {
+        if object_local {
+            let own_handles: Vec<u64> = storage_model_kinds()
+                .iter()
+                .filter_map(|kind| shard.bucket_index.object_block_refs(kind, key))
+                .flat_map(|refs| {
+                    refs.iter()
+                        .filter(|block_ref| block_ref.routing_bucket == routing_bucket)
+                        .map(|block_ref| block_ref.block_ref_key)
+                        .collect::<Vec<_>>()
+                })
+                .collect();
+            let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+                continue;
+            };
+            let mut deleted_object_ids = BTreeSet::new();
+            for handle in own_handles {
+                let Some(block) = bucket.block_index.remove(
+                    &handle,
+                    &mut shard.bucket_index.block_slab_live,
+                    crate::engine::state::StaleCause::Removed,
+                ) else {
+                    continue;
+                };
+                deleted_object_ids.insert(block.object_id(shard_id, key));
+                removed = true;
+                crate::engine::storage_bucket_internals::classify_bucket_layout_after_block_removal(
+                    &mut bucket,
+                    &block,
+                );
+            }
+            if !deleted_object_ids.is_empty() {
+                note_object_left_bucket(&mut bucket, &deleted_object_ids);
+                bucket.deleted_object_index.extend(deleted_object_ids);
+                if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
+                    owners.forget_key(routing_bucket, key);
+                }
+            }
+            continue;
+        }
+        if let Some(batch) = identities.as_deref_mut() {
+            batch.capture_bucket(shard, routing_bucket);
+        }
         let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
         let mut deleted_object_ids = BTreeSet::new();
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
-        let names = crate::engine::state::block_identities_in(
-            &bucket,
-            &crate::engine::state::BlockKeysByPosition::from_parts_for_bucket(
-                &shard.bucket_index.objects,
-                &shard.bucket_index.object_block_lookup,
-                routing_bucket,
-            ),
-        );
+        // Repair still needs every surviving identity. Use the small projection only
+        // when it names every block; mixed or incomplete buckets keep the full path.
+        let owned_names;
+        let names = match identities
+            .as_deref()
+            .and_then(|batch| batch.bucket(routing_bucket))
+        {
+            Some(names) => names,
+            None => {
+                owned_names = object_keys
+                    .as_ref()
+                    .filter(|_| bucket.block_index.len() <= MAX_DELETE_IDENTITY_PROJECTION_REFS)
+                    .map(|keys| crate::engine::state::block_identities_in(&bucket, keys))
+                    .filter(|names| names.len() == bucket.block_index.len())
+                    .unwrap_or_else(|| {
+                        // The bucket's own objects, not every object of the shard.
+                        crate::engine::state::block_identities_in(
+                            &bucket,
+                            &crate::engine::state::BlockKeysByPosition::from_owned_buckets(
+                                &shard.bucket_index.objects,
+                                &shard.bucket_index.object_block_lookup,
+                                shard.bucket_index.bucket_owners.get(),
+                                &[routing_bucket],
+                            ),
+                        )
+                    });
+                &owned_names
+            }
+        };
         bucket.block_index.retain(
             &mut shard.bucket_index.block_slab_live,
             crate::engine::state::StaleCause::Removed,
@@ -6732,22 +8468,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             }
         });
         if !deleted_object_ids.is_empty() {
-            // An empty bucket retains the deleted id as a tombstone. A mixed bucket must
-            // drop it before reconciliation, or a normal delete is reported as divergence.
-            if bucket.block_index.is_empty() {
-                bucket.object_index.extend(deleted_object_ids.iter().copied());
-            } else {
-                for object_id in &deleted_object_ids {
-                    bucket.object_index.remove(object_id);
-                }
-            }
-            bucket.set_dirty(true);
-            let next_flag = bucket.block_index.is_empty();
-            bucket.set_deleted(next_flag);
-            bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
-            bucket.set_meta_loaded(true);
-            let next_flag = !bucket.block_index.is_empty();
-            bucket.set_in_memory(next_flag);
+            note_object_left_bucket(&mut bucket, &deleted_object_ids);
             // THE REPAIR AT THE REMOVAL SITE, over this bucket's own blocks. A delta over the
             // ids this delete dropped stood here and was wrong -- it left drift that the reconcile
             // it replaced had been repairing silently. All three arms of that reconcile are kept,
@@ -6757,12 +8478,17 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             crate::engine::storage_bucket_internals::repair_object_index_against_its_blocks(
                 shard_id,
                 &mut bucket,
-                &names,
+                names,
             );
             crate::engine::storage_bucket_internals::classify_bucket_layout_in_place(&mut bucket);
             // Moved below the prune, which touches `object_index` and never this field. Nothing
             // between them reads it.
             bucket.deleted_object_index.extend(deleted_object_ids);
+            // THE OBJECT HAS LEFT THIS BUCKET. Forgetting is not needed for correctness (a stale
+            // owner names nothing) but keeps the lists to the objects that are there.
+            if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
+                owners.forget_key(routing_bucket, key);
+            }
         }
     }
     if removed {
@@ -7240,7 +8966,14 @@ fn mark_bucket_index_block_deleted_recording(
     removed
 }
 
+#[cfg(test)]
+thread_local! {
+    static ASSOCIATED_KEY_BUILDS_FOR_TEST: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 fn associated_record_keys(key: &str) -> Vec<String> {
+    #[cfg(test)]
+    ASSOCIATED_KEY_BUILDS_FOR_TEST.with(|count| count.set(count.get() + 1));
     if key.starts_with("control_state:") {
         return vec![key.to_string()];
     }
@@ -7272,6 +9005,15 @@ fn absorb_live_block_slab_ids(
 fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     let mut ids = BTreeSet::new();
     let mut visited = 0u64;
+    // Serving maps omit removals, but block-derived listings still read their physical markers.
+    // The reconciled tombstone rows retain those addresses until their entries are retired.
+    absorb_live_block_slab_ids(
+        &mut ids,
+        &mut visited,
+        shard.bucket_index.bucket_map.values()
+            .flat_map(|bucket| bucket.tombstone_elements.iter())
+            .map(|row| row.block.0),
+    );
     absorb_live_block_slab_ids(
         &mut ids,
         &mut visited,
@@ -7470,7 +9212,7 @@ fn append_string_value(
 /// being tidier: that function stamps the record header and the returned address from the SAME
 /// value. Assigning the ordinal on the index's copy afterwards would leave the header saying 0 and
 /// the address saying N, and `decode_block_record` compares exactly those two and refuses the block
-/// with "page id mismatch" -- the one cross-check on a read that can actually fire. So the ordinal
+/// with "block id mismatch" -- the one cross-check on a read that can actually fire. So the ordinal
 /// has to be an argument to the append, not a field set after it.
 ///
 /// `append_value` above is this with an ordinal of 0, which is what
@@ -7540,7 +9282,8 @@ fn append_owned_value_of_object(
         });
     }
     let address = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
-        block_store.append_block_of_object(
+        block_store.append_block_of_object_for_shard(
+            shard_id,
             &bytes,
             Some(object_id),
             Some(routing_bucket),
@@ -7613,7 +9356,8 @@ fn append_value_inner(
         if let Some(object_id) = object_id {
             block_in_wal::stage(object_id, element_name, bytes);
         }
-        return block_store.append_block_of_object(
+        return block_store.append_block_of_object_for_shard(
+            shard_id,
             bytes,
             object_id,
             routing_bucket,
@@ -7854,7 +9598,14 @@ fn invalidate_cache_key_inner(cache: &MultiLayerCache, key: CacheKey, memory_onl
     if memory_only {
         cache.invalidate_memory_only(&key);
     } else {
-        let _ = cache.invalidate(&key);
+        // ASK BEFORE INVALIDATING. A full `invalidate` of a key no tier holds still walks every
+        // tier's bookkeeping (disk index, manifest delete line, pmem delete line, ssd block
+        // delete), and that walk is the largest allocation class of a value write. A string's
+        // logical key is not filled by `StringGet`, so on an ordinary write it is absent from
+        // every tier and the walk removes nothing. `peek` answers for all three tiers and reports
+        // an expired entry as absent, which is the answer every read of it gives, so skipping on
+        // `false` leaves exactly the entries a reader could have been served.
+        invalidate_if_cached(cache, key);
     }
 }
 
@@ -7976,7 +9727,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
     //
     //   * `!bucket_map.is_empty()` -- satisfied by buckets holding NO blocks. Six of ten reaches
     //     over a 107-name set were this: nothing to mark, nothing lost.
-    //   * "has pages" -- satisfied by TOMBSTONES, which a mark must not dirty. The two
+    //   * "has blocks" -- satisfied by TOMBSTONES, which a mark must not dirty. The two
     //     non-fixture reaches were this.
     //   * "has a LIVE block" -- the actual question. Two reaches of 97 verdicts, both hand-built
     //     fixtures, each installing a block into `bucket_map` directly with NO filing anywhere in
@@ -7990,7 +9741,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
     // `sync_bucket_index_object_blocks_with_mode`, `rebuild_bucket_first_index` (twice),
     // `reload_released_bucket`, and `fold_delta_block_items`. The only doors that do not file are
     // `FromIterator<(Arc<str>, BlockIndex)> for BlockIndexMap`, which has ZERO callers anywhere,
-    // and the two serde doors that drop a decoded node's page keys -- `impl Deserialize for
+    // and the two serde doors that drop a decoded node's block keys -- `impl Deserialize for
     // BucketNode` and `BlockIndexMap`'s `serde(from = ..)` -- which compile out of `--lib` with
     // zero errors, measured against a control in the same probe form that yields one.
     //
@@ -8378,7 +10129,7 @@ fn invalidate_record_all(
 /// repeating the walk. `a_key_the_shard_has_dropped_is_never_still_answered_out_of_the_cache` is
 /// what holds that.
 ///
-/// Record-scoped indexes visit only the requested hash and feature selectors. Payload pages
+/// Record-scoped indexes visit only the requested hash and feature selectors. Payload blocks
 /// retain their physical keys and are neither copied nor scanned by this invalidation pass.
 /// GENERIC OVER THE KEY TYPE, and only because its two call sites hold their round's keys in
 /// different containers: `delete_drop` collects `Arc<str>` object keys off the live block entries,
@@ -8464,18 +10215,13 @@ fn read_block_frame_bytes(
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
-    let cache_key = CacheKey::page_with_slot(
-        shard_id,
-        address.block_slab_id(),
-        address.offset(),
-        address.length(),
-        routing_bucket);
+    let cache_key = read_block_key(shard_id, address, routing_bucket);
     read_block_frame_bytes_keyed(cache, block_store, shard_id, address, identity, cache_key)
 }
 
-/// [`read_block_frame_bytes`] with the page key already built.
+/// [`read_block_frame_bytes`] with the block key already built.
 ///
-/// A caller that reads many blocks builds their keys itself, through [`PageKeys`], so that blocks
+/// A caller that reads many blocks builds their keys itself, through [`BlockKeys`], so that blocks
 /// of one slab share one record-key allocation instead of each minting its own.
 #[allow(clippy::too_many_arguments)]
 fn read_block_frame_bytes_keyed(
@@ -8517,28 +10263,29 @@ fn read_block_frame_shared(
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<std::sync::Arc<[u8]>> {
-    let cache_key = CacheKey::page_with_slot(
-        shard_id,
-        address.block_slab_id(),
-        address.offset(),
-        address.length(),
-        routing_bucket,
-    );
+    let cache_key = read_block_key(shard_id, address, routing_bucket);
     let cached = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CacheRead, || {
         cache.get_shared(&cache_key)
     });
     if let Ok(Some(bytes)) = cached {
         return Some(bytes);
     }
-    read_block_frame_bytes_after_cache_miss(
-        cache,
-        block_store,
-        shard_id,
-        address,
-        identity,
-        cache_key,
-    )
-    .map(std::sync::Arc::from)
+    read_block_frame_shared_after_cache_miss(cache, block_store, shard_id, address, identity, cache_key)
+}
+
+fn read_block_frame_shared_after_cache_miss(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
+    cache_key: CacheKey,
+) -> Option<std::sync::Arc<[u8]>> {
+    let bytes: std::sync::Arc<[u8]> =
+        read_block_frame_from_storage(block_store, shard_id, address, identity)?.into();
+    // Cache promotion and the reader retain the same frame allocation.
+    let _ = cache.put_shared(cache_key, std::sync::Arc::clone(&bytes));
+    Some(bytes)
 }
 
 /// Read a frame from durable storage after its cache key has already missed.
@@ -8552,6 +10299,17 @@ fn read_block_frame_bytes_after_cache_miss(
     address: &ElementEntry,
     identity: BlockIdentity<'_>,
     cache_key: CacheKey,
+) -> Option<Vec<u8>> {
+    let bytes = read_block_frame_from_storage(block_store, shard_id, address, identity)?;
+    let _ = cache.put(cache_key, bytes.clone());
+    Some(bytes)
+}
+
+fn read_block_frame_from_storage(
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: BlockIdentity<'_>,
 ) -> Option<Vec<u8>> {
     // Past the cache, so this call goes to storage. Counted here rather than at each of the
     // three fallbacks below because every one of them is a trip to the store and they must not
@@ -8567,12 +10325,10 @@ fn read_block_frame_bytes_after_cache_miss(
             identity.element_name(),
             address,
         ) {
-            let _ = cache.put(cache_key, bytes.clone());
             return Some(bytes);
         }
     }
     if let Ok(bytes) = block_store.read(address) {
-        let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
     }
     // The block store could not answer, so try the record that carries this block.
@@ -8597,7 +10353,6 @@ fn read_block_frame_bytes_after_cache_miss(
         identity.element_name(),
         address,
     ) {
-        let _ = cache.put(cache_key, bytes.clone());
         return Some(bytes);
     }
     None
@@ -8651,8 +10406,8 @@ fn read_block_bytes(
     select_container_value(&bytes, element_name)
 }
 
-/// One element's value, for a caller that reads many elements and built their page keys itself
-/// (see [`PageKeys`]).
+/// One element's value, for a caller that reads many elements and built their block keys itself
+/// (see [`BlockKeys`]).
 ///
 /// A warm read selects the element out of the frame the cache already holds, shared, so the frame
 /// is not copied into a `Vec` only to have one value copied out of it and the frame dropped. That
@@ -8702,7 +10457,7 @@ fn read_block_bytes_after_cache_miss(
     select_container_value(&bytes, element_name)
 }
 
-/// Builds the physical page key for a run of reads, sharing the record key between blocks of one
+/// Builds the physical block key for a run of reads, sharing the record key between blocks of one
 /// slab.
 ///
 /// `CacheKey::page_with_slot` allocates three times per call: the record-key `String`, the `Arc`
@@ -8715,12 +10470,12 @@ fn read_block_bytes_after_cache_miss(
 /// so its spelling has one home. The selector is the one piece restated here, because the
 /// constructor builds it from the block's position; a test compares every key this makes with
 /// `page_with_slot`'s, field for field, because a changed byte is a silent cache miss.
-pub(crate) struct PageKeys {
-    slab: Option<(u64, std::sync::Arc<str>)>,
+pub(crate) struct BlockKeys {
+    slab: Option<((ShardId, u64), std::sync::Arc<str>)>,
 }
 
-impl PageKeys {
-    pub(crate) fn new() -> Self {
+impl BlockKeys {
+    pub(crate) const fn new() -> Self {
         Self { slab: None }
     }
 
@@ -8732,15 +10487,14 @@ impl PageKeys {
     ) -> CacheKey {
         let slab = address.block_slab_id();
         let record_key = match &self.slab {
-            Some((held, record_key)) if *held == slab => std::sync::Arc::clone(record_key),
+            Some((held, record_key)) if *held == (shard_id, slab) => std::sync::Arc::clone(record_key),
             _ => {
                 let record_key =
                     CacheKey::page_with_slot(shard_id, slab, 0, 0, None).record_key;
-                self.slab = Some((slab, std::sync::Arc::clone(&record_key)));
+                self.slab = Some(((shard_id, slab), std::sync::Arc::clone(&record_key)));
                 record_key
             }
         };
-        use std::fmt::Write as _;
         // Sized exactly: a miss stores this key, and a string grown by appends can sit on up to
         // twice the bytes it holds for as long as the entry does.
         let width = |n: u64| n.checked_ilog10().map_or(1, |digits| digits as usize + 1);
@@ -8749,10 +10503,19 @@ impl PageKeys {
             + width(address.length())
             + routing_bucket.map_or(0, |bucket| "slot-".len() + width(u64::from(bucket)) + 1);
         let mut selector = String::with_capacity(capacity);
+        // THE DIGITS ARE WRITTEN DIRECTLY, NOT THROUGH THE FORMATTER. Three integers per key, on
+        // every block a read touches, went through `core::fmt` -- over a quarter of the
+        // instructions of a whole-series feature read. The spelling is the formatter's, byte for
+        // byte (`a_block_key_spells_its_numbers_without_the_formatter`): a changed byte is a silent
+        // cache miss.
         if let Some(bucket) = routing_bucket {
-            let _ = write!(selector, "slot-{bucket}:");
+            selector.push_str("slot-");
+            push_decimal(&mut selector, u64::from(bucket));
+            selector.push(':');
         }
-        let _ = write!(selector, "{}:{}", address.offset(), address.length());
+        push_decimal(&mut selector, address.offset());
+        selector.push(':');
+        push_decimal(&mut selector, address.length());
         CacheKey {
             shard_id,
             record_key,
@@ -8760,6 +10523,36 @@ impl PageKeys {
             selector: std::borrow::Cow::Owned(selector),
         }
     }
+}
+
+/// Append the decimal digits of `n` to `out`, as `{n}` spells them.
+fn push_decimal(out: &mut String, mut n: u64) {
+    let mut digits = [0u8; 20];
+    let mut at = digits.len();
+    loop {
+        at -= 1;
+        digits[at] = b'0' + (n % 10) as u8;
+        n /= 10;
+        if n == 0 {
+            break;
+        }
+    }
+    out.push_str(std::str::from_utf8(&digits[at..]).expect("digits are ascii"));
+}
+
+thread_local! {
+    // One prefix per active thread, not one entry per slab or retained payload.
+    static READ_BLOCK_KEYS: std::cell::RefCell<BlockKeys> = const {
+        std::cell::RefCell::new(BlockKeys::new())
+    };
+}
+
+fn read_block_key(
+    shard_id: ShardId,
+    address: &ElementEntry,
+    routing_bucket: Option<u32>,
+) -> CacheKey {
+    READ_BLOCK_KEYS.with(|keys| keys.borrow_mut().key(shard_id, address, routing_bucket))
 }
 
 /// Select one element name from bytes already fetched by the caller.
@@ -8820,6 +10613,44 @@ pub fn reset_corrupt_container_block_count() {
 /// blocks and picks one out of itself by identity; handed only the object id it answers with the
 /// FIRST block of that object, which is another element's bytes rather than a miss.
 #[allow(clippy::too_many_arguments)]
+fn read_string_length(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    key: &str,
+    routing_bucket: u32,
+) -> Option<i64> {
+    // The live write path assigns this sentinel only to logical bytes carried
+    // in the WAL. Its length excludes all WAL framing and compression.
+    if address.block_slab_id() == HOT_BLOCK_SLAB_ID {
+        return Some(address.length() as i64);
+    }
+
+    let cache_key = read_block_key(shard_id, address, Some(routing_bucket));
+    if let Some(bytes) = cache.get_memory_shared(&cache_key) {
+        return Some(bytes.len() as i64);
+    }
+    if !crate::wal_record::is_wal_resident(address.block_slab_id()) {
+        shard_write_guard::note_block_read();
+        if let Some(length) = block_store.local_block_payload_length(address) {
+            return Some(length as i64);
+        }
+    }
+
+    // Older unframed records, remote slabs and alternate WAL locators use
+    // the existing read path.
+    read_block_shared_keyed(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        BlockIdentity::of(shard_id, "string", key, None),
+        cache_key,
+    )
+    .map(|bytes| bytes.len() as i64)
+}
+
 fn read_block_shared(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -8828,16 +10659,11 @@ fn read_block_shared(
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<std::sync::Arc<[u8]>> {
-    let cache_key = CacheKey::page_with_slot(
-        shard_id,
-        address.block_slab_id(),
-        address.offset(),
-        address.length(),
-        routing_bucket);
+    let cache_key = read_block_key(shard_id, address, routing_bucket);
     read_block_shared_keyed(cache, block_store, shard_id, address, identity, cache_key)
 }
 
-/// [`read_block_shared`] with the page key already built (see [`PageKeys`]).
+/// [`read_block_shared`] with the block key already built (see [`BlockKeys`]).
 #[allow(clippy::too_many_arguments)]
 fn read_block_shared_keyed(
     cache: &MultiLayerCache,
@@ -8853,11 +10679,10 @@ fn read_block_shared_keyed(
     if let Ok(Some(bytes)) = cached {
         return select_shared_block_value(bytes, identity);
     }
-    // Every path below writes to the cache and hands back what it wrote. Continue after the miss
-    // already observed above so the storage fallbacks stay in one place without probing this key
-    // again.
-    read_block_bytes_after_cache_miss(cache, block_store, shard_id, address, identity, cache_key)
-        .map(std::sync::Arc::from)
+    let frame = read_block_frame_shared_after_cache_miss(
+        cache, block_store, shard_id, address, identity, cache_key,
+    )?;
+    select_shared_block_value(frame, identity)
 }
 
 struct SharedBlockRead<'a> {
@@ -8877,12 +10702,12 @@ fn read_blocks_shared(
     shard_id: ShardId,
     reads: &[SharedBlockRead<'_>],
 ) -> Vec<Option<std::sync::Arc<[u8]>>> {
-    let mut page_prefixes = HashMap::with_capacity(reads.len().min(64));
+    let mut block_prefixes = HashMap::with_capacity(reads.len().min(64));
     let cache_keys = reads
         .iter()
         .map(|read| {
             let block_slab_id = read.address.block_slab_id();
-            page_prefixes
+            block_prefixes
                 .entry(block_slab_id)
                 .or_insert_with(|| PageCacheKeyPrefix::new(shard_id, block_slab_id))
                 .key_with_slot(
@@ -8905,15 +10730,15 @@ fn read_blocks_shared(
             if let Some(bytes) = bytes {
                 return select_shared_block_value(bytes, read.identity);
             }
-            read_block_bytes_after_cache_miss(
+            let frame = read_block_frame_shared_after_cache_miss(
                 cache,
                 block_store,
                 shard_id,
                 read.address,
                 read.identity,
                 cache_key,
-            )
-            .map(std::sync::Arc::from)
+            )?;
+            select_shared_block_value(frame, read.identity)
         })
         .collect()
 }
@@ -9293,6 +11118,9 @@ fn object_manager_stats(
 mod tests;
 
 #[cfg(test)]
+mod hash_execute_filed_tests;
+
+#[cfg(test)]
 mod flag_default_doc_tests {
     use std::path::Path;
 
@@ -9439,7 +11267,8 @@ mod key_state_shape_tests {
         let shard = ShardState::default();
         let blobs = capture_key_states(&shard, &["m:0".to_string()]);
         assert_eq!(blobs.len(), 1);
-        let object = blobs[0].as_object().expect("a blob is an object");
+        let blob = blobs[0].to_value();
+        let object = blob.as_object().expect("a blob is an object");
         assert_eq!(object.get("key").and_then(|v| v.as_str()), Some("m:0"));
         assert_eq!(
             object.len(),
@@ -9447,4 +11276,57 @@ mod key_state_shape_tests {
             "a key in no map should carry only its own name, got {object:?}"
         );
     }
+}
+
+/// The inputs of a reclaim plan that asks only about dirty buckets. See
+/// `TemporalEngine::dirty_bucket_plan_inputs`.
+#[derive(Default)]
+pub(crate) struct DirtyBucketPlanInputs {
+    pub(crate) claims: BTreeMap<u32, (u64, u64)>,
+    pub(crate) summaries: Vec<BucketStorageSummary>,
+    pub(crate) digests: BTreeMap<u32, BucketFingerprintDigest>,
+    pub(crate) bucket_node_count: usize,
+}
+
+#[cfg(test)]
+#[test]
+fn a_durable_direct_write_does_not_wait_for_another_shards_state_owner() {
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 << 20, dir.path().join("cache"), dir.path().join("blocks"), dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.load_shard(2);
+    let held_engine = engine.clone();
+    let (ready_tx, ready_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    let holder = std::thread::spawn(move || {
+        held_engine.shards.with_state_mut(1, |state| {
+            assert!(state.is_some());
+            ready_tx.send(()).unwrap();
+            release_rx.recv_timeout(Duration::from_secs(15)).unwrap();
+        });
+    });
+    ready_rx.recv_timeout(Duration::from_secs(5)).unwrap();
+    let writer_engine = engine.clone();
+    let (done_tx, done_rx) = mpsc::channel();
+    let writer = std::thread::spawn(move || {
+        let response = writer_engine.execute_durable(ExecuteRequest {
+            shard_id: 2,
+            command: Command::StringSet { key: "independent-owner".into(), value: vec![2, 4, 8] },
+        });
+        done_tx.send(response).unwrap();
+    });
+    let response = done_rx.recv_timeout(Duration::from_secs(5));
+    // Release even on failure, so a global-lock regression does not strand a worker.
+    release_tx.send(()).unwrap();
+    holder.join().unwrap();
+    writer.join().unwrap();
+    assert!(response.expect("peer write waited for the held owner").status.ok);
+    assert!(matches!(engine.execute(ExecuteRequest {
+        shard_id: 2, command: Command::StringGet { key: "independent-owner".into() },
+    }).response, CommandResponse::Bytes { value: Some(bytes) } if bytes == [2, 4, 8]));
 }

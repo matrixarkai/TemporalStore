@@ -12,8 +12,7 @@ use thiserror::Error;
 
 use crate::http::{
     get_json, get_json_with_options, post_json, post_json_with_options,
-    post_json_with_options_and_headers, HttpError,
-    HttpRequestOptions,
+    HttpError, HttpRequestOptions,
 };
 use crate::meta::GetShardResponse;
 use crate::meta::{
@@ -22,8 +21,18 @@ use crate::meta::{
 };
 #[path = "client/client_routing.rs"]
 mod client_routing;
+#[path = "client/response_json.rs"]
+mod response_json;
+#[path = "client/protobuf_transport.rs"]
+mod protobuf_transport;
+pub(crate) use protobuf_transport::{protobuf_command_key, ProtobufBatchExecuteReply};
+pub use protobuf_transport::ProtobufExecuteReply;
 #[path = "client/client_meta_sync.rs"]
 mod client_meta_sync;
+#[path = "client/metadata_grpc.rs"]
+mod metadata_grpc;
+#[path = "client/grpc_commands.rs"]
+mod grpc_commands;
 #[path = "client/client_commands.rs"]
 mod commands;
 // The proxy's drop decision hashes the same routing key this builds; it is re-exported
@@ -40,7 +49,8 @@ mod retry;
 #[path = "client/client_routing_operations.rs"]
 mod routing;
 
-use client_routing::batch_read_policy;
+pub(crate) use client_meta_sync::{get_meta_json, post_meta_json};
+pub use client_routing::batch_read_policy;
 use commands::{command_is_dropped, command_key, is_write};
 use retry::{
     classify_retry_decision, replica_read_policy_from_meta, retry_attempts_for,
@@ -66,6 +76,9 @@ pub enum ClientError {
     Status(String),
     #[error("invalid request: {0}")]
     InvalidRequest(String),
+    /// Routing or transport readiness failed before dispatching the request.
+    #[error("write not started: {0}")]
+    WriteNotStarted(String),
     /// A write failed in a way that does not say whether it was applied.
     ///
     /// The datanode stopped answering; it may have processed the write, or not. The write was
@@ -86,6 +99,8 @@ pub enum ClientError {
 pub struct ClientOptions {
     pub proxy_addr: String,
     pub meta_addr: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_grpc_target: Option<String>,
     pub default_shard_id: ShardId,
     pub connect_timeout_ms: u64,
     pub io_timeout_ms: u64,
@@ -116,6 +131,14 @@ impl ClientOptions {
         }
     }
 
+    /// Connect directly to table primaries discovered over gRPC.
+    pub fn direct(metadata_endpoint: impl Into<String>) -> Self {
+        Self {
+            meta_grpc_target: Some(metadata_endpoint.into()),
+            ..Self::default()
+        }
+    }
+
     fn http_options(&self) -> HttpRequestOptions {
         HttpRequestOptions {
             connect_timeout_ms: self.connect_timeout_ms,
@@ -139,6 +162,7 @@ impl Default for ClientOptions {
         Self {
             proxy_addr: "127.0.0.1:17000".to_string(),
             meta_addr: None,
+            meta_grpc_target: None,
             default_shard_id: 1,
             connect_timeout_ms: 200,
             io_timeout_ms: 200,
@@ -653,6 +677,9 @@ struct ClientInner {
     /// is atomic. It writes only when a route is fetched, replaced by a topology sync, or
     /// cleared.
     routes: RwLock<HashMap<ShardId, CachedRoute>>,
+    grpc_routes: RwLock<HashMap<String, CachedGrpcTableRoutes>>,
+    grpc_channels: RwLock<HashMap<String, tonic::transport::Channel>>,
+    meta_grpc_channel: Mutex<Option<(String, tonic::transport::Channel)>>,
     /// Executes and batch executes, counted outside `stats`.
     ///
     /// Both are bumped once per call on the path that succeeds, and taking the stats mutex for
@@ -704,6 +731,23 @@ struct ClientInner {
     /// next request resolved again -- a cache that could never converge. Recording what the
     /// topology was when the route was resolved is what lets "unchanged" mean anything.
     known_topology_version: AtomicU64,
+}
+
+/// A primary gRPC endpoint and the load generation it serves.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrpcPrimaryRoute {
+    pub shard_id: ShardId,
+    pub address: String,
+    pub load_version: u64,
+}
+
+#[derive(Debug)]
+struct CachedGrpcTableRoutes {
+    first_shard_id: ShardId,
+    shard_count: u64,
+    topology_version: u64,
+    refreshed_at: Option<Instant>,
+    shards: HashMap<ShardId, GrpcPrimaryRoute>,
 }
 
 #[derive(Debug, Clone)]
@@ -845,6 +889,9 @@ impl TemporalStoreClient {
             inner: Arc::new(ClientInner {
                 options,
                 routes: RwLock::default(),
+                grpc_routes: RwLock::default(),
+                grpc_channels: RwLock::default(),
+                meta_grpc_channel: Mutex::default(),
                 execute_requests: AtomicU64::new(0),
                 batch_execute_requests: AtomicU64::new(0),
                 route_cache_hits: AtomicU64::new(0),
@@ -1165,6 +1212,46 @@ impl TemporalStoreTable {
         )
     }
 
+    /// Resolve a table key to its advertised gRPC primary. For a replicated
+    /// shard, use the elected leader and its load version from the same topology.
+    pub fn resolve_grpc_primary(&self, key: &str) -> Result<GrpcPrimaryRoute, ClientError> {
+        if let Some(cached) = self.cached_grpc_primary(key, true) {
+            return cached;
+        }
+        self.client.sync_table_topology(&self.namespace, &self.table_name)?;
+        self.cached_grpc_primary(key, false).unwrap_or_else(|| {
+            Err(ClientError::Status("table has no gRPC topology".to_string()))
+        })
+    }
+
+    fn cached_grpc_primary(
+        &self,
+        key: &str,
+        require_fresh: bool,
+    ) -> Option<Result<GrpcPrimaryRoute, ClientError>> {
+        let tables = self
+            .client
+            .inner
+            .grpc_routes
+            .read()
+            .expect("gRPC route cache lock poisoned");
+        let table = tables.get(&self.combined_name)?;
+        let shard_id = shard_id_for_key(key, table.first_shard_id, table.shard_count, self.shard_id);
+        let route = table.shards.get(&shard_id);
+        let route_ttl = self.client.inner.options.route_cache_ttl_ms;
+        let ttl = Duration::from_millis(if route.is_some() {
+            route_ttl
+        } else {
+            route_ttl.min(250)
+        });
+        if require_fresh && table.refreshed_at.is_none_or(|at| at.elapsed() > ttl) {
+            return None;
+        }
+        Some(route.cloned().ok_or_else(|| {
+            ClientError::Status(format!("shard {shard_id} has no gRPC primary"))
+        }))
+    }
+
     pub fn options(&self) -> TableOptions {
         self.table_options()
     }
@@ -1478,26 +1565,31 @@ impl TemporalStoreTable {
                 response: CommandResponse::Empty,
             });
         }
+        let grpc = self.client.inner.options.meta_grpc_target.is_some();
         let force_primary = write || table_options.pin_primary;
         let retry_budget_attempts = retry_attempts_for(&table_options, write);
         let mut attempt = 0;
         let mut topology_refresh_used = false;
         let response = loop {
-            let current = self.client.execute_routed_with_http_and_policy(
-                ExecuteRequest {
-                    shard_id,
-                    command: command.clone(),
-                },
-                force_primary,
-                self.http_options(&table_options),
-                Some(table_options.continuous_failed_time_ms),
-                table_options.replica_read_policy,
-                if table_options.preferred_location.is_empty() {
-                    None
-                } else {
-                    Some(table_options.preferred_location.as_str())
-                },
-            )?;
+            let current = if grpc {
+                self.execute_native_grpc(&command)?
+            } else {
+                self.client.execute_routed_with_http_and_policy(
+                    ExecuteRequest {
+                        shard_id,
+                        command: command.clone(),
+                    },
+                    force_primary,
+                    self.http_options(&table_options),
+                    Some(table_options.continuous_failed_time_ms),
+                    table_options.replica_read_policy,
+                    if table_options.preferred_location.is_empty() {
+                        None
+                    } else {
+                        Some(table_options.preferred_location.as_str())
+                    },
+                )?
+            };
             let decision = classify_retry_decision(
                 &current.status,
                 write,
@@ -1505,10 +1597,21 @@ impl TemporalStoreTable {
                 retry_budget_attempts,
                 topology_refresh_used,
             );
-            if current.status.ok || !decision.would_retry {
+            let safe_grpc_write_retry = grpc && write && matches!(
+                current.status.code.as_str(),
+                "raft_write_not_started" | "load_version_mismatch" | "lifecycle_write_blocked"
+            );
+            let retry = if grpc && write {
+                safe_grpc_write_retry && (decision.would_retry
+                    || (current.status.code == "raft_write_not_started"
+                        && (attempt + 1 < retry_budget_attempts || !topology_refresh_used)))
+            } else {
+                decision.would_retry
+            };
+            if current.status.ok || !retry {
                 break current;
             }
-            if decision.topology_retry && !topology_refresh_used {
+            if (decision.topology_retry || safe_grpc_write_retry) && !topology_refresh_used {
                 topology_refresh_used = true;
                 self.refresh_table_topology_after_status();
             }
@@ -1607,6 +1710,9 @@ impl TemporalStoreTable {
                 responses,
             });
         }
+        if self.client.inner.options.meta_grpc_target.is_some() {
+            return self.batch_execute_native_grpc(commands);
+        }
         // The LIVE shard count, not the one this handle was opened with. Read from the
         // snapshot, a table that gained shards after the handle was created kept sending
         // every command to the single shard the handle started on -- while
@@ -1680,7 +1786,9 @@ impl TemporalStoreTable {
     }
 
     fn refresh_table_topology_before_write_if_due(&self) -> Result<(), ClientError> {
-        if self.client.inner.options.meta_addr.is_none() {
+        if self.client.inner.options.meta_addr.is_none()
+            && self.client.inner.options.meta_grpc_target.is_none()
+        {
             return Ok(());
         }
         let due = self
@@ -1801,7 +1909,9 @@ impl TemporalStoreTable {
     /// working through a topology change. One request's failure is enough to learn what all of
     /// them need.
     fn refresh_table_topology_after_status(&self) {
-        if self.client.inner.options.meta_addr.is_none() {
+        if self.client.inner.options.meta_addr.is_none()
+            && self.client.inner.options.meta_grpc_target.is_none()
+        {
             return;
         }
         if !self.client.forced_sync_is_due(&self.namespace, &self.table_name) {

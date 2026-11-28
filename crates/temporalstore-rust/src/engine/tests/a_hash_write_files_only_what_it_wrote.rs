@@ -114,51 +114,52 @@ fn a_hash_write_leaves_every_field_filed_exactly_once() {
         }
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    assert!(
-        !shard.bucket_index.bucket_map.is_empty(),
-        "no bucket index was built, so the arm that narrows the sync never ran"
-    );
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.expect("shard is loaded");
+        assert!(
+            !shard.bucket_index.bucket_map.is_empty(),
+            "no bucket index was built, so the arm that narrows the sync never ran"
+        );
 
-    let mut checked_fields = 0usize;
-    for object in 0..3 {
-        let key = format!("h-{object}");
-        let fields = shard.bucket_index.hashes.get(key.as_str()).expect("the hash exists");
-        let held: BTreeSet<String> = fields.iter().map(|(_, address)| identity(address)).collect();
+        let mut checked_fields = 0usize;
+        for object in 0..3 {
+            let key = format!("h-{object}");
+            let fields = shard.bucket_index.hashes.get(key.as_str()).expect("the hash exists");
+            let held: BTreeSet<String> = fields.iter().map(|(_, address)| identity(address)).collect();
 
-        let refs = shard
-            .bucket_index
-            .object_block_refs("hash", &key)
-            .expect("the hash has block refs");
-        let mut filed: Vec<String> = Vec::new();
-        for block_ref in refs.iter() {
-            let block = shard
+            let refs = shard
                 .bucket_index
-                .bucket_map
-                .get(&block_ref.routing_bucket)
-                .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
-                .expect("a ref names a block the index holds");
-            if !block.deleted() {
-                filed.push(identity(&block.address));
+                .object_block_refs("hash", &key)
+                .expect("the hash has block refs");
+            let mut filed: Vec<String> = Vec::new();
+            for block_ref in refs.iter() {
+                let block = shard
+                    .bucket_index
+                    .bucket_map
+                    .get(&block_ref.routing_bucket)
+                    .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
+                    .expect("a ref names a block the index holds");
+                if !block.deleted() {
+                    filed.push(identity(&block.address));
+                }
             }
-        }
-        let filed_set: BTreeSet<String> = filed.iter().cloned().collect();
+            let filed_set: BTreeSet<String> = filed.iter().cloned().collect();
 
-        // DENOMINATOR: 40 + 6 + 1 fields. A run that wrote fewer cannot have exercised the sync.
-        assert_eq!(47, held.len(), "{key}: the hash holds {} distinct blocks", held.len());
-        assert_eq!(
-            held, filed_set,
-            "{key}: the blocks the hash holds and the blocks the index files differ"
-        );
-        assert_eq!(
-            filed.len(),
-            filed_set.len(),
-            "{key}: a block is filed twice, so a replaced field left its predecessor behind"
-        );
-        checked_fields += held.len();
-    }
-    assert_eq!(141, checked_fields);
+            // DENOMINATOR: 40 + 6 + 1 fields. A run that wrote fewer cannot have exercised the sync.
+            assert_eq!(47, held.len(), "{key}: the hash holds {} distinct blocks", held.len());
+            assert_eq!(
+                held, filed_set,
+                "{key}: the blocks the hash holds and the blocks the index files differ"
+            );
+            assert_eq!(
+                filed.len(),
+                filed_set.len(),
+                "{key}: a block is filed twice, so a replaced field left its predecessor behind"
+            );
+            checked_fields += held.len();
+        }
+        assert_eq!(141, checked_fields);
+    });
 }
 
 #[test]
@@ -178,13 +179,14 @@ fn a_new_packed_hash_files_one_block_for_all_fields() {
     );
 
     {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let fields = shard.bucket_index.hashes.get("packed").expect("hash exists");
-        assert_eq!(fields.len(), 3);
-        let addresses: BTreeSet<_> = fields.iter().map(|(_, address)| identity(address)).collect();
-        assert_eq!(addresses.len(), 1);
-        assert_eq!(shard.bucket_index.object_block_refs("hash", "packed").unwrap().len(), 1);
+        engine.shards.with_state(1, |owner| {
+            let shard = owner.expect("shard is loaded");
+            let fields = shard.bucket_index.hashes.get("packed").expect("hash exists");
+            assert_eq!(fields.len(), 3);
+            let addresses: BTreeSet<_> = fields.iter().map(|(_, address)| identity(address)).collect();
+            assert_eq!(addresses.len(), 1);
+            assert_eq!(shard.bucket_index.object_block_refs("hash", "packed").unwrap().len(), 1);
+        });
     }
 
     run(
@@ -237,29 +239,31 @@ fn grouped_values(engine: &TemporalEngine) -> std::collections::BTreeMap<String,
 }
 
 fn grouped_block_count(engine: &TemporalEngine) -> usize {
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    let held: BTreeSet<_> = shard.bucket_index.hashes.get("grouped").unwrap()
-        .values().map(identity).collect();
-    let refs = shard.bucket_index.object_block_refs("hash", "grouped").unwrap();
-    let filed: BTreeSet<_> = refs.iter().map(|block_ref| {
-        let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket).unwrap();
-        let block = bucket.block_index.get(&block_ref.block_ref_key).unwrap();
-        assert!(!block.deleted());
-        identity(&block.address)
-    }).collect();
-    assert_eq!(refs.len(), filed.len());
-    assert_eq!(held, filed);
-    held.len()
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.unwrap();
+        let held: BTreeSet<_> = shard.bucket_index.hashes.get("grouped").unwrap()
+            .values().map(identity).collect();
+        let refs = shard.bucket_index.object_block_refs("hash", "grouped").unwrap();
+        let filed: BTreeSet<_> = refs.iter().map(|block_ref| {
+            let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket).unwrap();
+            let block = bucket.block_index.get(&block_ref.block_ref_key).unwrap();
+            assert!(!block.deleted());
+            identity(&block.address)
+        }).collect();
+        assert_eq!(refs.len(), filed.len());
+        assert_eq!(held, filed);
+        held.len()
+    })
 }
 
 fn grouped_tombstone(engine: &TemporalEngine, field: &str) -> bool {
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    let (start, end) = shard.routing_range();
-    let bucket = shard.bucket_index.bucket_map.get(&block_routing_bucket("grouped", start, end)).unwrap();
-    bucket.tombstone_element_block("grouped",
-        crate::engine::storage_bucket_internals::stored_model_kind("hash"), field).is_some()
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.unwrap();
+        let (start, end) = shard.routing_range();
+        let bucket = shard.bucket_index.bucket_map.get(&block_routing_bucket("grouped", start, end)).unwrap();
+        bucket.tombstone_element_block("grouped",
+            crate::engine::storage_bucket_internals::stored_model_kind("hash"), field).is_some()
+    })
 }
 
 #[test]
@@ -470,6 +474,7 @@ fn durable_shared_rows_keep_latest_fallback_through_size_transitions() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     let object_id = stable_block_object_id(1, "hash", "sized");
+    let mut previous_address = None;
     for (generation, width) in [(1, 48), (2, 16 * 1024), (3, 48), (4, 16 * 1024)] {
         let expected = vec![generation; width];
         let (response, _) = engine.batch_execute_shared_hash_rows(BatchHashMultiSetRequest {
@@ -477,12 +482,19 @@ fn durable_shared_rows_keep_latest_fallback_through_size_transitions() {
             rows: vec![BatchHashMultiSetRow("sized".to_string(), vec![BatchHashMultiSetValue(expected.clone())])],
         });
         assert!(response.status.ok, "{:?}", response.status);
-        let frame = super::super::block_in_wal::read_block(&engine.block_store, 1, object_id, Some("payload"))
+        let address = engine.shards.with_state(1, |owner| {
+            owner.unwrap().bucket_index.hashes.get("sized").unwrap().get("payload").unwrap().clone()
+        });
+        if let Some(previous) = &previous_address {
+            assert!(super::super::block_in_wal::read_block_at(&engine.block_store, 1, object_id, Some("payload"), previous).is_none());
+        }
+        let frame = super::super::block_in_wal::read_block_at(&engine.block_store, 1, object_id, Some("payload"), &address)
             .expect("latest carried frame remains available");
         match super::super::container_blocks::select_container_element(&frame, "payload") {
             super::super::container_blocks::ContainerElementRead::Found(value) => assert_eq!(value, expected),
             _ => panic!("latest field must be in the carried frame"),
         }
+        previous_address = Some(address);
     }
     engine.compact_shard_blocks(1).unwrap();
     assert_eq!(engine.registration_count_for_test(1), 0);
@@ -571,9 +583,10 @@ fn cached_timestamp_checks_fall_back_after_eviction_and_restart() {
     assert_eq!(engine.block_store.stats().reads, before, "a resident hint survives payload-cache eviction");
     // Losing derived index hints must still take the storage fallback without changing data.
     {
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&1).unwrap();
-        shard.bucket_index.hashes = shard.bucket_index.hashes.clone();
+        engine.shards.with_state_mut(1, |owner| {
+            let shard = owner.unwrap();
+            shard.bucket_index.hashes = shard.bucket_index.hashes.clone();
+        });
     }
     engine.cache.invalidate(&CacheKey::hash(1, "grouped", "stamp")).unwrap();
     assert_eq!(cached_timestamp_write(&engine, 9, vec![("stamp".to_string(), timestamp_bytes(9))]), 0);

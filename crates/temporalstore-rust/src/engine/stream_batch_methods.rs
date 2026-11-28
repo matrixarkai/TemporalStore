@@ -12,9 +12,8 @@ fn read_filled_hash_cache_enabled() -> bool {
         .map(|value| value != "0").unwrap_or(true))
 }
 
-#[path = "projected_batch_snapshot.rs"]
-mod projected_batch_snapshot;
-use projected_batch_snapshot::ProjectedBatchSnapshot;
+#[path = "interleaved_hash_rows.rs"]
+mod interleaved_hash_rows;
 
 #[cfg(test)]
 #[path = "tests/projected_read_snapshot.rs"]
@@ -49,6 +48,8 @@ mod packed_hash_cache_reclaim_tests;
 #[cfg(test)]
 thread_local! {
     static HASH_BATCH_EXPANSIONS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static AFTER_PROJECTED_READ_PLAN: std::cell::RefCell<Option<Box<dyn FnOnce()>>> =
+        const { std::cell::RefCell::new(None) };
 }
 
 #[cfg(test)]
@@ -159,6 +160,14 @@ struct BatchExecutionResult {
     applied: usize,
     skipped: usize,
     errors: Vec<BatchWriteError>,
+    pending_barrier_sequence: Option<u64>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct BatchExecutionOptions<'a> {
+    max_commands: Option<usize>,
+    defer_barrier: bool,
+    shared_hash_fields: Option<&'a container_blocks::SharedHashFields>,
 }
 
 struct BatchResultCollector {
@@ -233,6 +242,7 @@ impl BatchResultCollector {
             applied: self.applied,
             skipped: self.skipped,
             errors: self.errors,
+            pending_barrier_sequence: None,
         }
     }
 }
@@ -898,49 +908,130 @@ impl TemporalEngine {
             return Ok(());
         }
 
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            return Err(Status::error(
-                "shard_not_loaded",
-                "shard is not loaded on this server",
-            ));
-        };
-        let config = self
-            .configs
-            .read()
-            .expect("config lock poisoned")
-            .get(&shard_id)
-            .cloned()
-            .unwrap_or_default();
-        let info = self.request_shard_info(
-            shard_id,
-            config.table_read_qps.filter(|limit| *limit > 0).is_some(),
-        );
-        if !replaying_wal() && info.recovering {
-            return Err(Status::error(
-                "shard_not_loaded",
-                "shard is recovering (WAL replay in progress)",
-            ));
-        }
+        let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
+        let captured = self.shards.with_state_mut(shard_id, |shard| {
+            let Some(shard) = shard else {
+                return Err(Status::error(
+                    "shard_not_loaded",
+                    "shard is not loaded on this server",
+                ));
+            };
+            let config = self
+                .configs
+                .read()
+                .expect("config lock poisoned")
+                .get(&shard_id)
+                .cloned()
+                .unwrap_or_default();
+            let info = self.request_shard_info(
+                shard_id,
+                config.table_read_qps.filter(|limit| *limit > 0).is_some(),
+            );
+            if !replaying_wal() && info.recovering {
+                return Err(Status::error(
+                    "shard_not_loaded",
+                    "shard is recovering (WAL replay in progress)",
+                ));
+            }
 
-        // Lazy expiry is a mutating read and retains the generic batch's WAL/index handling. A
-        // live deadline does not mutate anything, so it stays on the projection path instead of
-        // expanding every row into an owned command and cloning the shared fields per entity.
-        let requested_key_expired = if shard.expires_at_ms().is_empty() {
-            false
-        } else {
-            let now = resolve_now_ms();
-            keys.iter().any(|key| {
-                shard
-                    .expires_at_ms()
-                    .get(key.as_str())
-                    .is_some_and(|expires_at| *expires_at <= now)
-            })
-        };
-        if requested_key_expired {
+            // Lazy expiry is a mutating read and retains the generic batch's WAL/index handling. A
+            // live deadline does not mutate anything, so it stays on the projection path instead of
+            // expanding every row into an owned command and cloning the shared fields per entity.
+            let requested_key_expired = if shard.expires_at_ms().is_empty() {
+                false
+            } else {
+                let now = resolve_now_ms();
+                keys.iter().any(|key| {
+                    shard
+                        .expires_at_ms()
+                        .get(key.as_str())
+                        .is_some_and(|expires_at| *expires_at <= now)
+                })
+            };
+            if requested_key_expired {
+                return Ok(None);
+            }
+
+            let start_routing_bucket = info.start_routing_bucket;
+            let end_routing_bucket = info.end_routing_bucket;
+            if !(self.wal_store.flat_append() && shard.promote_scan_done) {
+                self.promote_scans
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if promote_model_maps_to_bucket_index_authority(
+                    shard_id,
+                    shard,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                ) {
+                    reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
+                }
+                if self.wal_store.flat_append() && shard_has_model_entries(shard) {
+                    shard.promote_scan_done = true;
+                }
+            }
+
+            let quota_checks_enabled = self.shard_quota_checks_enabled(shard_id);
+            let read_admission_enabled =
+                !admission_limits(shard_id, false, &config, info.table_name.as_deref()).is_empty();
+            let enforce_foreground_limits = !raft_applying() && !replaying_wal();
+            let mut projection_scratch = container_blocks::Utf8ProjectionScratch::new();
+            let mut snapshot = execute_on_shard::PreparedHashBatch::new(keys.len());
+            let mut wal_snapshot = None;
+            let mut slab_snapshot = None;
+            let recency_now = now_ms();
+            for (index, key) in keys.iter().enumerate() {
+                let rejected = if enforce_foreground_limits
+                    && (quota_checks_enabled || read_admission_enabled)
+                {
+                    if quota_checks_enabled && !self.charge_quota(shard_id, quota::QuotaKind::Read) {
+                        Some(Status::error(
+                            "quota_exhausted",
+                            format!("shard {shard_id} is over its read rate limit"),
+                        ))
+                    } else if read_admission_enabled {
+                        self.check_admission(
+                            shard_id,
+                            false,
+                            &config,
+                            info.table_name.as_deref(),
+                        )
+                        .err()
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
+                if let Some(status) = rejected {
+                    snapshot.push(index, 0, Err(status));
+                    continue;
+                }
+
+                let routing_bucket =
+                    block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                let plan = execute_on_shard::PreparedHashRead::prepare(
+                    &self.cache,
+                    shard_id,
+                    shard,
+                    key,
+                    &fields,
+                    &projection_plan,
+                    &mut projection_scratch,
+                    true,
+                    snapshot.cache_budget(),
+                );
+                plan.pin_records(&mut wal_snapshot, &mut slab_snapshot, &self.block_store, shard_id, key, &fields, keys.len());
+                crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
+                    shard.bucket_recency.insert(routing_bucket, recency_now);
+                });
+                snapshot.push(index, routing_bucket, Ok(plan));
+            }
+            Ok(Some((snapshot, wal_snapshot, slab_snapshot, projection_scratch)))
+        })?;
+        let Some((snapshot, wal_snapshot, slab_snapshot, mut projection_scratch)) = captured
+        else {
             #[cfg(test)]
             HASH_BATCH_EXPANSIONS.with(|count| count.set(count.get().saturating_add(1)));
-            drop(shards);
             let response = self.batch_execute(BatchExecuteRequest {
                 shard_id,
                 commands: keys
@@ -974,82 +1065,18 @@ impl TemporalEngine {
                 }
             }
             return Ok(());
-        }
+        };
 
-        let start_routing_bucket = info.start_routing_bucket;
-        let end_routing_bucket = info.end_routing_bucket;
-        if !(self.wal_store.flat_append() && shard.promote_scan_done) {
-            self.promote_scans
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if promote_model_maps_to_bucket_index_authority(
-                shard_id,
-                shard,
-                start_routing_bucket,
-                end_routing_bucket,
-            ) {
-                reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
-            }
-            if self.wal_store.flat_append() && shard_has_model_entries(shard) {
-                shard.promote_scan_done = true;
-            }
+        #[cfg(test)]
+        if let Some(after) = AFTER_PROJECTED_READ_PLAN.with(|slot| slot.borrow_mut().take()) {
+            after();
         }
-
-        let quota_checks_enabled = self.shard_quota_checks_enabled(shard_id);
-        let read_admission_enabled =
-            !admission_limits(shard_id, false, &config, info.table_name.as_deref()).is_empty();
-        let enforce_foreground_limits = !raft_applying() && !replaying_wal();
-        let projection_plan = container_blocks::Utf8ProjectionPlan::new(&fields);
-        let mut projection_scratch = container_blocks::Utf8ProjectionScratch::new();
-        let mut snapshot = ProjectedBatchSnapshot::new(keys.len());
-        let recency_now = now_ms();
-        for (index, key) in keys.iter().enumerate() {
-            let rejected = if enforce_foreground_limits
-                && (quota_checks_enabled || read_admission_enabled)
-            {
-                if quota_checks_enabled && !self.charge_quota(shard_id, quota::QuotaKind::Read) {
-                    Some(Status::error(
-                        "quota_exhausted",
-                        format!("shard {shard_id} is over its read rate limit"),
-                    ))
-                } else if read_admission_enabled {
-                    self.check_admission(
-                        shard_id,
-                        false,
-                        &config,
-                        info.table_name.as_deref(),
-                    )
-                    .err()
-                } else {
-                    None
-                }
-            } else {
-                None
-            };
-            if let Some(status) = rejected {
-                snapshot.push(index, Err(status), &mut visit);
-                continue;
-            }
-
-            let routing_bucket =
-                block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-            let values = execute_on_shard::execute_hash_multi_get_projected(
-                &self.cache,
-                &self.block_store,
-                shard_id,
-                routing_bucket,
-                shard,
-                key,
-                &fields,
-                &projection_plan,
-                &mut projection_scratch,
-            );
-            crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
-                shard.bucket_recency.insert(routing_bucket, recency_now);
-            });
-            snapshot.push(index, Ok(values), &mut visit);
+        for (index, bucket, result) in snapshot.into_rows() {
+            visit(index, result.map(|plan| plan.load(&self.cache, &self.block_store, shard_id,
+                bucket, &keys[index], &fields, &projection_plan, &mut projection_scratch)));
         }
-        drop(shards);
-        snapshot.flush(&mut visit);
+        drop(wal_snapshot);
+        drop(slab_snapshot);
         Ok(())
     }
 
@@ -1154,10 +1181,11 @@ impl TemporalEngine {
     pub fn batch_execute(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         self.batch_execute_inner(
             request.shard_id,
-            BatchCommandSource::Commands(request.commands.into_iter()),
+            &mut BatchCommandSource::Commands(request.commands.into_iter()),
             false,
             None,
             None,
+            BatchExecutionOptions::default(),
         )
         .into_full()
     }
@@ -1169,10 +1197,11 @@ impl TemporalEngine {
     pub fn batch_execute_durable(&self, request: BatchExecuteRequest) -> BatchExecuteResponse {
         self.batch_execute_inner(
             request.shard_id,
-            BatchCommandSource::Commands(request.commands.into_iter()),
+            &mut BatchCommandSource::Commands(request.commands.into_iter()),
             false,
             Some(false),
             None,
+            BatchExecutionOptions::default(),
         )
         .into_full()
     }
@@ -1199,7 +1228,7 @@ impl TemporalEngine {
         let ttl_ms = request.ttl_ms;
         let response = self.batch_execute_inner(
             request.shard_id,
-            BatchCommandSource::SharedHashRows {
+            &mut BatchCommandSource::SharedHashRows {
                 entries: request
                     .fields
                     .into_iter()
@@ -1212,6 +1241,7 @@ impl TemporalEngine {
             true,
             None,
             Some(false),
+            BatchExecutionOptions::default(),
         )
         .into_compact();
         (response, completed_keys)
@@ -1242,7 +1272,7 @@ impl TemporalEngine {
         let mut completed_keys = Vec::with_capacity(request.rows.len());
         let response = self.batch_execute_inner(
             request.shard_id,
-            BatchCommandSource::SharedTimestampRows {
+            &mut BatchCommandSource::SharedTimestampRows {
                 entries: request
                     .fields
                     .into_iter()
@@ -1256,6 +1286,7 @@ impl TemporalEngine {
             true,
             None,
             Some(true),
+            BatchExecutionOptions::default(),
         )
         .into_compact();
         (response, completed_keys)
@@ -1270,22 +1301,23 @@ impl TemporalEngine {
         }
         let mut completed_keys = Vec::with_capacity(request.rows.len());
         let response = self.batch_execute_inner(request.shard_id,
-            BatchCommandSource::BorrowedTimestampRows {
+            &mut BatchCommandSource::BorrowedTimestampRows {
                 entries: request.fields.into_iter().map(|field| (field, Vec::new())).collect(),
                 timestamp_field: Some(request.timestamp_field), ttl_ms: request.ttl_ms,
                 rows: request.rows.into_iter(), current_values: Vec::new(),
                 completed_keys: &mut completed_keys,
-            }, true, None, Some(true)).into_compact();
+            }, true, None, Some(true), BatchExecutionOptions::default()).into_compact();
         (response, completed_keys)
     }
 
     fn batch_execute_inner(
         &self,
         shard_id: ShardId,
-        mut command_source: BatchCommandSource<'_>,
+        command_source: &mut BatchCommandSource<'_>,
         reuse_hash_command_metadata: bool,
         async_storage_override: Option<bool>,
         compact_conditional: Option<bool>,
+        options: BatchExecutionOptions<'_>,
     ) -> BatchExecutionResult {
         let reuse_hash_command_metadata =
             reuse_hash_command_metadata && crate::wal::wal_data_only_enabled();
@@ -1306,931 +1338,949 @@ impl TemporalEngine {
             }
         }
         let _drain_staged = DrainStagedOnExit;
-        let command_count = command_source.command_count();
+        let command_count = options.max_commands.unwrap_or(usize::MAX).min(command_source.command_count());
         let mut results = BatchResultCollector::new(command_count, compact_conditional);
         if command_count == 0 {
             return results.finish(Status::ok());
         }
         let _slab_target_scope = crate::storage_config::SlabTargetScope::new();
-        let mut shards = self.shards.write().expect("engine lock poisoned");
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            // returns a BATCH-LEVEL topology error with ZERO CmdResponse entries when the
-            // partition is missing/not-primary (a topology error: the client should
-            // refresh its shard map), not an OK batch full of per-command errors. The Rust client
-            // treats a batch-level shard_not_loaded status as topology-retryable
-            // (client/client_retry.rs status_is_topology_retryable) and refreshes + retries -- but it
-            // keys on the batch-level status, which the old ok+N-errors shape left ok, so the
-            // client never refreshed and kept hitting the wrong node. Return it batch-level.
-            return results.finish(Status::error(
-                "shard_not_loaded",
-                "shard is not loaded on this server",
-            ));
-        };
-        let mut config = self
-            .configs
-            .read()
-            .expect("config lock poisoned")
-            .get(&shard_id)
-            .cloned()
-            .unwrap_or_default();
-        if let Some(async_storage) = async_storage_override {
-            config.async_storage = async_storage;
-        }
-        let table_admission_enabled = config
-            .table_read_qps
-            .filter(|limit| *limit > 0)
-            .or_else(|| config.table_write_qps.filter(|limit| *limit > 0))
-            .is_some();
-        let info = self.request_shard_info(shard_id, table_admission_enabled);
-        let quota_checks_enabled = self.shard_quota_checks_enabled(shard_id);
-        let read_admission_enabled =
-            !admission_limits(shard_id, false, &config, info.table_name.as_deref()).is_empty();
-        let write_admission_enabled =
-            !admission_limits(shard_id, true, &config, info.table_name.as_deref()).is_empty();
-        let enforce_foreground_limits = !raft_applying() && !replaying_wal();
-        // Mirror execute_with_storage_override: a shard replaying its WAL on load is present
-        // but not yet serving. Reject the whole batch with a retryable status so batch writes
-        // cannot interleave with replay (anchor regression / double-apply) -- the batch path
-        // must not be a hole around the single-execute recovery gate. Replay itself never
-        // routes through batch_execute, but replaying_wal() is checked for symmetry.
-        if !replaying_wal() && info.recovering {
-            // Batch-level topology-retryable error with empty responses, as above (returns a
-            // partition-level error here, not a per-command one), so the client refreshes topology
-            // and retries rather than seeing an ok batch of failed commands.
-            return results.finish(Status::error(
+        let prepared = self.shards.with_state_mut(shard_id, |shard| {
+            let Some(shard) = shard else {
+                // returns a BATCH-LEVEL topology error with ZERO CmdResponse entries when the
+                // partition is missing/not-primary (a topology error: the client should
+                // refresh its shard map), not an OK batch full of per-command errors. The Rust client
+                // treats a batch-level shard_not_loaded status as topology-retryable
+                // (client/client_retry.rs status_is_topology_retryable) and refreshes + retries -- but it
+                // keys on the batch-level status, which the old ok+N-errors shape left ok, so the
+                // client never refreshed and kept hitting the wrong node. Return it batch-level.
+                return Err(results.finish(Status::error(
                     "shard_not_loaded",
-                    "shard is recovering (WAL replay in progress)",
-                ));
-        }
-        let readonly = info.readonly;
-        let start_routing_bucket = info.start_routing_bucket;
-        let end_routing_bucket = info.end_routing_bucket;
-        // Phase-1 flat-append fast-skip, the same one `execute_with_storage_override` applies to
-        // single commands. Without it the batch path pays the reconcile scan on EVERY batch, and
-        // that scan walks and CLONES every live model-map entry in the shard just to re-confirm
-        // that `bucket_index` -- which each mutating command already upserts before returning --
-        // is in sync. Measured on a 290 MB store, that made an ingest 1.65 s of pure proxy CPU
-        // against 0.15 s on a 26 MB one, and it was the single hottest frame in a stack profile
-        // of the write path. Every mem0 write arrives here, so the guarded path was the one that
-        // mattered and the unguarded one was the one being used.
-        //
-        // `promote_scan_done` is `#[serde(skip)]`, so a freshly loaded shard still pays exactly
-        // one full reconcile before the skip engages, and with the gate off the scan runs on
-        // every batch precisely as before.
-        if !(self.wal_store.flat_append() && shard.promote_scan_done) {
-            self.promote_scans
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            if promote_model_maps_to_bucket_index_authority(
-                shard_id,
-                shard,
-                start_routing_bucket,
-                end_routing_bucket,
-            ) {
-                reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
+                    "shard is not loaded on this server",
+                )));
+            };
+            let mut config = self
+                .configs
+                .read()
+                .expect("config lock poisoned")
+                .get(&shard_id)
+                .cloned()
+                .unwrap_or_default();
+            if let Some(async_storage) = async_storage_override {
+                config.async_storage = async_storage;
             }
-            // Latch only once the shard actually holds model-map state: `promote` returns false
-            // without establishing anything on an empty shard, so guarding on non-emptiness
-            // avoids latching before the first real write.
-            if self.wal_store.flat_append() && shard_has_model_entries(shard) {
-                shard.promote_scan_done = true;
+            let table_admission_enabled = config
+                .table_read_qps
+                .filter(|limit| *limit > 0)
+                .or_else(|| config.table_write_qps.filter(|limit| *limit > 0))
+                .is_some();
+            let info = self.request_shard_info(shard_id, table_admission_enabled);
+            let quota_checks_enabled = self.shard_quota_checks_enabled(shard_id);
+            let read_admission_enabled =
+                !admission_limits(shard_id, false, &config, info.table_name.as_deref()).is_empty();
+            let write_admission_enabled =
+                !admission_limits(shard_id, true, &config, info.table_name.as_deref()).is_empty();
+            let enforce_foreground_limits = !raft_applying() && !replaying_wal();
+            // Mirror execute_with_storage_override: a shard replaying its WAL on load is present
+            // but not yet serving. Reject the whole batch with a retryable status so batch writes
+            // cannot interleave with replay (anchor regression / double-apply) -- the batch path
+            // must not be a hole around the single-execute recovery gate. Replay itself never
+            // routes through batch_execute, but replaying_wal() is checked for symmetry.
+            if !replaying_wal() && info.recovering {
+                // Batch-level topology-retryable error with empty responses, as above (returns a
+                // partition-level error here, not a per-command one), so the client refreshes topology
+                // and retries rather than seeing an ok batch of failed commands.
+                return Err(results.finish(Status::error(
+                        "shard_not_loaded",
+                        "shard is recovering (WAL replay in progress)",
+                    )));
             }
-        }
-        let mut mutated_any = false;
-        let mut pending_barrier_seq = None;
-        // Set if any command in this batch rebuilt the bucket index, which invalidates the
-        // per-batch record of touched buckets and forces the full sweep below.
-        let mut rebuilt_bucket_index = false;
-        let mut wal_commands = Vec::new();
-        let mut wal_payloads_elided = false;
-        let mut context_embedding_commands = Vec::new();
-        // Shared rows can be served from retained WAL frames while materialization is deferred.
-        // This changes materialization only: the configured synchronous commit still fsyncs.
-        let defer_shared_hash_materialization = reuse_hash_command_metadata
-            && command_source.recycles_commands()
-            && !wal_legacy_recovery()
-            && config.maxmemory_bytes.is_none();
-        let hash_storage_async = config.async_storage || defer_shared_hash_materialization;
-        // WAL-resident and bulk writes defer served-index persistence, so they do not consume the
-        // per-key delta metadata below. Building it anyway clones every touched hash key and
-        // field, then drops the complete batch without writing it.
-        let persist_index_delta = !hash_storage_async && !bulk_ingest_mode();
-        // Accumulate the object keys every mutating command in the batch touched, for the
-        // single O(delta) index-log append below (delta path). Empty when the flag is off.
-        let mut delta_command_keys: Vec<String> = Vec::new();
-        // Did ANY command in this batch remove something? Only then does the per-key membership
-        // capture below have anything to preserve -- see the single-command execute path, whose
-        // guard this mirrors.
-        let mut batch_membership_shrank = false;
-        // Some(element names) while every mutating command in the batch is a pure block-upsert;
-        // one non-upsert write downgrades the whole record to snapshot semantics.
-        let mut batch_upsert_element_names: Option<Vec<(&'static str, String, Option<String>)>> =
-            Some(Vec::new());
-        // Every container element any command in this batch added or replaced. Unlike the
-        // element names above this is never downgraded to `None`: it is a list of elements, not a
-        // claim that the whole record is a pure upsert, so one non-upsert command in the batch
-        // does not make the others' identities uncarryable.
-        let mut batch_touched_container_elements: Vec<TouchedContainerElement> = Vec::new();
-        let mut dirty_propagation_keys = BTreeSet::new();
-        let shared_hash_fields = command_source.shared_hash_entries()
-            .filter(|_| reuse_hash_command_metadata)
-            .and_then(|entries| super::container_blocks::SharedHashFields::new(
-                entries.iter().map(|(field, _)| field.as_str())));
-        // Readers cannot observe these indexes until the synchronous WAL append has registered
-        // every frame. Conditional rows also retain the actual timestamp in the resident hint,
-        // so another row in this batch never needs an unregistered frame for its comparison.
-        let frame_cache = if read_filled_hash_cache_enabled()
-            && defer_shared_hash_materialization
-            && !config.async_storage
-            && !bulk_ingest_mode()
-            && !raft_applying()
-            && !replaying_wal()
-            && shared_hash_fields.is_some()
-            && command_source.supports_read_filled_frames()
-        {
-            execute_on_shard::PackedFrameCache::ReadThrough
-        } else {
-            execute_on_shard::PackedFrameCache::Eager
-        };
-        while let Some(mut command) = command_source.next_command() {
-            if !reuse_hash_command_metadata {
-                if let (Command::HashMultiSetIfTimestampOlder { entries, .. }, Some(values)) =
-                    (&mut command, command_source.borrowed_hash_values())
-                {
-                    for ((_, slot), value) in entries.iter_mut().zip(values) {
-                        *slot = value.0.to_vec();
-                    }
+            let readonly = info.readonly;
+            let start_routing_bucket = info.start_routing_bucket;
+            let end_routing_bucket = info.end_routing_bucket;
+            // Phase-1 flat-append fast-skip, the same one `execute_with_storage_override` applies to
+            // single commands. Without it the batch path pays the reconcile scan on EVERY batch, and
+            // that scan walks and CLONES every live model-map entry in the shard just to re-confirm
+            // that `bucket_index` -- which each mutating command already upserts before returning --
+            // is in sync. Measured on a 290 MB store, that made an ingest 1.65 s of pure proxy CPU
+            // against 0.15 s on a 26 MB one, and it was the single hottest frame in a stack profile
+            // of the write path. Every mem0 write arrives here, so the guarded path was the one that
+            // mattered and the unguarded one was the one being used.
+            //
+            // `promote_scan_done` is `#[serde(skip)]`, so a freshly loaded shard still pays exactly
+            // one full reconcile before the skip engages, and with the gate off the scan runs on
+            // every batch precisely as before.
+            if !(self.wal_store.flat_append() && shard.promote_scan_done) {
+                self.promote_scans
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if promote_model_maps_to_bucket_index_authority(
+                    shard_id,
+                    shard,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                ) {
+                    reconcile_secondary_views_from_bucket_index(&self.block_store, shard, None);
+                }
+                // Latch only once the shard actually holds model-map state: `promote` returns false
+                // without establishing anything on an empty shard, so guarding on non-emptiness
+                // avoids latching before the first real write.
+                if self.wal_store.flat_append() && shard_has_model_entries(shard) {
+                    shard.promote_scan_done = true;
                 }
             }
-            let write_command = is_write_command(&command);
-            if readonly && write_command {
-                results.push_error(Status::error(
-                    "readonly_shard",
-                    "readonly shard rejects write command",
-                ));
-                command_source.recycle(command, false);
-                continue;
+            let mut mutated_any = false;
+            let mut pending_barrier_seq = None;
+            // Set if any command in this batch rebuilt the bucket index, which invalidates the
+            // per-batch record of touched buckets and forces the full sweep below.
+            let mut rebuilt_bucket_index = false;
+            let mut wal_commands = Vec::new();
+            let mut wal_payloads_elided = false;
+            let mut context_embedding_commands = Vec::new();
+            // Shared rows can be served from retained WAL frames while materialization is deferred.
+            // This changes materialization only: the configured synchronous commit still fsyncs.
+            let defer_shared_hash_materialization = reuse_hash_command_metadata
+                && command_source.recycles_commands()
+                && !wal_legacy_recovery()
+                && config.maxmemory_bytes.is_none();
+            let hash_storage_async = config.async_storage || defer_shared_hash_materialization;
+            if options.defer_barrier && !defer_shared_hash_materialization {
+                return Err(results.finish(Status::error("interleaved_write_unavailable",
+                    "interleaved writes require retained data-only hash frames")));
             }
-            // Exempt under raft apply and under replay, as the single-command path is: a
-            // follower that refuses what its leader committed diverges from the leader, and a
-            // replay that refuses a record already in the log costs the whole shard load.
-            //
-            // Both are SYMMETRY here, deliberately and stated as such. Today neither reaches
-            // this function -- execute_raft_apply_batch and batch_execute_replicated both loop
-            // over the single-command path, and replay never batches -- exactly as the
-            // recovering-shard gate above says of replaying_wal(). A future batched apply that
-            // does route here would otherwise arrive at an ungated limit, and the failure it
-            // produces (a follower quietly skipping a committed entry) is not one that shows up
-            // as an error anywhere.
-            if enforce_foreground_limits
-                && (quota_checks_enabled
-                    || if write_command {
+            // WAL-resident and bulk writes defer served-index persistence, so they do not consume the
+            // per-key delta metadata below. Building it anyway clones every touched hash key and
+            // field, then drops the complete batch without writing it.
+            let persist_index_delta = !hash_storage_async && !bulk_ingest_mode();
+            // Accumulate the object keys every mutating command in the batch touched, for the
+            // single O(delta) index-log append below (delta path). Empty when the flag is off.
+            let mut delta_command_keys: Vec<String> = Vec::new();
+            // Did ANY command in this batch remove something? Only then does the per-key membership
+            // capture below have anything to preserve -- see the single-command execute path, whose
+            // guard this mirrors.
+            let mut batch_membership_shrank = false;
+            // Some(element names) while every mutating command in the batch is a pure block-upsert;
+            // one non-upsert write downgrades the whole record to snapshot semantics.
+            let mut batch_upsert_element_names: Option<Vec<(&'static str, String, Option<String>)>> =
+                Some(Vec::new());
+            // Every container element any command in this batch added or replaced. Unlike the
+            // element names above this is never downgraded to `None`: it is a list of elements, not a
+            // claim that the whole record is a pure upsert, so one non-upsert command in the batch
+            // does not make the others' identities uncarryable.
+            let mut batch_touched_container_elements: Vec<TouchedContainerElement> = Vec::new();
+            let mut dirty_propagation_keys = BTreeSet::new();
+            let owned_shared_hash_fields = options.shared_hash_fields.is_none().then(|| command_source.shared_hash_entries()
+                .filter(|_| reuse_hash_command_metadata)
+                .and_then(|entries| super::container_blocks::SharedHashFields::new(
+                    entries.iter().map(|(field, _)| field.as_str())))).flatten();
+            let shared_hash_fields = options.shared_hash_fields.or(owned_shared_hash_fields.as_ref());
+            // Readers cannot observe these indexes until the synchronous WAL append has registered
+            // every frame. Conditional rows also retain the actual timestamp in the resident hint,
+            // so another row in this batch never needs an unregistered frame for its comparison.
+            let frame_cache = if read_filled_hash_cache_enabled()
+                && defer_shared_hash_materialization
+                && !config.async_storage
+                && !bulk_ingest_mode()
+                && !raft_applying()
+                && !replaying_wal()
+                && shared_hash_fields.is_some()
+                && command_source.supports_read_filled_frames()
+            {
+                execute_on_shard::PackedFrameCache::ReadThrough
+            } else {
+                execute_on_shard::PackedFrameCache::Eager
+            };
+            for _ in 0..command_count {
+                let Some(mut command) = command_source.next_command() else { break };
+                if !reuse_hash_command_metadata {
+                    if let (Command::HashMultiSetIfTimestampOlder { entries, .. }, Some(values)) =
+                        (&mut command, command_source.borrowed_hash_values())
+                    {
+                        for ((_, slot), value) in entries.iter_mut().zip(values) {
+                            *slot = value.0.to_vec();
+                        }
+                    }
+                }
+                let write_command = is_write_command(&command);
+                if readonly && write_command {
+                    results.push_error(Status::error(
+                        "readonly_shard",
+                        "readonly shard rejects write command",
+                    ));
+                    command_source.recycle(command, false);
+                    continue;
+                }
+                // Exempt under raft apply and under replay, as the single-command path is: a
+                // follower that refuses what its leader committed diverges from the leader, and a
+                // replay that refuses a record already in the log costs the whole shard load.
+                //
+                // Both are SYMMETRY here, deliberately and stated as such. Today neither reaches
+                // this function -- execute_raft_apply_batch and batch_execute_replicated both loop
+                // over the single-command path, and replay never batches -- exactly as the
+                // recovering-shard gate above says of replaying_wal(). A future batched apply that
+                // does route here would otherwise arrive at an ungated limit, and the failure it
+                // produces (a follower quietly skipping a committed entry) is not one that shows up
+                // as an error anywhere.
+                if enforce_foreground_limits
+                    && (quota_checks_enabled
+                        || if write_command {
+                            write_admission_enabled
+                        } else {
+                            read_admission_enabled
+                        })
+                {
+                    // Charged per COMMAND, not per batch. The single-command path spends one token a
+                    // command, and a batch is not one unit of work -- a limit that counted it as one
+                    // would be escaped by batching, which is how most traffic arrives here.
+                    let kind = if write_command {
+                        quota::QuotaKind::Write
+                    } else {
+                        quota::QuotaKind::Read
+                    };
+                    if quota_checks_enabled && !self.charge_quota(shard_id, kind) {
+                        results.push_error(Status::error(
+                                "quota_exhausted",
+                                format!(
+                                    "shard {} is over its {} rate limit",
+                                    shard_id,
+                                    match kind {
+                                        quota::QuotaKind::Write => "write",
+                                        quota::QuotaKind::Read => "read",
+                                    }
+                                ),
+                            ));
+                        command_source.recycle(command, false);
+                        continue;
+                    }
+                    let admission_enabled = if write_command {
                         write_admission_enabled
                     } else {
                         read_admission_enabled
-                    })
-            {
-                // Charged per COMMAND, not per batch. The single-command path spends one token a
-                // command, and a batch is not one unit of work -- a limit that counted it as one
-                // would be escaped by batching, which is how most traffic arrives here.
-                let kind = if write_command {
-                    quota::QuotaKind::Write
-                } else {
-                    quota::QuotaKind::Read
-                };
-                if quota_checks_enabled && !self.charge_quota(shard_id, kind) {
+                    };
+                    if admission_enabled {
+                        if let Err(status) = self.check_admission(
+                            shard_id,
+                            write_command,
+                            &config,
+                            info.table_name.as_deref(),
+                        ) {
+                            results.push_error(status);
+                            command_source.recycle(command, false);
+                            continue;
+                        }
+                    }
+                }
+                // Exempt under raft apply and under replay, as the single-command path is and for
+                // the same reason. Symmetry here, on the same footing as the admission guard above:
+                // neither reaches this function today.
+                if enforce_foreground_limits
+                    && write_command
+                    && config
+                        .maxmemory_bytes
+                        // Current on-disk footprint (GC-decremented), not cumulative-ever
+                        // bytes_written -- see the single-command execute path.
+                        .map(|limit| self.block_store.slab_summary().total_known_physical_bytes >= limit)
+                        .unwrap_or(false)
+                {
                     results.push_error(Status::error(
-                            "quota_exhausted",
-                            format!(
-                                "shard {} is over its {} rate limit",
-                                shard_id,
-                                match kind {
-                                    quota::QuotaKind::Write => "write",
-                                    quota::QuotaKind::Read => "read",
-                                }
-                            ),
+                            "storage_quota_exceeded",
+                            "shard maxmemory_bytes limit has been reached",
                         ));
                     command_source.recycle(command, false);
                     continue;
                 }
-                let admission_enabled = if write_command {
-                    write_admission_enabled
-                } else {
-                    read_admission_enabled
-                };
-                if admission_enabled {
-                    if let Err(status) = self.check_admission(
-                        shard_id,
-                        write_command,
-                        &config,
-                        info.table_name.as_deref(),
-                    ) {
-                        results.push_error(status);
-                        command_source.recycle(command, false);
-                        continue;
+                if let Err(status) = validate_command_preconditions(
+                    &self.cache,
+                    &self.block_store,
+                    shard_id,
+                    shard,
+                    &command,
+                ) {
+                    results.push_error(status);
+                    command_source.recycle(command, false);
+                    continue;
+                }
+                let reuse_consumed_metadata = reuse_hash_command_metadata
+                    && matches!(
+                        &command,
+                        Command::HashMultiSet { .. }
+                            | Command::HashMultiSetIfTimestampOlder { .. }
+                    );
+                let shared_row_routing_bucket = reuse_consumed_metadata.then(|| match &command {
+                    Command::HashMultiSet { key, .. }
+                    | Command::HashMultiSetIfTimestampOlder { key, .. } => {
+                        block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
                     }
-                }
-            }
-            // Exempt under raft apply and under replay, as the single-command path is and for
-            // the same reason. Symmetry here, on the same footing as the admission guard above:
-            // neither reaches this function today.
-            if enforce_foreground_limits
-                && write_command
-                && config
-                    .maxmemory_bytes
-                    // Current on-disk footprint (GC-decremented), not cumulative-ever
-                    // bytes_written -- see the single-command execute path.
-                    .map(|limit| self.block_store.slab_summary().total_known_physical_bytes >= limit)
-                    .unwrap_or(false)
-            {
-                results.push_error(Status::error(
-                        "storage_quota_exceeded",
-                        "shard maxmemory_bytes limit has been reached",
-                    ));
-                command_source.recycle(command, false);
-                continue;
-            }
-            if let Err(status) = validate_command_preconditions(
-                &self.cache,
-                &self.block_store,
-                shard_id,
-                shard,
-                &command,
-            ) {
-                results.push_error(status);
-                command_source.recycle(command, false);
-                continue;
-            }
-            let reuse_consumed_metadata = reuse_hash_command_metadata
-                && matches!(
-                    &command,
-                    Command::HashMultiSet { .. }
-                        | Command::HashMultiSetIfTimestampOlder { .. }
-                );
-            let shared_row_routing_bucket = reuse_consumed_metadata.then(|| match &command {
-                Command::HashMultiSet { key, .. }
-                | Command::HashMultiSetIfTimestampOlder { key, .. } => {
-                    block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
-                }
-                _ => unreachable!("only shared hash rows reuse command metadata"),
-            });
-            let shared_row_object_id = reuse_consumed_metadata.then(|| match &command {
-                Command::HashMultiSet { key, .. }
-                | Command::HashMultiSetIfTimestampOlder { key, .. } => {
-                    stable_block_object_id(shard_id, "hash", key)
-                }
-                _ => unreachable!("only shared hash rows reuse command metadata"),
-            });
-            // Shared async hash rows return the consumed command as their post-write metadata.
-            // Borrow its key below instead of cloning the same String into a one-element Vec.
-            let defer_object_key_clone = reuse_consumed_metadata && !persist_index_delta;
-            let mut owned_object_keys =
-                (!defer_object_key_clone).then(|| command_object_keys(&command));
-            // Only a persisted served-index delta consumes this state. Async and bulk writes
-            // defer that delta, so avoid even the map probes on their per-row path.
-            let membership_before = persist_index_delta.then(|| {
-                key_state_before(
-                    shard,
-                    owned_object_keys
-                        .as_deref()
-                        .expect("persisted index delta owns command keys"),
-                )
-            });
-            let feature_trimmed_membership = persist_index_delta
-                && command_will_trim_feature_membership(
-                    &command,
-                    shard,
-                    config.feature_max_size,
-                );
-            let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
-            let (outcome, returned_post_write, hash_index_filed) = match command {
-                Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
-                    let (outcome, metadata, filed) =
-                        execute_on_shard::execute_hash_multi_set_reusing_metadata_at_bucket(
+                    _ => unreachable!("only shared hash rows reuse command metadata"),
+                });
+                let shared_row_object_id = reuse_consumed_metadata.then(|| match &command {
+                    Command::HashMultiSet { key, .. }
+                    | Command::HashMultiSetIfTimestampOlder { key, .. } => {
+                        stable_block_object_id(shard_id, "hash", key)
+                    }
+                    _ => unreachable!("only shared hash rows reuse command metadata"),
+                });
+                // Shared async hash rows return the consumed command as their post-write metadata.
+                // Borrow its key below instead of cloning the same String into a one-element Vec.
+                let defer_object_key_clone = reuse_consumed_metadata && !persist_index_delta;
+                let mut owned_object_keys =
+                    (!defer_object_key_clone).then(|| command_object_keys(&command));
+                // Only a persisted served-index delta consumes this state. Async and bulk writes
+                // defer that delta, so avoid even the map probes on their per-row path.
+                let membership_before = persist_index_delta.then(|| {
+                    key_state_before(
+                        shard,
+                        owned_object_keys
+                            .as_deref()
+                            .expect("persisted index delta owns command keys"),
+                    )
+                });
+                let feature_trimmed_membership = persist_index_delta
+                    && command_will_trim_feature_membership(
+                        &command,
+                        shard,
+                        config.feature_max_size,
+                    );
+                let cloned_post_write = (!reuse_consumed_metadata).then(|| command.clone());
+                shard.feature_max_age_ms = config.feature_max_age_ms();
+                let (outcome, returned_post_write, hash_index_filed) = match command {
+                    Command::HashMultiSet { key, entries } if reuse_consumed_metadata => {
+                        let (outcome, metadata, filed) =
+                            execute_on_shard::execute_hash_multi_set_reusing_metadata_at_bucket(
+                                &self.cache,
+                                &self.block_store,
+                                shard_id,
+                                shared_row_routing_bucket
+                                    .expect("shared hash row has a routing bucket"),
+                                shared_row_object_id.expect("shared hash row has an object id"),
+                                shard,
+                                hash_storage_async,
+                                true,
+                                key,
+                                entries,
+                                true,
+                                shared_hash_fields,
+                                frame_cache,
+                            );
+                        (outcome, Some(metadata), filed)
+                    }
+                    Command::HashMultiSetIfTimestampOlder {
+                        key,
+                        timestamp_field,
+                        timestamp_seconds,
+                        timestamp_nanos,
+                        ttl_ms,
+                        entries,
+                    } if reuse_consumed_metadata => {
+                        let (outcome, metadata, filed) =
+                            execute_on_shard::execute_packed_conditional_hash_write_at_bucket(
+                                &self.cache,
+                                &self.block_store,
+                                shard_id,
+                                shared_row_routing_bucket
+                                    .expect("shared timestamp row has a routing bucket"),
+                                shared_row_object_id.expect("shared timestamp row has an object id"),
+                                shard,
+                                hash_storage_async,
+                                key,
+                                timestamp_field,
+                                timestamp_seconds,
+                                timestamp_nanos,
+                                ttl_ms,
+                                entries,
+                                true,
+                                shared_hash_fields,
+                                command_source.borrowed_hash_values(),
+                                frame_cache,
+                            );
+                        (outcome, Some(metadata), filed)
+                    }
+                    Command::HashMultiSet { key, entries } => {
+                        // Preserve the per-execute hints normally published by execute_on_shard.
+                        shard.control_coalesce_persist = config.control_coalesce_persist_enabled();
+                        shard.control_state_max_size = config.control_state_max_size();
+                        shard.control_distinct_sketch = config.control_distinct_sketch_enabled();
+                        shard.set_listing_from_map = config.set_listing_from_map_enabled();
+                        let (outcome, _, filed) =
+                            execute_on_shard::execute_hash_multi_set_reusing_metadata(
+                                &self.cache,
+                                &self.block_store,
+                                shard_id,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                                shard,
+                                config.async_storage,
+                                false,
+                                key,
+                                entries,
+                            );
+                        // Keep the original retained command for WAL and post-write metadata.
+                        (outcome, None, filed)
+                    }
+                    command => (
+                        execute_on_shard(
                             &self.cache,
                             &self.block_store,
+                            config.feature_max_size,
+                            config.async_storage,
+                            config.control_rollup_enabled(),
+                            config.control_coalesce_persist_enabled(),
+                            config.control_state_max_size(),
+                            config.control_distinct_sketch_enabled(),
+                            config.trim_boundary_record_enabled(),
+                            config.set_listing_from_map_enabled(),
+                            shard_id,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                            shard,
+                            command,
+                        ),
+                        None,
+                        None,
+                    ),
+                };
+                if outcome.mutated {
+                    if let Some(ttl_ms) = command_source.shared_hash_ttl_ms() {
+                        let command = returned_post_write
+                            .as_ref()
+                            .expect("shared hash write returns its metadata");
+                        let Command::HashMultiSet { key, .. } = command else {
+                            unreachable!("only shared hash rows carry a shared expiry")
+                        };
+                        execute_on_shard::apply_hash_expiry(
                             shard_id,
                             shared_row_routing_bucket
                                 .expect("shared hash row has a routing bucket"),
-                            shared_row_object_id.expect("shared hash row has an object id"),
                             shard,
-                            hash_storage_async,
-                            true,
                             key,
-                            entries,
-                            true,
-                            shared_hash_fields.as_ref(),
-                            frame_cache,
-                        );
-                    (outcome, Some(metadata), filed)
-                }
-                Command::HashMultiSetIfTimestampOlder {
-                    key,
-                    timestamp_field,
-                    timestamp_seconds,
-                    timestamp_nanos,
-                    ttl_ms,
-                    entries,
-                } if reuse_consumed_metadata => {
-                    let (outcome, metadata, filed) =
-                        execute_on_shard::execute_packed_conditional_hash_write_at_bucket(
-                            &self.cache,
-                            &self.block_store,
-                            shard_id,
-                            shared_row_routing_bucket
-                                .expect("shared timestamp row has a routing bucket"),
-                            shared_row_object_id.expect("shared timestamp row has an object id"),
-                            shard,
-                            hash_storage_async,
-                            key,
-                            timestamp_field,
-                            timestamp_seconds,
-                            timestamp_nanos,
                             ttl_ms,
-                            entries,
-                            true,
-                            shared_hash_fields.as_ref(),
-                            command_source.borrowed_hash_values(),
-                            frame_cache,
                         );
-                    (outcome, Some(metadata), filed)
-                }
-                Command::HashMultiSet { key, entries } => {
-                    // Preserve the per-execute hints normally published by execute_on_shard.
-                    shard.control_coalesce_persist = config.control_coalesce_persist_enabled();
-                    shard.control_state_max_size = config.control_state_max_size();
-                    shard.control_distinct_sketch = config.control_distinct_sketch_enabled();
-                    shard.set_listing_from_map = config.set_listing_from_map_enabled();
-                    let (outcome, _, filed) =
-                        execute_on_shard::execute_hash_multi_set_reusing_metadata(
-                            &self.cache,
-                            &self.block_store,
-                            shard_id,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                            shard,
-                            config.async_storage,
-                            false,
-                            key,
-                            entries,
-                        );
-                    // Keep the original retained command for WAL and post-write metadata.
-                    (outcome, None, filed)
-                }
-                command => (
-                    execute_on_shard(
-                        &self.cache,
-                        &self.block_store,
-                        config.feature_max_size,
-                        config.async_storage,
-                        config.control_rollup_enabled(),
-                        config.control_coalesce_persist_enabled(),
-                        config.control_state_max_size(),
-                        config.control_distinct_sketch_enabled(),
-                        config.trim_boundary_record_enabled(),
-                        config.set_listing_from_map_enabled(),
-                        shard_id,
-                        start_routing_bucket,
-                        end_routing_bucket,
-                        shard,
-                        command,
-                    ),
-                    None,
-                    None,
-                ),
-            };
-            if outcome.mutated {
-                if let Some(ttl_ms) = command_source.shared_hash_ttl_ms() {
-                    let command = returned_post_write
-                        .as_ref()
-                        .expect("shared hash write returns its metadata");
-                    let Command::HashMultiSet { key, .. } = command else {
-                        unreachable!("only shared hash rows carry a shared expiry")
-                    };
-                    execute_on_shard::apply_hash_expiry(
-                        shard_id,
-                        shared_row_routing_bucket
-                            .expect("shared hash row has a routing bucket"),
-                        shard,
-                        key,
-                        ttl_ms,
-                    );
-                }
-            }
-            let mut command_for_post_write = Some(
-                returned_post_write
-                    .or(cloned_post_write)
-                    .expect("every batch command keeps post-write metadata"),
-            );
-            let command_for_post_write_ref = command_for_post_write
-                .as_ref()
-                .expect("post-write command remains available until WAL or recycle");
-            let object_keys: &[String] = match owned_object_keys.as_deref() {
-                Some(keys) => keys,
-                None => match command_for_post_write_ref {
-                    Command::HashMultiSet { key, .. }
-                    | Command::HashMultiSetIfTimestampOlder { key, .. } => {
-                        std::slice::from_ref(key)
                     }
-                    _ => unreachable!("only shared hash rows defer their key clone"),
-                },
-            };
-            let payload_elided = reuse_consumed_metadata;
-            if Self::command_updates_context_embedding(command_for_post_write_ref) {
-                context_embedding_commands.push(command_for_post_write_ref.clone());
-            }
-            // LRU recency: stamp the bucket(s) this command
-            // touched, read or write, so eviction can prefer least-recently-used buckets.
-            if let Some(routing_bucket) = shared_row_routing_bucket {
-                shard.bucket_recency.insert(routing_bucket, now_ms());
-            } else {
-                let now = now_ms();
-                crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
-                    for_each_precomputed_touched_key(
-                        command_for_post_write_ref,
-                        object_keys,
-                        |key| {
-                            let recency_bucket = block_routing_bucket(
-                                key,
-                                start_routing_bucket,
-                                end_routing_bucket,
-                            );
-                            shard.bucket_recency.insert(recency_bucket, now);
-                        },
-                    );
-                });
-            }
-            if outcome.mutated {
-                mutated_any = true;
-                // Same question as the single-command path, through the SAME function: a
-                // membership shrink OR a deadline change. Two spellings of this test is how
-                // one of them keeps a bug the other fixed, so there is only one.
-                if persist_index_delta && !batch_membership_shrank {
-                    batch_membership_shrank = feature_trimmed_membership
-                        || delta_key_state_change(
-                            shard,
-                            object_keys,
-                            membership_before
-                                .as_ref()
-                                .expect("persisted index delta captured pre-write state")
-                                .as_slice(),
-                        );
                 }
-                let hash_command = matches!(
-                    command_for_post_write_ref,
-                    Command::HashSet { .. }
-                        | Command::HashMultiSet { .. }
-                        | Command::HashMultiSetIfTimestampOlder { .. }
-                        | Command::HashIncrBy { .. }
-                        | Command::HashDelete { .. }
+                let mut command_for_post_write = Some(
+                    returned_post_write
+                        .or(cloned_post_write)
+                        .expect("every batch command keeps post-write metadata"),
                 );
-                let written_element_names = (!hash_command || persist_index_delta)
-                    .then(|| command_upsert_element_names(command_for_post_write_ref, shard))
-                    .flatten();
-                if persist_index_delta {
-                    batch_touched_container_elements.extend(command_touched_container_elements(
+                let command_for_post_write_ref = command_for_post_write
+                    .as_ref()
+                    .expect("post-write command remains available until WAL or recycle");
+                let object_keys: &[String] = match owned_object_keys.as_deref() {
+                    Some(keys) => keys,
+                    None => match command_for_post_write_ref {
+                        Command::HashMultiSet { key, .. }
+                        | Command::HashMultiSetIfTimestampOlder { key, .. } => {
+                            std::slice::from_ref(key)
+                        }
+                        _ => unreachable!("only shared hash rows defer their key clone"),
+                    },
+                };
+                let payload_elided = reuse_consumed_metadata;
+                if Self::command_updates_context_embedding(command_for_post_write_ref) {
+                    context_embedding_commands.push(command_for_post_write_ref.clone());
+                }
+                // LRU recency: stamp the bucket(s) this command
+                // touched, read or write, so eviction can prefer least-recently-used buckets.
+                if let Some(routing_bucket) = shared_row_routing_bucket {
+                    shard.bucket_recency.insert(routing_bucket, now_ms());
+                } else {
+                    let now = now_ms();
+                    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::RecencyStamp, || {
+                        for_each_precomputed_touched_key(
+                            command_for_post_write_ref,
+                            object_keys,
+                            |key| {
+                                let recency_bucket = block_routing_bucket(
+                                    key,
+                                    start_routing_bucket,
+                                    end_routing_bucket,
+                                );
+                                shard.bucket_recency.insert(recency_bucket, now);
+                            },
+                        );
+                    });
+                }
+                if outcome.mutated {
+                    mutated_any = true;
+                    // Same question as the single-command path, through the SAME function: a
+                    // membership shrink OR a deadline change. Two spellings of this test is how
+                    // one of them keeps a bug the other fixed, so there is only one.
+                    if persist_index_delta && !batch_membership_shrank {
+                        batch_membership_shrank = feature_trimmed_membership
+                            || delta_key_state_change(
+                                shard,
+                                object_keys,
+                                membership_before
+                                    .as_ref()
+                                    .expect("persisted index delta captured pre-write state")
+                                    .as_slice(),
+                            );
+                    }
+                    let hash_command = matches!(
                         command_for_post_write_ref,
-                        shard,
-                    ));
-                }
-                if object_keys.is_empty() {
-                    rebuild_bucket_block_ownership(
-                        shard_id,
-                        shard,
-                        start_routing_bucket,
-                        end_routing_bucket,
+                        Command::HashSet { .. }
+                            | Command::HashMultiSet { .. }
+                            | Command::HashMultiSetIfTimestampOlder { .. }
+                            | Command::HashIncrBy { .. }
+                            | Command::HashDelete { .. }
                     );
-                } else {
-                    for object_key in object_keys {
-                        // `mark_object_dirty` records the key together with the
-                        // routing bucket it computes on the next line. Inserting it here as well
-                        // was redundant when the set was flat and is wrong now: this site does
-                        // not know the bucket, and a key filed without one belongs to no bucket.
-                        let routing_bucket = shared_row_routing_bucket.unwrap_or_else(|| {
-                            block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
-                        });
-                        crate::engine::storage_bucket_internals::mark_object_dirty_at_bucket_deferred(
-                            shard, object_key, routing_bucket,
-                        );
-                        dirty_propagation_keys.insert(object_key.to_string());
-                    }
-                }
-                // The same maintenance the single-command path does. An ingest's writes are
-                // split across both paths, which is why covering only the other one removed
-                // exactly half the rebuild work and left the rest: 2404 block visits per add
-                // became 1205, and stayed there until this site was covered too.
-                //
-                // Same two guards: every touched key must report that it synced, or the rebuild
-                // still runs; and an empty bucket_map still rebuilds, because maintenance updates
-                // an index rather than constructing one.
-                let maintained_bucket_index = if hash_index_filed.is_some()
-                    || matches!(command_for_post_write_ref, Command::SetAdd { .. })
-                {
-                    // These writers already filed the applied elements and swept tombstones.
-                    true
-                } else if shard.bucket_index.bucket_map.is_empty() {
-                    false
-                } else {
-                    let narrow_hash = match command_for_post_write_ref {
-                        // Removal already updates the index; it files no new live block.
-                        Command::HashDelete { .. } => {
-                            crate::engine::storage_bucket_internals::hash_delete_maintained()
-                        }
-                        Command::HashSet { key, field, .. }
-                        | Command::HashIncrBy { key, field, .. } => {
-                            match shared_row_routing_bucket {
-                                Some(routing_bucket) => crate::engine::storage_bucket_internals::sync_written_hash_fields_at_bucket(
-                                    shard,
-                                    shard_id,
-                                    key,
-                                    routing_bucket,
-                                    shared_row_object_id.expect("shared hash row has an object id"),
-                                    std::iter::once(field.as_str()),
-                                ),
-                                None => crate::engine::storage_bucket_internals::sync_written_hash_fields(
-                                    shard,
-                                    shard_id,
-                                    key,
-                                    std::iter::once(field.as_str()),
-                                ),
-                            }
-                        }
-                        Command::HashMultiSet { key, entries }
-                        | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
-                            match shared_row_routing_bucket {
-                                Some(routing_bucket) => crate::engine::storage_bucket_internals::sync_written_hash_fields_at_bucket(
-                                    shard,
-                                    shard_id,
-                                    key,
-                                    routing_bucket,
-                                    shared_row_object_id.expect("shared hash row has an object id"),
-                                    entries.iter().map(|(field, _)| field.as_str()),
-                                ),
-                                None => crate::engine::storage_bucket_internals::sync_written_hash_fields(
-                                    shard,
-                                    shard_id,
-                                    key,
-                                    entries.iter().map(|(field, _)| field.as_str()),
-                                ),
-                            }
-                        }
-                        _ => false,
-                    };
-                    // Prefer the element names this command actually wrote. The whole-object sync
-                    // below re-upserts every field the object holds, which is quadratic in that
-                    // count; this is one upsert per written element name. It reports false when it
-                    // cannot model the write, and the whole-object sync then runs.
-                    let narrow = !hash_command
-                        && match written_element_names.as_deref() {
-                            Some(element_names) => {
-                                crate::engine::storage_bucket_internals::sync_blocks_for_written_element_names(
-                                    shard,
-                                    shard_id,
-                                    element_names,
-                                )
-                            }
-                            None => false,
-                        };
-                    narrow_hash
-                        || narrow
-                        || (!object_keys.is_empty()
-                            && object_keys.iter().all(|object_key| {
-                                crate::engine::storage_bucket_internals::sync_context_blocks_for_object(
-                                    shard,
-                                    shard_id,
-                                    object_key,
-                                )
-                            }))
-                };
-                if persist_index_delta {
-                    match (&mut batch_upsert_element_names, written_element_names) {
-                        (Some(collected), Some(element_names)) => collected.extend(element_names),
-                        (state, _) => *state = None,
-                    }
-                }
-                // Every per-command consumer above borrows these keys. The batch delta keeps
-                // them beyond this iteration, so transfer ownership only after maintenance.
-                if persist_index_delta {
-                    delta_command_keys.extend(
-                        owned_object_keys
-                            .take()
-                            .expect("persisted index delta owns command keys"),
-                    );
-                }
-                if !maintained_bucket_index
-                    && !defer_bucket_index_reconstruct()
-                    // A command that writes no block cannot have changed the block index, so a
-                    // rebuild after one recomputes what it already held. The single-command path
-                    // has always skipped it here; this path did not, so the same command walked
-                    // the whole store when it arrived in a batch and nothing when it arrived
-                    // alone -- measured at one visit per block in the shard, per command.
-                    && !command_writes_no_block(command_for_post_write_ref)
-                    && (!command_updates_bucket_index_directly(command_for_post_write_ref)
-                        || shard.bucket_index.bucket_map.is_empty())
-                {
-                    rebuild_bucket_first_index(
-                        shard_id,
-                        shard,
-                        start_routing_bucket,
-                        end_routing_bucket,
-                    );
-                    // The rebuild replaced bucket_map wholesale, so the record of which buckets
-                    // this batch touched no longer describes it.
-                    rebuilt_bucket_index = true;
-                }
-                if write_command {
-                    wal_payloads_elided |= payload_elided;
-                    if !command_source.recycles_commands() {
-                        wal_commands.push(
-                            command_for_post_write
-                                .take()
-                                .expect("post-write command is available for the WAL"),
-                        );
-                    }
-                }
-            }
-            if let Some(command) = command_for_post_write.take() {
-                command_source.recycle(command, outcome.mutated);
-            }
-            results.push_success(outcome.response);
-        }
-        // Readers cannot observe the batch until this shard write guard is released.
-        for key in dirty_propagation_keys {
-            push_object_dirty_onto_its_existing_blocks(shard, &key);
-        }
-        if mutated_any {
-            if rebuilt_bucket_index {
-                // The reconstruct on the line above already recomputed every bucket's object
-                // index from its block index, so the sweep's own rebuild would redo that identical
-                // scan. Flags still refresh; only the duplicate scan is dropped.
-                refresh_bucket_runtime_flags_after_reconstruct(shard);
-            } else {
-                // Refresh only the buckets this batch disturbed. The full sweep is
-                // O(total blocks), so running it per batch left bulk ingest quadratic in the
-                // corpus -- with a smaller constant than the per-write sweep, but the same shape.
-                refresh_pending_bucket_runtime_flags(shard);
-            }
-            // Every write records a WAL entry before any block is written. async_storage only
-            // changes whether the commit BLOCKS: sync -> fsync, async (or bulk backfill) ->
-            // buffered, no fsync (a fire-and-forget commit).
-            //
-            // The batch is logged as ONE crash-atomic group: all commands are appended under a
-            // single batch id and made durable by a SINGLE barrier (not a per-command fsync
-            // loop). A crash mid-batch therefore leaves an incomplete trailing batch that replay
-            // drops wholesale -- so a retry never double-applies a durable PREFIX of the batch,
-            // which for a non-idempotent / time-unspecified command (FeatureAppend occur_time=0 ->
-            // a fresh now on each apply) would otherwise duplicate points.
-            let sync = !config.async_storage && !bulk_ingest_mode();
-            // Use what the batch staged rather than discarding it. Every command here recorded
-            // what it DID; writing the commands instead left those items in the thread's buffer
-            // and put this whole path outside data-only, which is why a batch measured larger
-            // than the same writes made separately.
-            //
-            // one record carrying every item, when the items can be found again after a crash --
-            // the same rule a single write follows. Otherwise the commands go, as before.
-            let staged_outcomes = super::block_in_wal::take_outcomes();
-            let staged_blocks = super::block_in_wal::take_staged();
-            // ASKED PER RESULT, not per batch -- see `wal::every_result_can_be_found_again`. This
-            // was `sync || !staged_blocks.is_empty()`, which asked a per-result question at BATCH
-            // granularity: one carried block anywhere in the batch answered it for every result in
-            // the batch, and a measured batch left 12 of 20 acked results naming a block-store
-            // address and nothing else while the rule called the batch recoverable.
-            let recoverable =
-                crate::wal::every_result_can_be_found_again(&staged_outcomes, &staged_blocks);
-            let use_data_only =
-                crate::wal::wal_data_only_enabled() && !staged_outcomes.is_empty() && recoverable;
-            if wal_payloads_elided && !use_data_only {
-                return results.finish(Status::error(
-                        "wal_commit_failed",
-                        "packed hash outcomes were not recoverable from the data-only WAL",
-                    ));
-            }
-            let oldest_unindexed_sequence = shard.applied_wal_sequence.unwrap_or_default().saturating_add(1);
-            let concurrent_commit = sync
-                && use_data_only
-                && defer_shared_hash_materialization
-                && !persist_index_delta
-                && !raft_applying()
-                && !replaying_wal()
-                && self.concurrent_commit.load(std::sync::atomic::Ordering::Relaxed);
-            let batch_result = if use_data_only {
-                self.wal_store
-                    .append_batch_as_one_record_at(
-                        shard_id,
-                        staged_outcomes,
-                        staged_blocks,
-                        sync && !concurrent_commit,
-                    )
-                    .map(|(record, log_id)| {
-                        if concurrent_commit {
-                            pending_barrier_seq = Some(record.sequence);
-                        }
-                        shard.note_wal_application(record.sequence, record.sequence);
-                        // Materialization and the commit barrier are independent. A durable
-                        // shared-row batch can still need these locations after cache eviction.
-                        let has_wal_resident_blocks = record.outcomes.iter().any(|item| {
-                            item.resolved_address().is_some_and(|address| {
-                                crate::wal_record::is_wal_resident(address.block_slab_id())
-                            })
-                        });
-                        if !sync || has_wal_resident_blocks
-                            || (reuse_hash_command_metadata && !shard.wal_resident_blocks.is_empty())
-                        {
-                            let locations = match shared_hash_fields.as_ref() {
-                                Some(fields) => super::block_in_wal::register_shared_hash_record(
-                                    &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
-                                    log_id, record.sequence, &self.wal_store,
-                                    fields.names(),
-                                ),
-                                None => super::block_in_wal::register_record_with_outcomes(
-                                    &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
-                                    log_id, record.sequence, &self.wal_store,
-                                ),
-                            };
-                            for folded in locations {
-                                shard.wal_resident_blocks.insert(
-                                    folded,
-                                    super::state::WalResidentBlock {
-                                        log_id,
-                                        sequence: record.sequence,
-                                    },
-                                );
-                            }
-                        }
-                        for item in &record.outcomes {
-                            if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&item.routing_bucket) {
-                                if bucket.first_dirty_wal_sequence == 0 {
-                                    bucket.first_dirty_wal_sequence = oldest_unindexed_sequence.min(record.sequence);
-                                }
-                            }
-                        }
-                    })
-            } else {
-                self.wal_store
-                    .append_batch_atomic_recorded(shard_id, wal_commands, sync, staged_blocks, staged_outcomes)
-                    .map(|(records, carrier)| {
-                        if let (Some(first), Some(last)) = (records.first(), records.last()) {
-                            shard.note_wal_application(first.sequence, last.sequence);
-                            if let Some(log_id) = carrier {
-                                let locations = super::block_in_wal::register_record_with_outcomes(
-                                    &self.block_store, shard_id, &last.staged_blocks, &last.outcomes,
-                                    log_id, last.sequence, &self.wal_store,
-                                );
-                                for folded in locations {
-                                    shard.wal_resident_blocks.insert(folded,
-                                        super::state::WalResidentBlock { log_id, sequence: last.sequence });
-                                }
-                            }
-                        }
-                    })
-            };
-            if let Err(err) = batch_result {
-                if sync {
-                    // A durable batch commit that failed is not durable; surface it rather than
-                    // acking undurable writes (mirrors the single-command execute path).
-                    return results.finish(Status::error(
-                            "wal_commit_failed",
-                            format!("durable WAL batch commit failed: {err}"),
+                    let written_element_names = (!hash_command || persist_index_delta)
+                        .then(|| command_upsert_element_names(command_for_post_write_ref, shard))
+                        .flatten();
+                    if persist_index_delta {
+                        batch_touched_container_elements.extend(command_touched_container_elements(
+                            command_for_post_write_ref,
+                            shard,
                         ));
-                } else {
-                    tracing::error!(
-                        shard_id,
-                        error = %err,
-                        "async WAL batch append failed: acked writes are NOT durable and will be \
-                         lost on a crash before the next flush"
-                    );
-                }
-            }
-            // Block/index materialization stays deferred to the background dump in
-            // async and bulk modes (index_log/persist already no-op under bulk).
-            if persist_index_delta && shard.checkpoint_wal_sequence().is_some() {
-                // The append receipts establish the applied boundary without
-                // consulting a log tail that may include unapplied records.
-                // Where this batch STARTS in the log, taken before the anchor moves.
-                //
-                // The claim stamped below has to be the bucket's OLDEST undumped write, and for a
-                // batch that is the FIRST record it appended, not the last. The previous
-                // anchor was captured before append -- and when some other path wrote without anchoring, the value
-                // is only lower, which retains more rather than less. A claim ABOVE a bucket's
-                // oldest undumped write is the direction that frees records it still needs.
-                let batch_first_wal_sequence = oldest_unindexed_sequence;
-                // The WAL half of what each bucket this batch dirtied holds over the log, stamped
-                // the way the single-command path stamps it (engine.rs, after its own append).
-                //
-                // Without it a batch-dirtied bucket reported NO CLAIM RECORDED, which the reclaim
-                // plan reads as unknown rather than as "needs nothing" -- so every such bucket
-                // landed in `missing_bucket_generations` and refused the whole plan until a dump
-                // happened to cover it. A dump is capped per round, so on a shard written through
-                // this path the two logs simply grew.
-                //
-                // Only when unset, for the same reason as the sibling: the field is the OLDEST
-                // undumped write, so a later batch into an already-dirty bucket must not move it.
-                for key in &delta_command_keys {
-                    let routing_bucket =
-                        block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-                    if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
-                        if bucket.first_dirty_wal_sequence == 0 {
-                            bucket.first_dirty_wal_sequence = batch_first_wal_sequence;
+                    }
+                    if object_keys.is_empty() {
+                        rebuild_bucket_block_ownership(
+                            shard_id,
+                            shard,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        );
+                    } else {
+                        for object_key in object_keys {
+                            // `mark_object_dirty` records the key together with the
+                            // routing bucket it computes on the next line. Inserting it here as well
+                            // was redundant when the set was flat and is wrong now: this site does
+                            // not know the bucket, and a key filed without one belongs to no bucket.
+                            let routing_bucket = shared_row_routing_bucket.unwrap_or_else(|| {
+                                block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
+                            });
+                            // An object that was already marked had its blocks pushed by that mark.
+                            if crate::engine::storage_bucket_internals::mark_object_dirty_at_bucket_deferred(
+                                shard, object_key, routing_bucket,
+                            ) {
+                                dirty_propagation_keys.insert(object_key.to_string());
+                            }
+                        }
+                    }
+                    // The same maintenance the single-command path does. An ingest's writes are
+                    // split across both paths, which is why covering only the other one removed
+                    // exactly half the rebuild work and left the rest: 2404 block visits per add
+                    // became 1205, and stayed there until this site was covered too.
+                    //
+                    // Same two guards: every touched key must report that it synced, or the rebuild
+                    // still runs; and an empty bucket_map still rebuilds, because maintenance updates
+                    // an index rather than constructing one.
+                    let maintained_bucket_index = if hash_index_filed.is_some()
+                        || matches!(command_for_post_write_ref, Command::SetAdd { .. } | Command::SetAddMany { .. })
+                    {
+                        // These writers already filed the applied elements and swept tombstones.
+                        true
+                    } else if shard.bucket_index.bucket_map.is_empty() {
+                        false
+                    } else {
+                        let narrow_hash = match command_for_post_write_ref {
+                            // Removal already updates the index; it files no new live block.
+                            Command::HashDelete { .. } => {
+                                crate::engine::storage_bucket_internals::hash_delete_maintained()
+                            }
+                            Command::HashSet { key, field, .. }
+                            | Command::HashIncrBy { key, field, .. } => {
+                                match shared_row_routing_bucket {
+                                    Some(routing_bucket) => crate::engine::storage_bucket_internals::sync_written_hash_fields_at_bucket(
+                                        shard,
+                                        shard_id,
+                                        key,
+                                        routing_bucket,
+                                        shared_row_object_id.expect("shared hash row has an object id"),
+                                        std::iter::once(field.as_str()),
+                                    ),
+                                    None => crate::engine::storage_bucket_internals::sync_written_hash_fields(
+                                        shard,
+                                        shard_id,
+                                        key,
+                                        std::iter::once(field.as_str()),
+                                    ),
+                                }
+                            }
+                            Command::HashMultiSet { key, entries }
+                            | Command::HashMultiSetIfTimestampOlder { key, entries, .. } => {
+                                match shared_row_routing_bucket {
+                                    Some(routing_bucket) => crate::engine::storage_bucket_internals::sync_written_hash_fields_at_bucket(
+                                        shard,
+                                        shard_id,
+                                        key,
+                                        routing_bucket,
+                                        shared_row_object_id.expect("shared hash row has an object id"),
+                                        entries.iter().map(|(field, _)| field.as_str()),
+                                    ),
+                                    None => crate::engine::storage_bucket_internals::sync_written_hash_fields(
+                                        shard,
+                                        shard_id,
+                                        key,
+                                        entries.iter().map(|(field, _)| field.as_str()),
+                                    ),
+                                }
+                            }
+                            _ => false,
+                        };
+                        // Prefer the element names this command actually wrote. The whole-object sync
+                        // below re-upserts every field the object holds, which is quadratic in that
+                        // count; this is one upsert per written element name. It reports false when it
+                        // cannot model the write, and the whole-object sync then runs.
+                        let narrow = !hash_command
+                            && match written_element_names.as_deref() {
+                                Some(element_names) => {
+                                    crate::engine::storage_bucket_internals::sync_blocks_for_written_element_names(
+                                        shard,
+                                        shard_id,
+                                        element_names,
+                                    )
+                                }
+                                None => false,
+                            };
+                        narrow_hash
+                            || narrow
+                            || (!object_keys.is_empty()
+                                && object_keys.iter().all(|object_key| {
+                                    crate::engine::storage_bucket_internals::sync_context_blocks_for_object(
+                                        shard,
+                                        shard_id,
+                                        object_key,
+                                    )
+                                }))
+                    };
+                    if persist_index_delta {
+                        match (&mut batch_upsert_element_names, written_element_names) {
+                            (Some(collected), Some(element_names)) => collected.extend(element_names),
+                            (state, _) => *state = None,
+                        }
+                    }
+                    // Every per-command consumer above borrows these keys. The batch delta keeps
+                    // them beyond this iteration, so transfer ownership only after maintenance.
+                    if persist_index_delta {
+                        delta_command_keys.extend(
+                            owned_object_keys
+                                .take()
+                                .expect("persisted index delta owns command keys"),
+                        );
+                    }
+                    if !maintained_bucket_index
+                        && !defer_bucket_index_reconstruct()
+                        // A command that writes no block cannot have changed the block index, so a
+                        // rebuild after one recomputes what it already held. The single-command path
+                        // has always skipped it here; this path did not, so the same command walked
+                        // the whole store when it arrived in a batch and nothing when it arrived
+                        // alone -- measured at one visit per block in the shard, per command.
+                        && !command_writes_no_block(command_for_post_write_ref)
+                        && (!command_updates_bucket_index_directly(command_for_post_write_ref)
+                            || shard.bucket_index.bucket_map.is_empty())
+                    {
+                        rebuild_bucket_first_index(
+                            shard_id,
+                            shard,
+                            start_routing_bucket,
+                            end_routing_bucket,
+                        );
+                        // The rebuild replaced bucket_map wholesale, so the record of which buckets
+                        // this batch touched no longer describes it.
+                        rebuilt_bucket_index = true;
+                    }
+                    if write_command {
+                        wal_payloads_elided |= payload_elided;
+                        if !command_source.recycles_commands() {
+                            wal_commands.push(
+                                command_for_post_write
+                                    .take()
+                                    .expect("post-write command is available for the WAL"),
+                            );
                         }
                     }
                 }
-                // Append the blocks this batch changed (O(delta)) to the index-log (advances
-                // the sequence + populates the delta stream). The whole-index base rewrite is
-                // deferred to the next compaction point (see the single-command execute path).
-                let (items, upsert_record) = match batch_upsert_element_names.as_ref() {
-                    Some(element_names) => (
-                        collect_upsert_index_items(
-                            shard,
-                            shard_id,
-                            element_names,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        ),
-                        true,
-                    ),
-                    None => (
-                        collect_command_index_items(
-                            shard,
-                            &delta_command_keys,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        ),
-                        false,
-                    ),
-                };
-                // Capturing serializes every entry the per-key maps hold for each key, so
-                // appending to a posting of length N serialized all N -- 99.5% of the index log
-                // on a real corpus (3.53 GB against 16 MB for the same 20,001 messages). A write
-                // that only ADDED leaves nothing to resurrect, so it is skipped there, exactly as
-                // the single-command execute path already does.
-                let mut key_states = if batch_membership_shrank {
-                    capture_key_states(shard, &delta_command_keys)
+                if let Some(command) = command_for_post_write.take() {
+                    command_source.recycle(command, outcome.mutated);
+                }
+                results.push_success(outcome.response);
+            }
+            // Readers cannot observe the batch until this shard write guard is released.
+            for key in dirty_propagation_keys {
+                push_object_dirty_onto_its_existing_blocks(shard, &key);
+            }
+            if mutated_any {
+                if rebuilt_bucket_index {
+                    // The reconstruct on the line above already recomputed every bucket's object
+                    // index from its block index, so the sweep's own rebuild would redo that identical
+                    // scan. Flags still refresh; only the duplicate scan is dropped.
+                    refresh_bucket_runtime_flags_after_reconstruct(shard);
                 } else {
-                    Vec::new()
-                };
-                // Carried whether or not the shrink capture ran, for the reason the
-                // single-command path states: the gate above asks about a shrink or a deadline,
-                // and a pure add -- the write whose element the fold could not restore -- is
-                // neither.
-                key_states.extend(capture_container_element_states(
-                    shard,
-                    &batch_touched_container_elements,
-                ));
-                let appended_index_log_sequence = self
-                    .index_log_store
-                    .append_delta(
-                        shard_id,
-                        items,
-                        key_states,
-                        shard.applied_wal_sequence,
-                        None,
-                        upsert_record,
-                        // Match single writes: the WAL is the default durability source.
-                        // Legacy recovery still requires the index-log barrier.
-                        !raft_applying() && !wal_single_barrier(),
-                    )
-                    .unwrap_or(0);
-                // The index-log half, and it is a SEPARATE half: the plan keeps two frontiers
-                // counted in two different sequences and requires both, so a bucket that can
-                // place itself in the WAL and not in the index log has still said nothing.
+                    // Refresh only the buckets this batch disturbed. The full sweep is
+                    // O(total blocks), so running it per batch left bulk ingest quadratic in the
+                    // corpus -- with a smaller constant than the per-write sweep, but the same shape.
+                    refresh_pending_bucket_runtime_flags(shard);
+                }
+                // Every write records a WAL entry before any block is written. async_storage only
+                // changes whether the commit BLOCKS: sync -> fsync, async (or bulk backfill) ->
+                // buffered, no fsync (a fire-and-forget commit).
                 //
-                // `append_delta` returns 0 when it wrote nothing, which is exactly "no claim" --
-                // the same guard the single-command path uses.
-                if appended_index_log_sequence > 0 {
+                // The batch is logged as ONE crash-atomic group: all commands are appended under a
+                // single batch id and made durable by a SINGLE barrier (not a per-command fsync
+                // loop). A crash mid-batch therefore leaves an incomplete trailing batch that replay
+                // drops wholesale -- so a retry never double-applies a durable PREFIX of the batch,
+                // which for a non-idempotent / time-unspecified command (FeatureAppend occur_time=0 ->
+                // a fresh now on each apply) would otherwise duplicate points.
+                let sync = !config.async_storage && !bulk_ingest_mode();
+                // Use what the batch staged rather than discarding it. Every command here recorded
+                // what it DID; writing the commands instead left those items in the thread's buffer
+                // and put this whole path outside data-only, which is why a batch measured larger
+                // than the same writes made separately.
+                //
+                // one record carrying every item, when the items can be found again after a crash --
+                // the same rule a single write follows. Otherwise the commands go, as before.
+                let staged_outcomes = super::block_in_wal::take_outcomes();
+                let staged_blocks = super::block_in_wal::take_staged();
+                // ASKED PER RESULT, not per batch -- see `wal::every_result_can_be_found_again`. This
+                // was `sync || !staged_blocks.is_empty()`, which asked a per-result question at BATCH
+                // granularity: one carried block anywhere in the batch answered it for every result in
+                // the batch, and a measured batch left 12 of 20 acked results naming a block-store
+                // address and nothing else while the rule called the batch recoverable.
+                let recoverable =
+                    crate::wal::every_result_can_be_found_again(&staged_outcomes, &staged_blocks);
+                let use_data_only =
+                    crate::wal::wal_data_only_enabled() && !staged_outcomes.is_empty() && recoverable;
+                if wal_payloads_elided && !use_data_only {
+                    return Err(results.finish(Status::error(
+                            "wal_commit_failed",
+                            "packed hash outcomes were not recoverable from the data-only WAL",
+                        )));
+                }
+                let oldest_unindexed_sequence = shard.applied_wal_sequence.unwrap_or_default().saturating_add(1);
+                let concurrent_commit = sync
+                    && use_data_only
+                    && defer_shared_hash_materialization
+                    && !persist_index_delta
+                    && !raft_applying()
+                    && !replaying_wal()
+                    && (options.defer_barrier || self.concurrent_commit.load(std::sync::atomic::Ordering::Relaxed));
+                let batch_result = if use_data_only {
+                    self.wal_store
+                        .append_batch_as_one_record_at(
+                            shard_id,
+                            staged_outcomes,
+                            staged_blocks,
+                            sync && !concurrent_commit,
+                        )
+                        .map(|(record, log_id)| {
+                            if concurrent_commit {
+                                pending_barrier_seq = Some(record.sequence);
+                            }
+                            shard.note_wal_application(record.sequence, record.sequence);
+                            // Materialization and the commit barrier are independent. A durable
+                            // shared-row batch can still need these locations after cache eviction.
+                            let has_wal_resident_blocks = record.outcomes.iter().any(|item| {
+                                item.resolved_address().is_some_and(|address| {
+                                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                                })
+                            });
+                            if !sync || has_wal_resident_blocks
+                                || (reuse_hash_command_metadata && !shard.wal_resident_blocks.is_empty())
+                            {
+                                let locations = match shared_hash_fields {
+                                    Some(fields) => super::block_in_wal::register_shared_hash_record(
+                                        &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
+                                        log_id, record.sequence, &self.wal_store,
+                                        fields.names(),
+                                        shard,
+                                    ),
+                                    None => super::block_in_wal::register_record_with_outcomes(
+                                        &self.block_store, shard_id, &record.staged_blocks, &record.outcomes,
+                                        log_id, record.sequence, &self.wal_store,
+                                    ),
+                                };
+                                for folded in locations {
+                                    shard.wal_resident_blocks.insert(
+                                        folded,
+                                        super::state::WalResidentBlock {
+                                            log_id,
+                                            sequence: record.sequence,
+                                        },
+                                    );
+                                }
+                            }
+                            for item in &record.outcomes {
+                                if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&item.routing_bucket) {
+                                    if bucket.first_dirty_wal_sequence == 0 {
+                                        bucket.first_dirty_wal_sequence = oldest_unindexed_sequence.min(record.sequence);
+                                    }
+                                }
+                            }
+                        })
+                } else {
+                    self.wal_store
+                        .append_batch_atomic_recorded(shard_id, wal_commands, sync, staged_blocks, staged_outcomes)
+                        .map(|(records, carrier)| {
+                            if let (Some(first), Some(last)) = (records.first(), records.last()) {
+                                shard.note_wal_application(first.sequence, last.sequence);
+                                if let Some(log_id) = carrier {
+                                    let locations = super::block_in_wal::register_record_with_outcomes(
+                                        &self.block_store, shard_id, &last.staged_blocks, &last.outcomes,
+                                        log_id, last.sequence, &self.wal_store,
+                                    );
+                                    for folded in locations {
+                                        shard.wal_resident_blocks.insert(folded,
+                                            super::state::WalResidentBlock { log_id, sequence: last.sequence });
+                                    }
+                                }
+                            }
+                        })
+                };
+                if let Err(err) = batch_result {
+                    if sync {
+                        // A durable batch commit that failed is not durable; surface it rather than
+                        // acking undurable writes (mirrors the single-command execute path).
+                        return Err(results.finish(Status::error(
+                                "wal_commit_failed",
+                                format!("durable WAL batch commit failed: {err}"),
+                            )));
+                    } else {
+                        tracing::error!(
+                            shard_id,
+                            error = %err,
+                            "async WAL batch append failed: acked writes are NOT durable and will be \
+                             lost on a crash before the next flush"
+                        );
+                    }
+                }
+                // Block/index materialization stays deferred to the background dump in
+                // async and bulk modes (index_log/persist already no-op under bulk).
+                if persist_index_delta && shard.checkpoint_wal_sequence().is_some() {
+                    // The append receipts establish the applied boundary without
+                    // consulting a log tail that may include unapplied records.
+                    // Where this batch STARTS in the log, taken before the anchor moves.
+                    //
+                    // The claim stamped below has to be the bucket's OLDEST undumped write, and for a
+                    // batch that is the FIRST record it appended, not the last. The previous
+                    // anchor was captured before append -- and when some other path wrote without anchoring, the value
+                    // is only lower, which retains more rather than less. A claim ABOVE a bucket's
+                    // oldest undumped write is the direction that frees records it still needs.
+                    let batch_first_wal_sequence = oldest_unindexed_sequence;
+                    // The WAL half of what each bucket this batch dirtied holds over the log, stamped
+                    // the way the single-command path stamps it (engine.rs, after its own append).
+                    //
+                    // Without it a batch-dirtied bucket reported NO CLAIM RECORDED, which the reclaim
+                    // plan reads as unknown rather than as "needs nothing" -- so every such bucket
+                    // landed in `missing_bucket_generations` and refused the whole plan until a dump
+                    // happened to cover it. A dump is capped per round, so on a shard written through
+                    // this path the two logs simply grew.
+                    //
+                    // Only when unset, for the same reason as the sibling: the field is the OLDEST
+                    // undumped write, so a later batch into an already-dirty bucket must not move it.
                     for key in &delta_command_keys {
                         let routing_bucket =
                             block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-                        if let Some(mut bucket) =
-                            shard.bucket_index.bucket_map.get_mut(&routing_bucket)
-                        {
-                            if bucket.first_dirty_index_log_sequence == 0 {
-                                bucket.first_dirty_index_log_sequence =
-                                    appended_index_log_sequence;
+                        if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+                            if bucket.first_dirty_wal_sequence == 0 {
+                                bucket.first_dirty_wal_sequence = batch_first_wal_sequence;
+                            }
+                        }
+                    }
+                    // Append the blocks this batch changed (O(delta)) to the index-log (advances
+                    // the sequence + populates the delta stream). The whole-index base rewrite is
+                    // deferred to the next compaction point (see the single-command execute path).
+                    let (items, upsert_record) = match batch_upsert_element_names.as_ref() {
+                        Some(element_names) => (
+                            collect_upsert_index_items(
+                                shard,
+                                shard_id,
+                                element_names,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                            ),
+                            true,
+                        ),
+                        None => (
+                            collect_command_index_items(
+                                shard,
+                                &delta_command_keys,
+                                start_routing_bucket,
+                                end_routing_bucket,
+                            ),
+                            false,
+                        ),
+                    };
+                    // Capturing serializes every entry the per-key maps hold for each key, so
+                    // appending to a posting of length N serialized all N -- 99.5% of the index log
+                    // on a real corpus (3.53 GB against 16 MB for the same 20,001 messages). A write
+                    // that only ADDED leaves nothing to resurrect, so it is skipped there, exactly as
+                    // the single-command execute path already does.
+                    let mut key_states = if batch_membership_shrank {
+                        capture_key_states(shard, &delta_command_keys)
+                    } else {
+                        Vec::new()
+                    };
+                    // Carried whether or not the shrink capture ran, for the reason the
+                    // single-command path states: the gate above asks about a shrink or a deadline,
+                    // and a pure add -- the write whose element the fold could not restore -- is
+                    // neither.
+                    key_states.extend(
+                        capture_container_element_states(shard, &batch_touched_container_elements)
+                            .into_iter()
+                            .map(crate::index_log::KeyState::from),
+                    );
+                    let appended_index_log_sequence = self
+                        .index_log_store
+                        .append_delta(
+                            shard_id,
+                            items,
+                            key_states,
+                            shard.applied_wal_sequence,
+                            None,
+                            upsert_record,
+                            // Match single writes: the WAL is the default durability source.
+                            // Legacy recovery still requires the index-log barrier.
+                            !raft_applying() && !wal_single_barrier(),
+                        )
+                        .unwrap_or(0);
+                    // The index-log half, and it is a SEPARATE half: the plan keeps two frontiers
+                    // counted in two different sequences and requires both, so a bucket that can
+                    // place itself in the WAL and not in the index log has still said nothing.
+                    //
+                    // `append_delta` returns 0 when it wrote nothing, which is exactly "no claim" --
+                    // the same guard the single-command path uses.
+                    if appended_index_log_sequence > 0 {
+                        for key in &delta_command_keys {
+                            let routing_bucket =
+                                block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
+                            if let Some(mut bucket) =
+                                shard.bucket_index.bucket_map.get_mut(&routing_bucket)
+                            {
+                                if bucket.first_dirty_index_log_sequence == 0 {
+                                    bucket.first_dirty_index_log_sequence =
+                                        appended_index_log_sequence;
+                                }
                             }
                         }
                     }
                 }
             }
-        }
-        drop(shards);
-        if let Some(sequence) = pending_barrier_seq {
-            // Match single-command concurrent commit: reserve and register under the
-            // engine guard, then await the shared durable barrier before acknowledging.
-            #[cfg(test)]
-            BEFORE_SHARED_ROW_COMMIT.with(|slot| {
-                let observer = slot.borrow_mut().take();
-                if let Some(observer) = observer {
-                    observer(self, shard_id, sequence);
-                }
-            });
-            if let Err(err) = self.wal_store.commit_barrier(shard_id, sequence) {
-                return results.finish(Status::error(
-                    "wal_commit_failed",
-                    format!("durable WAL batch commit barrier failed: {err}"),
-                ));
+            Ok((results, pending_barrier_seq, context_embedding_commands))
+        });
+        let (results, pending_barrier_seq, context_embedding_commands) = match prepared {
+            Ok(batch) => batch,
+            Err(response) => return response,
+        };
+        if let Some(sequence) = pending_barrier_seq.filter(|_| !options.defer_barrier) {
+            if let Err(status) = self.commit_shared_row_barrier(shard_id, sequence) {
+                return results.finish(status);
             }
         }
         self.publish_context_embedding_commands(&context_embedding_commands);
-        results.finish(Status::ok())
+        let mut result = results.finish(Status::ok());
+        result.pending_barrier_sequence = pending_barrier_seq;
+        result
+    }
+
+    fn commit_shared_row_barrier(&self, shard_id: ShardId, sequence: u64) -> Result<(), Status> {
+        #[cfg(test)]
+        BEFORE_SHARED_ROW_COMMIT.with(|slot| {
+            let observer = slot.borrow_mut().take();
+            if let Some(observer) = observer {
+                observer(self, shard_id, sequence);
+            }
+        });
+        self.wal_store.commit_barrier(shard_id, sequence).map_err(|err| Status::error(
+            "wal_commit_failed", format!("durable WAL batch commit barrier failed: {err}")))
     }
 
     pub fn batch_execute_replicated(
@@ -2353,15 +2403,17 @@ impl TemporalEngine {
             .filter(|key| !key.trim().is_empty())
             .collect::<BTreeSet<_>>();
         let publish_all = selected_keys.is_empty();
-        let publish_targets = {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            let Some(shard) = shards.get(&shard_id) else {
+        let Some(owner) = self.shards.handle(shard_id) else {
+            return Err(Status::error("shard_not_loaded", "shard is not loaded on this server"));
+        };
+        let publish_targets = self.shards.with_handle_state(&owner, |shard| {
+            let Some(shard) = shard else {
                 return Err(Status::error(
                     "shard_not_loaded",
                     "shard is not loaded on this server",
                 ));
             };
-            if publish_all {
+            let targets = if publish_all {
                 let mut publish_targets = shard
                     .strings()
                     .iter()
@@ -2416,8 +2468,9 @@ impl TemporalEngine {
                     }
                 }
                 publish_targets
-            }
-        };
+            };
+            Ok(targets)
+        })?;
         let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
         let mut publish_records = Vec::with_capacity(publish_targets.len());
         for (target, address) in publish_targets {
@@ -2467,11 +2520,10 @@ impl TemporalEngine {
             .collect::<Vec<BlockAppendRecord>>();
         let published_addresses = self
             .block_store
-            .append_batch_with_block_metadata(append_records)
+            .append_batch_with_block_metadata_for_shard(shard_id, append_records)
             .map_err(|err| Status::error("publish_visibility_failed", err.to_string()))?;
-        let index_bytes = {
-            let mut shards = self.shards.write().expect("engine lock poisoned");
-            let Some(shard) = shards.get_mut(&shard_id) else {
+        let index_bytes = self.shards.with_handle_state_mut(&owner, |shard| {
+            let Some(shard) = shard else {
                 return Err(Status::error(
                     "shard_not_loaded",
                     "shard is not loaded on this server",
@@ -2591,15 +2643,15 @@ impl TemporalEngine {
             shard.publish_index_flush_countdown = shard
                 .publish_index_flush_countdown
                 .saturating_sub(published_key_count);
-            if shard.publish_index_flush_countdown == 0 && shard.checkpoint_wal_sequence().is_some() {
+            Ok(if shard.publish_index_flush_countdown == 0 && shard.checkpoint_wal_sequence().is_some() {
                 shard.publish_index_flush_countdown =
                     self.visibility_publish_index_flush_interval();
                 let publication = self.checkpoint_publications.capture(shard_id);
                 Some((serialize_index(shard), publication))
             } else {
                 None
-            }
-        };
+            })
+        })?;
         // `None` when this call's published keys did not run the countdown out -- see the
         // countdown above. The index-log anchor goes with the index and not without it: an anchor
         // record carries the digest and length of the index file it names, so there is nothing for

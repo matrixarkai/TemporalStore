@@ -4,17 +4,54 @@
 use super::*;
 
 pub(super) type PhysicalKey = (u64, crate::engine::LiveBlockKey);
-type Objects = HashMap<u64, HashMap<crate::engine::LiveBlockKey, Registration>>;
+type Addresses = HashMap<crate::engine::LiveBlockKey, Registration, ahash::RandomState>;
+type Objects = HashMap<u64, Addresses, ahash::RandomState>;
 #[derive(Default)]
 struct PhysicalShard {
+    owner: usize,
+    shard: ShardId,
     objects: Objects,
     len: usize,
+    folded_counts: Option<HashMap<u64, usize, ahash::RandomState>>,
+}
+
+impl Drop for PhysicalShard {
+    fn drop(&mut self) {
+        for location in self.objects.values().flat_map(|pages| pages.values()) {
+            untrack_location(self.owner, self.shard, location);
+        }
+    }
 }
 type Stores = HashMap<usize, HashMap<ShardId, PhysicalShard>>;
+
+impl PhysicalShard {
+    fn new(owner: usize, shard: ShardId) -> Self {
+        Self { owner, shard, objects: HashMap::default(), len: 0, folded_counts: None }
+    }
+}
 
 fn table() -> &'static Mutex<Stores> {
     static TABLE: OnceLock<Mutex<Stores>> = OnceLock::new();
     TABLE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub(super) fn enable_fold_tracking(blocks: &crate::block_store::BlockStore, shard: ShardId) {
+    // Keep lock order aligned with collision checks and hash-frame retirement.
+    let mut logical = registry().lock().expect("logical WAL locator lock poisoned");
+    let mut physical = table().lock().expect("physical WAL locator lock poisoned");
+    logical.shard_mut(blocks.store_id(), shard).enable_fold_tracking();
+    let state = physical.entry(blocks.store_id()).or_default().entry(shard).or_insert_with(|| {
+        PhysicalShard::new(blocks.store_id(), shard)
+    });
+    if state.folded_counts.is_none() {
+        let mut counts = HashMap::<_, _, ahash::RandomState>::default();
+        for (object, pages) in &state.objects {
+            for address in pages.keys() {
+                *counts.entry(folded((*object, *address))).or_default() += 1;
+            }
+        }
+        state.folded_counts = Some(counts);
+    }
 }
 
 fn series(kind: &str) -> bool {
@@ -33,10 +70,40 @@ fn series(kind: &str) -> bool {
 pub(super) fn bindings(
     outcomes: &[crate::wal::WalOutcomeItem],
     blocks: &[StagedBlock],
+    shared_hash_frames: bool,
 ) -> Vec<(PhysicalKey, usize)> {
+    if shared_hash_frames && outcomes.len() == blocks.len() {
+        let mut seen = std::collections::HashSet::<_, ahash::RandomState>::default();
+        let mut paired = Vec::with_capacity(blocks.len());
+        let valid = outcomes
+            .iter()
+            .zip(blocks)
+            .enumerate()
+            .all(|(index, (item, block))| {
+                let Some(address) = item.resolved_address() else {
+                    return false;
+                };
+                if item.kind != "hash"
+                    || item.object_id != block.object_id
+                    || (crate::wal_record::is_wal_resident(address.block_slab_id())
+                        && address.length() != block.bytes.len() as u64)
+                {
+                    return false;
+                }
+                let key = (item.object_id, crate::engine::live_block_key(&address));
+                if !seen.insert(key) {
+                    return false;
+                }
+                paired.push((key, index));
+                true
+            });
+        if valid {
+            return paired;
+        }
+    }
     let objects: std::collections::HashSet<_> = outcomes
         .iter()
-        .filter(|item| series(&item.kind))
+        .filter(|item| series(&item.kind) || (shared_hash_frames && item.kind == "hash"))
         .map(|item| item.object_id)
         .collect();
     if objects.is_empty() {
@@ -90,8 +157,11 @@ pub(super) fn install_many(
         .entry(blocks.store_id())
         .or_default()
         .entry(shard)
-        .or_default();
+        .or_insert_with(|| PhysicalShard::new(blocks.store_id(), shard));
     for (key, location) in locations {
+        track_location(blocks.store_id(), shard, &location,
+            state.objects.get(&key.0).and_then(|pages| pages.get(&key.1)));
+        let folded_key = folded(key);
         if state
             .objects
             .entry(key.0)
@@ -100,8 +170,11 @@ pub(super) fn install_many(
             .is_none()
         {
             state.len += 1;
+            if let Some(counts) = state.folded_counts.as_mut() {
+                *counts.entry(folded_key).or_default() += 1;
+            }
         }
-        folded_keys.push(folded(key));
+        folded_keys.push(folded_key);
     }
     folded_keys
 }
@@ -112,13 +185,25 @@ pub(super) fn lookup(
     object: u64,
     address: crate::engine::LiveBlockKey,
 ) -> Option<Option<Registration>> {
+    lookup_retaining(blocks, shard, object, address, |_| {})
+}
+
+pub(super) fn lookup_retaining(
+    blocks: &crate::block_store::BlockStore,
+    shard: ShardId,
+    object: u64,
+    address: crate::engine::LiveBlockKey,
+    mut retain: impl FnMut(&Registration),
+) -> Option<Option<Registration>> {
     let table = table().lock().ok()?;
     let pages = table
         .get(&blocks.store_id())?
         .get(&shard)?
         .objects
         .get(&object)?;
-    Some(pages.get(&address).cloned())
+    let location = pages.get(&address).cloned();
+    if let Some(location) = &location { retain(location); }
+    Some(location)
 }
 
 pub(super) fn locations(
@@ -176,7 +261,22 @@ pub(super) fn recover(
     record: &crate::wal::WriteAheadLogRecord,
     wanted: &std::collections::BTreeSet<u64>,
 ) -> Vec<u64> {
-    let bindings = bindings(&record.outcomes, &record.staged_blocks);
+    let candidates = bindings(&record.outcomes, &record.staged_blocks, true);
+    let hash_objects: std::collections::HashSet<_> = record
+        .outcomes
+        .iter()
+        .filter(|item| item.kind == "hash")
+        .map(|item| item.object_id)
+        .collect();
+    let shared_hash_frames = candidates
+        .iter()
+        .any(|(key, _)| hash_objects.contains(&key.0) && wanted.contains(&folded(*key)));
+    if shared_hash_frames { enable_fold_tracking(blocks, shard); }
+    let bindings = if shared_hash_frames {
+        candidates
+    } else {
+        bindings(&record.outcomes, &record.staged_blocks, false)
+    };
     let packed = packed_objects(&record.outcomes);
     let mut pool = std::collections::HashSet::new();
     let physical_indices: std::collections::HashSet<_> =
@@ -194,13 +294,16 @@ pub(super) fn recover(
         shard,
         bindings.into_iter().filter_map(|(key, index)| {
             wanted.contains(&folded(key)).then(|| {
-                (key, Arc::new((
+                (
+                    key,
+                    Arc::new((
                         store.clone(),
                         log_id,
                         record.sequence,
                         expected,
                         Some(index),
-                    )))
+                    )),
+                )
             })
         }),
     )
@@ -231,6 +334,19 @@ fn retained_frame_folds(
         },
     );
     retained
+}
+
+/// Whether this shard has any physical registration. The same test `retirements` opens with: when
+/// this is false it returns nothing, so a caller may skip the walk it would otherwise run first.
+/// A poisoned lock reads as "yes", which keeps the walk.
+pub(super) fn has_entries(blocks: &crate::block_store::BlockStore, shard: ShardId) -> bool {
+    let Ok(table) = table().lock() else {
+        return true;
+    };
+    table
+        .get(&blocks.store_id())
+        .and_then(|shards| shards.get(&shard))
+        .is_some_and(|state| state.len != 0)
 }
 
 pub(super) fn retirements(
@@ -292,6 +408,136 @@ pub(super) fn retirements(
     retirements
 }
 
+pub(super) fn retire_logical_hints(
+    blocks: &crate::block_store::BlockStore,
+    shard: ShardId,
+    state: &mut crate::engine::ShardState,
+    retired: &[(u64, Registration)],
+) {
+    if retired.is_empty() {
+        return;
+    }
+    let Ok(logical) = registry().lock() else {
+        return;
+    };
+    let Ok(table) = table().lock() else {
+        return;
+    };
+    for (key, location) in retired {
+        let logical_collision = logical
+            .shard(blocks.store_id(), shard)
+            .is_some_and(|entries| entries.has_fold(key));
+        let physical_collision = table
+            .get(&blocks.store_id())
+            .and_then(|shards| shards.get(&shard))
+            .is_some_and(|entries| entries.folded_counts.as_ref().is_some_and(|counts| counts.contains_key(key)));
+        if !logical_collision
+            && !physical_collision
+            && state
+                .wal_resident_blocks
+                .get(key)
+                .is_some_and(|held| held.log_id == location.1 && held.sequence == location.2)
+        {
+            state.wal_resident_blocks.remove(key);
+        }
+    }
+}
+
+pub(super) fn prune_hash_frames(
+    blocks: &crate::block_store::BlockStore,
+    shard: ShardId,
+    store: &LocalWriteAheadLogStore,
+    state: &mut crate::engine::ShardState,
+    outcomes: &[crate::wal::WalOutcomeItem],
+) -> std::collections::HashSet<u64> {
+    let mut live = HashMap::<
+        u64,
+        std::collections::HashSet<crate::engine::LiveBlockKey, ahash::RandomState>,
+        ahash::RandomState,
+    >::default();
+    for item in outcomes.iter().filter(|item| item.kind == "hash") {
+        if live.contains_key(&item.object_id) {
+            continue;
+        }
+        let mut addresses = std::collections::HashSet::default();
+        let mut previous = None;
+        for address in state
+            .bucket_index
+            .hashes
+            .get(&item.object_key)
+            .into_iter()
+            .flat_map(|fields| fields.values())
+        {
+            let address = crate::engine::live_block_key(address);
+            // Packed columns commonly share one frame; do not hash it once per column.
+            if previous != Some(address) {
+                addresses.insert(address);
+                previous = Some(address);
+            }
+        }
+        live.insert(item.object_id, addresses);
+    }
+    let mut retired = std::collections::HashSet::new();
+    let Ok(logical) = registry().lock() else {
+        return retired;
+    };
+    let Ok(mut table) = table().lock() else {
+        return retired;
+    };
+    let Some(physical) = table
+        .get_mut(&blocks.store_id())
+        .and_then(|shards| shards.get_mut(&shard))
+    else {
+        return retired;
+    };
+    for (object, live) in live {
+        let Some(pages) = physical.objects.get_mut(&object) else {
+            continue;
+        };
+        let dead: Vec<_> = pages
+            .iter()
+            .filter(|(address, location)| !live.contains(address) && location.0.same_log(store))
+            .map(|(address, location)| (*address, location.clone()))
+            .collect();
+        for (address, location) in dead {
+            pages.remove(&address);
+            untrack_location(blocks.store_id(), shard, &location);
+            physical.len -= 1;
+            let key = folded((object, address));
+            let count = physical
+                .folded_counts
+                .as_mut().expect("hash frame folds enabled")
+                .get_mut(&key)
+                .expect("physical fold exists");
+            *count -= 1;
+            if *count == 0 {
+                physical.folded_counts.as_mut().unwrap().remove(&key);
+            }
+            if !physical.folded_counts.as_ref().unwrap().contains_key(&key) {
+                retired.insert(key);
+                let logical_collision = logical
+                    .shard(blocks.store_id(), shard)
+                    .is_some_and(|entries| entries.has_fold(&key));
+                if !logical_collision
+                    && state.wal_resident_blocks.get(&key).is_some_and(|held| {
+                        held.log_id == location.1 && held.sequence == location.2
+                    })
+                {
+                    state.wal_resident_blocks.remove(&key);
+                }
+            }
+        }
+        if pages.is_empty() {
+            physical.objects.remove(&object);
+        }
+    }
+    if physical.objects.is_empty() {
+        physical.objects.shrink_to_fit();
+        if let Some(counts) = physical.folded_counts.as_mut() { counts.shrink_to_fit(); }
+    }
+    retired
+}
+
 pub(super) fn retire(
     blocks: &crate::block_store::BlockStore,
     shard: ShardId,
@@ -317,16 +563,26 @@ pub(super) fn retire(
         .get(address)
         .is_some_and(|held| Arc::ptr_eq(held, &retirement.location))
     {
-        pages.remove(address);
+        let removed = pages.remove(address).expect("retired physical location exists");
+        untrack_location(blocks.store_id(), shard, &removed);
         state.len -= 1;
+        if let Some(counts) = state.folded_counts.as_mut() {
+            let folded = folded((*object, *address));
+            let count = counts.get_mut(&folded).expect("physical fold exists");
+            *count -= 1;
+            if *count == 0 { counts.remove(&folded); }
+        }
     }
     if pages.is_empty() {
         objects.remove(object);
     }
-    if objects.is_empty() {
+    if objects.is_empty() && state.folded_counts.is_none() {
         if let Some(shards) = table.get_mut(&blocks.store_id()) {
             shards.remove(&shard);
         }
+    } else if objects.is_empty() {
+        objects.shrink_to_fit();
+        state.folded_counts.as_mut().unwrap().shrink_to_fit();
     }
 }
 
@@ -354,6 +610,14 @@ mod retention_work_tests;
 #[cfg(test)]
 #[path = "wal_location_batch_tests.rs"]
 mod location_batch_tests;
+
+#[cfg(test)]
+#[path = "wal_registration_summary_tests.rs"]
+mod registration_summary_tests;
+
+#[cfg(test)]
+#[path = "wal_hash_frame_tests.rs"]
+mod hash_frame_locator_tests;
 
 #[cfg(test)]
 mod tests {
@@ -588,9 +852,9 @@ mod tests {
         )
         .is_empty());
         source.create_bucket_dump_manifest(1, []).unwrap();
-        assert!(source.shards.read().unwrap()[&1]
-            .wal_resident_blocks
-            .contains_key(&folded_key));
+        assert!(source.shards.with_state(1, |state| {
+            state.unwrap().wal_resident_blocks.contains_key(&folded_key)
+        }));
         source.flush_shard_index(1);
         source.wal_store.flush(1).unwrap();
         drop(source);

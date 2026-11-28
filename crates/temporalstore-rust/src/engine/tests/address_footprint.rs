@@ -248,144 +248,145 @@ impl AddressCensus {
 /// every block addressed by a model map is addressed a SECOND time here. A census that read only
 /// the model maps would under-count the population by about half.
 fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&shard_id).expect("shard is loaded");
-    let mut c = AddressCensus::default();
+    engine.shards.with_state(shard_id, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut c = AddressCensus::default();
 
-    // ONE ADDRESS PER KEY, THREE MAPS -- BUT NO LONGER ONE ARRAY OF ONE TYPE.
-    //
-    // These three used to be an array literal, which requires a single element type. The
-    // `ShardState` note on this class says they have to "agree on their key type" because of THIS
-    // array -- and that was an undercount: an array literal binds the VALUE type too. One of the
-    // three holds an `ObjectRecord` now, so the array stopped type-checking, which is how the
-    // coupling surfaced.
-    //
-    // Materialising the addresses per map keeps the walk and the per-map attribution identical
-    // while letting the values differ. The record map pays one `address()` per entry, in a test
-    // probe, which is the right place for that cost.
-    for (name, addresses) in [
-        ("strings", shard.strings().values().map(|slot| slot.address()).collect::<Vec<_>>()),
-        (
-            "control_state_pages",
-            shard
-                .control_state_blocks()
-                .values()
-                .map(|record| record.address())
-                .collect::<Vec<_>>(),
-        ),
-        ("context_nodes", shard.context_nodes().values().cloned().collect::<Vec<_>>()),
-    ] {
-        let before = c.total;
-        for address in &addresses {
-            c.observe(address);
-        }
-        c.note(name, c.total - before);
-    }
-
-    // HashMap<String, HashMap<String, BlockAddress>>
-    {
-        let before = c.total;
-        for fields in shard.bucket_index.hashes.values() {
-            for address in fields.values() {
+        // ONE ADDRESS PER KEY, THREE MAPS -- BUT NO LONGER ONE ARRAY OF ONE TYPE.
+        //
+        // These three used to be an array literal, which requires a single element type. The
+        // `ShardState` note on this class says they have to "agree on their key type" because of THIS
+        // array -- and that was an undercount: an array literal binds the VALUE type too. One of the
+        // three holds an `ObjectRecord` now, so the array stopped type-checking, which is how the
+        // coupling surfaced.
+        //
+        // Materialising the addresses per map keeps the walk and the per-map attribution identical
+        // while letting the values differ. The record map pays one `address()` per entry, in a test
+        // probe, which is the right place for that cost.
+        for (name, addresses) in [
+            ("strings", shard.strings().values().map(|slot| slot.address()).collect::<Vec<_>>()),
+            (
+                "control_state_pages",
+                shard
+                    .control_state_blocks()
+                    .values()
+                    .map(|record| record.address())
+                    .collect::<Vec<_>>(),
+            ),
+            ("context_nodes", shard.context_nodes().values().cloned().collect::<Vec<_>>()),
+        ] {
+            let before = c.total;
+            for address in &addresses {
                 c.observe(address);
             }
+            c.note(name, c.total - before);
         }
-        c.note("hashes", c.total - before);
-    }
 
-    // HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>
-    {
-        let before = c.total;
-        for members in shard.bucket_index.sets.values() {
-            for address in members.values() {
+        // HashMap<String, HashMap<String, BlockAddress>>
+        {
+            let before = c.total;
+            for fields in shard.bucket_index.hashes.values() {
+                for address in fields.values() {
+                    c.observe(address);
+                }
+            }
+            c.note("hashes", c.total - before);
+        }
+
+        // HashMap<String, BTreeMap<Vec<u8>, BlockAddress>>
+        {
+            let before = c.total;
+            for members in shard.bucket_index.sets.values() {
+                for address in members.values() {
+                    c.observe(address);
+                }
+            }
+            c.in_btree += c.total - before;
+            c.note("sets", c.total - before);
+        }
+
+        // HashMap<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>
+        {
+            let before = c.total;
+            for members in shard.bucket_index.zsets.values() {
+                for (_, address) in members.values() {
+                    c.observe(address);
+                }
+            }
+            c.in_btree += c.total - before;
+            c.note("zsets", c.total - before);
+        }
+
+        // HashMap<String, BTreeMap<i64, BlockAddress>>
+        {
+            let before = c.total;
+            for elements in shard.bucket_index.lists.values() {
+                for address in elements.values() {
+                    c.observe(address);
+                }
+            }
+            c.in_btree += c.total - before;
+            c.note("lists", c.total - before);
+        }
+
+        // The time-keyed series maps: HashMap<String, BTreeMap<u64, BlockAddress>>. One address PER
+        // POINT, which is the population the whole question is about.
+        // THE EVENTS MAP FIRST, ON ITS OWN. It holds an owned sorted array per key now, so it is
+        // not the same type as the seven below and cannot ride in one array with them -- and its
+        // addresses are counted into `in_owned_array` rather than `in_btree`, which is the honest
+        // bucket for them. It still calls `note`, because the census asserts it walks SIXTEEN maps and
+        // that count is invisible to a grep for a field name.
+        {
+            let before = c.total;
+            for series in shard.context_events().values() {
+                for address in series.addresses() {
+                    c.observe(address);
+                }
+            }
+            c.in_owned_array += c.total - before;
+            c.note("context_events", c.total - before);
+        }
+        // FLATTENED TO ADDRESSES AND TYPE-ERASED, so the value type stops mattering: `features` holds
+        // the owned array now and the context kinds still hold B-trees, and an array literal demands
+        // one element type. Both representations expose `values()` over `&ElementEntry`, which is all
+        // this walk looks at.
+        for (name, addresses) in [
+            (
+                "features",
+                Box::new(shard.features().values().flat_map(|series| series.addresses()))
+                    as Box<dyn Iterator<Item = &ElementEntry>>,
+            ),
+            ("context_indexes", Box::new(shard.context_indexes().values().flat_map(|s| s.addresses()))),
+            ("context_audits", Box::new(shard.context_audits().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a)))),
+            ("context_entities", Box::new(shard.context_entities().values().flat_map(|s| s.addresses()))),
+            ("context_children", Box::new(shard.context_children().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a)))),
+            ("context_summaries", Box::new(shard.context_summaries().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a)))),
+            (
+                "context_compressions",
+                Box::new(shard.context_compressions().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
+            ),
+        ] {
+            let before = c.total;
+            for address in addresses {
                 c.observe(address);
             }
+            c.in_btree += c.total - before;
+            c.note(name, c.total - before);
         }
-        c.in_btree += c.total - before;
-        c.note("sets", c.total - before);
-    }
 
-    // HashMap<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>
-    {
-        let before = c.total;
-        for members in shard.bucket_index.zsets.values() {
-            for (_, address) in members.values() {
-                c.observe(address);
+        // The bucket index -- the SECOND copy of every address.
+        {
+            let before = c.total;
+            for bucket in shard.bucket_index.bucket_map.values() {
+                for (_, block) in bucket.block_index.iter() {
+                    c.observe(&block.address);
+                }
             }
+            c.note("bucket_index (BlockIndex.address)", c.total - before);
         }
-        c.in_btree += c.total - before;
-        c.note("zsets", c.total - before);
-    }
 
-    // HashMap<String, BTreeMap<i64, BlockAddress>>
-    {
-        let before = c.total;
-        for elements in shard.bucket_index.lists.values() {
-            for address in elements.values() {
-                c.observe(address);
-            }
-        }
-        c.in_btree += c.total - before;
-        c.note("lists", c.total - before);
-    }
-
-    // The time-keyed series maps: HashMap<String, BTreeMap<u64, BlockAddress>>. One address PER
-    // POINT, which is the population the whole question is about.
-    // THE EVENTS MAP FIRST, ON ITS OWN. It holds an owned sorted array per key now, so it is
-    // not the same type as the seven below and cannot ride in one array with them -- and its
-    // addresses are counted into `in_owned_array` rather than `in_btree`, which is the honest
-    // bucket for them. It still calls `note`, because the census asserts it walks SIXTEEN maps and
-    // that count is invisible to a grep for a field name.
-    {
-        let before = c.total;
-        for series in shard.context_events().values() {
-            for address in series.addresses() {
-                c.observe(address);
-            }
-        }
-        c.in_owned_array += c.total - before;
-        c.note("context_events", c.total - before);
-    }
-    // FLATTENED TO ADDRESSES AND TYPE-ERASED, so the value type stops mattering: `features` holds
-    // the owned array now and the context kinds still hold B-trees, and an array literal demands
-    // one element type. Both representations expose `values()` over `&ElementEntry`, which is all
-    // this walk looks at.
-    for (name, addresses) in [
-        (
-            "features",
-            Box::new(shard.features().values().flat_map(|series| series.addresses()))
-                as Box<dyn Iterator<Item = &ElementEntry>>,
-        ),
-        ("context_indexes", Box::new(shard.context_indexes().values().flat_map(|s| s.addresses()))),
-        ("context_audits", Box::new(shard.context_audits().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a)))),
-        ("context_entities", Box::new(shard.context_entities().values().flat_map(|s| s.addresses()))),
-        ("context_children", Box::new(shard.context_children().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a)))),
-        ("context_summaries", Box::new(shard.context_summaries().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a)))),
-        (
-            "context_compressions",
-            Box::new(shard.context_compressions().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
-        ),
-    ] {
-        let before = c.total;
-        for address in addresses {
-            c.observe(address);
-        }
-        c.in_btree += c.total - before;
-        c.note(name, c.total - before);
-    }
-
-    // The bucket index -- the SECOND copy of every address.
-    {
-        let before = c.total;
-        for bucket in shard.bucket_index.bucket_map.values() {
-            for (_, block) in bucket.block_index.iter() {
-                c.observe(&block.address);
-            }
-        }
-        c.note("bucket_index (BlockIndex.address)", c.total - before);
-    }
-
-    c
+        c
+    })
 }
 
 /// An engine with NO shard loaded, so the caller can load one on a chosen routing range.
@@ -1134,74 +1135,75 @@ fn differing_fields(a: &ElementEntry, b: &ElementEntry) -> Vec<&'static str> {
 /// The same walk `census` does, but tagging each address with whether a MODEL map or the BUCKET
 /// INDEX holds it, because the pairing between those two is the whole question.
 fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> DuplicationCensus {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&shard_id).expect("shard is loaded");
-    let mut d = DuplicationCensus::default();
+    engine.shards.with_state(shard_id, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut d = DuplicationCensus::default();
 
-    // Same three maps, same reason they are no longer one array: one of them holds a record.
-    // Chained rather than arrayed, so the walk is still a single pass over all three.
-    let control_state_addresses: Vec<ElementEntry> = shard
-        .control_state_blocks()
-        .values()
-        .map(|record| record.address())
-        .collect();
-    // THE STRING MAP HOLDS A ROW NOW, so its addresses are materialised like the control-state
-    // ones already were. Three owned vectors chained, still one pass over all three.
-    let string_addresses: Vec<ElementEntry> =
-        shard.strings().values().map(|slot| slot.address()).collect();
-    for address in string_addresses
-        .iter()
-        .chain(shard.context_nodes().values())
-        .chain(control_state_addresses.iter())
-    {
-        d.observe_model(address);
-    }
-    for fields in shard.bucket_index.hashes.values() {
-        for address in fields.values() {
+        // Same three maps, same reason they are no longer one array: one of them holds a record.
+        // Chained rather than arrayed, so the walk is still a single pass over all three.
+        let control_state_addresses: Vec<ElementEntry> = shard
+            .control_state_blocks()
+            .values()
+            .map(|record| record.address())
+            .collect();
+        // THE STRING MAP HOLDS A ROW NOW, so its addresses are materialised like the control-state
+        // ones already were. Three owned vectors chained, still one pass over all three.
+        let string_addresses: Vec<ElementEntry> =
+            shard.strings().values().map(|slot| slot.address()).collect();
+        for address in string_addresses
+            .iter()
+            .chain(shard.context_nodes().values())
+            .chain(control_state_addresses.iter())
+        {
             d.observe_model(address);
         }
-    }
-    for members in shard.bucket_index.sets.values() {
-        for address in members.values() {
-            d.observe_model(address);
+        for fields in shard.bucket_index.hashes.values() {
+            for address in fields.values() {
+                d.observe_model(address);
+            }
         }
-    }
-    for members in shard.bucket_index.zsets.values() {
-        for (_, address) in members.values() {
-            d.observe_model(address);
+        for members in shard.bucket_index.sets.values() {
+            for address in members.values() {
+                d.observe_model(address);
+            }
         }
-    }
-    for elements in shard.bucket_index.lists.values() {
-        for address in elements.values() {
-            d.observe_model(address);
+        for members in shard.bucket_index.zsets.values() {
+            for (_, address) in members.values() {
+                d.observe_model(address);
+            }
         }
-    }
-    for series in shard.context_events().values() {
-        for address in series.addresses() {
-            d.observe_model(address);
+        for elements in shard.bucket_index.lists.values() {
+            for address in elements.values() {
+                d.observe_model(address);
+            }
         }
-    }
-    // Same flattening as the walk above, for the same reason.
-    for addresses in [
-        Box::new(shard.features().values().flat_map(|s| s.addresses()))
-            as Box<dyn Iterator<Item = &ElementEntry>>,
-        Box::new(shard.context_indexes().values().flat_map(|s| s.addresses())),
-        Box::new(shard.context_audits().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
-        Box::new(shard.context_entities().values().flat_map(|s| s.addresses())),
-        Box::new(shard.context_children().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
-        Box::new(shard.context_summaries().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
-        Box::new(shard.context_compressions().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
-    ] {
-        for address in addresses {
-            d.observe_model(address);
+        for series in shard.context_events().values() {
+            for address in series.addresses() {
+                d.observe_model(address);
+            }
         }
-    }
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, block) in bucket.block_index.iter() {
-            d.observe_bucket(&block.address);
+        // Same flattening as the walk above, for the same reason.
+        for addresses in [
+            Box::new(shard.features().values().flat_map(|s| s.addresses()))
+                as Box<dyn Iterator<Item = &ElementEntry>>,
+            Box::new(shard.context_indexes().values().flat_map(|s| s.addresses())),
+            Box::new(shard.context_audits().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
+            Box::new(shard.context_entities().values().flat_map(|s| s.addresses())),
+            Box::new(shard.context_children().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
+            Box::new(shard.context_summaries().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
+            Box::new(shard.context_compressions().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
+        ] {
+            for address in addresses {
+                d.observe_model(address);
+            }
         }
-    }
-    d
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (_, block) in bucket.block_index.iter() {
+                d.observe_bucket(&block.address);
+            }
+        }
+        d
+    })
 }
 
 /// THE NUMBER CANDIDATE A TURNS ON: matching against differing, with a denominator.
@@ -1386,28 +1388,29 @@ impl SeriesLengthCensus {
 }
 
 fn series_lengths(engine: &TemporalEngine, shard_id: ShardId) -> SeriesLengthCensus {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&shard_id).expect("shard is loaded");
-    let mut c = SeriesLengthCensus::default();
-    for series in shard.context_events().values() {
-        c.observe(series.len());
-    }
-    // Erased to the LENGTHS, which is all this census observes, so the two representations can
-    // ride in one literal: `features` holds the owned array and the context kinds hold B-trees.
-    for lengths in [
-        Box::new(shard.features().values().map(|s| s.len())) as Box<dyn Iterator<Item = usize>>,
-        Box::new(shard.context_indexes().values().map(|s| s.len())),
-        Box::new(shard.context_audits().values().map(|s| s.owned_element_count())),
-        Box::new(shard.context_entities().values().map(|s| s.len())),
-        Box::new(shard.context_children().values().map(|s| s.owned_element_count())),
-        Box::new(shard.context_summaries().values().map(|s| s.owned_element_count())),
-        Box::new(shard.context_compressions().values().map(|s| s.owned_element_count())),
-    ] {
-        for length in lengths {
-            c.observe(length);
+    engine.shards.with_state(shard_id, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut c = SeriesLengthCensus::default();
+        for series in shard.context_events().values() {
+            c.observe(series.len());
         }
-    }
-    c
+        // Erased to the LENGTHS, which is all this census observes, so the two representations can
+        // ride in one literal: `features` holds the owned array and the context kinds hold B-trees.
+        for lengths in [
+            Box::new(shard.features().values().map(|s| s.len())) as Box<dyn Iterator<Item = usize>>,
+            Box::new(shard.context_indexes().values().map(|s| s.len())),
+            Box::new(shard.context_audits().values().map(|s| s.owned_element_count())),
+            Box::new(shard.context_entities().values().map(|s| s.len())),
+            Box::new(shard.context_children().values().map(|s| s.owned_element_count())),
+            Box::new(shard.context_summaries().values().map(|s| s.owned_element_count())),
+            Box::new(shard.context_compressions().values().map(|s| s.owned_element_count())),
+        ] {
+            for length in lengths {
+                c.observe(length);
+            }
+        }
+        c
+    })
 }
 
 /// The `Empty`/`One`/`Many` shape, written out here so it can be PRICED before it is adopted.
@@ -1815,104 +1818,105 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
     fn one_container<K, V>(_: &std::collections::HashMap<K, V>) {}
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = new_engine(dir.path());
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let six = [
-        "features",
-        "context_indexes",
-        "context_audits",
-        "context_children",
-        "context_summaries",
-        "context_compressions",
-    ];
-    one_container(shard.features());
-    one_container(shard.context_indexes());
-    one_container(shard.context_audits());
-    one_container(shard.context_children());
-    one_container(shard.context_summaries());
-    one_container(shard.context_compressions());
-    assert_eq!(
-        6,
-        six.len(),
-        "denominator: the six kinds timestamped_series_mut dispatches over are {six:?}"
-    );
-    // --- THE LIFTING, PROVED BY USE AND NOT BY A SATISFIABLE BOUND ---
-    //
-    // A second representation, existing only in this test: points in a sorted vector rather than a
-    // B-tree. It is here to be PASSED TO THE REAL HELPER, because a bound that merely compiles
-    // would prove only that the trait is implementable, not that the helpers take it.
-    #[derive(Default)]
-    struct SortedPoints(Vec<(u64, ElementEntry)>);
-    impl crate::engine::timestamped_series::TimestampedSeries for SortedPoints {
-        fn len(&self) -> usize {
-            self.0.len()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let six = [
+            "features",
+            "context_indexes",
+            "context_audits",
+            "context_children",
+            "context_summaries",
+            "context_compressions",
+        ];
+        one_container(shard.features());
+        one_container(shard.context_indexes());
+        one_container(shard.context_audits());
+        one_container(shard.context_children());
+        one_container(shard.context_summaries());
+        one_container(shard.context_compressions());
+        assert_eq!(
+            6,
+            six.len(),
+            "denominator: the six kinds timestamped_series_mut dispatches over are {six:?}"
+        );
+        // --- THE LIFTING, PROVED BY USE AND NOT BY A SATISFIABLE BOUND ---
+        //
+        // A second representation, existing only in this test: points in a sorted vector rather than a
+        // B-tree. It is here to be PASSED TO THE REAL HELPER, because a bound that merely compiles
+        // would prove only that the trait is implementable, not that the helpers take it.
+        #[derive(Default)]
+        struct SortedPoints(Vec<(u64, ElementEntry)>);
+        impl crate::engine::timestamped_series::TimestampedSeries for SortedPoints {
+            fn len(&self) -> usize {
+                self.0.len()
+            }
+            fn get(&self, at: u64) -> Option<&ElementEntry> {
+                self.0
+                    .binary_search_by_key(&at, |(instant, _)| *instant)
+                    .ok()
+                    .map(|found| &self.0[found].1)
+            }
+            fn addresses(&self) -> impl Iterator<Item = &ElementEntry> {
+                self.0.iter().map(|(_, address)| address)
+            }
+            fn points(&self) -> impl Iterator<Item = (u64, &ElementEntry)> {
+                self.0.iter().map(|(instant, address)| (*instant, address))
+            }
+            fn points_mut(&mut self) -> impl Iterator<Item = (u64, &mut ElementEntry)> {
+                self.0.iter_mut().map(|(instant, address)| (*instant, address))
+            }
+            /// TWO BINARY SEARCHES AND A SLICE, which is the point of the method being on the trait:
+            /// an alternative representation answers a window more cheaply than a tree does, so
+            /// requiring it costs no generality. This test-local type is the second representation
+            /// that proves it.
+            fn range(
+                &self,
+                bounds: impl std::ops::RangeBounds<u64>,
+            ) -> impl DoubleEndedIterator<Item = (u64, &ElementEntry)> {
+                use std::ops::Bound;
+                let start = match bounds.start_bound() {
+                    Bound::Unbounded => 0,
+                    Bound::Included(&at) => self.0.partition_point(|(i, _)| *i < at),
+                    Bound::Excluded(&at) => self.0.partition_point(|(i, _)| *i <= at),
+                };
+                let end = match bounds.end_bound() {
+                    Bound::Unbounded => self.0.len(),
+                    Bound::Included(&at) => self.0.partition_point(|(i, _)| *i <= at),
+                    Bound::Excluded(&at) => self.0.partition_point(|(i, _)| *i < at),
+                };
+                self.0[start..end.max(start)]
+                    .iter()
+                    .map(|(instant, address)| (*instant, address))
+            }
         }
-        fn get(&self, at: u64) -> Option<&ElementEntry> {
-            self.0
-                .binary_search_by_key(&at, |(instant, _)| *instant)
-                .ok()
-                .map(|found| &self.0[found].1)
-        }
-        fn addresses(&self) -> impl Iterator<Item = &ElementEntry> {
-            self.0.iter().map(|(_, address)| address)
-        }
-        fn points(&self) -> impl Iterator<Item = (u64, &ElementEntry)> {
-            self.0.iter().map(|(instant, address)| (*instant, address))
-        }
-        fn points_mut(&mut self) -> impl Iterator<Item = (u64, &mut ElementEntry)> {
-            self.0.iter_mut().map(|(instant, address)| (*instant, address))
-        }
-        /// TWO BINARY SEARCHES AND A SLICE, which is the point of the method being on the trait:
-        /// an alternative representation answers a window more cheaply than a tree does, so
-        /// requiring it costs no generality. This test-local type is the second representation
-        /// that proves it.
-        fn range(
-            &self,
-            bounds: impl std::ops::RangeBounds<u64>,
-        ) -> impl DoubleEndedIterator<Item = (u64, &ElementEntry)> {
-            use std::ops::Bound;
-            let start = match bounds.start_bound() {
-                Bound::Unbounded => 0,
-                Bound::Included(&at) => self.0.partition_point(|(i, _)| *i < at),
-                Bound::Excluded(&at) => self.0.partition_point(|(i, _)| *i <= at),
-            };
-            let end = match bounds.end_bound() {
-                Bound::Unbounded => self.0.len(),
-                Bound::Included(&at) => self.0.partition_point(|(i, _)| *i <= at),
-                Bound::Excluded(&at) => self.0.partition_point(|(i, _)| *i < at),
-            };
-            self.0[start..end.max(start)]
-                .iter()
-                .map(|(instant, address)| (*instant, address))
-        }
-    }
 
-    // The address collector is one of the four helpers, and it is generic now. Both
-    // representations go through the SAME function, which is the property the six needed.
-    let one_point = ElementEntry::from_parts(1, 64, 32, Some(0), Some(11));
-    let as_btree: BTreeMap<u64, ElementEntry> = BTreeMap::from([(7u64, one_point.clone())]);
-    let as_vector = SortedPoints(vec![(7u64, one_point.clone())]);
-    let from_btree =
-        crate::engine::storage_reporting::unique_timestamped_kv_block_addresses(&as_btree);
-    let from_vector =
-        crate::engine::storage_reporting::unique_timestamped_kv_block_addresses(&as_vector);
-    assert_eq!(
-        1,
-        from_vector.len(),
-        "the alternative representation answered no addresses, so this proves nothing: a helper \
-         returning empty for it would pass an equality against an equally empty B-tree"
-    );
-    assert_eq!(
-        from_btree, from_vector,
-        "the same point in two representations produced different addresses through the same \
-         helper, so the seam does not abstract the series: {from_btree:?} against {from_vector:?}"
-    );
+        // The address collector is one of the four helpers, and it is generic now. Both
+        // representations go through the SAME function, which is the property the six needed.
+        let one_point = ElementEntry::from_parts(1, 64, 32, Some(0), Some(11));
+        let as_btree: BTreeMap<u64, ElementEntry> = BTreeMap::from([(7u64, one_point.clone())]);
+        let as_vector = SortedPoints(vec![(7u64, one_point.clone())]);
+        let from_btree =
+            crate::engine::storage_reporting::unique_timestamped_kv_block_addresses(&as_btree);
+        let from_vector =
+            crate::engine::storage_reporting::unique_timestamped_kv_block_addresses(&as_vector);
+        assert_eq!(
+            1,
+            from_vector.len(),
+            "the alternative representation answered no addresses, so this proves nothing: a helper \
+             returning empty for it would pass an equality against an equally empty B-tree"
+        );
+        assert_eq!(
+            from_btree, from_vector,
+            "the same point in two representations produced different addresses through the same \
+             helper, so the seam does not abstract the series: {from_btree:?} against {from_vector:?}"
+        );
 
-    println!(
-        "  {} timestamped series maps still share one container type, and the helpers over them \
-         no longer require it: a sorted-vector series goes through the same address collector",
-        six.len()
-    );
+        println!(
+            "  {} timestamped series maps still share one container type, and the helpers over them \
+             no longer require it: a sorted-vector series goes through the same address collector",
+            six.len()
+        );
+    })
 }
 
 /// The CAPACITY CEILING each proposed narrowing would impose, measured on a fixture built to
@@ -1947,7 +1951,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
         let commands = (chunk_start..(chunk_start + 500).min(FIELDS_PER_OBJECT))
             .map(|i| Command::HashSet {
                 key: "wide_object".to_string(),
-                field: format!("component{i}"),
+                field: format!("attribute{i}"),
                 value: vec![104u8; 16],
             })
             .collect::<Vec<_>>();
@@ -2015,216 +2019,217 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     println!("--- wide fixture, model-map census ---");
     wide.report("wide fixture");
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
 
-    let empty_in_model_map = shard.string_address("empty_value").map(|a| a.length());
-    let big_in_model_map = shard.string_address("big_value").map(|a| a.length());
-    println!(
-        "  MODEL MAP lengths -- empty_value: {empty_in_model_map:?}   big_value: {big_in_model_map:?}"
-    );
+        let empty_in_model_map = shard.string_address("empty_value").map(|a| a.length());
+        let big_in_model_map = shard.string_address("big_value").map(|a| a.length());
+        println!(
+            "  MODEL MAP lengths -- empty_value: {empty_in_model_map:?}   big_value: {big_in_model_map:?}"
+        );
 
-    let mut max_objects_in_a_bucket = 0usize;
-    let mut max_blocks_in_a_bucket = 0usize;
-    let mut blocks_per_object: BTreeMap<u64, usize> = BTreeMap::new();
-    let mut model_ids: std::collections::BTreeSet<String> = Default::default();
-    let mut max_length = 0u64;
-    let mut max_block_id = 0u64;
-    let mut live_zero_length: Vec<(String, String)> = Vec::new();
-    let mut deleted_zero_length = 0usize;
-    let mut live_blocks = 0usize;
-    let mut named: BTreeMap<String, (u64, bool)> = BTreeMap::new();
-    let mut longest: Vec<(u64, String)> = Vec::new();
+        let mut max_objects_in_a_bucket = 0usize;
+        let mut max_blocks_in_a_bucket = 0usize;
+        let mut blocks_per_object: BTreeMap<u64, usize> = BTreeMap::new();
+        let mut model_ids: std::collections::BTreeSet<String> = Default::default();
+        let mut max_length = 0u64;
+        let mut max_block_id = 0u64;
+        let mut live_zero_length: Vec<(String, String)> = Vec::new();
+        let mut deleted_zero_length = 0usize;
+        let mut live_blocks = 0usize;
+        let mut named: BTreeMap<String, (u64, bool)> = BTreeMap::new();
+        let mut longest: Vec<(u64, String)> = Vec::new();
 
-    // EVERY ROW BELOW NAMES ITS OBJECT FROM THE STRUCTURE BESIDE THE BLOCK. `identity_of` is
-    // used rather than the live-only inversion because this walk reports on DELETED blocks too --
-    // two of its rows are about zero-length tombstones -- and a tombstone's object is named by
-    // the bucket's own removal row, not by the object lookup.
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    for bucket in shard.bucket_index.bucket_map.values() {
-        max_objects_in_a_bucket = max_objects_in_a_bucket.max(bucket.object_index.object_count());
-        let mut blocks_here = 0usize;
-        for (handle, block) in bucket.block_index.iter() {
-            blocks_here += 1;
-            model_ids.insert(block.model_id().to_string());
-            let named_key = keys
-                .identity_of(bucket, *handle, block)
-                .map(|beside| std::sync::Arc::clone(beside.object_key))
-                .unwrap_or_else(|| {
-                    panic!(
-                        "the block at handle {handle} is named by nothing beside it, so this footprint report has no object to attribute it to"
-                    )
-                });
-            *blocks_per_object.entry(block.object_id(1, &named_key)).or_default() += 1;
-            max_length = max_length.max(block.address.length());
-            max_block_id = max_block_id.max(block.address.block_id().unwrap_or(0));
-            longest.push((block.address.length(), named_key.to_string()));
-            if named_key.as_ref() == "big_value" || named_key.as_ref() == "empty_value" {
-                named.insert(named_key.to_string(), (block.address.length(), block.deleted()));
-            }
-            if !block.deleted() {
-                live_blocks += 1;
-                if block.address.length() == 0 {
-                    live_zero_length.push((block.model_id().to_string(), named_key.to_string()));
+        // EVERY ROW BELOW NAMES ITS OBJECT FROM THE STRUCTURE BESIDE THE BLOCK. `identity_of` is
+        // used rather than the live-only inversion because this walk reports on DELETED blocks too --
+        // two of its rows are about zero-length tombstones -- and a tombstone's object is named by
+        // the bucket's own removal row, not by the object lookup.
+        let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            max_objects_in_a_bucket = max_objects_in_a_bucket.max(bucket.object_index.object_count());
+            let mut blocks_here = 0usize;
+            for (handle, block) in bucket.block_index.iter() {
+                blocks_here += 1;
+                model_ids.insert(block.model_id().to_string());
+                let named_key = keys
+                    .identity_of(bucket, *handle, block)
+                    .map(|beside| std::sync::Arc::clone(beside.object_key))
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "the block at handle {handle} is named by nothing beside it, so this footprint report has no object to attribute it to"
+                        )
+                    });
+                *blocks_per_object.entry(block.object_id(1, &named_key)).or_default() += 1;
+                max_length = max_length.max(block.address.length());
+                max_block_id = max_block_id.max(block.address.block_id().unwrap_or(0));
+                longest.push((block.address.length(), named_key.to_string()));
+                if named_key.as_ref() == "big_value" || named_key.as_ref() == "empty_value" {
+                    named.insert(named_key.to_string(), (block.address.length(), block.deleted()));
                 }
-            } else if block.address.length() == 0 {
-                deleted_zero_length += 1;
+                if !block.deleted() {
+                    live_blocks += 1;
+                    if block.address.length() == 0 {
+                        live_zero_length.push((block.model_id().to_string(), named_key.to_string()));
+                    }
+                } else if block.address.length() == 0 {
+                    deleted_zero_length += 1;
+                }
             }
+            max_blocks_in_a_bucket = max_blocks_in_a_bucket.max(blocks_here);
         }
-        max_blocks_in_a_bucket = max_blocks_in_a_bucket.max(blocks_here);
-    }
-    let max_blocks_in_an_object = blocks_per_object.values().copied().max().unwrap_or(0);
+        let max_blocks_in_an_object = blocks_per_object.values().copied().max().unwrap_or(0);
 
-    // WHAT A NARROWING ACTUALLY BUYS, which is not what its field width suggests.
-    //
-    // BlockAddress is 8-byte aligned because it contains u64s, so its size is its payload rounded
-    // UP to a multiple of 8. That payload was 6*8 + 4 + 1 = 53, rounded to 56, with three bytes
-    // of padding already being paid for -- so narrowing ONE 8-byte field to 4 took the payload to
-    // 49, still rounded to 56, and would have bought NOTHING. The struct only got smaller once a
-    // change removed at least six bytes of payload, and that is what `length` and `block_id`
-    // moving to 32 bits together did: 4*8 + 3*4 + 1 = 45, rounded to 48. The per-field question
-    // was never "can this be narrower" but "does this cross an alignment step".
-    //
-    // 48 -> 40 is the same lesson a third time, and the cleanest instance of it: no field was
-    // narrowed at all. `generation` was REMOVED -- derived from `block_id.or(object_id)`, which it
-    // equalled on every address this census has ever walked -- taking a whole eight-byte step off
-    // the payload in one go: 3*8 + 3*4 + 1 = 37, rounded to 40. Three bytes of padding again,
-    // because the step size did not change.
-    //
-    // 40 -> 32 is the FOURTH, and it is why the payload below is DERIVED rather than written down.
-    // The slab id and the offset merged into one word, taking the payload from 37 to 29 -- and the
-    // literal 37 stayed here, so this line computed `32 - 37` and the whole probe aborted on an
-    // unsigned underflow before printing a single ceiling. It is `#[ignore]`d, so no gate ever ran
-    // it and nothing said so. A payload figure beside a struct that moves is a hand-written
-    // subject list: it goes stale and nothing fails.
-    //
-    // 32 -> 24 IS THE FIFTH, and it went stale the same way -- this constant read 29 against a
-    // 24-byte struct, and the assertion below is what said so rather than an underflow. It is also
-    // the clearest instance of the lesson: `routing_bucket` LEFT (payload 25, still rounding to 32,
-    // worth zero) and `block_id` narrowed to sixteen bits (payload 27, still rounding to 32, worth
-    // zero), and only the two TOGETHER reach 23 and cross. Neither field could have been read as
-    // worth anything on its own.
-    println!("--- what the struct actually costs ---");
-    // Derived from the field widths, in declaration order, so the next step cannot leave it stale:
-    // one merged address word, the object id, a 32-bit length, a 16-bit block id and the presence
-    // byte.
-    const ADDRESS_PAYLOAD_BYTES: usize = 8 + 8 + 4 + 2 + 1;
-    assert!(
-        std::mem::size_of::<ElementEntry>() >= ADDRESS_PAYLOAD_BYTES,
-        "the derived payload {ADDRESS_PAYLOAD_BYTES} exceeds size_of ElementEntry {}, so a field \
-         has changed width and the derivation above has to change with it",
-        std::mem::size_of::<ElementEntry>()
-    );
-    println!(
-        "  size_of ElementEntry = {} (payload 2*8 + 4 + 2 + 1 = {ADDRESS_PAYLOAD_BYTES}, so {} \
-         bytes are padding)",
-        std::mem::size_of::<ElementEntry>(),
-        std::mem::size_of::<ElementEntry>() - ADDRESS_PAYLOAD_BYTES
-    );
-    println!(
-        "  align_of ElementEntry = {}",
-        std::mem::align_of::<ElementEntry>()
-    );
-    println!(
-        "  size_of BlockIndex = {} (it holds a ElementEntry, an Arc<str>, an Option<Arc<str>>, a \
-         one-byte model spelling and 3 bools)",
-        std::mem::size_of::<BlockIndex>()
-    );
-    println!(
-        "  size_of Arc<str> = {}, size_of Option<Arc<str>> = {}, size_of bool = {}",
-        std::mem::size_of::<Arc<str>>(),
-        std::mem::size_of::<Option<Arc<str>>>(),
-        std::mem::size_of::<bool>()
-    );
+        // WHAT A NARROWING ACTUALLY BUYS, which is not what its field width suggests.
+        //
+        // BlockAddress is 8-byte aligned because it contains u64s, so its size is its payload rounded
+        // UP to a multiple of 8. That payload was 6*8 + 4 + 1 = 53, rounded to 56, with three bytes
+        // of padding already being paid for -- so narrowing ONE 8-byte field to 4 took the payload to
+        // 49, still rounded to 56, and would have bought NOTHING. The struct only got smaller once a
+        // change removed at least six bytes of payload, and that is what `length` and `block_id`
+        // moving to 32 bits together did: 4*8 + 3*4 + 1 = 45, rounded to 48. The per-field question
+        // was never "can this be narrower" but "does this cross an alignment step".
+        //
+        // 48 -> 40 is the same lesson a third time, and the cleanest instance of it: no field was
+        // narrowed at all. `generation` was REMOVED -- derived from `block_id.or(object_id)`, which it
+        // equalled on every address this census has ever walked -- taking a whole eight-byte step off
+        // the payload in one go: 3*8 + 3*4 + 1 = 37, rounded to 40. Three bytes of padding again,
+        // because the step size did not change.
+        //
+        // 40 -> 32 is the FOURTH, and it is why the payload below is DERIVED rather than written down.
+        // The slab id and the offset merged into one word, taking the payload from 37 to 29 -- and the
+        // literal 37 stayed here, so this line computed `32 - 37` and the whole probe aborted on an
+        // unsigned underflow before printing a single ceiling. It is `#[ignore]`d, so no gate ever ran
+        // it and nothing said so. A payload figure beside a struct that moves is a hand-written
+        // subject list: it goes stale and nothing fails.
+        //
+        // 32 -> 24 IS THE FIFTH, and it went stale the same way -- this constant read 29 against a
+        // 24-byte struct, and the assertion below is what said so rather than an underflow. It is also
+        // the clearest instance of the lesson: `routing_bucket` LEFT (payload 25, still rounding to 32,
+        // worth zero) and `block_id` narrowed to sixteen bits (payload 27, still rounding to 32, worth
+        // zero), and only the two TOGETHER reach 23 and cross. Neither field could have been read as
+        // worth anything on its own.
+        println!("--- what the struct actually costs ---");
+        // Derived from the field widths, in declaration order, so the next step cannot leave it stale:
+        // one merged address word, the object id, a 32-bit length, a 16-bit block id and the presence
+        // byte.
+        const ADDRESS_PAYLOAD_BYTES: usize = 8 + 8 + 4 + 2 + 1;
+        assert!(
+            std::mem::size_of::<ElementEntry>() >= ADDRESS_PAYLOAD_BYTES,
+            "the derived payload {ADDRESS_PAYLOAD_BYTES} exceeds size_of ElementEntry {}, so a field \
+             has changed width and the derivation above has to change with it",
+            std::mem::size_of::<ElementEntry>()
+        );
+        println!(
+            "  size_of ElementEntry = {} (payload 2*8 + 4 + 2 + 1 = {ADDRESS_PAYLOAD_BYTES}, so {} \
+             bytes are padding)",
+            std::mem::size_of::<ElementEntry>(),
+            std::mem::size_of::<ElementEntry>() - ADDRESS_PAYLOAD_BYTES
+        );
+        println!(
+            "  align_of ElementEntry = {}",
+            std::mem::align_of::<ElementEntry>()
+        );
+        println!(
+            "  size_of BlockIndex = {} (it holds a ElementEntry, an Arc<str>, an Option<Arc<str>>, a \
+             one-byte model spelling and 3 bools)",
+            std::mem::size_of::<BlockIndex>()
+        );
+        println!(
+            "  size_of Arc<str> = {}, size_of Option<Arc<str>> = {}, size_of bool = {}",
+            std::mem::size_of::<Arc<str>>(),
+            std::mem::size_of::<Option<Arc<str>>>(),
+            std::mem::size_of::<bool>()
+        );
 
-    println!("--- capacity ceilings, wide fixture ---");
-    println!("  live blocks walked: {live_blocks}");
-    println!(
-        "  max objects in one bucket: {max_objects_in_a_bucket}  (8-bit object_id ceiling 255, headroom {:.1}x)",
-        255.0 / max_objects_in_a_bucket.max(1) as f64
-    );
-    println!("  max blocks in one bucket: {max_blocks_in_a_bucket}");
-    println!(
-        "  max blocks in one object: {max_blocks_in_an_object}  (16-bit page_id ceiling 65535, headroom {:.1}x)",
-        65535.0 / max_blocks_in_an_object.max(1) as f64
-    );
-    println!(
-        "  max page_id observed: {max_block_id}  (16-bit ceiling 65535, headroom {:.1}x)",
-        65535.0 / max_block_id.max(1) as f64
-    );
-    println!(
-        "  max block length: {max_length} bytes  (32-bit ceiling 4294967295, headroom {:.1}x)",
-        4294967295.0 / max_length.max(1) as f64
-    );
-    longest.sort_by(|a, b| b.0.cmp(&a.0));
-    println!("  five longest blocks (length, key):");
-    for (len, key) in longest.iter().take(5) {
-        println!("    {len} bytes  key={key}");
-    }
-    println!(
-        "  the 1 MiB write landed as: {:?}   the empty write landed as: {:?}   (length, deleted)",
-        named.get("big_value"),
-        named.get("empty_value")
-    );
-    println!(
-        "  distinct model_id values in the tree: {} -> {:?}",
-        model_ids.len(),
-        model_ids
-    );
-    println!(
-        "  LIVE blocks carrying length 0: {} (deleted blocks carrying length 0: {deleted_zero_length})",
-        live_zero_length.len()
-    );
-    for (model, key) in live_zero_length.iter().take(5) {
-        println!("    live zero-length block: model={model} key={key}");
-    }
-    println!(
-        "  VERDICT on the length-0 tombstone: {}",
-        if live_zero_length.is_empty() {
-            "no live block carries length 0 in this fixture"
-        } else {
-            "A LIVE BLOCK CARRIES LENGTH 0, so the length-0 tombstone encoding is UNAVAILABLE"
+        println!("--- capacity ceilings, wide fixture ---");
+        println!("  live blocks walked: {live_blocks}");
+        println!(
+            "  max objects in one bucket: {max_objects_in_a_bucket}  (8-bit object_id ceiling 255, headroom {:.1}x)",
+            255.0 / max_objects_in_a_bucket.max(1) as f64
+        );
+        println!("  max blocks in one bucket: {max_blocks_in_a_bucket}");
+        println!(
+            "  max blocks in one object: {max_blocks_in_an_object}  (16-bit page_id ceiling 65535, headroom {:.1}x)",
+            65535.0 / max_blocks_in_an_object.max(1) as f64
+        );
+        println!(
+            "  max page_id observed: {max_block_id}  (16-bit ceiling 65535, headroom {:.1}x)",
+            65535.0 / max_block_id.max(1) as f64
+        );
+        println!(
+            "  max block length: {max_length} bytes  (32-bit ceiling 4294967295, headroom {:.1}x)",
+            4294967295.0 / max_length.max(1) as f64
+        );
+        longest.sort_by(|a, b| b.0.cmp(&a.0));
+        println!("  five longest blocks (length, key):");
+        for (len, key) in longest.iter().take(5) {
+            println!("    {len} bytes  key={key}");
         }
-    );
+        println!(
+            "  the 1 MiB write landed as: {:?}   the empty write landed as: {:?}   (length, deleted)",
+            named.get("big_value"),
+            named.get("empty_value")
+        );
+        println!(
+            "  distinct model_id values in the tree: {} -> {:?}",
+            model_ids.len(),
+            model_ids
+        );
+        println!(
+            "  LIVE blocks carrying length 0: {} (deleted blocks carrying length 0: {deleted_zero_length})",
+            live_zero_length.len()
+        );
+        for (model, key) in live_zero_length.iter().take(5) {
+            println!("    live zero-length block: model={model} key={key}");
+        }
+        println!(
+            "  VERDICT on the length-0 tombstone: {}",
+            if live_zero_length.is_empty() {
+                "no live block carries length 0 in this fixture"
+            } else {
+                "A LIVE BLOCK CARRIES LENGTH 0, so the length-0 tombstone encoding is UNAVAILABLE"
+            }
+        );
 
-    // NON-VACUITY, asserted AFTER the report so a guard can never hide the numbers that explain
-    // why it fired. An earlier draft asserted first, and the blocks-per-object arm aborted the
-    // whole probe before a single maximum was printed -- which is the same failure as an empty
-    // sweep: the run says something is wrong and nothing about what.
-    assert!(
-        live_blocks > DISTINCT_KEYS,
-        "fixture must produce more live blocks ({live_blocks}) than the {DISTINCT_KEYS} plain keys"
-    );
-    // The large-value arm is reported, not asserted on its MAXIMUM, because what it revealed is
-    // that a value does not become a block of its own size: the entry below names the length the
-    // index actually holds for a 1 MiB write. Asserting a maximum here would have turned a fact
-    // about where big values live into a red test.
-    assert!(
-        named.contains_key("big_value") && named.contains_key("empty_value"),
-        "both probe keys must reach the bucket index, saw {:?}",
-        named.keys().collect::<Vec<_>>()
-    );
-    assert!(
-        max_objects_in_a_bucket >= 1 && !model_ids.is_empty(),
-        "the bucket walk must see objects and models, saw {max_objects_in_a_bucket} and {}",
-        model_ids.len()
-    );
+        // NON-VACUITY, asserted AFTER the report so a guard can never hide the numbers that explain
+        // why it fired. An earlier draft asserted first, and the blocks-per-object arm aborted the
+        // whole probe before a single maximum was printed -- which is the same failure as an empty
+        // sweep: the run says something is wrong and nothing about what.
+        assert!(
+            live_blocks > DISTINCT_KEYS,
+            "fixture must produce more live blocks ({live_blocks}) than the {DISTINCT_KEYS} plain keys"
+        );
+        // The large-value arm is reported, not asserted on its MAXIMUM, because what it revealed is
+        // that a value does not become a block of its own size: the entry below names the length the
+        // index actually holds for a 1 MiB write. Asserting a maximum here would have turned a fact
+        // about where big values live into a red test.
+        assert!(
+            named.contains_key("big_value") && named.contains_key("empty_value"),
+            "both probe keys must reach the bucket index, saw {:?}",
+            named.keys().collect::<Vec<_>>()
+        );
+        assert!(
+            max_objects_in_a_bucket >= 1 && !model_ids.is_empty(),
+            "the bucket walk must see objects and models, saw {max_objects_in_a_bucket} and {}",
+            model_ids.len()
+        );
 
-    // BLOCKS PER OBJECT IS THE ANSWER, AND THE ANSWER CHANGED.
-    //
-    // This arm writes 4,000 hash fields under ONE key. It used to report 4,000 objects of one
-    // block each, because the object identity folded the element name in and a field was therefore
-    // its own OBJECT rather than another block inside one. Since the element name left
-    // `stable_block_object_id`, one key is one object and those fields are blocks of it.
-    //
-    // Reported and not asserted, deliberately: an earlier draft asserted first and aborted the
-    // whole probe before a single maximum was printed, which is the same failure as an empty
-    // sweep -- the run says something is wrong and nothing about what.
-    println!(
-        "  NOTE: blocks-per-object is {max_blocks_in_an_object} over {FIELDS_PER_OBJECT} fields \
-         of one key; the element name is no longer part of the object id, so a field is another \
-         block of one object rather than an object of its own"
-    );
+        // BLOCKS PER OBJECT IS THE ANSWER, AND THE ANSWER CHANGED.
+        //
+        // This arm writes 4,000 hash fields under ONE key. It used to report 4,000 objects of one
+        // block each, because the object identity folded the element name in and a field was therefore
+        // its own OBJECT rather than another block inside one. Since the element name left
+        // `stable_block_object_id`, one key is one object and those fields are blocks of it.
+        //
+        // Reported and not asserted, deliberately: an earlier draft asserted first and aborted the
+        // whole probe before a single maximum was printed, which is the same failure as an empty
+        // sweep -- the run says something is wrong and nothing about what.
+        println!(
+            "  NOTE: blocks-per-object is {max_blocks_in_an_object} over {FIELDS_PER_OBJECT} fields \
+             of one key; the element name is no longer part of the object id, so a field is another \
+             block of one object rather than an object of its own"
+        );
+    })
 }
 
 // =============================================================================================
@@ -2311,12 +2316,11 @@ fn the_warm_block_is_found_under_the_key_the_other_side_wrote() {
 
         // AND THE ENGINE'S OWN ACCESSOR NAMES THE SAME BLOCK, which is what every other test in this
         // tree reaches for when it wants "the key this block is cached under".
-        let (address, start, end) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
+        let (address, start, end) = engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
             let (start, end) = shard.routing_range();
             (shard.string_address(keys[0].as_str()).expect("indexed").clone(), start, end)
-        };
+        });
         let derived = crate::engine::hashing::block_routing_bucket(&keys[0], start, end);
         let read_key = matrixcache::CacheKey::page_with_slot(
             1,
@@ -2502,9 +2506,8 @@ fn what_consulting_the_object_index_costs_against_computing_the_hash() {
         );
 
         // The objects a bucket actually holds, which is what the alternative's cost is a function of.
-        let (max_objects, buckets) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
+        let (max_objects, buckets) = engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
             let max = shard
                 .bucket_index
                 .bucket_map
@@ -2513,7 +2516,7 @@ fn what_consulting_the_object_index_costs_against_computing_the_hash() {
                 .max()
                 .unwrap_or(0);
             (max, shard.bucket_index.bucket_map.len())
-        };
+        });
 
         println!("--- {label}: what a read pays for its bucket ---");
         println!("  reads: {read}, buckets: {buckets}, max objects in one bucket: {max_objects}");
@@ -2626,9 +2629,8 @@ fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
             assert!(response.status.ok, "{label}: seed: {:?}", response.status);
         }
 
-        let mut per_bucket: Vec<usize> = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
+        let mut per_bucket: Vec<usize> = engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
             shard
                 .bucket_index
                 .bucket_map
@@ -2636,7 +2638,7 @@ fn how_many_objects_a_bucket_holds_as_percentiles_and_max() {
                 .map(|bucket| bucket.object_index.object_count())
                 .filter(|count| *count > 0)
                 .collect()
-        };
+        });
         per_bucket.sort_unstable();
 
         // DENOMINATOR FIRST.

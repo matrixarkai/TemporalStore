@@ -87,7 +87,7 @@ pub(super) struct DerivedMembership {
     pub(super) unframed: usize,
     /// Blocks of the first shape, which cannot state a removal.
     pub(super) live_only_blocks: usize,
-    /// Items whose key its own page's spelling could not render back to an element name.
+    /// Items whose key its own block's spelling could not render back to an element name.
     pub(super) unrenderable_items: usize,
 }
 
@@ -122,7 +122,7 @@ pub(super) fn append_position(address: &ElementEntry) -> (u64, u64) {
 
 /// Fold a container's blocks into the membership they state.
 ///
-/// `pages` is every page this object resolves to, LIVE ENTRIES AND TOMBSTONE ENTRIES ALIKE. The
+/// `blocks` is every block this object resolves to, LIVE ENTRIES AND TOMBSTONE ENTRIES ALIKE. The
 /// caller supplies them because only it knows how it walked the index; what this function owns is
 /// the ordering and the fold, which are the parts that were wrong before there was anything to fold.
 ///
@@ -178,7 +178,7 @@ where
                 }
                 for item in items {
                     let Some(element_name) = element_name_from_element_key(spelling, &item.key) else {
-                        // A key its own page's spelling cannot render is a corrupt page, not an
+                        // A key its own block's spelling cannot render is a corrupt block, not an
                         // absent element -- the same reading `element_name_from_element_key`'s own
                         // doc comment gives it.
                         derived.unrenderable_items += 1;

@@ -411,31 +411,32 @@ fn reading_on(
         written += 1;
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
-    assert_eq!(
-        written,
-        shard.strings().len(),
-        "[CLAUSE seed-landed] the fixture acked {written} string object(s) and the index holds \
-         {}, so the denominator every figure below is taken against is not the corpus",
-        shard.strings().len()
-    );
+    engine.shards.with_state(SHARD, |state| {
+        let shard = state.expect("shard is loaded");
+        assert_eq!(
+            written,
+            shard.strings().len(),
+            "[CLAUSE seed-landed] the fixture acked {written} string object(s) and the index holds \
+             {}, so the denominator every figure below is taken against is not the corpus",
+            shard.strings().len()
+        );
 
-    let container = crate::engine::encode_index_bytes(shard);
-    let msgpack = msgpack_stream_of(&container);
-    let json = serde_json::to_vec(shard).expect("the index must serialize as JSON");
-    let value = serde_json::to_value(shard).expect("the index must serialize as a value");
-    Reading {
-        keys: written,
-        width,
-        shape,
-        ordinals: keys + 2,
-        buckets: shard.bucket_index.bucket_map.len(),
-        container: container.len(),
-        msgpack,
-        json,
-        value,
-    }
+        let container = crate::engine::encode_index_bytes(shard);
+        let msgpack = msgpack_stream_of(&container);
+        let json = serde_json::to_vec(shard).expect("the index must serialize as JSON");
+        let value = serde_json::to_value(shard).expect("the index must serialize as a value");
+        Reading {
+            keys: written,
+            width,
+            shape,
+            ordinals: keys + 2,
+            buckets: shard.bucket_index.bucket_map.len(),
+            container: container.len(),
+            msgpack,
+            json,
+            value,
+        }
+    })
 }
 
 impl Reading {

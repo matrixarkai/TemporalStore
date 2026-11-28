@@ -31,7 +31,7 @@
 //! TESTS FIRED THAT ASSERTION IMMEDIATELY, and it was replaced by a rebuild.
 //!
 //! BOTH THE ASSERTION AND THE TWO TESTS WERE ABOUT THE WRONG CONDITION. "Buckets present" is not
-//! "pages present", and "pages present" is not "a LIVE block present" -- a tombstone is a page a
+//! "pages present", and "pages present" is not "a LIVE block present" -- a tombstone is a block a
 //! mark must not dirty. Measured over a 107-name set of mark-reaching tests, 97 verdicts: six
 //! reaches had no blocks at all, two had only tombstones, and the only two reaches with a live block
 //! were the fixtures in this module, each writing into `bucket_map` directly with no filing
@@ -403,14 +403,15 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
         let folds = crate::engine::bucket_visit_sites::flag_folds();
 
         let blocks_in_bucket: usize = {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 loaded");
-            shard
-                .bucket_index
-                .bucket_map
-                .values()
-                .map(|bucket| bucket.block_index.len())
-                .sum()
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard 1 loaded");
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .values()
+                    .map(|bucket| bucket.block_index.len())
+                    .sum()
+            })
         };
 
         println!(
@@ -512,9 +513,10 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     }
     crate::engine::bucket_visit_sites::reset();
     {
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        refresh_bucket_runtime_flags(shard);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 loaded");
+            refresh_bucket_runtime_flags(shard);
+        })
     }
     let control_folds = crate::engine::bucket_visit_sites::flag_folds();
     println!(

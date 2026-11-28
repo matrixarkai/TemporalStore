@@ -106,7 +106,7 @@ impl NameSpread {
         for (name, map) in [
             ("object_key", &self.object_key),
             ("model_id", &self.model_id),
-            ("component", &self.element_name),
+            ("element_name", &self.element_name),
         ] {
             let buckets = self.buckets();
             let multi = Self::buckets_with_more_than_one(map);
@@ -138,35 +138,36 @@ impl NameSpread {
 /// `element_name` is counted over the OPTION, so a bucket where some blocks have an element name and some
 /// do not counts two -- which is the honest answer for "could one stored value serve them all".
 fn name_spread(engine: &TemporalEngine) -> NameSpread {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut spread = NameSpread::default();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        let mut keys: BTreeSet<&str> = BTreeSet::new();
-        let mut models: BTreeSet<&str> = BTreeSet::new();
-        let mut element_names: BTreeSet<Option<&str>> = BTreeSet::new();
-        let mut held = 0usize;
-        for (handle, block) in bucket.block_index.iter() {
-            held += 1;
-            keys.insert(named.at(bucket.routing_bucket, *handle));
-            models.insert(block.model_id().as_str());
-            // Every entry's name is the same absence, so this set holds one member for any
-            // non-empty bucket. The histogram it feeds is restated where it is read.
-            element_names.insert(None::<&str>);
-        }
-        *spread.blocks_held.entry(held).or_default() += 1;
-        *spread.object_key.entry(keys.len()).or_default() += 1;
-        *spread.model_id.entry(models.len()).or_default() += 1;
-        *spread.element_name.entry(element_names.len()).or_default() += 1;
-        if held > 1 {
-            spread.multi_block_buckets += 1;
-            if element_names.len() == 1 {
-                spread.multi_block_buckets_with_one_element_name += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut spread = NameSpread::default();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            let mut keys: BTreeSet<&str> = BTreeSet::new();
+            let mut models: BTreeSet<&str> = BTreeSet::new();
+            let mut element_names: BTreeSet<Option<&str>> = BTreeSet::new();
+            let mut held = 0usize;
+            for (handle, block) in bucket.block_index.iter() {
+                held += 1;
+                keys.insert(named.at(bucket.routing_bucket, *handle));
+                models.insert(block.model_id().as_str());
+                // Every entry's name is the same absence, so this set holds one member for any
+                // non-empty bucket. The histogram it feeds is restated where it is read.
+                element_names.insert(None::<&str>);
+            }
+            *spread.blocks_held.entry(held).or_default() += 1;
+            *spread.object_key.entry(keys.len()).or_default() += 1;
+            *spread.model_id.entry(models.len()).or_default() += 1;
+            *spread.element_name.entry(element_names.len()).or_default() += 1;
+            if held > 1 {
+                spread.multi_block_buckets += 1;
+                if element_names.len() == 1 {
+                    spread.multi_block_buckets_with_one_element_name += 1;
+                }
             }
         }
-    }
-    spread
+        spread
+    })
 }
 
 pub(super) fn probe_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
@@ -509,50 +510,51 @@ impl KeyAllocationCensus {
 const ARC_HEADER_BYTES: usize = 16;
 
 fn key_allocation_census(engine: &TemporalEngine) -> KeyAllocationCensus {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    // (model_id, object_key) -> the distinct allocation addresses its blocks hold.
-    let mut by_object: BTreeMap<(String, String), (BTreeSet<usize>, BTreeSet<usize>, usize)> =
-        BTreeMap::new();
-    // READ THROUGH THE POSITION MAP, AND THE OBJECT-KEY COLUMN IS NOW A STRUCTURAL CONTROL.
-    //
-    // This counted the distinct ALLOCATIONS of one object key that its own blocks held, and
-    // `surplus_object_key_allocations` was the copies beyond the first. A block entry holds no
-    // key, so there is nothing per block to be a copy OF: the blocks of an object are all handed
-    // the one `Arc` their bucket's lookup holds, and the column reads 1 BY CONSTRUCTION.
-    //
-    // KEPT, FOR THE REASON THE `model_id` COLUMN BESIDE IT IS KEPT -- and the comment there says
-    // it first. It is no longer evidence that a sharing pool was consulted; it still
-    // DISCRIMINATES, because a read path that copied the text per block instead of cloning the
-    // `Arc` would report two here. That is not hypothetical: forty walks in this module tree take
-    // a key per block through this same inversion, and a copy per block would reinstate the exact
-    // duplication this change removed.
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in bucket.block_index.iter() {
-            let object_key = named.at(bucket.routing_bucket, *handle);
-            let slot = by_object
-                .entry((block.model_id().to_string(), object_key.to_string()))
-                .or_default();
-            slot.0.insert(object_key.as_ptr() as usize);
-            // The spelling is a `&'static str` off the registry now, not an allocation: one
-            // address per kind for the whole process, so this census reads 1 BY CONSTRUCTION
-            // rather than because a pool happened to be consulted. Kept as the control it was.
-            slot.1.insert(block.model_id().as_str().as_ptr() as usize);
-            slot.2 += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        // (model_id, object_key) -> the distinct allocation addresses its blocks hold.
+        let mut by_object: BTreeMap<(String, String), (BTreeSet<usize>, BTreeSet<usize>, usize)> =
+            BTreeMap::new();
+        // READ THROUGH THE POSITION MAP, AND THE OBJECT-KEY COLUMN IS NOW A STRUCTURAL CONTROL.
+        //
+        // This counted the distinct ALLOCATIONS of one object key that its own blocks held, and
+        // `surplus_object_key_allocations` was the copies beyond the first. A block entry holds no
+        // key, so there is nothing per block to be a copy OF: the blocks of an object are all handed
+        // the one `Arc` their bucket's lookup holds, and the column reads 1 BY CONSTRUCTION.
+        //
+        // KEPT, FOR THE REASON THE `model_id` COLUMN BESIDE IT IS KEPT -- and the comment there says
+        // it first. It is no longer evidence that a sharing pool was consulted; it still
+        // DISCRIMINATES, because a read path that copied the text per block instead of cloning the
+        // `Arc` would report two here. That is not hypothetical: forty walks in this module tree take
+        // a key per block through this same inversion, and a copy per block would reinstate the exact
+        // duplication this change removed.
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in bucket.block_index.iter() {
+                let object_key = named.at(bucket.routing_bucket, *handle);
+                let slot = by_object
+                    .entry((block.model_id().to_string(), object_key.to_string()))
+                    .or_default();
+                slot.0.insert(object_key.as_ptr() as usize);
+                // The spelling is a `&'static str` off the registry now, not an allocation: one
+                // address per kind for the whole process, so this census reads 1 BY CONSTRUCTION
+                // rather than because a pool happened to be consulted. Kept as the control it was.
+                slot.1.insert(block.model_id().as_str().as_ptr() as usize);
+                slot.2 += 1;
+            }
         }
-    }
-    let mut census = KeyAllocationCensus::default();
-    for ((_, object_key), (key_ptrs, model_ptrs, blocks)) in by_object.iter() {
-        census.objects += 1;
-        census.blocks += blocks;
-        *census.object_key.entry(key_ptrs.len()).or_default() += 1;
-        *census.model_id.entry(model_ptrs.len()).or_default() += 1;
-        let surplus = key_ptrs.len().saturating_sub(1);
-        census.surplus_object_key_allocations += surplus;
-        census.surplus_object_key_bytes += surplus * (object_key.len() + ARC_HEADER_BYTES);
-    }
-    census
+        let mut census = KeyAllocationCensus::default();
+        for ((_, object_key), (key_ptrs, model_ptrs, blocks)) in by_object.iter() {
+            census.objects += 1;
+            census.blocks += blocks;
+            *census.object_key.entry(key_ptrs.len()).or_default() += 1;
+            *census.model_id.entry(model_ptrs.len()).or_default() += 1;
+            let surplus = key_ptrs.len().saturating_sub(1);
+            census.surplus_object_key_allocations += surplus;
+            census.surplus_object_key_bytes += surplus * (object_key.len() + ARC_HEADER_BYTES);
+        }
+        census
+    })
 }
 
 /// THE BLOCKS OF ONE OBJECT HOLD ONE ALLOCATION OF ITS KEY.
@@ -807,96 +809,14 @@ fn capture_the_stored_spelling_of_a_block_entry() {
 // and the offset are the only part of the stored spelling this change moves.
 // ---------------------------------------------------------------------------------------------
 
-// AND THE THREE ARE KEPT AT THE SPELLING THEY HAD AT STAMP 26, WHICH IS WHAT THEY ARE FOR.
-//
-// The entry stopped writing `object_key` and `model_id` -- the composite key's own second and
-// first slots -- at stamp 27. Editing these three constants to match would hand this module its
-// own output and leave the comparison below asserting nothing about what moved. So they stay as
-// the bytes a stamp-26 binary wrote, and the expectation is DERIVED from them by naming the two
-// keys that left and removing them, with each substitution asserted to have FIRED. That is the
-// same shape `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed`
-// uses on the whole-index fixture, and for the same reason.
+// THE STORED SPELLING OF A BLOCK ENTRY, character for character, over three shapes. The object key
+// and the kind are the composite key's own second and first slots, so the entry writes neither.
 
-const BLOCK_ENTRY_PLAIN_AT_STAMP_26: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
+const BLOCK_ENTRY_PLAIN: &str = r#"{"address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
+const BLOCK_ENTRY_ALL_FLAGS: &str = r#"{"address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":true,"deleted":true}"#;
 
-const BLOCK_ENTRY_ALL_FLAGS_AT_STAMP_26: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":null,"g":4},"dirty":true,"deleted":true}"#;
-
-const BLOCK_ENTRY_OVER_WIDE_AT_STAMP_26: &str = r#"{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":4294967295,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
-
-/// The entry's own copy of the object key, as a stamp-26 row spells it -- with its trailing comma,
-/// so removing it leaves well-formed JSON.
-const ENTRY_OBJECT_KEY_AT_STAMP_26: &str = r#""object_key":"k","#;
-/// And its own copy of the kind, which is the key's leftmost slot.
-const ENTRY_MODEL_ID_AT_STAMP_26: &str = r#""model_id":"string","#;
-
-/// A whole shard index written at `15583789e`: one bucket holding six blocks -- five of one object
-/// (four plain, one carrying an element name and a different kind) and one of a SECOND object in the
-/// same bucket, which is what a cluster-range shard produces routinely.
-/// The routing bucket an index written before this change carries, and what this binary writes in
-/// its place -- which is NOTHING, the slot having been retired from the wire struct rather than
-/// held open and written nil. It was `"rs":null,` while the slot was still declared.
-/// See `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed`.
-const STORED_ROUTING_BUCKET: &str = r#""rs":7,"#;
-/// The identity slot as an OLD row spells it, and as this binary writes it back.
-///
-/// The slot is not retired -- the index log packs the address POSITIONALLY, so dropping a field
-/// shortens the array and refuses every existing row. It is written EMPTY instead, which is a
-/// change to the stored bytes and is what `SHARD_INDEX_FORMAT_VERSION` 6 pays for.
-const STORED_OBJECT_ID: &str = r#""oi":42,"#;
-/// The log-resident flag AS THE OLD INDEX STORED IT, both polarities, each with its leading comma
-/// so removing one leaves well-formed JSON. The fixture carries six of these across its entries.
-const STORED_LOG_RESIDENT_TRUE: &str = r#","log_backed":true"#;
-const STORED_LOG_RESIDENT_FALSE: &str = r#","log_backed":false"#;
-const EMPTIED_OBJECT_ID: &str = r#""oi":null,"#;
-const EMPTY_ROUTING_BUCKET: &str = r#""#;
-
-const OLD_STORE_INDEX: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"block_index":{"hash:k:f0:1:9:3:4:4":{"object_key":"k","model_id":"hash","component":"f0","address":{"a":4294967305,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967296,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967297,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:4":{"object_key":"k","model_id":"string","address":{"a":4294967299,"l":3,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:4":{"object_key":"other","model_id":"string","address":{"a":8589934593,"l":5,"pi":4,"oi":42,"rs":7,"g":4},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
-
-/// THE SAME INDEX, CARRYING THE COMBINATION NO WRITER PRODUCES.
-///
-/// Byte for byte the text above as it stood before `generation` became derived: `"g":9` beside a
-/// `"pi":4`, and block-ref keys ending `:4:9` to match. This engine has never written that --
-/// every production constructor passed `block_id.or(object_id)` -- but an index that DID carry it
-/// must not be loaded and silently re-keyed, because the generation is hashed into the block
-/// handle and rendered into the key, and those handles are on disk inside the lookup refs.
-const OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"block_index":{"hash:k:f0:1:9:3:4:9":{"object_key":"k","model_id":"hash","component":"f0","address":{"a":4294967305,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967296,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967297,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967299,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:9":{"object_key":"other","model_id":"string","address":{"a":8589934593,"l":5,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
-
-/// What this binary must write back after loading `OLD_STORE_INDEX`: the same bytes, MINUS the one
-/// key the node no longer holds.
-///
-/// Named rather than called "the text above", because there are now two index fixtures here and
-/// only one of them is the one that loads.
-///
-/// `last_dump_sequence` is DELETED FROM THE STORED TEXT rather than a second fixture typed out
-/// beside it, so every other byte of the comparison is still against what an older binary wrote.
-/// The test asserts the deletion actually changed the string, or the expectation would be the
-/// stored text unmodified and the round trip would be an equality with itself.
-const REMOVED_KEY: &str = "\"last_dump_sequence\":11,";
-
-/// The element name as a stored row carries it, and the block handle that renders it.
-///
-/// TWO PLACES, BECAUSE `block_index_written_key` RENDERS THE NAME INTO THE MAP KEY as well as the
-/// entry carrying it as a field. A canonicalisation that took only one of them would leave the
-/// write-back comparison reporting a difference it had caused itself.
-const STORED_ELEMENT_NAME: &str = r#""component":"f0","#;
-const STORED_NAMED_HANDLE: &str = r#""hash:k:f0:1:9:3:4:4""#;
-/// The same handle as this binary renders it: the element slot between the object key and the slab
-/// id is empty, which is the shape the five string rows of this fixture already have.
-const BLOCK_NAMED_HANDLE: &str = r#""hash:k::1:9:3:4:4""#;
-
-/// Every page of that index, spelled out independently of the text it came from.
-///
-/// `(object_key, model_id, element_name, slab, offset, length, dirty, deleted, log_backed)`.
-#[allow(clippy::type_complexity)]
-const OLD_STORE_BLOCKS: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, bool)] = &[
-    ("k", "hash", Some("f0"), 1, 9, 3, true, false, false),
-    ("k", "string", None, 1, 0, 3, false, false, true),
-    ("k", "string", None, 1, 1, 3, false, false, true),
-    ("k", "string", None, 1, 2, 3, false, false, true),
-    ("k", "string", None, 1, 3, 3, false, false, true),
-    ("other", "string", None, 2, 1, 5, false, false, true),
-];
+const BLOCK_ENTRY_OVER_WIDE: &str = r#"{"address":{"a":4294967298,"l":4294967295,"pi":4,"oi":null,"g":4},"dirty":false,"deleted":false}"#;
 
 // ---------------------------------------------------------------------------------------------
 // THE STORED FORMAT, pinned over several shapes.
@@ -963,23 +883,13 @@ pub(super) fn block_fixture(length: u64, flags: (bool, bool)) -> BlockIndex {
 /// WITH ITS OWN CONTROL. Two entries that both serialized to nothing would pass an equality test
 /// against each other, so the shapes are asserted to differ from one another and each spelling is
 /// asserted longer than 100 bytes. A comparison that cannot report a difference is vacuous.
-/// AND IT DID MOVE, IN EXACTLY ONE SLOT. This test was called
-/// `the_stored_spelling_of_a_page_entry_did_not_move` and it is renamed rather than re-goldened,
-/// because a test whose NAME asserts the opposite of what it checks is worse than a stale golden:
-/// the name is what a future reader greps for.
-///
-/// WHAT MOVED: `"oi":42` became `"oi":null`. `BlockAddressWire::object_id` carries `rename`,
-/// `alias` and `default` but NO `skip_serializing_if`, so an address that no longer holds an id
-/// writes the slot as a null instead of dropping it.
-///
-/// WHY IT IS WRITTEN RATHER THAN RETIRED: the index log packs this struct POSITIONALLY --
-/// `encode_index_payload_into` uses a plain `rmp_serde::Serializer`, so a field is a position and
-/// not a name -- so retiring the slot would shorten the array and refuse every row already on
-/// disk. Keeping it empty is also what lets the decode go on cross-checking an old `g` against
-/// `block_id.or(object_id)`, which `an_old_store_whose_generation_disagrees_is_refused_before_the_decode`
-/// drives.
+/// THE ONE SLOT THAT IS WRITTEN EMPTY RATHER THAN RETIRED: `"oi":null`. `BlockAddressWire::object_id`
+/// carries `rename`, `alias` and `default` but NO `skip_serializing_if`, so an address that holds no
+/// id writes the slot as a null instead of dropping it. The index log packs this struct
+/// POSITIONALLY -- `encode_index_payload_into` uses a plain `rmp_serde::Serializer`, so a field is a
+/// position and not a name -- so retiring the slot would shorten the array.
 #[test]
-fn the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot() {
+fn the_stored_spelling_of_a_block_entry_is_pinned_over_three_shapes() {
     // THROUGH THE WRAPPER, WHICH NO LONGER TAKES A KEY. `BLOCK_FIXTURE_OBJECT_KEY` was the
     // characters the derive read off the entry and then the characters this fixture injected; the
     // entry writes neither the object key nor the kind now, so the wrapper takes the block alone and
@@ -1001,71 +911,18 @@ fn the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot() {
     println!("ALL_FLAGS = {all_flags}");
     println!("OVER_WIDE = {over_wide}");
 
-    // THE EXPECTATION IS DERIVED FROM THE STAMP-26 BYTES, NOT RE-GOLDENED FROM THIS RUN.
-    //
-    // Two keys left the entry, each asserted present in the stamp-26 spelling BEFORE it is removed
-    // and absent after -- so a substitution that matched nothing cannot leave the comparison
-    // reporting a sameness it never tested, and a key that came back is a failure here rather than
-    // a golden somebody updates.
-    let at_stamp_27 = |was: &str, label: &str| -> String {
-        for (what, spelling) in [
-            ("the object key", ENTRY_OBJECT_KEY_AT_STAMP_26),
-            ("the kind", ENTRY_MODEL_ID_AT_STAMP_26),
-        ] {
-            assert_eq!(
-                1,
-                was.matches(spelling).count(),
-                "the stamp-26 {label} spelling does not carry {what} exactly once, so removing it \
-                 is not what the derivation below is reporting: {was}"
-            );
-        }
-        let derived = was
-            .replace(ENTRY_OBJECT_KEY_AT_STAMP_26, "")
-            .replace(ENTRY_MODEL_ID_AT_STAMP_26, "");
-        for key in ["\"object_key\"", "\"model_id\""] {
-            assert_eq!(
-                0,
-                derived.matches(key).count(),
-                "{key} survives the derivation of the {label} expectation"
-            );
-        }
-        assert_ne!(
-            was, derived.as_str(),
-            "the derivation of the {label} expectation changed nothing"
-        );
-        derived
-    };
-
     assert_eq!(
-        at_stamp_27(BLOCK_ENTRY_PLAIN_AT_STAMP_26, "plain"),
-        plain,
-        "the stored spelling of a page entry moved in some way other than dropping the object key \
-         and the kind the composite key already spells; if that is intended, the version stamp has \
-         to move with it"
+        BLOCK_ENTRY_PLAIN, plain,
+        "the stored spelling of a block entry moved; if that is intended, the version stamp has to          move with it"
     );
     assert_eq!(
-        at_stamp_27(BLOCK_ENTRY_ALL_FLAGS_AT_STAMP_26, "all flags"),
-        all_flags,
-        "the stored spelling of a page entry with every flag set moved"
+        BLOCK_ENTRY_ALL_FLAGS, all_flags,
+        "the stored spelling of a block entry with every flag set moved"
     );
     assert_eq!(
-        at_stamp_27(BLOCK_ENTRY_OVER_WIDE_AT_STAMP_26, "over wide"),
-        over_wide,
-        "the stored spelling of a page entry whose length saturated moved"
+        BLOCK_ENTRY_OVER_WIDE, over_wide,
+        "the stored spelling of a block entry whose length saturated moved"
     );
-    // AND NO SHAPE WRITES AN ELEMENT-NAME KEY, which is what the retired fourth golden was for.
-    // Asserted over all three rather than inferred from the equalities above, because a golden
-    // updated in step with a regression would not report one and this will.
-    for (name, spelling) in [
-        ("plain", &plain),
-        ("all flags", &all_flags),
-        ("over wide", &over_wide),
-    ] {
-        assert!(
-            !spelling.contains("\"component\""),
-            "the {name} spelling writes an element-name key: {spelling}"
-        );
-    }
 
     // --- Controls. Without these the assertions above could all be comparing "" with "". ---
     for (name, spelling) in [
@@ -1116,451 +973,6 @@ fn the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot() {
         "a length that wrapped would read as a shorter record and no error anywhere"
     );
     let _ = wrapped_would_be;
-}
-
-/// AN INDEX WRITTEN BEFORE THIS CHANGE, LOADED BY THIS BINARY, COMPARED ELEMENT BY ELEMENT.
-///
-/// The text below is the shard index a store built at `15583789e` writes for a bucket holding
-/// five blocks of one object -- four plain and one carrying an element name -- plus a second object in
-/// the same bucket. It is the bytes, not a paraphrase of them.
-///
-/// THE DIRECTION THAT MATTERS is the one nothing reports. A reader that cannot find a block does
-/// not fail: the block is still on its slab and nothing looks for it. So the assertion is EQUALITY
-/// of the whole block set, field by field, against what went in -- never that the set is non-empty
-/// afterwards.
-///
-/// AND THE REVERSE IS NO LONGER THE SAME CLAIM, so it is no longer in this name. "An old index
-/// still loads" and "it is written back byte for byte" were one test for as long as both were
-/// true. The second stopped being true when the entry shed `log_backed`: this binary writes the
-/// stored form one key lighter, by construction, and the format stamp is what pays for it. One
-/// name over both would have had to be WEAKENED until it passed, and a weakened version would no
-/// longer pin the half that is still exact -- so the write-back claim is restated, as what this
-/// binary actually writes, in
-/// `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed`.
-///
-/// THE GENERATION IN THESE BYTES MOVED, AND ONLY IT. When `generation` became derived from
-/// `block_id.or(object_id)`, the fixture behind this capture stopped being able to express the
-/// independent `9` it had chosen beside a `block_id` of `4` -- a combination no production
-/// constructor in this engine has ever emitted. The bytes were regenerated with the capture
-/// instrument in this module rather than hand-edited, and they came back the same 1,349 bytes
-/// with `"g":4` and keys ending `:4:4`. An index that really did carry the old combination is
-/// REFUSED rather than re-keyed; `an_old_store_whose_generation_disagrees_is_refused_before_the_decode`
-/// drives it -- named, rather than called "the test directly below", which it stopped being the
-/// moment this test split in two.
-#[test]
-fn an_index_written_before_this_change_loads_block_for_block() {
-    let index: crate::engine::state::CoreIndex =
-        serde_json::from_str(OLD_STORE_INDEX).expect("an index written at 15583789e must load");
-
-    let bucket = index
-        .bucket_map
-        .get(&7)
-        .expect("the stored bucket must load");
-
-    // --- Element by element, in the order the stored map spells them. ---
-    let mut loaded: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool)> =
-        super::blocks_with_identity(&index)
-            .into_iter()
-            .map(|(_, _, object_key, block)| {
-            (
-                object_key.to_string(),
-                block.model_id().to_string(),
-                None::<String>,
-                block.address.block_slab_id(),
-                block.address.offset(),
-                block.address.length(),
-                block.dirty(),
-                block.deleted(),
-            )
-        })
-        .collect();
-    loaded.sort();
-
-    let mut expected: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool)> =
-        OLD_STORE_BLOCKS
-            .iter()
-            // THE NINTH COLUMN IS READ NO LONGER, AND THE FIXTURE KEEPS IT ON PURPOSE. It records
-            // what the old index STORED, which is the fixture's whole job -- and in some of these
-            // rows what it stored was WRONG: a log-resident flag set on a slab-backed block. That
-            // disagreement was a documented defect. The property is derived from the address now,
-            // so there is no stored copy left to round-trip and nothing to compare it against.
-            //
-            // AND THE ELEMENT NAME COLUMN IS NOW THE SAME KIND OF COLUMN: KEPT, AND DERIVED THROUGH.
-            // It reads `Some("f0")` for the hash row because that is what the old index stored,
-            // and the table is the record of those bytes spelled out independently of the text. The
-            // expectation is DERIVED from it by applying the one difference this binary makes --
-            // the entry has no field to put an element name in, so the decode drops it -- rather
-            // than by editing `Some("f0")` to `None`. Editing the table would destroy the record
-            // and leave this arm asserting that an index with no element name loads as one with no
-            // element name, which is a statement about nothing.
-            .map(|(key, model, _element_name, slab, offset, length, dirty, deleted, _log_backed)| {
-                (
-                    (*key).to_string(),
-                    (*model).to_string(),
-                    None::<String>,
-                    *slab,
-                    *offset,
-                    *length,
-                    *dirty,
-                    *deleted,
-                )
-            })
-            .collect();
-    expected.sort();
-
-    assert_eq!(
-        expected.len(),
-        loaded.len(),
-        "the block COUNT moved: {} written, {} loaded",
-        expected.len(),
-        loaded.len()
-    );
-    for (index_of, (want, got)) in expected.iter().zip(loaded.iter()).enumerate() {
-        assert_eq!(want, got, "block {index_of} came back different");
-    }
-
-    // --- Anti-vacuity: the fixture has to hold the shapes the claim is about. ---
-    assert!(
-        loaded.len() >= 5,
-        "the fixture holds {} blocks; it is supposed to hold a multi-block object",
-        loaded.len()
-    );
-    // THE DERIVATION ABOVE MUST HAVE SOMETHING TO DERIVE, asserted on the SOURCE rather than on the
-    // result. This read `loaded.iter().any(|block| block.2.is_some())` -- "no loaded block carries a
-    // element name, so the element name's stored round trip is untested" -- and no loaded block CAN carry
-    // one, so it could only ever fail. What it was protecting is still worth protecting: that the
-    // stored bytes really do contain an element name for the decode to drop. So it is asked of the
-    // fixture, in both of the places the name appears in a stored row.
-    assert!(
-        OLD_STORE_BLOCKS.iter().any(|block| block.2.is_some()),
-        "no row of the stored page table carries an element name, so dropping it in the \
-         derivation above changes nothing and this arm tests no shed key"
-    );
-    assert!(
-        OLD_STORE_INDEX.contains(STORED_ELEMENT_NAME),
-        "the stored index text carries no {STORED_ELEMENT_NAME} key, so the tolerant decode this \
-         arm is about is not being exercised"
-    );
-    assert!(
-        OLD_STORE_INDEX.contains(STORED_NAMED_HANDLE),
-        "the stored index text carries no element-named block handle, so the key shape this arm is \
-         about is not being exercised"
-    );
-    // AND NOTHING THAT LOADED CARRIES ONE, which is the other half of the same statement: the
-    // decode is tolerant of the key and drops it rather than failing or keeping it.
-    assert!(
-        loaded.iter().all(|block| block.2.is_none()),
-        "a loaded block carries an element name; the entry has no field for one, so this would mean \
-         the field has come back"
-    );
-    assert!(
-        loaded.iter().filter(|block| block.0 == "k").count() > 1,
-        "no object in the fixture holds more than one block, so the axis this change is about is \
-         not covered by this golden"
-    );
-    assert!(
-        bucket.block_index.len() > 1,
-        "the stored bucket holds {} block(s); a single-block bucket would exercise only the inline \
-         arm and say nothing about the map arm",
-        bucket.block_index.len()
-    );
-
-    // --- The control: a DIFFERENT block set must not compare equal, or the comparison above is
-    // reporting sameness it cannot actually detect. ---
-    let mut injected = loaded.clone();
-    injected[0].5 = injected[0].5.wrapping_add(1);
-    assert_ne!(
-        injected, loaded,
-        "the element-by-element comparison cannot report a difference when one is injected"
-    );
-}
-
-/// WHAT THIS BINARY WRITES BACK WHEN IT IS HANDED AN INDEX WRITTEN BEFORE THIS CHANGE.
-///
-/// THE OTHER HALF OF THE TEST ABOVE, SPLIT OFF RATHER THAN RELAXED -- see its note for why one
-/// name could not keep both claims once the second stopped being true.
-///
-/// THE FIXTURE IS NOT RESTATED, and the direction this test runs in is the reason.
-/// `OLD_STORE_INDEX` records YESTERDAY'S INPUT: the bytes a store at `15583789e` really wrote,
-/// whose whole job is to prove that a pre-change index still decodes. Re-goldening it would hand
-/// this test today's own output, and it would then assert nothing about the past. So the
-/// expectation is DERIVED from those bytes instead, by naming each difference this binary makes to
-/// a stored row and applying it -- with every substitution asserted to have FIRED, so none of them
-/// can quietly match nothing and leave the comparison reporting a sameness it never tested.
-///
-/// FOUR DIFFERENCES ARE NAMED, and none of them is a number that moved: a key that is no longer
-/// written, a slot retired from the wire struct, a slot written empty, and the flag the entry shed.
-#[test]
-fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed() {
-    let index: crate::engine::state::CoreIndex =
-        serde_json::from_str(OLD_STORE_INDEX).expect("an index written at 15583789e must load");
-
-    // --- And back: the same bytes but for the keys the node no longer holds. ---
-    let without_the_removed_key = OLD_STORE_INDEX.replace(REMOVED_KEY, "");
-    assert_ne!(
-        OLD_STORE_INDEX, without_the_removed_key.as_str(),
-        "the stored fixture does not contain {REMOVED_KEY}, so the expectation below is the stored \
-         text unmodified and the round trip proves nothing about the removal"
-    );
-    // AND THE ROUTING BUCKET IS NOT WRITTEN BACK AT ALL, which is the second content change this
-    // round trip has to account for. The address does not hold a routing bucket, and the SLOT is
-    // now retired from the wire struct rather than held open and written nil -- see
-    // `block_store::shorter_struct_against_an_existing_row` for why a dead slot can leave. So an
-    // index written before this loads with its `rs` read and ignored, and is written back with the
-    // key ABSENT.
-    //
-    // That this fixture still LOADS, carrying six `"rs":7` keys no field claims, is the
-    // compatibility half of this test and it is the half that matters: a named decoder tolerates a
-    // key nothing declares.
-    let stored_bucket_keys = without_the_removed_key.matches(STORED_ROUTING_BUCKET).count();
-    assert_eq!(
-        6, stored_bucket_keys,
-        "the fixture must carry a stored routing bucket on each of its six block entries, or the \
-         canonicalisation below is not reporting what happens to one"
-    );
-    let canonical = without_the_removed_key.replace(STORED_ROUTING_BUCKET, EMPTY_ROUTING_BUCKET);
-    // AND THE RETIRED IDENTITY SLOT IS WRITTEN BACK EMPTY, which is the second content change this
-    // binary makes to a stored row. The slot STAYS -- the log packs positionally -- so what the
-    // writer emits is `"oi":null` where the old row carried the id. Canonicalised here for the same
-    // reason the routing bucket is: the expectation has to be what THIS binary writes, and the
-    // replacement is asserted to have fired so it cannot quietly match nothing.
-    let stored_object_id_count = canonical.matches(STORED_OBJECT_ID).count();
-    assert_eq!(
-        6, stored_object_id_count,
-        "the fixture must carry a stored object id on each of its six block entries, or the \
-         canonicalisation below is not reporting what happens to one"
-    );
-    let canonical = canonical.replace(STORED_OBJECT_ID, EMPTIED_OBJECT_ID);
-    // AND THE FIFTH DIFFERENCE IS THE MAP KEY ITSELF. The node writes its block map under
-    // `block_index` now and still ACCEPTS `page_index` on the way in, which is what the decode at
-    // the top of this test exercises. Substitution asserted to have fired, like the four above,
-    // so it cannot quietly match nothing and leave the comparison reporting a sameness it never
-    // tested.
-    let stored_map_key_count = canonical.matches("\"page_index\":").count();
-    assert_eq!(
-        1, stored_map_key_count,
-        "the fixture must carry exactly one stored block-map key, or the canonicalisation below is not reporting what happens to it"
-    );
-    let canonical = canonical.replace("\"page_index\":", "\"block_index\":");
-    assert_eq!(
-        0,
-        canonical.matches(STORED_OBJECT_ID).count(),
-        "every stored object id must be emptied in the expectation, not left as it was"
-    );
-    assert_eq!(
-        6,
-        canonical.matches(EMPTIED_OBJECT_ID).count(),
-        "and each one must be emptied to the null the writer actually emits"
-    );
-    assert_ne!(
-        without_the_removed_key, canonical,
-        "the stored fixture does not contain {STORED_ROUTING_BUCKET}, so the expectation below \
-         cannot be reporting what happens to a stored routing bucket"
-    );
-    // COUNTED ON WHAT REMAINS, not on the replacement. `EMPTY_ROUTING_BUCKET` is the empty string
-    // now that the slot is retired, and `str::matches("")` answers once per character boundary --
-    // so counting occurrences OF it would report the length of the document and pass for any text
-    // at all. What has to be true is that no routing-bucket key survives.
-    assert_eq!(
-        0,
-        canonical.matches("\"rs\"").count(),
-        "every stored routing bucket must be gone from the expectation, not rewritten to nil: \
-         the slot is retired from the wire struct"
-    );
-    // AND THE LOG-RESIDENT KEY IS DROPPED FROM THE EXPECTATION, COUNTED BOTH WAYS.
-    //
-    // THE CLAIM THIS TEST MAKES HAS SPLIT IN TWO, and only the first half is unchanged. An index
-    // written before this change still LOADS block for block -- asserted above, and that is the
-    // tolerant decoder doing its job, since the wire struct declines no unknown key. What it no
-    // longer does is write back the SAME BYTES: it writes back one key lighter, because the entry
-    // shed the flag nothing maintained. That is precisely what the format stamp is spent on.
-    //
-    // Canonicalised rather than asserted around, in the same counted shape as the object id above:
-    // the count is checked BEFORE so the replacement cannot be reporting on nothing, and checked
-    // to zero after so it cannot have half-fired.
-    let log_resident_keys = canonical.matches(STORED_LOG_RESIDENT_TRUE).count()
-        + canonical.matches(STORED_LOG_RESIDENT_FALSE).count();
-    assert_eq!(
-        6, log_resident_keys,
-        "the fixture must carry a stored log-resident flag on each of its six block entries, or \
-         the canonicalisation below is not reporting what happens to one"
-    );
-    let canonical = canonical
-        .replace(STORED_LOG_RESIDENT_TRUE, "")
-        .replace(STORED_LOG_RESIDENT_FALSE, "");
-    assert_eq!(
-        0,
-        canonical.matches("\"log_backed\"").count(),
-        "every stored log-resident flag must be gone from the expectation: the key is retired \
-         from the entry and this binary does not write it"
-    );
-
-    // AND THE ELEMENT NAME IS DROPPED FROM THE EXPECTATION IN BOTH PLACES IT APPEARS, COUNTED.
-    //
-    // THE FIFTH DIFFERENCE, AND THE ONLY ONE THIS BRANCH ADDS. `BlockIndex` has no element-name
-    // field, so a stored row that carries one is written back without it -- and the name appears
-    // TWICE in a stored row, which is why this is two substitutions and not one:
-    //
-    //   * the entry's own `"element_name":"f0"` key, which the wire struct no longer declares; and
-    //   * the block_index MAP KEY, `"hash:k:f0:1:9:3:4:4"`. `block_index_written_key` renders the
-    //     element name into that key, and it passes `None` now, so the slot between the object key
-    //     and the slab id is empty -- the same shape the five string rows in this fixture already
-    //     have.
-    //
-    // A SUBSTITUTION THAT MATCHED ONLY ONE OF THE TWO WOULD LEAVE THE COMPARISON REPORTING A
-    // DIFFERENCE IT HAD CAUSED ITSELF, so both are counted before and after, in the same shape as
-    // the object id and the log-resident flag above.
-    assert_eq!(
-        1,
-        canonical.matches(STORED_ELEMENT_NAME).count(),
-        "the fixture must carry exactly one stored element name, on its one hash row, or the \
-         canonicalisation below is not reporting what happens to one"
-    );
-    assert_eq!(
-        1,
-        canonical.matches(STORED_NAMED_HANDLE).count(),
-        "the fixture must carry exactly one element-named page handle, or the canonicalisation \
-         below is not reporting what happens to one"
-    );
-    let canonical = canonical
-        .replace(STORED_ELEMENT_NAME, "")
-        .replace(STORED_NAMED_HANDLE, BLOCK_NAMED_HANDLE);
-    assert_eq!(
-        0,
-        canonical.matches("\"component\"").count(),
-        "every stored element name must be gone from the expectation: the key is retired from the \
-         entry and this binary does not write it"
-    );
-    assert_eq!(
-        0,
-        canonical.matches(STORED_NAMED_HANDLE).count(),
-        "the element-named block handle must be gone from the expectation, not left as it was"
-    );
-    assert_eq!(
-        1,
-        canonical.matches(BLOCK_NAMED_HANDLE).count(),
-        "and it must be rewritten to the block-named handle this binary renders"
-    );
-
-    // AND THE SIXTH DIFFERENCE: THE ENTRY NO LONGER WRITES THE OBJECT KEY OR THE KIND.
-    //
-    // Both are slots of the composite key the entry is filed under -- the second and the first --
-    // and the decoder reads them back out of it, so the entry writes three keys instead of five.
-    // The fixture holds six entries and TWO kinds, so each spelling is counted at its own arity:
-    // six object keys across two distinct values, five `string` rows and one `hash` row.
-    //
-    // COUNTED BEFORE AND AFTER, in the same shape as the four differences above, so a substitution
-    // that matched nothing cannot leave the comparison reporting a difference it caused itself.
-    for (spelling, expected) in [
-        (r#""object_key":"k","#, 5),
-        (r#""object_key":"other","#, 1),
-        (r#""model_id":"string","#, 5),
-        (r#""model_id":"hash","#, 1),
-    ] {
-        assert_eq!(
-            expected,
-            canonical.matches(spelling).count(),
-            "the fixture must carry {spelling} exactly {expected} time(s), or the removal below \
-             is not reporting what happens to it"
-        );
-    }
-    let canonical = canonical
-        .replace(r#""object_key":"k","#, "")
-        .replace(r#""object_key":"other","#, "")
-        .replace(r#""model_id":"string","#, "")
-        .replace(r#""model_id":"hash","#, "");
-    for key in ["\"object_key\"", "\"model_id\""] {
-        assert_eq!(
-            0,
-            canonical.matches(key).count(),
-            "{key} must be gone from the expectation: the composite key already spells it and this \
-             binary does not write it on the entry"
-        );
-    }
-
-    // AND THE ONE KEY THE INDEX GAINED, which is the whole of what this change moved in the
-    // stored image. `objects` was a TOP-LEVEL key of the serialized `ShardState` and is a field of
-    // `CoreIndex` now, so a re-encode writes it inside `slot_index` -- empty here, because this
-    // fixture is a bare `CoreIndex` holding no object rows. `SHARD_INDEX_FORMAT_VERSION` 30 is
-    // what that move cost, and appending it to the EXPECTATION rather than stripping it from the
-    // result is deliberate: it keeps this comparison a byte golden over everything else, so a
-    // second key arriving, or a block entry changing, still fails here.
-    let canonical = canonical
-        .strip_suffix('}')
-        .map(|head| format!(r#"{head},"objects":{{}}}}"#))
-        .expect("the canonical index is a JSON object");
-
-    let rewritten = serde_json::to_string(&index).expect("the index re-serializes");
-    assert_eq!(
-        canonical, rewritten,
-        "the index this binary writes back differs from the index it was given in some way other \
-         than dropping last_dump_sequence, retiring the address's routing bucket, emptying its \
-         identity slot, dropping the log-resident flag the entry shed, dropping the element name \
-         from both the entry and its block handle, and dropping the object key and the kind the \
-         composite key already spells"
-    );
-    assert!(
-        rewritten.len() > 500,
-        "the re-serialized index is {} bytes; a comparison of two near-empty documents cannot \
-         report a difference",
-        rewritten.len()
-    );
-}
-
-/// A MIS-VERSIONED STORE IS DRIVEN, AND IT FAILS LOUDLY -- BEFORE THE DECODE COMPLETES.
-///
-/// The index here is the one above as it stood before `generation` became derived: `"g":9` beside
-/// a `"pi":4`, with block-ref keys ending `:4:9` to match. No production constructor in this
-/// engine emits that combination, but if one ever reached disk, loading it under the derivation
-/// would compute `4` where the writer stored `9` -- and the generation is hashed into the block
-/// handle and rendered into the key, so every block in the bucket would be filed under a name the
-/// refs already on disk do not use. That is a lost object, reported by nothing.
-///
-/// So the load must FAIL, and fail where it can still be understood: at the address, during
-/// deserialization, naming the two values. The assertions below are on the MESSAGE as well as the
-/// failure, because a load that fails for some unrelated reason would pass a bare `is_err`.
-///
-/// WITH ITS CONTROL, which is the test directly above: the same index with an agreeing generation
-/// loads block for block and rewrites as the same 1,349 bytes. Without that, this test would pass
-/// just as well if the loader had stopped accepting any index at all.
-#[test]
-fn an_old_store_whose_generation_disagrees_is_refused_before_the_decode() {
-    let outcome: Result<crate::engine::state::CoreIndex, _> =
-        serde_json::from_str(OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION);
-
-    let error = outcome.err().expect(
-        "an index carrying a generation this binary cannot reproduce must NOT load: deriving a \
-         different one silently re-keys every block in the bucket",
-    );
-    let text = error.to_string();
-    println!("REFUSED WITH: {text}");
-    assert!(
-        text.contains("disagrees with block_id.or(object_id)"),
-        "the refusal must name what disagreed, got: {text}"
-    );
-    assert!(
-        text.contains("recompute every page handle"),
-        "and say why that matters, got: {text}"
-    );
-
-    // The two values themselves, so the message is actionable rather than merely alarming.
-    assert!(text.contains('9'), "the stored generation must appear in the message: {text}");
-    assert!(text.contains('4'), "and the derived one: {text}");
-
-    // NON-VACUITY: the text this test drives must actually be the disagreeing shape, or the
-    // refusal above could be about anything at all.
-    assert!(
-        OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION.contains(r#""g":9"#),
-        "the fixture has stopped carrying the independent generation it exists to drive"
-    );
-    assert!(
-        OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION.contains(r#":4:9""#),
-        "the fixture has stopped carrying the keys that match it"
-    );
-    assert_ne!(
-        OLD_STORE_INDEX, OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION,
-        "the two fixtures are the same text, so one of them is not what it claims to be"
-    );
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1676,62 +1088,63 @@ fn a_container_cannot_fill_the_pool_the_kinds_are_interned_in() {
     // names against a pool cap of 64.
     seed_container_keys(&engine, 4, 100);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let pooled = shard.bucket_index.kind_pool.len();
-    println!("kind_pool={pooled} entries");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let pooled = shard.bucket_index.kind_pool.len();
+        println!("kind_pool={pooled} entries");
 
-    // The pool must be PAST the element name ceiling, or the crowding-out this test is about cannot
-    // happen and every assertion below is free.
-    assert!(
-        pooled > 64,
-        "the pool holds {pooled} entries; this fixture is supposed to produce four hundred \
-         distinct element names and so drive it past the element name ceiling of 64. Below that, \
-         an element name could not have crowded a kind out even before this change"
-    );
-    // And still bounded: element names stop at 64, kinds may use 16 more, nothing else may.
-    assert!(
-        pooled <= 64 + 16,
-        "the pool holds {pooled} entries against a ceiling of 80; it is supposed to stay bounded \
-         by the sum of the two ceilings"
-    );
+        // The pool must be PAST the element name ceiling, or the crowding-out this test is about cannot
+        // happen and every assertion below is free.
+        assert!(
+            pooled > 64,
+            "the pool holds {pooled} entries; this fixture is supposed to produce four hundred \
+             distinct element names and so drive it past the element name ceiling of 64. Below that, \
+             an element name could not have crowded a kind out even before this change"
+        );
+        // And still bounded: element names stop at 64, kinds may use 16 more, nothing else may.
+        assert!(
+            pooled <= 64 + 16,
+            "the pool holds {pooled} entries against a ceiling of 80; it is supposed to stay bounded \
+             by the sum of the two ceilings"
+        );
 
-    // AND WHO STILL HOLDS THE POOLED NAME, which is the half of this test the entry no longer
-    // decides. A page entry carries the one-byte spelling and no string, so it cannot hold a
-    // pooled copy and cannot fail to. The remaining holder is the OBJECT LOOKUP, whose `by_model`
-    // head is keyed by the shared name -- that is why the pool is still consulted at all, and it
-    // is what the ceilings above are protecting.
-    let mut lookup_heads = 0usize;
-    let mut pooled_heads = 0usize;
-    for (model_id, _object_key, _refs) in shard.bucket_index.object_block_lookup.iter() {
-        lookup_heads += 1;
-        if let Some(pooled) = shard.bucket_index.kind_pool.get(model_id) {
-            if Arc::ptr_eq(pooled, model_id) {
-                pooled_heads += 1;
+        // AND WHO STILL HOLDS THE POOLED NAME, which is the half of this test the entry no longer
+        // decides. A page entry carries the one-byte spelling and no string, so it cannot hold a
+        // pooled copy and cannot fail to. The remaining holder is the OBJECT LOOKUP, whose `by_model`
+        // head is keyed by the shared name -- that is why the pool is still consulted at all, and it
+        // is what the ceilings above are protecting.
+        let mut lookup_heads = 0usize;
+        let mut pooled_heads = 0usize;
+        for (model_id, _object_key, _refs) in shard.bucket_index.object_block_lookup.iter() {
+            lookup_heads += 1;
+            if let Some(pooled) = shard.bucket_index.kind_pool.get(model_id) {
+                if Arc::ptr_eq(pooled, model_id) {
+                    pooled_heads += 1;
+                }
             }
         }
-    }
-    assert!(
-        lookup_heads > 0,
-        "the lookup holds no (model, object) head, so there is nothing whose key could be pooled"
-    );
-    assert_eq!(
-        lookup_heads, pooled_heads,
-        "{pooled_heads} of {lookup_heads} lookup heads are keyed by the POOLED allocation of \
-         their kind; the rest hold a copy, which is the cost the pool exists to remove"
-    );
+        assert!(
+            lookup_heads > 0,
+            "the lookup holds no (model, object) head, so there is nothing whose key could be pooled"
+        );
+        assert_eq!(
+            lookup_heads, pooled_heads,
+            "{pooled_heads} of {lookup_heads} lookup heads are keyed by the POOLED allocation of \
+             their kind; the rest hold a copy, which is the cost the pool exists to remove"
+        );
 
-    // And the block's own side of it: one byte, no string, nothing to pool.
-    let mut blocks = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        blocks += bucket.block_index.iter().count();
-    }
-    assert!(blocks > 0, "no blocks were recorded; nothing was measured");
-    assert_eq!(
-        1,
-        std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
-        "the page entry is supposed to spend one byte on the spelling the pool holds for the lookup",
-    );
+        // And the block's own side of it: one byte, no string, nothing to pool.
+        let mut blocks = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            blocks += bucket.block_index.iter().count();
+        }
+        assert!(blocks > 0, "no blocks were recorded; nothing was measured");
+        assert_eq!(
+            1,
+            std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
+            "the page entry is supposed to spend one byte on the spelling the pool holds for the lookup",
+        );
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1772,10 +1185,9 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     seed_container_keys(&engine, 2, 8);
     seed_routed_keys(&engine, 8);
 
-    let mut shard = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        shards.get(&1).expect("shard is loaded").clone()
-    };
+    let mut shard = engine.shards.with_state(1, |state| {
+        state.expect("shard is loaded").clone()
+    });
     let bytes = serialize_index_stamped(&mut shard);
     assert!(
         bytes.len() > 200,
@@ -2329,276 +1741,4 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
          supposed to re-derive that set from each block's own terms, so a stored id cannot be \
          authoritative any more"
     );
-}
-
-// ---------------------------------------------------------------------------------------------
-// AN UNGATED STORE MUST BE REFUSED, NOT MISREAD.
-// ---------------------------------------------------------------------------------------------
-
-
-/// A WHOLE SHARD INDEX WRITTEN WITH THE GATE OFF, AT THE STAMP A PRE-CHANGE BINARY CARRIES.
-///
-/// Captured by `capture_an_ungated_store_index` from this branch's own ungated writer, with
-/// `index_format_version` set to 8 -- what `matrixark/main` holds. Three entries, each NAMING its
-/// element: `element_name` `f0` and `f1` on a hash and `6d30` (hex `m0`) on a zset, and the written
-/// key of each embedding that name.
-///
-/// A STRING CONSTANT, WHICH IS THE WHOLE POINT. Once `BlockIndex` has no field for an element
-/// name there is no way left to BUILD this store -- not with a gate, not by hand -- so bytes are
-/// the only form of it that outlives the field. This is the yesterday\x27s-input kind of golden: it
-/// is not what this engine writes and must never be regenerated to match what it writes.
-pub(super) const UNGATED_STORE_INDEX_AT_STAMP_8: &str = r##"{"index_format_version":8,"wal_resident_blocks":{},"expires_at_ms":{},"strings":{},"hashes":{"ungated/hash":{"f1":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"f0":{"a":0,"l":27,"pi":0,"oi":null,"g":0}}},"sets":{},"seen":{},"buckets":{},"zsets":{"ungated/zset":[[[109,48],[13830554455654793216,{"a":54,"l":34,"pi":0,"oi":null,"g":0}]]]},"lists":{},"features":{},"control_state":{},"control_state_blocks":{},"control_state_changes":{},"control_state_change_sketch":{},"control_state_selection":{},"control_state_uuid":{},"context_nodes":{},"context_event_timeline":{},"context_audits":{},"context_entities":{},"context_children":{},"context_summaries":{},"context_compressions":{},"slot_index":{"bucket_map":{"979707521":{"routing_slot":979707521,"layout":"SingleBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":1,"object_index":[3660521199139779587],"deleted_object_index":[],"block_index":{"zset:ungated/zset:6d30:0:54:34:0:0":{"object_key":"ungated/zset","model_id":"zset","component":"6d30","address":{"a":54,"l":34,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false}}},"3709665044":{"routing_slot":3709665044,"layout":"MultiBlockObject","dirty":true,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":2,"object_index":[14105434925875933987],"deleted_object_index":[],"block_index":{"hash:ungated/hash:f0:0:0:27:0:0":{"object_key":"ungated/hash","model_id":"hash","component":"f0","address":{"a":0,"l":27,"pi":0,"oi":null,"g":0},"dirty":true,"deleted":false},"hash:ungated/hash:f1:0:27:27:1:1":{"object_key":"ungated/hash","model_id":"hash","component":"f1","address":{"a":27,"l":27,"pi":1,"oi":null,"g":1},"dirty":true,"deleted":false}}}}},"applied_wal_sequence":3}
-"##;
-
-/// The golden's JSON read by the STRUCT'S OWN DESERIALIZER.
-///
-/// `decode_index_bytes` reads the msgpack container and nothing else, so a committed JSON image can
-/// no longer go through it. What these tests ask of the golden is how the struct's fields and the
-/// bucket node's readers treat a spelling, and that is the deserializer's to answer -- it is what the
-/// retired plain-JSON arm called.
-fn golden_state(json: &str) -> Result<crate::engine::state::ShardState, String> {
-    serde_json::from_str::<crate::engine::state::ShardState>(json)
-        .map_err(|error| error.to_string())
-}
-
-/// THE BUCKET NODE READER TAKES `block_index` AND NOT THE RETIRED SPELLINGS.
-///
-/// The bucket node's block index is written under `block_index`. It used to be written under
-/// `page_index` (and before that `page_refs`), and the reader accepted all three. The first
-/// release carries no installed base, so the two older spellings are not accepted. A named map
-/// DROPS a key its struct does not declare, silently and with every other value intact, so "it
-/// loaded" is not the property -- "it loaded carrying the blocks" is, and an empty block index is
-/// exactly what the silent drop looks like. So the control is that the committed bytes, spelled
-/// `block_index`, decode to a non-zero block count, and each retired spelling, swapped in alone for
-/// that key, must not produce the same count.
-#[test]
-fn the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones() {
-    let canonical = golden_state(UNGATED_STORE_INDEX_AT_STAMP_8)
-        .expect("the committed bytes, spelling `block_index`, must decode");
-    let canonical_blocks = super::blocks_with_identity(&canonical.bucket_index).len();
-    assert!(
-        canonical_blocks > 0,
-        "the control decoded to ZERO blocks, so every comparison below would pass vacuously"
-    );
-    assert!(
-        UNGATED_STORE_INDEX_AT_STAMP_8.contains("\"block_index\":"),
-        "the committed bytes no longer spell `block_index`, so the swaps below vary nothing"
-    );
-
-    for retired in ["page_index", "page_refs"] {
-        let swapped = UNGATED_STORE_INDEX_AT_STAMP_8
-            .replace("\"block_index\":", &format!("\"{retired}\":"));
-        assert_ne!(swapped, UNGATED_STORE_INDEX_AT_STAMP_8, "the swap to `{retired}` did not take");
-        let loaded = golden_state(&swapped);
-        let blocks = loaded
-            .as_ref()
-            .map(|index| super::blocks_with_identity(&index.bucket_index).len());
-        assert!(
-            blocks.as_ref().map_or(true, |count| *count != canonical_blocks),
-            "an index spelling the block index `{retired}` decoded to the same {canonical_blocks} \
-             blocks as `block_index`: the retired spelling is accepted"
-        );
-    }
-
-    // THE OBJECT INDEX TOO: `object_ids` is the retired spelling of `object_index`. Compared as the
-    // JSON the decoded index serialises to, which differs when the key was dropped as unknown (the
-    // object index falls to empty) and would be equal if the retired spelling were read.
-    assert!(
-        UNGATED_STORE_INDEX_AT_STAMP_8.contains("\"object_index\":["),
-        "the committed bytes carry no object_index array, so the swap below varies nothing"
-    );
-    let with_ids = UNGATED_STORE_INDEX_AT_STAMP_8.replace("\"object_index\":", "\"object_ids\":");
-    assert_ne!(with_ids, UNGATED_STORE_INDEX_AT_STAMP_8, "the swap to `object_ids` did not take");
-    let canonical_json = serde_json::to_value(&canonical.bucket_index).unwrap();
-    let loaded = golden_state(&with_ids);
-    assert!(
-        loaded
-            .as_ref()
-            .map_or(true, |index| serde_json::to_value(&index.bucket_index).unwrap() != canonical_json),
-        "an index spelling the object index `object_ids` decoded to the same buckets as \
-         `object_index`: the retired spelling is accepted"
-    );
-
-    // THE WRITERS STILL SPELL THE CANONICAL NAME, read from the source: a writer that drifted back
-    // to a retired spelling would write bytes this reader no longer takes.
-    let state = include_str!("../engine_storage_state.rs");
-    for writer in [
-        "node.serialize_field(\"block_index\"",
-        "once!(block_index, \"block_index\")",
-    ] {
-        assert!(
-            state.contains(writer),
-            "a writer stopped spelling the canonical key: {writer:?} is gone from engine_storage_state.rs"
-        );
-    }
-    assert!(
-        !state.contains("\"page_index\" =>") && !state.contains("| \"page_refs\""),
-        "the bucket node field reader names a retired spelling again"
-    );
-}
-
-#[test]
-fn an_ungated_store_is_refused_before_it_is_served() {
-    use crate::engine::persistence::{index_load_path_counts, reset_index_load_path_counts};
-
-    // --- ARM 1: THE GOLDEN READS, AND IT IS THE READ THAT LOSES THE NAMES. ---
-    let decoded = golden_state(UNGATED_STORE_INDEX_AT_STAMP_8)
-        .expect("an index written by a pre-change binary must still be READABLE by the struct's \
-                 deserializer -- the header refuses it one layer up, and a read that failed here \
-                 would hide that");
-    assert_eq!(
-        8, decoded.index_format_version,
-        "the golden's stamp is {} rather than 8, so it is not the pre-change store this guard is \
-         about",
-        decoded.index_format_version
-    );
-    let container_entries: Vec<(String, String, Option<String>)> =
-        super::blocks_with_identity(&decoded.bucket_index)
-            .into_iter()
-            .filter(|(_, _, _, block)| {
-                matches!(block.model_id().as_str(), "hash" | "zset" | "set" | "list")
-            })
-            .map(|(_, _, object_key, block)| {
-                (
-                    object_key.to_string(),
-                    block.model_id().as_str().to_string(),
-                    element_name_of(block),
-                )
-            })
-            .collect();
-    println!("\n=== a pre-change store, decoded by this binary ===");
-    for row in &container_entries {
-        println!("  {row:?}");
-    }
-    // FLOOR: the golden really does hold container entries, or the naming claim below is about an
-    // empty set and the refusal arm is about an empty store.
-    assert_eq!(
-        3,
-        container_entries.len(),
-        "the golden decoded to {} container entries rather than 3, so it is not the store this \
-         guard was captured from",
-        container_entries.len()
-    );
-
-    // THE NAMES ARE A FACT ABOUT THE STORED BYTES, asserted there rather than on the decoded
-    // entries -- because what this binary can still READ off an entry is exactly what the change
-    // under test takes away. The bytes cannot change; the field can. So the golden is asserted to
-    // SPELL the three element names, and what the decode recovered is PRINTED beside it.
-    for spelling in [
-        "\"component\":\"f0\"",
-        "\"component\":\"f1\"",
-        "\"component\":\"6d30\"",
-    ] {
-        assert!(
-            UNGATED_STORE_INDEX_AT_STAMP_8.contains(spelling),
-            "the golden does not spell {spelling}, so it is not a store whose entries name their \
-             elements and the refusal below is about nothing"
-        );
-    }
-    let recovered = container_entries
-        .iter()
-        .filter(|(_, _, name)| name.is_some())
-        .count();
-    println!(
-        "  of 3 stored element names, this binary recovered {recovered} off the entries -- a drop \
-         to 0 is the silent key drop that the refusal below stands between a reader and"
-    );
-
-    // --- ARM 2: THE SHARD REFUSES IT, AND SERVES NOTHING FROM IT. ---
-    let dir = tempfile::tempdir().expect("tempdir");
-    let indexes = dir.path().join("indexes");
-    std::fs::create_dir_all(&indexes).expect("mkdir");
-    // THE PRE-CHANGE STORE'S OWN STATE, in the container this binary reads, behind a header that
-    // names the struct version the golden carries. The header is the stamp: the reader compares it
-    // with the constant before it reads the payload, so what it must do with this image is decided
-    // by those four bytes alone.
-    let planted = crate::engine::encode_index_bytes_at_version(&decoded, 8);
-    let refusal = crate::engine::decode_index_bytes(&planted)
-        .err()
-        .expect("an image whose header says struct version 8 must be refused by the decode");
-    assert!(
-        refusal.contains("struct version 8")
-            && refusal.contains(&crate::engine::SHARD_INDEX_FORMAT_VERSION.to_string()),
-        "the planted image was refused, but not on its header's struct version: {refusal}"
-    );
-    std::fs::write(indexes.join("shard-7.index.json"), &planted)
-        .expect("plant the pre-change index");
-    // AND THE ROUTING-RANGE STAMP BESIDE IT, WHICH A PRE-CHANGE STORE REALLY HAS.
-    //
-    // Without it this guard asserted nothing and did not say so: `decide_routing_range` refuses a
-    // store that has ON-DISK STATE and NO range stamp, before the index is read at all, so all four
-    // index-load counters stayed at ZERO -- not even `absent`. Measured, by driving it: a refusal
-    // arm that cannot tell "refused for the reason under test" from "never asked" is the shape of a
-    // control that passes for an unintended reason. A binary that wrote this index also wrote this
-    // file, so planting both is what makes the FORMAT stamp the thing being tested.
-    crate::engine::routing_range_stamp::write_routing_range_stamp(
-        &indexes,
-        7,
-        crate::engine::routing_range_stamp::RoutingRangeStamp {
-            start_routing_bucket: 0,
-            end_routing_bucket: u32::MAX,
-        },
-    )
-    .expect("plant the routing-range stamp the index was written under");
-
-    reset_index_load_path_counts();
-    let engine = crate::engine::TemporalEngine::with_local_dirs(
-        1024,
-        dir.path().join("cache"),
-        dir.path().join("blocks"),
-        indexes,
-    );
-    // THE LOAD'S OWN STATUS, CHECKED. A first draft of this guard did not, and every counter read
-    // ZERO -- not even `absent` -- which is what a load that never reached the index looks like.
-    // A refusal arm that cannot tell "refused" from "never asked" asserts nothing.
-    engine.load_shard(7);
-    let (accepted, absent, undecodable) = index_load_path_counts();
-    println!("  load path -> accepted {accepted}, absent {absent}, undecodable {undecodable}");
-    assert!(
-        undecodable > 0,
-        "a store stamped 8 against a current {} was NOT refused and counted: accepted \
-         {accepted}, absent {absent}, undecodable {undecodable}. The header's struct version is \
-         compared with `!=`, so the direction that fails silently is a stamp that is too LOW -- \
-         and this is that direction",
-        crate::engine::SHARD_INDEX_FORMAT_VERSION
-    );
-    assert_eq!(
-        0, accepted,
-        "the load counted {accepted} ACCEPTED beside {undecodable} refused. Independent counters \
-         mean a load can move both, and a refusal that is also an acceptance is an acceptance"
-    );
-
-    // AND NOTHING IS SERVED FROM IT. There is no write-ahead log beside the planted index, so a
-    // refusal leaves an empty shard; anything served here came out of the index this binary was
-    // supposed to refuse.
-    let served = engine.execute(crate::types::ExecuteRequest {
-        shard_id: 7,
-        command: crate::types::Command::HashGetAll {
-            key: "ungated/hash".to_string(),
-        },
-    });
-    let entries = match served.response {
-        crate::types::CommandResponse::HashEntries { entries } => entries,
-        other => panic!("expected HashEntries, got {other:?}"),
-    };
-    println!("  served from the refused index: {} field(s)", entries.len());
-    assert!(
-        entries.is_empty(),
-        "the refused index served {} field(s): {:?}. A refused store must be REPLAYED, never read \
-         -- and with no log beside it the honest answer is nothing at all",
-        entries.len(),
-        entries
-    );
-}
-
-/// The element name a block entry carries, read in the one place that has to change when the field
-/// goes.
-///
-/// A HELPER AND NOT AN INLINE FIELD READ, so that removing `BlockIndex::element_name` leaves ONE
-/// compile error here with a comment attached rather than silently turning the naming assertion
-/// above into `None == None`. When the field goes this answers `None` for every entry, which is
-/// precisely the silent drop arm 1 is about -- and the assertion above compares against the golden's
-/// own recorded names rather than against whatever this returns.
-fn element_name_of(block: &BlockIndex) -> Option<String> {
-    None::<String>
 }

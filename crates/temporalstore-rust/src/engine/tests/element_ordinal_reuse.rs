@@ -382,21 +382,22 @@ fn write(engine: &TemporalEngine, command: Command) {
 /// claims to the quantity it was always about, rather than weakening any of them.
 /// [`tombstoned_blocks_of`] is the other half, and the arms below assert BOTH.
 fn blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<String>, Option<u64>)> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut held = Vec::new();
-    for (_routing_bucket, _handle, object_key, block) in
-        super::blocks_with_identity(&shard.bucket_index)
-    {
-        if block.deleted() {
-            continue;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        let mut held = Vec::new();
+        for (_routing_bucket, _handle, object_key, block) in
+            super::blocks_with_identity(&shard.bucket_index)
+        {
+            if block.deleted() {
+                continue;
+            }
+            if block.model_id().as_str() == kind && &*object_key == key {
+                held.push((None::<String>, block.address.block_id()));
+            }
         }
-        if block.model_id().as_str() == kind && &*object_key == key {
-            held.push((None::<String>, block.address.block_id()));
-        }
-    }
-    held.sort();
-    held
+        held.sort();
+        held
+    })
 }
 
 /// The ordinals the object's TOMBSTONE entries carry, ascending.
@@ -405,37 +406,39 @@ fn blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<Stri
 /// it and the element that was handed it back -- and a guard about reuse has to be able to say which
 /// is which rather than counting two and calling it corruption.
 fn tombstone_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    // TOMBSTONES ARE THE SUBJECT HERE, so the object has to come from the door that names a
-    // deleted block -- the bucket's own removal row. The object lookup holds no deleted block at
-    // all, and a walk that asked it would come back empty and read as "no tombstone kept an
-    // ordinal", which is the claim this exists to refute.
-    let mut held = Vec::new();
-    for (_routing_bucket, _handle, object_key, block) in
-        super::blocks_with_identity(&shard.bucket_index)
-    {
-        if block.deleted() && block.model_id().as_str() == kind && &*object_key == key {
-            held.push(block.address.block_id());
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        // TOMBSTONES ARE THE SUBJECT HERE, so the object has to come from the door that names a
+        // deleted block -- the bucket's own removal row. The object lookup holds no deleted block at
+        // all, and a walk that asked it would come back empty and read as "no tombstone kept an
+        // ordinal", which is the claim this exists to refute.
+        let mut held = Vec::new();
+        for (_routing_bucket, _handle, object_key, block) in
+            super::blocks_with_identity(&shard.bucket_index)
+        {
+            if block.deleted() && block.model_id().as_str() == kind && &*object_key == key {
+                held.push(block.address.block_id());
+            }
         }
-    }
-    held.sort();
-    held
+        held.sort();
+        held
+    })
 }
 
 /// Blocks of this object that carry `deleted == true`.
 fn tombstoned_blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut count = 0usize;
-    for (_routing_bucket, _handle, object_key, block) in
-        super::blocks_with_identity(&shard.bucket_index)
-    {
-        if block.model_id().as_str() == kind && &*object_key == key && block.deleted() {
-            count += 1;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        let mut count = 0usize;
+        for (_routing_bucket, _handle, object_key, block) in
+            super::blocks_with_identity(&shard.bucket_index)
+        {
+            if block.model_id().as_str() == kind && &*object_key == key && block.deleted() {
+                count += 1;
+            }
         }
-    }
-    count
+        count
+    })
 }
 
 /// WHAT THE ENGINE'S OWN ALLOCATOR WOULD HAND A NEW ELEMENT OF THIS OBJECT.
@@ -465,15 +468,16 @@ fn tombstoned_blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize
 /// overwrite arm and report that element's position as though it were the next free one.
 fn next_element_ordinal_would_be(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let probe = hex::encode(b"-no-element-of-any-fixture-object-holds-this-");
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    assert!(
-        crate::engine::state::resident_element_name_address(shard, kind, key, &probe).is_none(),
-        "the probe element name IS held by an element of {kind}/{key}, so the allocator would answer \
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        assert!(
+            crate::engine::state::resident_element_name_address(shard, kind, key, &probe).is_none(),
+            "the probe element name IS held by an element of {kind}/{key}, so the allocator would answer \
          its overwrite arm and this helper would be reporting that element's position as the next \
          free ordinal"
-    );
-    crate::engine::state::container_block_ordinal(shard, kind, key, &probe) as usize
+        );
+        crate::engine::state::container_block_ordinal(shard, kind, key, &probe) as usize
+    })
 }
 
 /// The ordinal one named element of this object actually holds, from the resident map.
@@ -486,34 +490,37 @@ fn ordinal_of_element(
     key: &str,
     element_name: &str,
 ) -> Option<u64> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    crate::engine::state::resident_element_name_address(shard, kind, key, element_name)
-        .and_then(crate::block_store::ElementEntry::block_id)
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        crate::engine::state::resident_element_name_address(shard, kind, key, element_name)
+            .and_then(crate::block_store::ElementEntry::block_id)
+    })
 }
 
 /// Whether any bucket's persisted tombstone holds this object id.
 fn tombstone_holds(engine: &TemporalEngine, object_id: u64) -> bool {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .any(|bucket| bucket.deleted_object_index.contains(&object_id))
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .any(|bucket| bucket.deleted_object_index.contains(&object_id))
+    })
 }
 
 /// How many elements the durable map holds for this key, per kind.
 fn durable_element_count(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    match kind {
-        "zset" => shard.bucket_index.zsets.get(key).map_or(0, |members| members.len()),
-        "set" => shard.bucket_index.sets.get(key).map_or(0, |members| members.len()),
-        "list" => shard.bucket_index.lists.get(key).map_or(0, |entries| entries.len()),
-        "hash" => shard.bucket_index.hashes.get(key).map_or(0, |fields| fields.len()),
-        other => panic!("no durable map is claimed for kind {other}"),
-    }
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        match kind {
+            "zset" => shard.bucket_index.zsets.get(key).map_or(0, |members| members.len()),
+            "set" => shard.bucket_index.sets.get(key).map_or(0, |members| members.len()),
+            "list" => shard.bucket_index.lists.get(key).map_or(0, |entries| entries.len()),
+            "hash" => shard.bucket_index.hashes.get(key).map_or(0, |fields| fields.len()),
+            other => panic!("no durable map is claimed for kind {other}"),
+        }
+    })
 }
 
 fn zset_name(member: &[u8]) -> String {
@@ -995,9 +1002,8 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
     // `address_footprint` reads it through), and the aggregate through the PUBLIC surface a recovery
     // sweep actually calls. The row carries the claim; the aggregate proves it is not confined to an
     // internal structure nobody serves from.
-    let (row_deleted, row_block_refs, row_deleted_refs, row_hot) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
+    let (row_deleted, row_block_refs, row_deleted_refs, row_hot) = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
         let internal = crate::engine::object_manager::runtime_report(shard);
         let rows: Vec<_> = internal
             .objects
@@ -1018,7 +1024,7 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
             row.deleted_block_ref_count,
             row.hot_block_ref_count,
         )
-    };
+    });
 
     let public = engine.object_manager_runtime_report(1);
     println!(
@@ -1295,7 +1301,7 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
     // ONE ELEMENT'S ELEMENT NAME SPELLING, READ FROM THE PAGE THAT SPELLS IT.
     //
     // RE-ATTRIBUTED. This read `blocks_of(...)[0].0` -- the element name off the index entry -- and
-    // `unwrap_or_else(|| panic!("{kind}/{key} holds a page with no element_name"))` is exactly what it
+    // `unwrap_or_else(|| panic!("{kind}/{key} holds a block with no element_name"))` is exactly what it
     // did, because an entry has no element-name field to hold one. The four spellings this arm is
     // about did NOT go anywhere: a container block states its own elements in its payload, which is
     // what `container_blocks::ElementKeySpelling` renders and what makes several pages foldable into
@@ -1307,9 +1313,8 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
     // and a derivation holding two would make `keys().next()` an arbitrary choice dressed as a
     // measurement.
     let one_element_name = |kind: &str, key: &str| -> String {
-        let (addresses, live_entries) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 is loaded");
+        let (addresses, live_entries) = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard 1 is loaded");
             let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
             let mut live = 0usize;
             {
@@ -1327,7 +1332,7 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
                 }
             }
             (addresses, live)
-        };
+        });
         assert_eq!(
             live_entries, 1,
             "DENOMINATOR: {kind}/{key} holds {live_entries} live blocks, not the one this arm reads"
@@ -1732,7 +1737,7 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
         std::mem::size_of::<T>()
     }
 
-    let name: Option<std::sync::Arc<str>> = Some(std::sync::Arc::from("a-component-name"));
+    let name: Option<std::sync::Arc<str>> = Some(std::sync::Arc::from("a-key-field-name"));
     let element_name_width = field_width(&name);
     let u16_ordinal = field_width(&Some(0u16));
     let u32_ordinal = field_width(&Some(0u32));
@@ -1915,19 +1920,20 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
 
 /// Every block of this shard, as `(kind, key, element_name length)`.
 fn element_name_census(engine: &TemporalEngine) -> Vec<(String, String, Option<usize>)> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut rows = Vec::new();
-    for (_routing_bucket, _handle, object_key, block) in
-        super::blocks_with_identity(&shard.bucket_index)
-    {
-        rows.push((
-            block.model_id().as_str().to_string(),
-            object_key.to_string(),
-            None::<usize>,
-        ));
-    }
-    rows
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        let mut rows = Vec::new();
+        for (_routing_bucket, _handle, object_key, block) in
+            super::blocks_with_identity(&shard.bucket_index)
+        {
+            rows.push((
+                block.model_id().as_str().to_string(),
+                object_key.to_string(),
+                None::<usize>,
+            ));
+        }
+        rows
+    })
 }
 
 fn seed_containers(engine: &TemporalEngine, keys: usize, members: usize) {
@@ -2603,9 +2609,8 @@ fn the_element_name_ordering_property_is_consumed_by_the_set_listing() {
         // sequence and each address is turned back into its member through `shard.bucket_index.sets` -- the same
         // address join the engine makes on the write path. The property is unchanged: the listing
         // INHERITS this order and imposes none of its own.
-        let walked: Vec<Vec<u8>> = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 is loaded");
+        let walked: Vec<Vec<u8>> = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard 1 is loaded");
             let mut member_at: std::collections::BTreeMap<(u64, u64, u64), Vec<u8>> =
                 std::collections::BTreeMap::new();
             for (member, address) in shard
@@ -2639,7 +2644,7 @@ fn the_element_name_ordering_property_is_consumed_by_the_set_listing() {
                     .cloned()
             })
             .collect()
-        };
+        });
         assert_eq!(
             members.len(),
             walked.len(),
@@ -2957,9 +2962,8 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     // The element name this used to look up (`let doomed_element_name = zset_name(&doomed);`) was the
     // handle by which the rewrite below found the doomed block. There is no element name to look up
     // and no rewrite to do -- see the block below for both.
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
         let removed = shard
             .bucket_index.zsets
             .elements_mut_for_test("eo-fold")
@@ -3007,7 +3011,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
             "  [fold] dropped the doomed member from the durable map; the entry names no member \
              at any width"
         );
-    }
+    });
 
     engine.unload_shard(1);
     load_on(&engine, OPERATOR_END);

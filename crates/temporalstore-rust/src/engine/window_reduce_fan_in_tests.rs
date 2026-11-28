@@ -9,7 +9,7 @@ use super::*;
 use crate::engine::cell_set::{
     Cell, CellHeader, DimSpec, DimType, EntityType, KeySpec, LaneReducer, LaneSpec, Member, HEADER_VERSION,
 };
-use crate::types::{CellMemberId, CellRankSpec, CellScore, CellWindow, FeatureFilter, FeatureFilterOp, RankedCells};
+use crate::types::{CellMemberId, WindowReduceRankSpec, WindowReduceScore, WindowReduceWindow, FeatureFilter, FeatureFilterOp, RankedCells};
 
 type Samples = Vec<(u64, Vec<Cell>)>;
 
@@ -45,22 +45,22 @@ fn views(snaps: &Samples) -> Vec<SampleView<'_>> {
     snaps.iter().map(|(timestamp_ms, cells)| SampleView { timestamp_ms: *timestamp_ms, cells }).collect()
 }
 
-const ALL: CellWindow = CellWindow::Between { start_ms: 0, end_ms: u64::MAX };
+const ALL: WindowReduceWindow = WindowReduceWindow::Between { start_ms: 0, end_ms: u64::MAX };
 
-fn spec(window: CellWindow, score: CellScore, top_k: usize) -> CellRankSpec {
-    CellRankSpec { window, filters: Vec::new(), score, top_k, project: Vec::new(), members: Default::default(), anchor: Default::default(), quota: Default::default() }
+fn spec(window: WindowReduceWindow, score: WindowReduceScore, top_k: usize) -> WindowReduceRankSpec {
+    WindowReduceRankSpec { window, filters: Vec::new(), score, top_k, project: Vec::new(), members: Default::default(), anchor: Default::default(), quota: Default::default(), sample_info: false }
 }
 
-fn lane(name: &str) -> CellScore {
-    CellScore::Lane { lane: name.to_string() }
+fn lane(name: &str) -> WindowReduceScore {
+    WindowReduceScore::Lane { lane: name.to_string() }
 }
 
-fn plan(query: &CellRankSpec) -> Plan {
+fn plan(query: &WindowReduceRankSpec) -> Plan {
     Plan::compile(&header(), query).expect("the query is valid")
 }
 
 /// Runs the fan-in over `keys`.
-fn fan_in(query: &CellRankSpec, keys: &[Samples], now_ms: u64) -> Result<RankedCells, String> {
+fn fan_in(query: &WindowReduceRankSpec, keys: &[Samples], now_ms: u64) -> Result<RankedCells, String> {
     let owned: Vec<Vec<SampleView<'_>>> = keys.iter().map(views).collect();
     let slices: Vec<&[SampleView<'_>]> = owned.iter().map(Vec::as_slice).collect();
     plan(query).run_fan_in(now_ms, &slices)
@@ -125,8 +125,8 @@ fn one_key_answers_what_the_single_key_read_answers() {
     let mut compared = 0usize;
     for _ in 0..40 {
         let keys = random_keys(&mut rng, 1, 9, true);
-        for window in [ALL, CellWindow::LastN { n: 3 }, CellWindow::Since { start_ms: 40 }] {
-            for score in [lane("shown"), lane("seen"), CellScore::Time] {
+        for window in [ALL, WindowReduceWindow::LastN { n: 3 }, WindowReduceWindow::Since { start_ms: 40 }] {
+            for score in [lane("shown"), lane("seen"), WindowReduceScore::Time] {
                 let query = spec(window.clone(), score, 7);
                 let single = plan(&query).run(0, &views(&keys[0])).unwrap();
                 let merged = fan_in(&query, &keys, 0).unwrap();
@@ -139,7 +139,7 @@ fn one_key_answers_what_the_single_key_read_answers() {
 }
 
 #[test]
-fn keys_with_distinct_stamps_answer_what_one_key_holding_all_their_snapshots_answers() {
+fn keys_with_distinct_stamps_answer_what_one_key_holding_all_their_samples_answers() {
     let mut rng = Rng(0x9E37_79B9_7F4A_7C15);
     let mut compared = 0usize;
     for _ in 0..40 {
@@ -149,7 +149,7 @@ fn keys_with_distinct_stamps_answer_what_one_key_holding_all_their_snapshots_ans
         // across keys here, so the single key is well formed.
         let mut one: Samples = keys.iter().flatten().cloned().collect();
         one.sort_by_key(|(ts, _)| *ts);
-        for score in [lane("shown"), lane("peak"), lane("low"), lane("first"), lane("seen"), CellScore::Time] {
+        for score in [lane("shown"), lane("peak"), lane("low"), lane("first"), lane("seen"), WindowReduceScore::Time] {
             let query = spec(ALL, score, 1000);
             let single = plan(&query).run(0, &views(&one)).unwrap();
             let mut merged = fan_in(&query, &keys, 0).unwrap();
@@ -219,17 +219,17 @@ fn a_fan_in_answers_what_an_independent_fold_answers() {
         let keys_count = 1 + (rng.next() % 6) as usize;
         // Stamps are shared across keys, so ties between keys are the common case.
         let keys = random_keys(&mut rng, keys_count, 8, true);
-        let (window, last_n) = if round % 2 == 0 { (ALL, None) } else { (CellWindow::LastN { n: 3 }, Some(3)) };
-        let cases: Vec<(CellScore, Pick)> = vec![
+        let (window, last_n) = if round % 2 == 0 { (ALL, None) } else { (WindowReduceWindow::LastN { n: 3 }, Some(3)) };
+        let cases: Vec<(WindowReduceScore, Pick)> = vec![
             (lane("shown"), Box::new(|f| Some(f.lanes[0] as f64))),
             (lane("peak"), Box::new(|f| Some(f.lanes[1] as f64))),
             (lane("low"), Box::new(|f| Some(f.lanes[2] as f64))),
             (lane("first"), Box::new(|f| Some(f.lanes[3] as f64))),
             (lane("seen"), Box::new(|f| Some(f.lanes[4] as f64))),
-            (CellScore::Time, Box::new(|f| Some(f.last_ms as f64))),
+            (WindowReduceScore::Time, Box::new(|f| Some(f.last_ms as f64))),
             (
-                CellScore::Ratio { numerator: "shown".to_string(), denominator: "low".to_string() },
-                Box::new(|f| (f.lanes[2] != 0).then(|| f.lanes[0] as f64 / f.lanes[2] as f64)),
+                WindowReduceScore::Ratio { numerator: "shown".to_string(), denominator: "low".to_string() },
+                Box::new(|f| Some(if f.lanes[2] == 0 { 0.0 } else { (f.lanes[0] / f.lanes[2]) as f64 })),
             ),
         ];
         for (score, pick) in cases {
@@ -320,27 +320,27 @@ fn the_window_applies_to_each_key_and_the_answer_counts_what_it_chose() {
     let key = |stamps: &[u64]| -> Samples { stamps.iter().map(|ts| (*ts, vec![cell(1, 0, [1, 0, 0, 0, 0])])).collect() };
     let (a, b) = (key(&[10, 20, 30, 40, 50]), key(&[15, 25]));
     // The newest two of EACH key: 40, 50 and 15, 25. Not the newest two of the union (40, 50).
-    let last_two = fan_in(&spec(CellWindow::LastN { n: 2 }, lane("shown"), 1), &[a.clone(), b.clone()], 0).unwrap();
-    assert_eq!((last_two.snapshots, last_two.rows[0].score as i64, last_two.rows[0].last_ms), (4, 4, 50));
+    let last_two = fan_in(&spec(WindowReduceWindow::LastN { n: 2 }, lane("shown"), 1), &[a.clone(), b.clone()], 0).unwrap();
+    assert_eq!((last_two.samples, last_two.rows[0].score as i64, last_two.rows[0].last_ms), (4, 4, 50));
     // A time window is the same for every key: [20, 40] holds 20, 30, 40 and 25.
-    let between = spec(CellWindow::Between { start_ms: 20, end_ms: 40 }, lane("shown"), 1);
+    let between = spec(WindowReduceWindow::Between { start_ms: 20, end_ms: 40 }, lane("shown"), 1);
     let ranked = fan_in(&between, &[a.clone(), b.clone()], 0).unwrap();
-    assert_eq!((ranked.snapshots, ranked.rows[0].score as i64), (4, 4));
+    assert_eq!((ranked.samples, ranked.rows[0].score as i64), (4, 4));
     // `Last` ends at the clock the caller passes.
-    let last = spec(CellWindow::Last { duration_ms: 10 }, lane("shown"), 1);
-    assert_eq!(fan_in(&last, &[a, b], 50).unwrap().snapshots, 2, "40 and 50 in the first key, nothing in the second");
+    let last = spec(WindowReduceWindow::Last { duration_ms: 10 }, lane("shown"), 1);
+    assert_eq!(fan_in(&last, &[a, b], 50).unwrap().samples, 2, "40 and 50 in the first key, nothing in the second");
 }
 
 #[test]
 fn nothing_to_rank_is_an_empty_answer_and_a_malformed_key_is_refused_naming_its_position() {
     let query = spec(ALL, lane("shown"), 3);
     let empty = fan_in(&query, &[Vec::new(), Vec::new()], 0).unwrap();
-    assert!(empty.rows.is_empty() && empty.snapshots == 0 && empty.refused.is_empty());
+    assert!(empty.rows.is_empty() && empty.samples == 0 && empty.refused.is_empty());
     assert_eq!(empty.keys, 0, "no key held a sample");
     // Of three keys, the one with nothing in the window is not counted as read.
     let one: Samples = vec![(10, vec![cell(1, 0, [1, 0, 0, 0, 0])])];
     let partly = fan_in(&query, &[Vec::new(), one.clone(), one], 0).unwrap();
-    assert_eq!((partly.keys, partly.snapshots, partly.rows[0].score as i64), (2, 2, 2));
+    assert_eq!((partly.keys, partly.samples, partly.rows[0].score as i64), (2, 2, 2));
     let bad: Samples = vec![(20, vec![cell(1, 0, [1, 0, 0, 0, 0])]), (10, vec![cell(1, 0, [1, 0, 0, 0, 0])])];
     let error = fan_in(&query, &[Vec::new(), bad], 0).unwrap_err();
     assert!(error.starts_with("key 1: "), "{error}");
@@ -363,7 +363,7 @@ fn keys_in_a_fan_in_are_bounded_at_exactly_the_limit() {
     let query = spec(ALL, lane("shown"), 1);
     // At the limit all 64 keys merge, and the member's sum is 64.
     let at = fan_in(&query, &one_member_keys(MAX_FAN_IN_KEYS, 1, 1), 0).unwrap();
-    assert_eq!((at.snapshots, at.rows[0].score as usize), (MAX_FAN_IN_KEYS, MAX_FAN_IN_KEYS));
+    assert_eq!((at.samples, at.rows[0].score as usize), (MAX_FAN_IN_KEYS, MAX_FAN_IN_KEYS));
     let over = fan_in(&query, &one_member_keys(MAX_FAN_IN_KEYS + 1, 1, 1), 0).unwrap_err();
     assert!(over.contains("keys in a fan-in read"), "{over}");
     let none = fan_in(&query, &[], 0).unwrap_err();
@@ -372,11 +372,11 @@ fn keys_in_a_fan_in_are_bounded_at_exactly_the_limit() {
 }
 
 #[test]
-fn snapshots_in_a_fan_in_are_bounded_at_exactly_the_limit() {
+fn samples_in_a_fan_in_are_bounded_at_exactly_the_limit() {
     let query = spec(ALL, lane("shown"), 1);
     // Two keys of 512 (each at the per-key window bound) is 1024: accepted, and all of it is summed.
     let at = fan_in(&query, &one_member_keys(2, 512, 1), 0).unwrap();
-    assert_eq!((at.snapshots, at.rows[0].score as usize), (MAX_FAN_IN_SAMPLES, MAX_FAN_IN_SAMPLES));
+    assert_eq!((at.samples, at.rows[0].score as usize), (MAX_FAN_IN_SAMPLES, MAX_FAN_IN_SAMPLES));
     // One more sample in a third key is 1025: refused whole.
     let mut over = one_member_keys(2, 512, 1);
     over.push(one_member_keys(1, 1, 1).remove(0));
@@ -384,8 +384,8 @@ fn snapshots_in_a_fan_in_are_bounded_at_exactly_the_limit() {
     assert!(error.contains("samples in a fan-in read"), "{error}");
     assert_eq!(MAX_FAN_IN_SAMPLES, 1024);
     // The count is what the window CHOSE: the same 1025 samples under a narrower window pass.
-    let narrow = fan_in(&spec(CellWindow::LastN { n: 100 }, lane("shown"), 1), &over, 0).unwrap();
-    assert_eq!(narrow.snapshots, 201);
+    let narrow = fan_in(&spec(WindowReduceWindow::LastN { n: 100 }, lane("shown"), 1), &over, 0).unwrap();
+    assert_eq!(narrow.samples, 201);
 }
 
 #[test]
@@ -425,11 +425,11 @@ fn a_key_named_twice_is_refused_naming_both_positions_and_the_limit_is_accepted(
 
 #[test]
 fn the_keys_count_is_a_wire_field_that_an_answer_without_it_reads_as_zero() {
-    let ranked = RankedCells { keys: 3, snapshots: 5, ..RankedCells::default() };
+    let ranked = RankedCells { keys: 3, samples: 5, ..RankedCells::default() };
     let json = serde_json::to_string(&ranked).unwrap();
     assert!(json.contains("\"keys\":3"), "{json}");
     assert_eq!(serde_json::from_str::<RankedCells>(&json).unwrap(), ranked);
-    let without = r#"{"label_columns":[],"lane_columns":[],"snapshots":5,"unscored":0,"rows":[]}"#;
+    let without = r#"{"label_columns":[],"lane_columns":[],"samples":5,"unscored":0,"rows":[]}"#;
     assert_eq!(serde_json::from_str::<RankedCells>(without).unwrap().keys, 0);
 }
 
@@ -456,16 +456,17 @@ mod probe {
             .collect()
     }
 
-    fn query(top_k: usize) -> CellRankSpec {
-        CellRankSpec {
-            window: CellWindow::LastN { n: 8 },
+    fn query(top_k: usize) -> WindowReduceRankSpec {
+        WindowReduceRankSpec {
+            window: WindowReduceWindow::LastN { n: 8 },
             filters: vec![FeatureFilter { field: "peak".to_string(), op: FeatureFilterOp::GreaterThan, value: 0 }],
-            score: CellScore::Ratio { numerator: "shown".to_string(), denominator: "peak".to_string() },
+            score: WindowReduceScore::Ratio { numerator: "shown".to_string(), denominator: "peak".to_string() },
             top_k,
             project: Vec::new(),
             members: Default::default(),
             anchor: Default::default(),
             quota: Default::default(),
+            sample_info: false,
         }
     }
 

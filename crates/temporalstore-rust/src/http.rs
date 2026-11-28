@@ -223,6 +223,11 @@ impl<'a> StreamTransfer<'a> {
         self.stream.flush()
     }
 
+    /// Close a connection whose streamed response could not be completed.
+    pub fn abort_response(&self) {
+        let _ = self.stream.shutdown(std::net::Shutdown::Both);
+    }
+
     /// Consume the transfer, returning the full request body (any prebuffered
     /// bytes + the rest read from the socket). Used by the buffered fallback when
     /// the streaming handler declines; taking `self` by value releases the socket

@@ -20,8 +20,8 @@
 //!
 //! Every default-on flag in the tree reached one of those readers:
 //! `TS_META_AUTO_REBALANCE_BALANCE`, `TS_META_REBALANCE_LOCATION_SCOPED`,
-//! `TS_META_REBALANCE_PER_TABLE`, `TS_MATRIXOBJECT_CHECKPOINT_ON_START`,
-//! `TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START` and `TS_RAFT_ALLOW_PLAINTEXT`.
+//! `TS_META_REBALANCE_PER_TABLE`, `TS_MATRIXOBJECT_NETWORKED_CHECKPOINT_ON_START` and
+//! `TS_RAFT_ALLOW_PLAINTEXT`.
 //!
 //! The python side of this repository already settled the same argument and wrote it down in
 //! `tools/test_env_flag_vocabulary.py`: "Boolean flags were parsed in six different
@@ -261,8 +261,11 @@ mod tests {
             assert_eq!(None, env_value(name), "{written:?} should read as absent");
         }
         std::env::set_var(name, " codex ");
-        assert_eq!(Some(" codex ".to_string()), env_value(name),
-                   "a real value is returned as written, trimming is the caller's business");
+        assert_eq!(
+            Some(" codex ".to_string()),
+            env_value(name),
+            "a real value is returned as written, trimming is the caller's business"
+        );
         std::env::remove_var(name);
         assert_eq!(None, env_value(name));
     }
@@ -281,8 +284,11 @@ mod tests {
             "a blank newer spelling must not shadow the older one"
         );
         std::env::set_var(new, "4194304");
-        assert_eq!(Some("4194304".to_string()), env_value(new).or_else(|| env_value(old)),
-                   "and a real newer value still wins");
+        assert_eq!(
+            Some("4194304".to_string()),
+            env_value(new).or_else(|| env_value(old)),
+            "and a real newer value still wins"
+        );
         std::env::remove_var(new);
         std::env::remove_var(old);
     }
@@ -367,6 +373,126 @@ mod tests {
         // A name no test sets, so this reads the unset path without racing a sibling.
         let unset = "TS_ENV_FLAG_VOCABULARY_NAME_THAT_IS_NEVER_SET";
         assert!(env_bool(unset, true), "unset must fall back to the default");
-        assert!(!env_bool(unset, false), "unset must fall back to the default");
+        assert!(
+            !env_bool(unset, false),
+            "unset must fall back to the default"
+        );
     }
 }
+
+// ---------------------------------------------------------------------------------------------
+// The three flags every write asks about
+// ---------------------------------------------------------------------------------------------
+//
+// A write consults the same few flags from a dozen places -- the bulk-ingest gate, the WAL outcome
+// items, the WAL framing -- and each consultation was a `getenv`, which scans the whole environment:
+// about forty reads of `MATRIXARK_BULK_INGEST` per write, each a scan, a `String` and a lowercase.
+// Together these three were 3.3% of a shared-store profile.
+//
+// A process-wide cache is not the answer. Two production binaries set `MATRIXARK_BULK_INGEST` from
+// inside the process and tests flip flags between operations, so the value has to be read again when
+// the next operation starts. What it does not have to be is read again WITHIN one.
+//
+// A general per-name snapshot was tried first and was SLOWER: looking a name up in a hash map costs
+// about as much as the `getenv` it replaces, so it lost. These are therefore fixed slots, one `Cell`
+// per flag, with no hashing and no allocation.
+//
+// [`OperationEnv::begin`] opens an operation on the current thread; [`cached_flag`] then answers from
+// the slot, reading the environment the first time the flag is asked for, and the outermost guard's
+// drop clears the slots. The contract is three lines:
+//
+//   * outside an operation, and on any thread that has not begun one, a read is live, as before;
+//   * inside an operation, a change to the environment made by that same operation is not seen
+//     until the next one begins;
+//   * a guard begun inside another leaves the outer operation's slots alone.
+
+use std::cell::Cell;
+
+/// The flags that have a slot.
+#[derive(Clone, Copy)]
+pub enum Slot {
+    BulkIngest = 0,
+    OutcomeItems = 1,
+    BinaryFrame = 2,
+}
+
+const UNKNOWN: u8 = 0;
+const OFF: u8 = 1;
+const ON: u8 = 2;
+
+thread_local! {
+    static DEPTH: Cell<u32> = const { Cell::new(0) };
+    static SLOTS: [Cell<u8>; 3] = const { [Cell::new(UNKNOWN), Cell::new(UNKNOWN), Cell::new(UNKNOWN)] };
+}
+
+/// While alive, the slotted flags on this thread are read from the environment once each.
+#[must_use = "the slots are cleared when the guard is dropped"]
+pub struct OperationEnv(());
+
+impl OperationEnv {
+    /// Open an operation on this thread, or join the one already open.
+    pub fn begin() -> Self {
+        DEPTH.with(|depth| {
+            if depth.get() == 0 {
+                SLOTS.with(|slots| slots.iter().for_each(|slot| slot.set(UNKNOWN)));
+            }
+            depth.set(depth.get() + 1);
+        });
+        OperationEnv(())
+    }
+}
+
+impl Drop for OperationEnv {
+    fn drop(&mut self) {
+        DEPTH.with(|depth| {
+            depth.set(depth.get() - 1);
+            if depth.get() == 0 {
+                SLOTS.with(|slots| slots.iter().for_each(|slot| slot.set(UNKNOWN)));
+            }
+        });
+    }
+}
+
+/// The value of the flag in `slot`: from the slot inside an operation, from `read` otherwise.
+pub fn cached_flag(slot: Slot, read: impl FnOnce() -> bool) -> bool {
+    if DEPTH.with(Cell::get) == 0 {
+        return read();
+    }
+    SLOTS.with(|slots| {
+        let cell = &slots[slot as usize];
+        match cell.get() {
+            ON => true,
+            OFF => false,
+            _ => {
+                let value = read();
+                cell.set(if value { ON } else { OFF });
+                value
+            }
+        }
+    })
+}
+
+/// Is `raw` one of the words that turn a flag OFF (`0`, `false`, `no`, `off`)? An unset or
+/// unreadable value is not one: a flag that opts out is on until someone says otherwise.
+pub fn is_off_word(raw: Option<&str>) -> bool {
+    raw.is_some_and(|raw| {
+        let raw = raw.trim();
+        ["0", "false", "no", "off"]
+            .iter()
+            .any(|word| raw.eq_ignore_ascii_case(word))
+    })
+}
+
+/// Is `raw` one of the words that turn a flag ON (`1`, `true`, `yes`, `on`)?
+pub fn is_on_word(raw: Option<&str>) -> bool {
+    raw.is_some_and(|raw| {
+        let raw = raw.trim();
+        ["1", "true", "yes", "on"]
+            .iter()
+            .any(|word| raw.eq_ignore_ascii_case(word))
+    })
+}
+
+#[cfg(test)]
+#[path = "env_flag/slot_tests.rs"]
+mod slot_tests;

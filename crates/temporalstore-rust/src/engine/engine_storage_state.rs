@@ -302,12 +302,14 @@ pub(super) struct ShardState {
     /// `expires_at_ms` above: the ordering here is the whole point of this map and is untouched,
     /// but the characters it orders are the ones that map already holds.
     pub(super) expiry_by_deadline: BTreeMap<(u64, Arc<str>), ()>,
+    /// Last inspected deadlines for the bounded hot and cold maintenance scans.
+    #[serde(skip)]
+    pub(super) expiry_scan_positions: [Option<(u64, Arc<str>)>; 2],
     // ONE FIELD FOR BOTH ADDRESS MAPS NOW, keyed by `AddressMap`, behind `strings()` /
     // `_mut()` and `context_nodes()` / `_mut()`. `default`, because an index written before
     // this merge carries `strings` and no `address_maps` and must still DECODE -- the stamp
-    // is what refuses it, and a decode error would hide that, which is the defect
-    // `an_ungated_store_is_refused_before_it_is_served` caught when `counter_series` shipped
-    // without one.
+    // is what refuses it, and a decode error would hide that, as it did when `counter_series`
+    // shipped without one.
     // ONE FIELD FOR EVERY DOMAIN-KEYED SIDE TABLE, keyed by `SideTable`, behind the same four
     // doors as before. THE VARIANT WRAPS THE TABLE, NOT THE ENTRY, so no key pays a byte: the tag
     // is paid once per domain, four times in total, and every inner map keeps its exact type.
@@ -439,6 +441,11 @@ pub(super) struct ShardState {
     // execute.
     #[serde(skip)]
     pub(super) set_listing_from_map: bool,
+    // Transient per-execute hint: the age cut for feature series, from
+    // Config::feature_max_age_ms(). Serde-skipped and set on EVERY execute, which is what makes it
+    // replay-correct, as for the retained-points cap above. 0 means no age cut.
+    #[serde(skip)]
+    pub(super) feature_max_age_ms: u64,
     // THE LEGACY COMPATIBILITY FIELD IS GONE, and the condition its own doc set is what
     // retired it: no door can deliver a top-level `context_events` key any more. Pre-stamp
     // images are refused on every one of `decode_index_bytes`'s callers, and images at stamp
@@ -591,8 +598,14 @@ pub(super) struct ShardState {
     /// replay); a missing index file replays the whole retained WAL onto empty state.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub(super) applied_wal_sequence: Option<u64>,
-    /// An applied record skipped an unapplied log prefix. Only replay can establish
-    /// a complete state boundary again; do not publish this in-memory image.
+    /// The file-backed source and remote sequence already installed in this local image.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(super) file_restore_frontier: Option<(String, u64)>,
+    /// Relocation prefix folded into this image; not a WAL or load replay cursor.
+    #[serde(default)]
+    pub(super) captured_relocation_sequence: u64,
+    /// Replay must restore a publishable checkpoint boundary. An unapplied WAL
+    /// prefix or a required expiry delta that failed admission can invalidate it.
     #[serde(skip)]
     pub(super) wal_apply_discontinuous: bool,
     /// Per-bucket LRU recency: wall-clock ms of the last read/write that touched the
@@ -978,6 +991,12 @@ pub(super) struct CoreIndex {
     ///
     /// Not serialized in either direction; the decoder below names no arm for it.
     pub(super) released_buckets: BTreeSet<u32>,
+    /// Per bucket, the objects that hold a block ref in it. See `bucket_owners`.
+    ///
+    /// Derived and not persisted, built when a shard is installed, kept current by the one door that
+    /// files a ref, and OPTIONAL: while absent every caller names a bucket's blocks by walking the
+    /// shard. It is what makes naming one bucket's blocks cost the bucket and not the shard.
+    pub(super) bucket_owners: super::bucket_owners::OwnersCell,
     // ---- THE FOUR CONTAINER MODEL MAPS, MOVED IN FROM `ShardState`'s TOP LEVEL. ----
     //
     // WHY THEY ARE HERE AND NOT THERE, which is the same reason `objects` moved in: the
@@ -1106,6 +1125,7 @@ impl Default for CoreIndex {
             kind_pool: std::collections::HashSet::default(),
             object_element_name_block_refs: Some(0),
             released_buckets: BTreeSet::default(),
+            bucket_owners: super::bucket_owners::OwnersCell::default(),
         }
     }
 }
@@ -1446,6 +1466,119 @@ mod bucket_projection_tests {
     }
 }
 
+#[cfg(test)]
+mod checkpoint_identity_tests {
+    use super::*;
+    use crate::engine::object_record::ObjectSlot;
+    use crate::engine::storage_bucket_internals::StoredModelKind;
+
+    #[test]
+    fn encoding_names_both_ref_homes_without_building_the_handle_index() {
+        let mut index = CoreIndex::default();
+        let mut handle = 0;
+        for &kind in StoredModelKind::ALL {
+            let model = Arc::<str>::from(kind.as_str());
+            for object in 0..32 {
+                let key = Arc::<str>::from(format!("{model}-{object}"));
+                let slot = index.objects.entry(kind).or_default().entry(key.clone()).or_default();
+                for block in 0..8 {
+                    let position = BlockLookupRef {
+                        routing_bucket: block,
+                        block_ref_key: handle,
+                    };
+                    // Include dual-home objects, not only the normal single-home layout.
+                    if block % 2 == 0 {
+                        slot.file_ref(position);
+                    } else {
+                        index.object_block_lookup.file(&model, &key, position);
+                    }
+                    handle += 1;
+                }
+            }
+        }
+        index.object_block_lookup.file(
+            &Arc::from("unknown-stored-model"), &Arc::from("legacy-object"),
+            BlockLookupRef { routing_bucket: 99, block_ref_key: handle },
+        );
+        let full = index.block_identities();
+        let (encoded, visits) = measure_block_identity_visits_for_test(|| {
+            BlockKeysByPosition::for_encoding(&index)
+        });
+        assert_eq!(encoded.by_position.len(), handle as usize + 1);
+        assert_eq!(encoded.by_position, full.by_position);
+        assert!(!encoded.restricted);
+        assert!(encoded.by_handle.is_empty());
+        assert_eq!(full.by_handle.len(), encoded.by_position.len());
+        assert_eq!(visits, 2 * StoredModelKind::ALL.len() * 32 + 1);
+    }
+
+    fn index_with_live_and_deleted_blocks() -> CoreIndex {
+        let mut index = CoreIndex::default();
+        for (number, &kind) in StoredModelKind::ALL.iter().enumerate() {
+            let key = Arc::<str>::from(format!("key-{number}"));
+            let bucket = (number % 3) as u32;
+            let mut node = index.bucket_map.entry(bucket).or_insert_with(|| BucketNode {
+                routing_bucket: bucket,
+                ..BucketNode::default()
+            });
+            for deleted in [false, true] {
+                let block = BlockIndex::new(
+                    kind,
+                    ElementEntry::from_parts(number as u64, u64::from(deleted) * 128, 64, Some(0), Some(1)),
+                    true, deleted,
+                );
+                let handle = block_index_handle(&key, &block);
+                node.block_index.insert_with_handle(handle, block.clone(), &mut index.block_slab_live);
+                if deleted {
+                    node.record_tombstone_element(&key, kind, "removed-field", &block.address);
+                } else if number % 2 == 0 {
+                    let mut slot = ObjectSlot::default();
+                    slot.file_ref(BlockLookupRef { routing_bucket: bucket, block_ref_key: handle });
+                    index.objects.entry(kind).or_default().insert(key.clone(), slot);
+                } else {
+                    index.object_block_lookup.file(
+                        &Arc::from(kind.as_str()), &key,
+                        BlockLookupRef { routing_bucket: bucket, block_ref_key: handle },
+                    );
+                }
+            }
+        }
+        index.released_buckets.insert(99);
+        index
+    }
+
+    #[test]
+    fn encoding_keeps_bucket_bytes_for_every_stored_model_and_tombstones() {
+        let index = index_with_live_and_deleted_blocks();
+        let full = index.block_identities();
+        let encoding = BlockKeysByPosition::for_encoding(&index);
+        let old = BucketMapAt { buckets: &index.bucket_map, keys: &full };
+        let new = BucketMapAt { buckets: &index.bucket_map, keys: &encoding };
+        assert_eq!(serde_json::to_vec(&new).unwrap(), serde_json::to_vec(&old).unwrap());
+        assert_eq!(rmp_serde::to_vec_named(&new).unwrap(), rmp_serde::to_vec_named(&old).unwrap());
+    }
+
+    #[test]
+    fn encoding_still_refuses_missing_live_and_deleted_identities() {
+        for missing_live in [false, true] {
+            let mut index = index_with_live_and_deleted_blocks();
+            if missing_live {
+                index.objects.clear();
+                index.object_block_lookup = ObjectBlockLookup::default();
+            } else {
+                for node in index.bucket_map.values_mut() {
+                    node.tombstone_elements = TombstoneElements::default();
+                }
+            }
+            assert!(rmp_serde::to_vec_named(&index).is_err());
+            let keys = index.block_identities();
+            assert!(rmp_serde::to_vec_named(&BucketMapAt {
+                buckets: &index.bucket_map, keys: &keys,
+            }).is_err());
+        }
+    }
+}
+
 thread_local! {
     /// Times THIS THREAD built a block-identity inversion restricted to named keys. Per thread, so
     /// a probe counts its own writes and not a neighbouring test's.
@@ -1460,6 +1593,26 @@ pub fn keyed_block_inversions() -> u64 {
 #[cfg(test)]
 thread_local! {
     static BLOCK_IDENTITY_BUILDS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Objects this thread visited while naming a bucket's blocks, by the owner path or the walk.
+    static BLOCK_IDENTITY_VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    /// Test switch: behave as if the owners were absent, so the walk runs.
+    static BUCKET_OWNERS_DISABLED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// The most owner entries the test-only owner check will derive and compare at once.
+#[cfg(test)]
+const OWNER_CHECK_MAX_ENTRIES: usize = 2_000;
+
+#[cfg(test)]
+pub(super) fn measure_block_identity_visits_for_test<T>(work: impl FnOnce() -> T) -> (T, usize) {
+    BLOCK_IDENTITY_VISITS.with(|count| count.set(0));
+    let result = work();
+    (result, BLOCK_IDENTITY_VISITS.with(|count| count.get()))
+}
+
+#[cfg(test)]
+pub(super) fn disable_bucket_owners_for_test(disabled: bool) {
+    BUCKET_OWNERS_DISABLED.with(|flag| flag.set(disabled));
 }
 
 #[cfg(test)]
@@ -1493,7 +1646,13 @@ impl<'a> BlockKeysByPosition<'a> {
         >,
         lookup: &'a ObjectBlockLookup,
     ) -> Self {
-        Self::from_parts_filtered(objects, lookup, None)
+        Self::from_parts_filtered::<true>(objects, lookup, None)
+    }
+
+    // Encoding names blocks at their filed positions. Only ownership validation needs
+    // the second index that can name a block independently of its routing bucket.
+    fn for_encoding(index: &'a CoreIndex) -> Self {
+        Self::from_parts_filtered::<false>(&index.objects, &index.object_block_lookup, None)
     }
 
     pub(super) fn from_parts_for_bucket(
@@ -1504,10 +1663,10 @@ impl<'a> BlockKeysByPosition<'a> {
         lookup: &'a ObjectBlockLookup,
         routing_bucket: u32,
     ) -> Self {
-        Self::from_parts_filtered(objects, lookup, Some(routing_bucket))
+        Self::from_parts_filtered::<false>(objects, lookup, Some(routing_bucket))
     }
 
-    fn from_parts_filtered(
+    fn from_parts_filtered<const WITH_HANDLES: bool>(
         objects: &'a BTreeMap<
             super::storage_bucket_internals::StoredModelKind,
             HashMap<ModelKey, super::object_record::ObjectSlot>,
@@ -1528,7 +1687,7 @@ impl<'a> BlockKeysByPosition<'a> {
                     (block_ref.routing_bucket, block_ref.block_ref_key),
                     (model_id, object_key),
                 );
-                if routing_bucket.is_none() {
+                if WITH_HANDLES {
                     by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
                 }
             }
@@ -1536,6 +1695,8 @@ impl<'a> BlockKeysByPosition<'a> {
         // THE SLOT HOME FIRST. `as_str` on the kind is `&'static str`, which outlives `'a`.
         for (kind, table) in objects {
             for (object_key, slot) in table {
+                #[cfg(test)]
+                BLOCK_IDENTITY_VISITS.with(|count| count.set(count.get() + 1));
                 if let Some(refs) = slot.refs() {
                     file(kind.as_str(), object_key, refs);
                 }
@@ -1543,12 +1704,89 @@ impl<'a> BlockKeysByPosition<'a> {
         }
         // THEN THE LOOKUP, for the kinds whose objects hold no slot row.
         for (model_id, object_key, refs) in lookup.iter() {
+            #[cfg(test)]
+            BLOCK_IDENTITY_VISITS.with(|count| count.set(count.get() + 1));
             file(model_id.as_ref(), object_key, refs);
         }
         Self {
             by_position,
             by_handle,
             restricted: routing_bucket.is_some(),
+        }
+    }
+
+    /// THE SAME INVERSION AS [`Self::from_parts_for_bucket`], FROM THE BUCKETS' OWN OBJECTS.
+    ///
+    /// `from_parts_for_bucket` visits every object of every kind and keeps the refs that sit in the
+    /// bucket, so naming one bucket's blocks costs the shard. With the per-bucket owners this asks
+    /// each recorded owner of each named bucket for its refs and keeps the ones in those buckets:
+    /// the cost is the buckets' objects, and it is ONE inversion however many buckets are named.
+    /// The answer is the same, and when the owners are absent it IS the walk, so a caller without
+    /// them is still right.
+    pub(super) fn from_owned_buckets(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+        owners: Option<&super::bucket_owners::BucketOwners>,
+        buckets: &[u32],
+    ) -> Self {
+        #[cfg(test)]
+        let owners = if BUCKET_OWNERS_DISABLED.with(std::cell::Cell::get) {
+            None
+        } else {
+            owners
+        };
+        let Some(owners) = owners else {
+            return match buckets {
+                [only] => Self::from_parts_for_bucket(objects, lookup, *only),
+                _ => Self::from_parts(objects, lookup),
+            };
+        };
+        #[cfg(test)]
+        BLOCK_IDENTITY_BUILDS.with(|count| count.set(count.get() + 1));
+        let mut by_position = std::collections::HashMap::new();
+        let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {
+            for block_ref in refs.iter() {
+                if !buckets.contains(&block_ref.routing_bucket) {
+                    continue;
+                }
+                by_position.insert(
+                    (block_ref.routing_bucket, block_ref.block_ref_key),
+                    (model_id, object_key),
+                );
+            }
+        };
+        for &routing_bucket in buckets {
+            let Some(recorded) = owners.owners_of(routing_bucket) else {
+                continue;
+            };
+            for (kind, key) in recorded.iter() {
+                #[cfg(test)]
+                BLOCK_IDENTITY_VISITS.with(|count| count.set(count.get() + 1));
+                // THE SLOT HOME FIRST, then the lookup, as in the whole-shard walk.
+                if let Some((object_key, slot)) = objects
+                    .get(&kind)
+                    .and_then(|table| table.get_key_value(&**key))
+                {
+                    if let Some(refs) = slot.refs() {
+                        file(kind.as_str(), object_key, refs);
+                    }
+                }
+                if let Some((object_key, refs)) = lookup
+                    .by_model
+                    .get(kind.as_str())
+                    .and_then(|table| table.get_key_value(&**key))
+                {
+                    file(kind.as_str(), object_key, refs);
+                }
+            }
+        }
+        Self {
+            by_position,
+            by_handle: std::collections::HashMap::new(),
+            restricted: true,
         }
     }
 
@@ -1748,13 +1986,7 @@ impl Serialize for CoreIndex {
         S: serde::Serializer,
     {
         use serde::ser::SerializeStruct;
-        // BUILT IN EVERY BUILD, BECAUSE IT IS THE SOURCE AND NOT A CHECK.
-        //
-        // It was `#[cfg(debug_assertions)]` here while the written key was composed from the
-        // entry's own copy of the identity and this inversion only CONFIRMED it. The key is
-        // composed from the inversion now, so a release build without one would write no key at
-        // all. The type's own doc prices the pass.
-        let keys = self.block_identities();
+        let keys = BlockKeysByPosition::for_encoding(self);
         let mut index = serializer.serialize_struct("CoreIndex", 6)?;
         index.serialize_field(
             "bucket_map",
@@ -3851,6 +4083,10 @@ pub(super) struct BlockSlabLiveIndex {
     /// zero, and the fallback is the walk -- so a load path that forgets to seed it costs the old
     /// cost rather than reporting a store made entirely of garbage.
     ready: bool,
+    /// The sum of `bytes` over every slab in `by_slab`, kept as it goes so the block-GC gate can
+    /// read the shard's live bytes without walking the map. Charged and discharged in the same
+    /// two functions that move `by_slab`, and rebuilt by the two that replace it.
+    total_live_bytes: u64,
 }
 
 /// Every charge and discharge this process has made against a live tally.
@@ -3884,11 +4120,30 @@ impl BlockSlabLiveIndex {
         self.ready = false;
     }
 
+    /// Drop one slab's entry, so the tally under-reports a slab the index still points at.
+    ///
+    /// The drift a counting bug would cause, made on purpose: the guard for a collection that
+    /// believes the tally needs a tally that is WRONG, and the walk in
+    /// `recompute_block_slab_live` would otherwise correct it before the guard looked.
+    #[cfg(test)]
+    pub(super) fn drop_slab_for_test(&mut self, block_slab_id: u64) {
+        self.by_slab.remove(&block_slab_id);
+    }
+
+    /// The slabs this tally says hold at least one live block, in order.
+    pub(super) fn live_slab_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.by_slab
+            .iter()
+            .filter(|(_, tally)| tally.block_refs > 0)
+            .map(|(block_slab_id, _)| *block_slab_id)
+    }
+
     pub(super) fn add_address(&mut self, address: &ElementEntry) {
         BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let tally = self.by_slab.entry(address.block_slab_id()).or_default();
         tally.block_refs = tally.block_refs.saturating_add(1);
         tally.bytes = tally.bytes.saturating_add(address.length());
+        self.total_live_bytes = self.total_live_bytes.saturating_add(address.length());
     }
 
     /// Discharge a block from the live tally AND record the range it retired.
@@ -3926,8 +4181,11 @@ impl BlockSlabLiveIndex {
         let Some(tally) = self.by_slab.get_mut(&address.block_slab_id()) else {
             return;
         };
+        // The tally gives up at most what it holds, and the total must give up the same.
+        let discharged = tally.bytes.min(address.length());
         tally.block_refs = tally.block_refs.saturating_sub(1);
         tally.bytes = tally.bytes.saturating_sub(address.length());
+        self.total_live_bytes = self.total_live_bytes.saturating_sub(discharged);
         if tally.block_refs == 0 && tally.bytes == 0 {
             // A slab nothing points at any more is ABSENT, not zero. Keeping the entry would grow
             // this map with every slab the store ever rolled, and the caller that wants a zero for
@@ -4119,6 +4377,11 @@ impl BlockSlabLiveIndex {
         self.by_slab.len()
     }
 
+    /// Live bytes summed over every slab, in O(1). Meaningful only while [`Self::is_ready`].
+    pub(super) fn total_live_bytes(&self) -> u64 {
+        self.total_live_bytes
+    }
+
     pub(super) fn total_block_refs(&self) -> u64 {
         self.by_slab
             .values()
@@ -4150,6 +4413,7 @@ impl BlockSlabLiveIndex {
     /// would recommend discarding bytes that are live.
     pub(super) fn clear(&mut self) {
         self.by_slab.clear();
+        self.total_live_bytes = 0;
         self.stale.clear();
         self.stale_bytes_by_cause = [0; 3];
         self.stale_slabs_pruned = 0;
@@ -4168,6 +4432,9 @@ impl BlockSlabLiveIndex {
     /// to it would delete true records every time the drift check ran. `clear` is how the retired
     /// set is emptied, and it is called where the index is actually replaced.
     pub(super) fn reset_from(&mut self, tallies: BTreeMap<u64, SlabLiveTally>) {
+        self.total_live_bytes = tallies
+            .values()
+            .fold(0_u64, |sum, tally| sum.saturating_add(tally.bytes));
         self.by_slab = tallies;
         self.ready = true;
     }
@@ -4786,7 +5053,7 @@ impl Serialize for BlockIndexAt<'_> {
 /// THE KEY SET IS OBSERVED, NOT READ OFF THE ATTRIBUTES.
 /// `block_entry_names::capture_the_stored_spelling_of_a_block_entry` prints a real encode of an
 /// entry and of a whole index, and
-/// `block_entry_names::the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` pins the three
+/// `block_entry_names::the_stored_spelling_of_a_block_entry_is_pinned_over_three_shapes` pins the three
 /// written forms byte for byte.
 pub(super) struct BlockEntryAt<'a> {
     pub(super) block: &'a BlockIndex,
@@ -4809,8 +5076,6 @@ pub(super) struct BlockEntryAt<'a> {
 /// AND THE TWO THAT LEFT ARE DELIBERATELY NOT `#[serde(default)]` DECOYS: the derive drops a key it
 /// has no field for, so an index written before this change arrives with its `object_key` and
 /// `model_id` dropped and the reconstruction reads the SAME values out of the key beside them.
-/// `block_entry_names::an_index_written_before_this_change_loads_block_for_block` drives that against
-/// committed bytes, field by field.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct StoredBlockEntry {
     pub(super) address: ElementEntry,
@@ -5009,10 +5274,8 @@ where
         // would inherit the stronger claim from the prose.
         //
         // WHERE THE CLAIM LIVES NOW, and it is a golden rather than a tie:
-        // `block_entry_names::the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` pins
-        // the four written forms byte for byte, and
-        // `an_index_written_before_this_change_loads_block_for_block` pins that a row written by a
-        // binary that still had the field decodes.
+        // `block_entry_names::the_stored_spelling_of_a_block_entry_is_pinned_over_three_shapes` pins
+        // the three written forms byte for byte.
         entries.push((
             block_index_written_key(beside.object_key, block),
             BlockEntryAt { block },
@@ -5193,7 +5456,7 @@ pub(super) fn block_index_written_key(object_key: &str, block: &BlockIndex) -> S
     crate::index_log::block_ref_key_from_parts(
         block.model_id().as_str(),
         object_key,
-        // `None`, WHICH IS WHAT THIS ALREADY PASSED. The STORED spelling of a page's key is built
+        // `None`, WHICH IS WHAT THIS ALREADY PASSED. The STORED spelling of a block's key is built
         // here, so the value must not move: every entry's element name was `None` before the field was
         // removed, and passing the constant keeps every written key character-for-character what it
         // was. That is why removing the field costs no `SHARD_INDEX_FORMAT_VERSION` step -- the
@@ -5362,7 +5625,7 @@ pub(super) struct ObjectBlockLookup {
 ///
 ///      `insert_object_block_lookup` files into the slot when the object has a row and here when
 ///      it does not. That alone would have saved NOTHING on the corpus the published figure uses:
-///      `where_an_objects_refs_could_live::whether_a_slot_row_exists_when_its_page_is_filed`
+///      `where_an_objects_refs_could_live::whether_a_slot_row_exists_when_its_block_is_filed`
 ///      measures that a first write has no row yet -- the row holds the object's ADDRESS and the
 ///      address IS where the block landed, so a first write cannot install the row before filing
 ///      the block. Every single-block object would have stayed here while every test passed. The
@@ -6044,6 +6307,11 @@ impl DirtyObjectIndex {
 
     pub(super) fn contains(&self, object_key: &str) -> bool {
         self.by_key.contains_key(object_key)
+    }
+
+    /// Whether `object_key` is already marked dirty under exactly `routing_bucket`.
+    pub(super) fn is_marked_at(&self, object_key: &str, routing_bucket: u32) -> bool {
+        self.by_key.get(object_key) == Some(&routing_bucket)
     }
 
     /// Every dirty object key, in key order -- what iterating the flat set gave.
@@ -7022,8 +7290,7 @@ mod tombstone_reconcile_cost_tests;
 ///     of the break and is why it is stated here rather than discovered;
 ///   * each field has ONE accepted spelling. `object_ids`, `deleted_object_ids`, `page_index` and
 ///     `page_refs` are not read: a key nothing declares falls to `Ignore`, so a document that
-///     spells one loads with that field empty, which `the_bucket_node_reader_takes_the_block_spelling_and_refuses_the_retired_ones`
-///     asserts;
+///     spells one loads with that field empty;
 ///   * the fields that had `#[serde(default)]` still default when the key is absent, and the ones
 ///     that did not still REFUSE a node that omits them. Presence comes from the wire.
 ///
@@ -7557,11 +7824,7 @@ const _: () = assert!(
 /// decode still cross-checks an old `g` against `block_id.or(object_id)` through it.
 ///
 /// So the stored form moved, `SHARD_INDEX_FORMAT_VERSION` goes to 6 to pay for it, and the guards
-/// are `the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` (the four goldens),
-/// `an_index_written_before_this_change_loads_block_for_block` (that an old row still decodes),
-/// `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed` (what this
-/// binary writes back in its place) and `core_index_loads_legacy_bucket_page_field_names` (that
-/// the old names still read).
+/// are `the_stored_spelling_of_a_block_entry_is_pinned_over_three_shapes` (the three goldens).
 // FORTY, AND THE NEIGHBOUR BRACKET THAT STOOD HERE IS GONE.
 //
 // IT COULD DISTINGUISH NO CASE. The `!= 39` and `!= 41` lines sat in the SAME const context as
@@ -8162,7 +8425,7 @@ impl CoreIndex {
         // which kinds that puts where.
         //
         // AND THE FIRST BLOCK OF AN OBJECT ARRIVES BEFORE ITS ROW DOES, measured by
-        // `whether_a_slot_row_exists_when_its_page_is_filed`: a first `StringSet` files its page
+        // `whether_a_slot_row_exists_when_its_block_is_filed`: a first `StringSet` files its block
         // and only then installs the address, because the address IS where the block landed. So
         // this route alone would leave every single-block object in the lookup -- which is why the
         // door that creates a row ADOPTS what the lookup holds for it. See
@@ -8204,6 +8467,23 @@ impl CoreIndex {
             // the removers still comes from callers and is still sometimes `Some`.
             self.object_block_lookup.file(&kind, object_key, value)
         };
+        // THE OWNER IS RECORDED WHEN THE REF IS, whichever home took it, and whether or not it was new:
+        // adding is idempotent and a missing owner would leave a block unnamed.
+        if added && self.bucket_owners.get().is_some() {
+            let first_in_bucket = self
+                .refs_of_object(block.model_id(), object_key.as_ref())
+                .is_some_and(|refs| {
+                    refs.iter()
+                        .filter(|block_ref| block_ref.routing_bucket == routing_bucket)
+                        .count()
+                        == 1
+                });
+            if first_in_bucket {
+                if let Some(owners) = self.bucket_owners.get_mut() {
+                    owners.add(routing_bucket, block.model_id(), object_key);
+                }
+            }
+        }
         if added {
             if let Some(total) = self.object_element_name_block_refs.as_mut() {
                 *total = total.saturating_add(1);
@@ -8246,7 +8526,7 @@ impl CoreIndex {
     /// # WHY THE FOLD DOES NOT WORK WITHOUT THIS
     ///
     /// `insert_object_block_lookup` files into the slot when the object HAS a row and into the
-    /// lookup when it does not -- and `whether_a_slot_row_exists_when_its_page_is_filed` measures
+    /// lookup when it does not -- and `whether_a_slot_row_exists_when_its_block_is_filed` measures
     /// that a first write has no row yet: 8 of 16 string filings found none, and every
     /// control-state filing found none. That is not an ordering to swap. The row holds the
     /// object's ADDRESS, and the address IS where the block landed, so a first write cannot install
@@ -8364,6 +8644,95 @@ impl CoreIndex {
                 slot.take_refs();
             }
         }
+        // The refs are about to be re-filed, and each filing records its owner.
+        if self.bucket_owners.get().is_some() {
+            self.bucket_owners.set(super::bucket_owners::BucketOwners::default());
+        }
+    }
+
+    /// THE PER-BUCKET OWNERS, DERIVED FROM THE OBJECTS' REFS in both homes.
+    pub(super) fn derive_bucket_owners(&self) -> super::bucket_owners::BucketOwners {
+        // ONE OWNER PER (OBJECT, BUCKET): an object with several blocks in a bucket has several
+        // refs naming it, and is recorded once.
+        fn add_once(
+            owners: &mut super::bucket_owners::BucketOwners,
+            seen: &mut Vec<u32>,
+            kind: super::storage_bucket_internals::StoredModelKind,
+            object_key: &Arc<str>,
+            refs: &BlockRefs,
+        ) {
+            seen.clear();
+            for block_ref in refs.iter() {
+                if !seen.contains(&block_ref.routing_bucket) {
+                    seen.push(block_ref.routing_bucket);
+                    owners.add(block_ref.routing_bucket, kind, object_key);
+                }
+            }
+        }
+        let mut owners = super::bucket_owners::BucketOwners::default();
+        let mut seen: Vec<u32> = Vec::new();
+        for (kind, table) in &self.objects {
+            for (object_key, slot) in table {
+                if let Some(refs) = slot.refs() {
+                    add_once(&mut owners, &mut seen, *kind, object_key, refs);
+                }
+            }
+        }
+        for (model_id, object_key, refs) in self.object_block_lookup.iter() {
+            if let Some(kind) =
+                super::storage_bucket_internals::StoredModelKind::from_stored_name(model_id)
+            {
+                add_once(&mut owners, &mut seen, kind, object_key, refs);
+            }
+        }
+        owners.shrink();
+        owners
+    }
+
+    /// The refs an object holds, from whichever home has them.
+    fn refs_of_object(
+        &self,
+        kind: super::storage_bucket_internals::StoredModelKind,
+        object_key: &str,
+    ) -> Option<&BlockRefs> {
+        self.objects
+            .get(&kind)
+            .and_then(|table| table.get(object_key))
+            .and_then(|slot| slot.refs())
+            .or_else(|| self.object_block_lookup.get(kind.as_str(), object_key))
+    }
+
+    /// Build the owners if they are absent. O(objects) once; a no-op after.
+    pub(super) fn ensure_bucket_owners(&mut self) {
+        if self.bucket_owners.get().is_none() {
+            let owners = self.derive_bucket_owners();
+            self.bucket_owners.set(owners);
+        }
+    }
+
+    /// TEST ONLY: every ref's owner is recorded. The recorded set may hold EXTRA entries (stale ones
+    /// are harmless) but never fewer than the refs say, which is the property naming relies on.
+    #[cfg(test)]
+    pub(super) fn assert_bucket_owners_cover_every_ref(&self) {
+        let Some(recorded) = self.bucket_owners.get() else {
+            return;
+        };
+        // THE CHECK DERIVES EVERY OWNER FROM EVERY REF, so it is linear in the shard, and the delete
+        // path runs it. On a large fixture that made each delete cost the shard again, which hid
+        // what the owners save from every timing test. It runs on small shards only.
+        if recorded.entries() > OWNER_CHECK_MAX_ENTRIES {
+            return;
+        }
+        let truth = self.derive_bucket_owners();
+        for (bucket, expected) in truth.iter() {
+            let have = recorded.owners_of(*bucket);
+            for (kind, key) in expected.iter() {
+                assert!(
+                    have.is_some_and(|list| list.contains(kind, key)),
+                    "bucket {bucket}: object {key:?} of kind {kind:?} holds a ref there and is not recorded as an owner",
+                );
+            }
+        }
     }
 
     /// THE ALLOCATION THIS INDEX ALREADY HOLDS FOR `object_key`, UNDER ANY KIND.
@@ -8456,6 +8825,8 @@ impl CoreIndex {
             kind_pool,
             object_element_name_block_refs,
             released_buckets,
+            // Derived from the refs, which this rebuild re-homes: dropped here and rebuilt on demand.
+            bucket_owners: _,
             // ---- CARRIED: durable, and the reconstruct has no way to derive it. ----
             // CARRIED TOO, AND FOR THE SAME REASON `objects` IS: these four are the DURABLE
             // authority for which container objects exist and what elements they hold. A
@@ -8498,6 +8869,7 @@ impl CoreIndex {
         self.kind_pool = kind_pool;
         self.object_element_name_block_refs = object_element_name_block_refs;
         self.released_buckets = released_buckets;
+        self.bucket_owners = super::bucket_owners::OwnersCell::default();
         // THE RECONSTRUCT'S OWN FILINGS MOVE INTO THE ROWS THEY BELONG TO. Without this the fold
         // is undone by every rebuild: the rows would be back but every ref would sit in the
         // lookup, so the figure would regress on any shard that has ever been reconstructed and
@@ -8507,7 +8879,7 @@ impl CoreIndex {
         // dropped, which is what makes merging safe: a block that moved leaves a carried ref behind
         // at its old position, and a stale position could otherwise be served as another object's
         // identity by `BlockKeysByPosition`.
-        self.prune_refs_to_the_pages_the_index_holds();
+        self.prune_refs_to_the_blocks_the_index_holds();
     }
 
     /// DROP EVERY REF THAT NAMES A BLOCK THIS INDEX DOES NOT HOLD.
@@ -8521,7 +8893,7 @@ impl CoreIndex {
     /// reason `ObjectSlot::refs` gives: `block_refs_for` answering `Some(&[])` where a caller
     /// distinguishes "names nothing" by `None` sends the re-add after a removal down the wrong
     /// branch.
-    fn prune_refs_to_the_pages_the_index_holds(&mut self) {
+    fn prune_refs_to_the_blocks_the_index_holds(&mut self) {
         let holds = |block_ref: &BlockLookupRef| -> bool {
             self.bucket_map
                 .get(&block_ref.routing_bucket)
@@ -8883,6 +9255,44 @@ impl CoreIndex {
             }
         }
         removed
+    }
+
+    pub(super) fn contains_object_block_address_with_bucket_hint(
+        &self,
+        model_id: &str,
+        object_key: &str,
+        element_name: Option<&str>,
+        address: &ElementEntry,
+        routing_bucket: u32,
+    ) -> bool {
+        if element_name.is_none() {
+            if let Some(kind) =
+                crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(model_id)
+            {
+                let candidate = BlockIndex::new(kind, address.clone(), false, false);
+                let block_ref = BlockLookupRef {
+                    routing_bucket,
+                    block_ref_key: block_index_handle(object_key, &candidate),
+                };
+                if self
+                    .block_refs_for(model_id, object_key, element_name)
+                    .is_some_and(|refs| refs.binary_search(&block_ref).is_ok())
+                    && self
+                        .bucket_map
+                        .get(&routing_bucket)
+                        .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
+                        .is_some_and(|block| {
+                            !block.deleted()
+                                && block.model_id().as_str() == model_id
+                                && same_block_address(&block.address, address)
+                        })
+                {
+                    return true;
+                }
+            }
+        }
+        // Hints and derived handles are accelerators, not ownership authority.
+        self.contains_object_block_address(model_id, object_key, element_name, address)
     }
 
     pub(super) fn contains_object_block_address(
@@ -9266,12 +9676,6 @@ pub(super) struct AdmissionLimit {
 pub(super) struct ExecuteOutcome {
     pub(super) response: CommandResponse,
     pub(super) mutated: bool,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub(super) struct PackedFeatureBlock {
-    pub(super) version: u8,
-    pub(super) points: Vec<FeaturePoint>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -9995,7 +10399,19 @@ pub(super) static REPACK_ADOPTED_FIELDS: std::sync::atomic::AtomicUsize =
 pub(super) static REPACK_ADOPTED_HASHED: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
+#[cfg(test)]
+pub(super) fn thread_repack_calls() -> usize {
+    THREAD_REPACK_CALLS.with(std::cell::Cell::get)
+}
+
+#[cfg(test)]
+std::thread_local! {
+    static THREAD_REPACK_CALLS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
 pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
+    #[cfg(test)]
+    THREAD_REPACK_CALLS.with(|calls| calls.set(calls.get() + 1));
     let ShardState {
         // ----- Packed here. Deserialized, and filled one entry at a time. -----
         wal_resident_blocks,
@@ -10035,11 +10451,13 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // refill happens in the expiry path rather than here, and is left to it.
         buckets_pending_flag_refresh: _,
         expiry_by_deadline: _,
+        expiry_scan_positions: _,
         rollups: _,
         control_coalesce_persist: _,
         control_state_max_size: _,
         control_distinct_sketch: _,
         set_listing_from_map: _,
+        feature_max_age_ms: _,
         dirty_objects: _,
         // A plain `u64` the decode leaves at 0 because it is `#[serde(skip)]`, and 0 is the value
         // this pass would want anyway: it means the first logged-deletion round after a load is
@@ -10066,6 +10484,8 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         shard_id: _,
         shard_id_known: _,
         applied_wal_sequence: _,
+        file_restore_frontier: _,
+        captured_relocation_sequence: _,
         wal_apply_discontinuous: _,
         index_format_version: _,
         // The bucket index's own containers are owned elsewhere and are deliberately left alone
@@ -11825,7 +12245,7 @@ mod a_records_blocks_can_live_on_the_shard_beside_the_record {
             ObjectRecord::from_object_rows_with_layout(&address, 9, Some(1_700), true, reserved)
                 .expect("the layout arm refused an entry it is documented to hold");
         assert!(
-            matches!(record.page_address(), BlockAddress::Many(_)),
+            matches!(record.block_address(), BlockAddress::Many(_)),
             "the record should carry a handle rather than an inline address"
         );
 

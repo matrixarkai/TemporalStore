@@ -98,7 +98,7 @@ matrixraft            https://github.com/matrixarkai/MatrixRaft.git         (Raf
 matrixcache           https://github.com/matrixarkai/MatrixCache.git        (tiered cache + RocksDB SSD store)
 ```
 
-An optional object-store backend sits behind `--features matrixobject`, for putting a shared store behind a set of otherwise stateless nodes. It is **off by default**, because a single-node store needs nothing of it — but it is an ordinary dependency now, Apache-2.0 and pinned to an exact revision alongside the two above, so turning the feature on builds from a clean checkout with nothing to add by hand.
+The MatrixObject object-store backend is part of the default build: there is no feature to switch on. A shared store behind a set of otherwise stateless nodes is reached through a MatrixObject cluster, directly or through a gateway (see `docs/MATRIXOBJECT_DIRECT_MODE.md`). The crate is Apache-2.0 and pinned to an exact revision alongside the other dependencies, so a clean checkout builds with nothing to add by hand.
 
 Each dependency is pinned to an exact revision, so builds are reproducible. You
 do not clone these repos by hand — you only need `git` and network access to

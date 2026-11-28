@@ -34,3 +34,12 @@ mod the_loop_reports_its_backlog_and_its_dumps;
 mod a_sync_value_once_survives_the_loop;
 #[path = "tests/a_sync_value_once_does_not_outgrow_the_materialise_cap.rs"]
 mod a_sync_value_once_does_not_outgrow_the_materialise_cap;
+#[path = "tests/an_idle_collection_round_does_not_walk_the_shard.rs"]
+mod an_idle_collection_round_does_not_walk_the_shard;
+#[path = "tests/page_gc_resumes_behind_its_window.rs"]
+mod page_gc_resumes_behind_its_window;
+#[path = "tests/reclaim_page_reports_its_time_per_phase.rs"]
+mod reclaim_page_reports_its_time_per_phase;
+
+#[path = "tests/the_shared_wal_sink_is_read_without_a_lock.rs"]
+mod the_shared_wal_sink_is_read_without_a_lock;

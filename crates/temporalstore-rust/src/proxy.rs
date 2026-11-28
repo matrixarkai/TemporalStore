@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 mod commands;
 #[path = "proxy/proxy_context.rs"]
 mod context;
+#[path = "proxy/grpc.rs"]
+mod grpc;
 mod meta_sync;
 #[path = "proxy/proxy_prometheus.rs"]
 mod prometheus;
@@ -47,13 +49,11 @@ use policy::{
 use response::execute_error;
 
 use crate::client::{
-    ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport, ReplicaReadPolicy,
+    get_meta_json, post_meta_json, ClientStats, ClientTopologyCacheReport,
+    ClientTopologyRefreshReport, ReplicaReadPolicy,
     RequestOptions, TableOptions, TemporalStoreClient,
 };
-use crate::http::{
-    get_json_with_options_and_headers, post_json_with_options_and_headers, HttpRequest,
-    HttpRequestOptions,
-};
+use crate::http::{HttpRequest, HttpRequestOptions};
 use crate::meta::GetShardResponse;
 use crate::meta::{
     AckResponse, ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest,
@@ -68,6 +68,8 @@ use crate::types::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyOptions {
     pub meta_addr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_grpc_target: Option<String>,
     #[serde(default = "default_proxy_addr")]
     pub proxy_addr: String,
     #[serde(default)]
@@ -278,6 +280,7 @@ impl Default for ProxyOptions {
     fn default() -> Self {
         Self {
             meta_addr: "127.0.0.1:17001".to_string(),
+            meta_grpc_target: None,
             proxy_addr: "127.0.0.1:17000".to_string(),
             config_version: 0,
             namespace: String::new(),
@@ -910,42 +913,42 @@ pub struct ProxySequenceQueryCommandRequest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellRollupCommandRequest {
+pub struct ProxyWindowReduceRollupCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    pub spec: crate::types::CellRollupSpec,
+    pub spec: crate::types::WindowReduceRollupSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellRemoveCommandRequest {
+pub struct ProxyWindowReduceRemoveCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    pub spec: crate::types::CellRemoveSpec,
+    pub spec: crate::types::WindowReduceRemoveSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellRankQueryCommandRequest {
+pub struct ProxyWindowReduceRankCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub key: String,
-    pub spec: crate::types::CellRankSpec,
+    pub spec: crate::types::WindowReduceRankSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellRankBatchQueryCommandRequest {
+pub struct ProxyWindowReduceRankBatchCommandRequest {
     pub namespace: String,
     pub table_name: String,
-    pub queries: Vec<crate::types::CellRankBatchItem>,
+    pub queries: Vec<crate::types::WindowReduceRankBatchItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub struct ProxyCellFanInRankQueryCommandRequest {
+pub struct ProxyWindowReduceFanInRankCommandRequest {
     pub namespace: String,
     pub table_name: String,
     pub keys: Vec<String>,
-    pub spec: crate::types::CellRankSpec,
+    pub spec: crate::types::WindowReduceRankSpec,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1475,10 +1478,9 @@ impl ProxyService {
 
     fn get_shard(&self, shard_id: ShardId, count_error: bool) -> Result<GetShardResponse, Status> {
         let options = self.options();
-        get_json_with_options_and_headers::<GetShardResponse>(
+        get_meta_json::<GetShardResponse>(
             &options.meta_addr,
             &format!("/shards/{shard_id}"),
-            &crate::meta::admin_auth_header(),
             options.http_options(),
         )
         .map_err(|err| {
@@ -2024,19 +2026,29 @@ impl ProxyService {
         if options.context_shard_count != 0 {
             return;
         }
-        let Ok(listed) = get_json_with_options_and_headers::<crate::meta::ListShardsResponse>(
-            &options.meta_addr,
-            "/shards",
-            &crate::meta::admin_auth_header(),
-            options.control_http_options(),
-        ) else {
-            return;
+        let deadline = options.control_http_options();
+        let (mut ids, complete) = if let Some(target) = options.meta_grpc_target.as_deref() {
+            let Ok(result) = self.client().metadata_shard_ids_grpc(target, deadline.io_timeout_ms) else {
+                return;
+            };
+            result
+        } else {
+            let Ok(listed) = get_meta_json::<crate::meta::ListShardsResponse>(
+                &options.meta_addr, "/shards", deadline,
+            ) else {
+                return;
+            };
+            if !listed.status.ok {
+                return;
+            }
+            (
+                listed.shards.into_iter().map(|shard| shard.shard_id).collect(),
+                listed.next_after_shard_id.is_none(),
+            )
         };
-        if !listed.status.ok || listed.shards.is_empty() {
+        if ids.is_empty() {
             return;
         }
-        let mut ids: Vec<crate::types::ShardId> =
-            listed.shards.iter().map(|shard| shard.shard_id).collect();
         ids.sort_unstable();
         ids.dedup();
         let contiguous_from_first = ids
@@ -2045,7 +2057,6 @@ impl ProxyService {
             .all(|(offset, id)| *id == options.context_first_shard_id + offset as u64);
         // A short block means there are more shards than were listed; a partial view could look
         // contiguous when the whole set is not, so do not conclude anything from it.
-        let complete = listed.next_after_shard_id.is_none();
         let usable = complete && contiguous_from_first;
         self.inner.cluster_shard_count.store(
             if usable { ids.len() as u64 } else { 0 },
@@ -2222,6 +2233,7 @@ fn proxy_client_error_code(err: &crate::client::ClientError) -> &'static str {
         // free to retry, one that may have applied is not. `a_caller_can_tell_an_unknown_write_
         // from_a_failed_one` covers this.
         crate::client::ClientError::WriteOutcomeUnknown(_) => "write_outcome_unknown",
+        crate::client::ClientError::WriteNotStarted(_) => "raft_write_not_started",
         // The caller's own request is wrong; nothing on this side will make it work, so it is not
         // reported as a server-side failure.
         crate::client::ClientError::InvalidRequest(_) => "invalid_request",
@@ -4749,6 +4761,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_328),
@@ -4789,6 +4802,7 @@ mod tests {
         assert_eq!(proxy.info().route_cache_size, 1);
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_329),
@@ -4867,6 +4881,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_340),
@@ -4919,6 +4934,7 @@ mod tests {
         }
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_341),
@@ -9007,6 +9023,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_384),
@@ -9115,6 +9132,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_380),
@@ -9385,6 +9403,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_374),
@@ -9430,6 +9449,7 @@ mod tests {
 
         // The shard moves to the second datanode.
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_375),

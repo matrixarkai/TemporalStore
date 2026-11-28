@@ -427,11 +427,13 @@ fn is_write(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
+            | Command::SetAddMany { .. }
+            | Command::SetRemoveMany { .. }
             | Command::FeatureAppend { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
-            | Command::CellRollup { .. }
-            | Command::CellRemove { .. }
+            | Command::WindowReduceRollup { .. }
+            | Command::WindowReduceRemove { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
             | Command::ControlStateIncrement { .. }

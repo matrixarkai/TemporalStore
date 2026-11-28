@@ -42,7 +42,7 @@ pub(crate) const RETRY_RING_CAPACITY: usize = 16;
 /// What the first application of a token landed: the three counts of the merge receipt.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct RetryReceipt {
-    pub(crate) snapshots_written: u64,
+    pub(crate) samples_written: u64,
     pub(crate) cells_created: u64,
     pub(crate) cells_merged: u64,
 }
@@ -190,7 +190,7 @@ impl<'de> serde::Deserialize<'de> for RetryRing {
 /// One entry's four fields, as a ring stores each of its entries.
 fn write_entry(out: &mut Vec<u8>, token: u64, receipt: &RetryReceipt) {
     encode_varint_field(out, 1, token);
-    encode_varint_field(out, 2, receipt.snapshots_written);
+    encode_varint_field(out, 2, receipt.samples_written);
     encode_varint_field(out, 3, receipt.cells_created);
     encode_varint_field(out, 4, receipt.cells_merged);
 }
@@ -232,8 +232,8 @@ fn decode_entry(record: &[u8]) -> Result<(u64, RetryReceipt), String> {
     if cursor != record.len() {
         return Err("retry entry has bytes after its last field".to_string());
     }
-    let [token, snapshots_written, cells_created, cells_merged] = values;
-    Ok((token, RetryReceipt { snapshots_written, cells_created, cells_merged }))
+    let [token, samples_written, cells_created, cells_merged] = values;
+    Ok((token, RetryReceipt { samples_written, cells_created, cells_merged }))
 }
 
 #[cfg(test)]

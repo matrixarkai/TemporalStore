@@ -14,6 +14,24 @@ thread_local! {
 }
 
 #[cfg(test)]
+thread_local! {
+    static VACATED_BLOCK_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times retiring a vacated block had to WALK the object's refs because the block it
+/// computed was not the one filed, on this thread since the last reset.
+#[cfg(test)]
+pub(in crate::engine) fn vacated_block_walks_for_test(reset: bool) -> u64 {
+    VACATED_BLOCK_WALKS.with(|walks| {
+        let now = walks.get();
+        if reset {
+            walks.set(0);
+        }
+        now
+    })
+}
+
+#[cfg(test)]
 pub(super) fn note_set_write_scan(dirty: bool) {
     SET_WRITE_SCANS.with(|counts| {
         let (supersede, propagation) = counts.get();
@@ -24,6 +42,11 @@ pub(super) fn note_set_write_scan(dirty: bool) {
 #[cfg(test)]
 #[path = "set_batch_work_tests.rs"]
 mod set_batch_work_tests;
+
+#[cfg(test)]
+pub(super) fn dirty_propagation_visits() -> u64 {
+    SET_WRITE_SCANS.with(|counts| counts.get().1)
+}
 use crate::engine::reports::StageWalkCharges;
 use std::sync::Arc;
 
@@ -190,6 +213,15 @@ pub(super) fn storage_reclaim_candidates_from_slab_reports(
                 .saturating_mul(10_000_u64.saturating_sub(report.live_ref_density_basis_points))
                 .saturating_div(10_000)
                 .saturating_add(stale_block_estimate);
+            // An entirely live owned slab includes a fixed format header in its physical
+            // extent. Those bytes cannot be reclaimed by relocating its live records.
+            if !fully_stale
+                && reclaim_score == 0
+                && report.live_block_refs == report.block_count
+                && report.block_count != 0
+            {
+                return None;
+            }
             Some(StorageReclaimCandidate {
                 block_slab_id: report.block_slab_id,
                 physical_bytes: report.physical_bytes,
@@ -1403,16 +1435,127 @@ pub fn reset_live_block_scan_sites() {
     if let Ok(mut sites) = live_block_scan_sites().lock() {
         sites.clear();
     }
+    #[cfg(test)]
+    {
+        if let Ok(mut times) = live_block_walk_times().lock() {
+            times.clear();
+        }
+    }
+}
+
+/// How long each whole-shard walk ran, per calling site, in test builds: `file:line -> (calls,
+/// total microseconds, longest microseconds)`. The entry counts above say how MANY blocks a site
+/// walked; this says how long it held whatever guard its caller held while it did, which is what a
+/// writer waiting on that guard sees. Also names the writer-stall probe's phase for the duration of
+/// each walk (`walk file:line`), so a write that began inside a walk is attributed to it.
+#[cfg(test)]
+fn live_block_walk_times(
+) -> &'static std::sync::Mutex<std::collections::BTreeMap<String, (u64, u128, u128)>> {
+    static TIMES: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::BTreeMap<String, (u64, u128, u128)>>,
+    > = std::sync::OnceLock::new();
+    TIMES.get_or_init(|| std::sync::Mutex::new(std::collections::BTreeMap::new()))
+}
+
+#[cfg(test)]
+pub fn live_block_walk_times_snapshot() -> std::collections::BTreeMap<String, (u64, u128, u128)> {
+    live_block_walk_times()
+        .lock()
+        .map(|times| times.clone())
+        .unwrap_or_default()
+}
+
+/// Whether walks are timed. OFF unless a harness switches it on: a timer allocates (a site label,
+/// a map entry), and the allocation guards that count a walk's bytes to the byte must not see it.
+#[cfg(test)]
+static WALK_TIMING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Switch the per-site walk timing on or off. Test builds only; the writer-wait harness turns it on
+/// for its own rounds and off again.
+#[cfg(test)]
+pub fn set_walk_timing(on: bool) {
+    WALK_TIMING.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Times one whole-shard walk for the writer-stall probe. Test builds only, and a no-op that
+/// allocates nothing unless [`set_walk_timing`] switched it on.
+#[cfg(test)]
+pub(super) struct WalkTimer {
+    previous: &'static str,
+    site: String,
+    started: std::time::Instant,
+    armed: bool,
+}
+
+#[cfg(test)]
+impl WalkTimer {
+    #[track_caller]
+    pub(super) fn start() -> Self {
+        if !WALK_TIMING.load(std::sync::atomic::Ordering::Relaxed) {
+            return Self {
+                previous: "",
+                site: String::new(),
+                started: std::time::Instant::now(),
+                armed: false,
+            };
+        }
+        let caller = std::panic::Location::caller();
+        let site = format!("{}:{}", caller.file(), caller.line());
+        // The probe's phase is a `&'static str`; one leaked label per distinct site, in tests only.
+        static LABELS: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashMap<String, &'static str>>,
+        > = std::sync::OnceLock::new();
+        let label = *LABELS
+            .get_or_init(Default::default)
+            .lock()
+            .unwrap()
+            .entry(site.clone())
+            .or_insert_with(|| Box::leak(format!("walk {site}").into_boxed_str()));
+        let previous = super::writer_stall_probe::current_phase();
+        super::writer_stall_probe::set_phase(label);
+        Self {
+            previous,
+            site,
+            started: std::time::Instant::now(),
+            armed: true,
+        }
+    }
+}
+
+#[cfg(test)]
+impl Drop for WalkTimer {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let elapsed = self.started.elapsed().as_micros();
+        if let Ok(mut times) = live_block_walk_times().lock() {
+            let entry = times.entry(self.site.clone()).or_insert((0, 0, 0));
+            entry.0 += 1;
+            entry.1 += elapsed;
+            entry.2 = entry.2.max(elapsed);
+        }
+        super::writer_stall_probe::set_phase(self.previous);
+    }
 }
 
 /// Both arms charge themselves, so this wrapper is no longer the only counted way in. It stays
 /// `#[track_caller]` so a charge made further down still attributes to ITS caller.
 #[track_caller]
 pub(super) fn collect_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
+    let mut entries = Vec::new();
+    visit_live_block_entries(shard, |entry| entries.push(entry));
+    entries
+}
+
+#[track_caller]
+pub(super) fn visit_live_block_entries(shard: &ShardState, mut visit: impl FnMut(LiveBlockEntry)) {
     if !shard.bucket_index.bucket_map.is_empty() {
-        collect_bucket_index_live_block_entries(shard)
+        visit_bucket_index_live_block_entries(shard, visit);
     } else {
-        collect_model_live_block_entries(shard)
+        for entry in collect_model_live_block_entries(shard) {
+            visit(entry);
+        }
     }
 }
 
@@ -1446,19 +1589,46 @@ pub(super) fn mark_object_dirty_at_bucket(
     mark_object_dirty_at_bucket_with_policy::<true>(shard, object_key, routing_bucket);
 }
 
+/// Marks the object dirty and answers whether its existing blocks still need the push: false when
+/// the object was already marked under this bucket, in which case an earlier mark already reached
+/// every block it had.
 pub(super) fn mark_object_dirty_at_bucket_deferred(
     shard: &mut ShardState,
     object_key: &str,
     routing_bucket: u32,
-) {
-    mark_object_dirty_at_bucket_with_policy::<false>(shard, object_key, routing_bucket);
+) -> bool {
+    mark_object_dirty_at_bucket_with_policy::<false>(shard, object_key, routing_bucket)
 }
 
 fn mark_object_dirty_at_bucket_with_policy<const PROPAGATE: bool>(
     shard: &mut ShardState,
     object_key: &str,
     routing_bucket: u32,
-) {
+) -> bool {
+    // A MARK ON AN OBJECT THAT IS ALREADY MARKED HAS NOTHING LEFT TO PUSH.
+    //
+    // The push below visits every block the object has, so a write to a collection of N elements
+    // cost N bucket and block lookups to set a flag that was already set: measured with callgrind
+    // at 53% of the instructions of a run of single-element writes into sets of 10,000, and the
+    // reason a write took 140 microseconds at 100 elements and 5,500 at 100,000.
+    //
+    // It is skipped only when the object is in the dirty index under THIS bucket, and that is
+    // enough because the two ways a block stops being dirty both remove the object from the index
+    // in the same step (the dump clears the blocks of each bucket it cleared and then drains
+    // exactly those buckets; the per-object clear drops the key and then clears its blocks), and a
+    // block filed after the mark is filed dirty by the writer that files it. The first mark after
+    // either of those finds the object absent and pushes, as before.
+    //
+    // WHAT A BLOCK'S OWN BIT STILL MEANS INSIDE A MARKED OBJECT. A block filed or re-filed after the
+    // mark (a rebuild of the ownership, a compaction move) may be clean while its object is marked.
+    // That changes no answer, because the dirty index is what keeps the bucket dirty: the flag
+    // refresh combines it with the blocks, and `clear_published_object_dirty_state`, which used to
+    // assign from the blocks alone, now does too. This mark also sets the bucket dirty below.
+    //
+    // The deferred form is used only inside a batch, which pushes once at its end while it still
+    // holds the shard, so the dirty index never holds an object whose push is outstanding when a
+    // single write looks at it.
+    let already_marked = shard.dirty_objects.is_marked_at(object_key, routing_bucket);
     // Recorded WITH the bucket that was just computed for it. Every consumer that asks which
     // bucket a dirty object belongs to used to recompute this hash for itself.
     // ONE COPY OF THE CHARACTERS -- see `DirtyObjectIndex::insert_shared`. The handle is read out
@@ -1471,7 +1641,7 @@ fn mark_object_dirty_at_bucket_with_policy<const PROPAGATE: bool>(
     // PUSHED, NOT PULLED -- see `push_object_dirty_onto_its_existing_blocks`. This is the second of
     // exactly two sites that mark an object dirty, and the invariant the tests pin is that BOTH
     // push: a mark that does not reach its blocks leaves the bucket reading clean.
-    if PROPAGATE {
+    if PROPAGATE && !already_marked {
         super::push_object_dirty_onto_its_existing_blocks(shard, object_key);
     }
     let mut bucket = shard
@@ -1487,6 +1657,7 @@ fn mark_object_dirty_at_bucket_with_policy<const PROPAGATE: bool>(
     bucket.dirty_generation = bucket.dirty_generation.saturating_add(1).max(1);
     drop(bucket);
     note_bucket_flags_stale(shard, routing_bucket);
+    !already_marked
 }
 
 fn collect_rebuild_tombstones<const INDEXED: bool>(shard: &ShardState)
@@ -2034,19 +2205,19 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
                 // release would find every released block "missing" from the index and rebuild the
                 // whole shard -- which is a correct index and a release that never survives one
                 // execute.
-                let released = shard.bucket_index.released_buckets.contains(
-                    &block_routing_bucket(
-                        object_key.as_str(),
-                        start_routing_bucket,
-                        end_routing_bucket,
-                    ),
+                let routing_bucket = block_routing_bucket(
+                    object_key.as_str(),
+                    start_routing_bucket,
+                    end_routing_bucket,
                 );
+                let released = shard.bucket_index.released_buckets.contains(&routing_bucket);
                 if !released
-                    && !shard.bucket_index.contains_object_block_address(
+                    && !shard.bucket_index.contains_object_block_address_with_bucket_hint(
                         kind.as_str(),
                         object_key.as_str(),
                         element_name,
                         address,
+                        routing_bucket,
                     )
                 {
                     missing_entry = true;
@@ -2138,12 +2309,19 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     let hashes = HashMap::<super::state::ModelKey, super::hash_field_map::HashFieldMap>::new();
     // THE SAME LIVE-ADDRESS SET THE RECONCILE BUILDS, and built from the same walk the derived view
     // below is built from, so the filter can only ever remove what the derived view also lacks.
-    let walked = collect_bucket_index_live_block_entries(shard);
-    let live_blocks_by_address: std::collections::HashSet<super::LiveBlockKey> = walked
-        .iter()
-        .filter(|entry| !entry.deleted)
-        .map(|entry| super::live_block_key(&entry.address))
-        .collect();
+    // An empty persisted map has no fields to filter. Reconciliation still runs below to
+    // invalidate its cached ordinals and timestamp hints, without naming unrelated blocks.
+    let live_blocks_by_address: std::collections::HashSet<super::LiveBlockKey> =
+        if shard.bucket_index.hashes.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            let walked = collect_bucket_index_live_block_entries(shard);
+            walked
+                .iter()
+                .filter(|entry| !entry.deleted)
+                .map(|entry| super::live_block_key(&entry.address))
+                .collect()
+        };
     // MERGED, NOT ASSIGNED, AND THE `is_empty` GATE WENT WITH THE ASSIGNMENT. While `hashes` was
     // `skip_serializing` there was nothing in `shard.bucket_index.hashes` to protect, so overwriting it whenever
     // the index said anything was harmless and the gate only avoided clearing it to empty. It is
@@ -2167,14 +2345,95 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
 #[track_caller]
 pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEntry> {
     let mut entries = Vec::new();
+    visit_bucket_index_live_block_entries(shard, |entry| entries.push(entry));
+    entries
+}
+
+#[track_caller]
+fn visit_bucket_index_live_block_entries(shard: &ShardState, mut visit: impl FnMut(LiveBlockEntry)) {
+    visit_bucket_nodes_live_block_entries(shard, shard.bucket_index.bucket_map.iter(), &mut visit);
+    // A RELEASED bucket holds no block entries, and every caller of this walk -- the dump
+    // manifest, WAL reclaim, compaction, the GC snapshot -- reads "no entries" as "no live
+    // blocks". Left alone that is not a cheaper index, it is a block whose backing record may be
+    // reclaimed. So the released buckets are supplemented from the model maps, which is the same
+    // source `reload_released_bucket` would rebuild them from: what this returns is what the
+    // bucket index WOULD say if nothing were released.
+    //
+    // Exact, not approximate, because a release refuses any bucket holding a block whose KEY does
+    // not route to it -- `BucketReleaseRefusal::BlockRoutingMismatch` -- so the bucket computed
+    // below is the bucket the released node held the block under, and cannot claim a block for the
+    // wrong bucket.
+    if !shard.bucket_index.released_buckets.is_empty() {
+        let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+        for mut entry in collect_model_live_block_entries(shard) {
+            let routing_bucket = block_routing_bucket(
+                &entry.object_key,
+                start_routing_bucket,
+                end_routing_bucket,
+            );
+            if shard.bucket_index.released_buckets.contains(&routing_bucket) {
+                // The filing is known exactly here too, and a supplemented entry must not read as
+                // "not filed": the five readers downstream would then fall back to a hash over the
+                // WHOLE keyspace and name a bucket a narrow shard does not hold.
+                entry.filed_routing_bucket = routing_bucket;
+                entry.filing_is_known = true;
+                restore_retained_inline_page_state(shard, &mut entry);
+                visit(entry);
+            }
+        }
+    }
+}
+
+/// The live blocks of the buckets `buckets` yields, as the whole walk emits them for those buckets,
+/// charged the same way. A sweep that holds a bucket cursor walks a few buckets per step through
+/// this and pays for those buckets only. It does NOT supplement released buckets: a caller that
+/// can meet one must use the whole walk.
+#[track_caller]
+pub(super) fn visit_bucket_nodes_live_block_entries<'a>(
+    shard: &ShardState,
+    buckets: impl Iterator<Item = (&'a u32, &'a BucketNode)>,
+    visit: impl FnMut(LiveBlockEntry),
+) {
+    visit_bucket_nodes_live_block_entries_inner(shard, buckets, None, visit);
+}
+
+pub(super) fn visit_owned_bucket_live_block_entries(
+    shard: &ShardState,
+    routing_bucket: &u32,
+    bucket: &BucketNode,
+    visit: impl FnMut(LiveBlockEntry),
+) {
+    visit_bucket_nodes_live_block_entries_inner(
+        shard, std::iter::once((routing_bucket, bucket)), Some(*routing_bucket), visit,
+    );
+}
+
+#[track_caller]
+fn visit_bucket_nodes_live_block_entries_inner<'a>(
+    shard: &ShardState,
+    buckets: impl Iterator<Item = (&'a u32, &'a BucketNode)>,
+    scoped_bucket: Option<u32>,
+    mut visit: impl FnMut(LiveBlockEntry),
+) {
+    #[cfg(test)]
+    let _walk_timer = WalkTimer::start();
     // Charged here rather than by whoever called: three production callers reach this walk
     // without going through `collect_live_block_entries`, and the wrapper's charge could not see
     // the supplement walk below either -- it charged what was RETURNED, while the walk
     // materializes the indexed blocks and then, whenever anything is released, the whole shard.
     let mut from_index = 0usize;
     // THE IDENTITY COMES FROM BESIDE THE BLOCK, once for the walk. `shard` is immutable here.
-    let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+    let identities = match scoped_bucket {
+        Some(bucket) => crate::engine::state::BlockKeysByPosition::from_owned_buckets(
+            &shard.bucket_index.objects, &shard.bucket_index.object_block_lookup,
+            shard.bucket_index.bucket_owners.get(), &[bucket],
+        ),
+        None => shard.bucket_index.block_identities(),
+    };
+    // A misfiled block may be absent from the scoped owners. Name it through the complete
+    // index so ownership validation still reports it, rather than dropping the damaged row.
+    let fallback = std::cell::OnceCell::new();
+    for (routing_bucket, bucket) in buckets {
         // Preserve the scalar lookup's first match without rescanning all tombstones per block.
         // This borrowed map lives for one bucket only, not for the shard's lifetime.
         let mut deleted_keys = HashMap::new();
@@ -2201,10 +2460,15 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
                     .identity_of(bucket, *handle, block)
                     .map(|named| named.object_key)
             }
-                .or_else(|| identities.identity_anywhere(*handle).map(|(_, key)| key));
+                .or_else(|| {
+                    let complete = if scoped_bucket.is_some() {
+                        fallback.get_or_init(|| shard.bucket_index.block_identities())
+                    } else { &identities };
+                    complete.identity_anywhere(*handle).map(|(_, key)| key)
+                });
             let Some(beside) = beside else {
                 debug_assert!(
-                    identities.names_no_position(),
+                    fallback.get().unwrap_or(&identities).names_no_position(),
                     "bucket {} holds a block the index cannot name at any position while the \
                      lookup DOES name positions, so this walk is dropping a row outside the one \
                      window that explains it",
@@ -2213,7 +2477,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
                 continue;
             };
             from_index += 1;
-            entries.push(LiveBlockEntry {
+            visit(LiveBlockEntry {
                 object_key: Arc::clone(beside),
                 kind: block.model_id(),
                 // `None`: THIS WALK IS OVER THE INDEX, AND AN INDEX ENTRY NAMES A BLOCK.
@@ -2238,36 +2502,6 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
         }
     }
     note_live_block_scan(from_index);
-    // A RELEASED bucket holds no block entries, and every caller of this walk -- the dump
-    // manifest, WAL reclaim, compaction, the GC snapshot -- reads "no entries" as "no live
-    // blocks". Left alone that is not a cheaper index, it is a block whose backing record may be
-    // reclaimed. So the released buckets are supplemented from the model maps, which is the same
-    // source `reload_released_bucket` would rebuild them from: what this returns is what the
-    // bucket index WOULD say if nothing were released.
-    //
-    // Exact, not approximate, because a release refuses any bucket holding a block whose KEY does
-    // not route to it -- `BucketReleaseRefusal::BlockRoutingMismatch` -- so the bucket computed
-    // below is the bucket the released node held the block under, and cannot claim a block for the
-    // wrong bucket.
-    if !shard.bucket_index.released_buckets.is_empty() {
-        let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
-        for mut entry in collect_model_live_block_entries(shard) {
-            let routing_bucket = block_routing_bucket(
-                &entry.object_key,
-                start_routing_bucket,
-                end_routing_bucket,
-            );
-            if shard.bucket_index.released_buckets.contains(&routing_bucket) {
-                // The filing is known exactly here too, and a supplemented entry must not read as
-                // "not filed": the five readers downstream would then fall back to a hash over the
-                // WHOLE keyspace and name a bucket a narrow shard does not hold.
-                entry.filed_routing_bucket = routing_bucket;
-                entry.filing_is_known = true;
-                entries.push(entry);
-            }
-        }
-    }
-    entries
 }
 
 /// The identity a released block is compared by, so a release can prove it is reversible.
@@ -2506,6 +2740,10 @@ pub(super) fn settle_released_bucket_object_delete(
             classify_bucket_layout_in_place(&mut bucket);
             settled = true;
         }
+        drop(bucket);
+        if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
+            owners.forget_key(routing_bucket, object_key);
+        }
     }
     settled
 }
@@ -2527,8 +2765,7 @@ pub(super) struct BucketReleaseRefusals {
     pub(super) not_in_memory: usize,
     /// A load is in flight and the block list is not settled.
     pub(super) loading: usize,
-    /// The bucket still pins the log. Releasing it while `eviction_dump_before_evict` is false
-    /// would strand undumped writes with nothing to rebuild them from.
+    /// The bucket still pins the log and this release route cannot retain its exact dirty state.
     pub(super) bucket_dirty: usize,
     /// Deleted: its blocks are not a set a reload should rebuild.
     pub(super) bucket_deleted: usize,
@@ -2636,10 +2873,76 @@ pub(super) fn release_bucket_blocks(
     shard: &mut ShardState,
     candidates: &[u32],
 ) -> BucketReleaseOutcome {
+    release_bucket_blocks_inner(shard, candidates, false, None)
+}
+
+/// Derived bucket indexes removed from serving state. Drop these after releasing the shard owner.
+pub(super) struct RetiredBucketIndexes(Vec<crate::engine::state::BlockIndexMap>);
+
+impl RetiredBucketIndexes {
+    pub(super) fn with_capacity(candidates: usize) -> Self {
+        Self(Vec::with_capacity(candidates))
+    }
+}
+
+#[cfg(test)]
+type BeforeRetiredBucketDrop = Box<dyn FnOnce(usize)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static BEFORE_RETIRED_BUCKET_DROP: std::cell::RefCell<Option<BeforeRetiredBucketDrop>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+impl Drop for RetiredBucketIndexes {
+    fn drop(&mut self) {
+        if !self.0.is_empty() {
+            let hook = BEFORE_RETIRED_BUCKET_DROP.with(|hook| hook.borrow_mut().take());
+            if let Some(hook) = hook {
+                hook(self.0.len());
+            }
+        }
+    }
+}
+
+pub(super) fn detach_bucket_blocks(
+    shard: &mut ShardState,
+    candidates: &[u32],
+    preserve_inline_pages: bool,
+    retired: &mut RetiredBucketIndexes,
+) -> BucketReleaseOutcome {
+    release_bucket_blocks_inner(shard, candidates, preserve_inline_pages, Some(retired))
+}
+
+#[cfg(test)]
+#[path = "inline_page_eviction_tests.rs"]
+mod inline_page_eviction_tests;
+
+/// Inline string records retain the address and exact page flags while the derived list is cold.
+pub(super) fn release_bucket_blocks_preserving_inline_pages(
+    shard: &mut ShardState,
+    candidates: &[u32],
+) -> BucketReleaseOutcome {
+    release_bucket_blocks_inner(shard, candidates, true, None)
+}
+
+fn inline_string_pages(bucket: &BucketNode) -> bool {
+    !bucket.block_index.is_empty()
+        && bucket.block_index.values().all(|block| block.model_id().as_str() == "string" && !block.deleted())
+}
+
+fn release_bucket_blocks_inner(
+    shard: &mut ShardState,
+    candidates: &[u32],
+    preserve_inline_pages: bool,
+    mut retired: Option<&mut RetiredBucketIndexes>,
+) -> BucketReleaseOutcome {
     let mut outcome = BucketReleaseOutcome::default();
     if candidates.is_empty() {
         return outcome;
     }
+    shard.bucket_index.ensure_bucket_owners();
     let wanted: BTreeSet<u32> = candidates.iter().copied().collect();
     // One model-map walk for the whole batch, not one per bucket. This is the set a reload would
     // rebuild from, so comparing the resident blocks against it is the proof the release is
@@ -2671,7 +2974,6 @@ pub(super) fn release_bucket_blocks(
     // that was built eagerly, at the same shard state, and every outcome field is identical.
     // `refuse` is a set of counters with no ordering, and `released_buckets` is still pushed in
     // candidate order.
-    let mut derived: Option<BTreeMap<u32, BTreeSet<ReleasedBlockIdentity>>> = None;
     let mut names_by_bucket = None;
     let lookup_established = !shard.bucket_index.names_no_object_blocks();
     // The shard's own range, for the per-block routing term below.
@@ -2682,6 +2984,7 @@ pub(super) fn release_bucket_blocks(
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             continue;
         };
+        let inline_pages = preserve_inline_pages && inline_string_pages(bucket);
         // The residency terms, tested in order so a refusal can name the one that decided it.
         // Same set, same order, same answer as the `||` chain this replaces -- what is new is
         // that the outcome can say WHICH, which is what makes one guard per term possible.
@@ -2689,7 +2992,7 @@ pub(super) fn release_bucket_blocks(
             Some(BucketReleaseRefusal::NotInMemory)
         } else if bucket.loading() {
             Some(BucketReleaseRefusal::Loading)
-        } else if bucket.dirty() {
+        } else if bucket.dirty() && !inline_pages {
             Some(BucketReleaseRefusal::BucketDirty)
         } else if bucket.deleted() {
             Some(BucketReleaseRefusal::BucketDeleted)
@@ -2713,14 +3016,19 @@ pub(super) fn release_bucket_blocks(
         // Keep only owned candidate identities across mutations. A successful release removes
         // lookup rows local to that bucket, so it cannot change another candidate's identities.
         let names = names_by_bucket.get_or_insert_with(|| {
-            let keys = crate::engine::state::BlockKeysByPosition::from_parts(
+            // ONE INVERSION FOR THE BATCH, from the owners of every wanted bucket.
+            let wanted_buckets: Vec<u32> = wanted.iter().copied().collect();
+            let keys = crate::engine::state::BlockKeysByPosition::from_owned_buckets(
                 &shard.bucket_index.objects,
                 &shard.bucket_index.object_block_lookup,
+                shard.bucket_index.bucket_owners.get(),
+                &wanted_buckets,
             );
             wanted.iter().filter_map(|routing_bucket| {
                 shard.bucket_index.bucket_map.get(routing_bucket)
                     .filter(|node| {
-                        node.in_memory() && !node.loading() && !node.dirty()
+                        node.in_memory() && !node.loading()
+                            && (!node.dirty() || preserve_inline_pages && inline_string_pages(node))
                             && !node.deleted() && !node.block_index.is_empty()
                     })
                     .map(|node| {
@@ -2735,7 +3043,7 @@ pub(super) fn release_bucket_blocks(
                 // bucket's lookup entries cannot be shown to drop only its own.
                 return Some(BucketReleaseRefusal::LookupNotLocal);
             };
-            if block.dirty() {
+            if block.dirty() && !inline_pages {
                 Some(BucketReleaseRefusal::BlockDirty)
             } else if block.deleted() {
                 Some(BucketReleaseRefusal::BlockDeleted)
@@ -2753,6 +3061,10 @@ pub(super) fn release_bucket_blocks(
                 Some(BucketReleaseRefusal::BlockRoutingMismatch)
             } else if !released_model_kind_is_addressable(block.model_id().as_str()) {
                 Some(BucketReleaseRefusal::BlockKindNotAddressable)
+            } else if inline_pages && !shard.strings().get(beside.as_ref()).is_some_and(|slot| {
+                matches!(slot.record.block_address(), super::object_record::BlockAddress::One(_))
+            }) {
+                Some(BucketReleaseRefusal::ModelMapDisagreement)
             } else {
                 None
             }
@@ -2781,46 +3093,46 @@ pub(super) fn release_bucket_blocks(
             outcome.refuse(BucketReleaseRefusal::LookupNotLocal);
             continue;
         }
-        let resident: BTreeSet<ReleasedBlockIdentity> = bucket
-            .block_index
-            .iter()
-            .filter_map(|(handle, block)| {
-                // A BLOCK NOTHING NAMES CONTRIBUTES NO IDENTITY, which makes the resident set
-                // smaller than the derived one and refuses the release below. That is the safe
-                // direction: releasing across a disagreement loses blocks.
-                names.get(handle).map(|beside| {
-                    released_block_identity(
-                        block.model_id().as_str(),
-                        beside,
-                        // `None`: the identity an entry can state is its block's, not its
-                        // element's.
-                        None,
-                        &block.address,
-                    )
+        // NO WHOLE-STORE PASS ON THIS PATH. A release is the local act of clearing one bucket's
+        // block list; a reload rebuilds it from the model maps, so a block the maps hold and the
+        // bucket does not is added back, not lost. The comparison of the two sets is
+        // `verify_release_matches_model_maps`, run by tests and by verify, not per batch.
+        //
+        // The one set comparison that stays is local to the bucket: with inline pages, two blocks
+        // that state the same identity would collapse into one and a reload would not restore
+        // both, so the resident identities must be as many as the resident blocks.
+        if inline_pages {
+            let resident: BTreeSet<ReleasedBlockIdentity> = bucket
+                .block_index
+                .iter()
+                .filter_map(|(handle, block)| {
+                    names.get(handle).map(|beside| {
+                        released_block_identity(block.model_id().as_str(), beside, None, &block.address)
+                    })
                 })
-            })
-            .collect();
-        // THE WHOLE-STORE PASS, on first demand and once. Nothing above this line consulted it.
-        let derived = derived.get_or_insert_with(|| {
-            BUCKET_RELEASE_MODEL_DERIVATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            derive_released_block_identities(shard, &wanted)
-        });
-        if derived.get(&routing_bucket) != Some(&resident) {
-            // The model maps would not rebuild what is resident. Whatever the disagreement is,
-            // it is not this function's to resolve -- and releasing across it would lose blocks.
-            outcome.refuse(BucketReleaseRefusal::ModelMapDisagreement);
-            continue;
+                .collect();
+            if resident.len() != bucket.block_index.len() {
+                outcome.refuse(BucketReleaseRefusal::ModelMapDisagreement);
+                continue;
+            }
         }
-        let dropped: Vec<(StoredModelKind, Arc<str>)> = bucket
+        let dropped: Vec<(StoredModelKind, Arc<str>, bool, bool)> = bucket
             .block_index
             .iter()
             .filter_map(|(handle, block)| {
-                names.get(handle).map(|beside| (block.model_id(), Arc::clone(beside)))
+                names.get(handle).map(|beside| (block.model_id(), Arc::clone(beside), block.dirty(), block.deleted()))
             })
             .collect();
         let block_count = dropped.len();
+        for (kind, key, dirty, deleted) in &dropped {
+            if kind.as_str() == "string" {
+                if let Some(slot) = shard.strings_mut().get_mut(key.as_ref()) {
+                    slot.record.retain_page_state(*dirty, *deleted);
+                }
+            }
+        }
         if lookup_established {
-            for (model_id, object_key) in &dropped {
+            for (model_id, object_key, _, _) in &dropped {
                 shard.bucket_index.remove_object_block_lookup_entry(
                     model_id.as_str(),
                     object_key,
@@ -2836,7 +3148,14 @@ pub(super) fn release_bucket_blocks(
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("bucket read immutably above");
-        bucket.block_index = crate::engine::state::BlockIndexMap::Empty;
+        if let Some(retired) = retired.as_deref_mut() {
+            retired.0.push(std::mem::replace(
+                &mut bucket.block_index,
+                crate::engine::state::BlockIndexMap::Empty,
+            ));
+        } else {
+            bucket.block_index = crate::engine::state::BlockIndexMap::Empty;
+        }
         bucket.set_meta_loaded(true);
         bucket.set_loading(false);
         bucket.set_in_memory(false);
@@ -2883,9 +3202,11 @@ pub(super) fn restore_released_buckets_in_checkpoint(shard: &mut ShardState, sha
         |key, _| released.contains(&block_routing_bucket(key, start, end)),
         |kind, key, element, address| {
             let bucket = block_routing_bucket(key.as_str(), start, end);
-            by_bucket.entry(bucket).or_default().push(live_block_entry_filed(
+            let mut entry = live_block_entry_filed(
                 key.to_handle(), kind.as_str(), element.map(str::to_string), address.clone(), bucket,
-            ));
+            );
+            restore_retained_inline_page_state(shard, &mut entry);
+            by_bucket.entry(bucket).or_default().push(entry);
         },
     );
     for bucket in released {
@@ -2918,15 +3239,7 @@ fn install_released_bucket_entries(
         let address = entry.address;
         blocks.push((
             Arc::clone(&entry.object_key),
-            BlockIndex::new(
-                entry.kind,
-                address,
-                // The model maps carry no per-block dirty/deleted bit, which is exactly why
-                // release refuses a bucket holding either. Reloaded blocks are clean and live,
-                // which is the state they were released in.
-                false,
-                false,
-            ),
+            BlockIndex::new(entry.kind, address, entry.dirty, entry.deleted),
             object_id,
         ));
     }
@@ -2954,6 +3267,9 @@ fn install_released_bucket_entries(
         drop(bucket);
         shard.bucket_index.bucket_map.remove(&routing_bucket);
         shard.bucket_index.released_buckets.remove(&routing_bucket);
+        if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
+            owners.forget_bucket(routing_bucket);
+        }
         return true;
     }
     // THE LIVE SET FROM WHAT WAS JUST INSTALLED, which is every block this bucket now holds: the
@@ -2973,6 +3289,9 @@ fn install_released_bucket_entries(
         .collect();
     update_bucket_layout_with_live_objects(&mut bucket, &live_object_ids);
     drop(bucket);
+    if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
+        owners.reset_bucket(routing_bucket);
+    }
     for (handle, object_key, block) in installed {
         shard
             .bucket_index
@@ -3882,6 +4201,8 @@ pub(super) fn visit_model_live_blocks(
     accept: impl Fn(&str, &ElementEntry) -> bool,
     mut emit: impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
 ) {
+    #[cfg(test)]
+    let _walk_timer = WalkTimer::start();
     // THE ARM LIST. Nested so that `visit_model_live_blocks` is the only thing in the tree that
     // can reach it, and so the count wraps all fifteen arms at once instead of being repeated
     // in each -- an arm added below is charged without being told to be.
@@ -4358,17 +4679,88 @@ pub(super) fn collect_model_live_block_entries_in_bucket(
                 == routing_bucket
         },
         |kind, object_key, element_name, address| {
-            entries.push(live_block_entry_filed(
+            let mut entry = live_block_entry_filed(
                 // Lent, not rebuilt -- see `collect_model_live_block_entries`.
                 object_key.to_handle(),
                 kind.as_str(),
                 element_name.map(str::to_string),
                 address.clone(),
                 routing_bucket,
-            ));
+            );
+            restore_retained_inline_page_state(shard, &mut entry);
+            entries.push(entry);
         },
     );
     entries
+}
+
+fn restore_retained_inline_page_state(shard: &ShardState, entry: &mut LiveBlockEntry) {
+    if entry.kind.as_str() != "string" { return; }
+    let (start, end) = shard.routing_range();
+    let bucket = entry.filed_bucket().unwrap_or_else(|| block_routing_bucket(&entry.object_key, start, end));
+    if !shard.bucket_index.released_buckets.contains(&bucket) { return; }
+    if let Some(slot) = shard.strings().get(entry.object_key.as_ref()) {
+        (entry.dirty, entry.deleted) = slot.record.retained_page_state();
+    }
+}
+
+pub(super) fn clear_retained_inline_page_dirty_state(shard: &mut ShardState, buckets: &[u32]) {
+    let wanted = buckets.iter().copied()
+        .filter(|bucket| shard.bucket_index.released_buckets.contains(bucket)).collect::<BTreeSet<_>>();
+    if wanted.is_empty() { return; }
+    let owners = shard.bucket_index.bucket_owners.get();
+    let complete = owners.is_some_and(|owners| wanted.iter().all(|bucket| owners.owners_of(*bucket).is_some()));
+    let keys = if complete {
+        wanted.iter().flat_map(|bucket| owners.unwrap().owners_of(*bucket).unwrap().iter())
+            .filter(|(kind, _)| kind.as_str() == "string")
+            .map(|(_, key)| Arc::clone(key)).collect::<Vec<_>>()
+    } else {
+        let (start, end) = shard.routing_range();
+        shard.strings().keys().filter(|key| wanted.contains(&block_routing_bucket(key, start, end)))
+            .cloned().collect::<Vec<_>>()
+    };
+    for key in keys {
+        if let Some(slot) = shard.strings_mut().get_mut(key.as_ref()) {
+            let (_, deleted) = slot.record.retained_page_state();
+            slot.record.retain_page_state(false, deleted);
+        }
+    }
+}
+
+/// Whether each wanted bucket's resident blocks are exactly what a reload would rebuild.
+///
+/// The check `release_bucket_blocks` used to run once per batch under the write lock. It walks the
+/// model maps, so it belongs to verification, not to the eviction hot path.
+pub(super) fn verify_release_matches_model_maps(
+    shard: &ShardState,
+    buckets: &[u32],
+) -> bool {
+    let wanted: BTreeSet<u32> = buckets.iter().copied().collect();
+    let wanted_list: Vec<u32> = wanted.iter().copied().collect();
+    let keys = crate::engine::state::BlockKeysByPosition::from_owned_buckets(
+        &shard.bucket_index.objects,
+        &shard.bucket_index.object_block_lookup,
+        shard.bucket_index.bucket_owners.get(),
+        &wanted_list,
+    );
+    BUCKET_RELEASE_MODEL_DERIVATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let derived = derive_released_block_identities(shard, &wanted);
+    wanted.iter().all(|routing_bucket| {
+        let Some(bucket) = shard.bucket_index.bucket_map.get(routing_bucket) else {
+            return true;
+        };
+        let names = crate::engine::state::block_identities_in(bucket, &keys);
+        let resident: BTreeSet<ReleasedBlockIdentity> = bucket
+            .block_index
+            .iter()
+            .filter_map(|(handle, block)| {
+                names.get(handle).map(|beside| {
+                    released_block_identity(block.model_id().as_str(), beside, None, &block.address)
+                })
+            })
+            .collect();
+        derived.get(routing_bucket) == Some(&resident)
+    })
 }
 
 /// What a reload would rebuild for each of the WANTED buckets, and nothing else.
@@ -4685,8 +5077,14 @@ pub(super) fn upsert_bucket_index_block_filed_at_bucket(
 pub(super) fn mark_bucket_index_object_deleted_filed(
     shard: &mut ShardState,
     object_key: &str,
+    identities: Option<&mut super::maintenance_log::DeletionIdentityBatch>,
 ) -> (bool, ObjectDeletionFiled) {
-    let marked = super::mark_bucket_index_object_deleted(shard, object_key);
+    let marked = match identities {
+        Some(batch) => super::mark_bucket_index_object_deleted_with_identity_batch(
+            shard, object_key, Some(batch),
+        ),
+        None => super::mark_bucket_index_object_deleted(shard, object_key),
+    };
     (marked, ObjectDeletionFiled(()))
 }
 
@@ -4805,7 +5203,7 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
         })
         .unwrap_or_default();
     // AND THE BUCKETS HOLDING ONLY A TOMBSTONE OF IT, which no ref can name. The old walk set
-    // `holds_a_page_of_the_object` from deleted pages as well as live ones, and filed the object's
+    // `holds_a_page_of_the_object` from deleted blocks as well as live ones, and filed the object's
     // id in that bucket's tombstone list for either -- so a bucket whose only block of the object
     // was already deleted still got the id. The rows are what state that now.
     let tombstoned: Vec<u32> = shard
@@ -4868,12 +5266,47 @@ pub(super) fn drop_vacated_live_block(
     address: &ElementEntry,
 ) {
     let target = super::live_block_key(address);
-    let targets: Vec<_> = shard.bucket_index.object_block_refs(kind, object_key).into_iter()
+    // THE BLOCK IS NAMED BY ITS HANDLE, NOT FOUND BY A WALK. A block's handle is derived from its
+    // object key and its address, and every block of an object is filed in the one bucket its key
+    // routes to, so the ref this retires is computed from the vacated address in O(log n). The walk
+    // below asked every ref of the object whether its block sat at that address, which made every
+    // removal from a collection cost a pair of lookups per element it held (the term that grew a
+    // removal from 1.7 ms at 10,000 members to 16.7 ms at 100,000). `retire_object_blocks` names
+    // its block the same way. The walk remains for the case where the computed ref is not the one
+    // filed (a block that moved buckets, or whose address differs in a field the handle hashes), so
+    // a miss costs what it always did and the answer is unchanged.
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    let direct_handle = crate::engine::state::block_index_handle(
+        object_key,
+        &BlockIndex::new(stored_model_kind(kind), address.clone(), false, false),
+    );
+    let direct = crate::engine::state::BlockLookupRef {
+        routing_bucket,
+        block_ref_key: direct_handle,
+    };
+    let direct_is_filed = shard
+        .bucket_index
+        .bucket_map
+        .get(&routing_bucket)
+        .and_then(|bucket| bucket.block_index.get(&direct_handle))
+        .is_some_and(|block| !block.deleted() && super::live_block_key(&block.address) == target)
+        && shard
+            .bucket_index
+            .object_block_refs(kind, object_key)
+            .is_some_and(|refs| refs.as_slice().binary_search(&direct).is_ok());
+    let targets: Vec<_> = if direct_is_filed {
+        vec![direct]
+    } else {
+        #[cfg(test)]
+        VACATED_BLOCK_WALKS.with(|walks| walks.set(walks.get() + 1));
+        shard.bucket_index.object_block_refs(kind, object_key).into_iter()
         .flat_map(|refs| refs.iter())
         .filter(|block_ref| shard.bucket_index.bucket_map.get(&block_ref.routing_bucket)
             .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
             .is_some_and(|block| !block.deleted() && super::live_block_key(&block.address) == target))
-        .cloned().collect();
+        .cloned().collect()
+    };
     for block_ref in targets {
         let removed = if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) {
             let removed = bucket.block_index.remove(&block_ref.block_ref_key,
@@ -5384,7 +5817,11 @@ fn upsert_bucket_index_block_inner(
         element_name: None,
         log_backed: address.block_id().is_none(),
         address,
-        dirty,
+        // A BLOCK FILED INTO AN OBJECT THAT IS ALREADY MARKED DIRTY IS FILED DIRTY. The mark of a
+        // repeat write skips the walk over the object's blocks (see
+        // `mark_object_dirty_at_bucket_with_policy`), which holds only if no block of a marked
+        // object is clean; this is the door every single-block writer files through.
+        dirty: dirty || shard.dirty_objects.contains(object_key),
         deleted: false,
         // Where this upsert is about to file it, computed ten lines up.
         filed_routing_bucket: routing_bucket,
@@ -5719,6 +6156,142 @@ fn upsert_bucket_index_block_inner(
     shard.buckets_pending_flag_refresh.extend(touched_buckets);
 }
 
+#[cfg(test)]
+thread_local! {
+    /// Test switch: file a series write by restating the whole live set, as every write that
+    /// replaced or trimmed a point did before [`file_series_blocks_after_write`]. The differential
+    /// test replays one sequence with this on and off and compares what was stored.
+    pub(super) static RESTATE_SERIES_BLOCKS: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// File what a series write did to the object's blocks: publish the blocks it wrote and retire
+/// the ones it left with no point.
+///
+/// `vacated` is every address a dropped, replaced or trimmed point held. A restating publish
+/// drops all of the object's blocks and files the live ones back -- the object's whole block
+/// count, per write, for a write that changed one. This asks the series which of the vacated
+/// blocks nobody maps to ([`addresses_no_point_names`]) and removes exactly those, by the handle
+/// their identity hashes to. A write that vacated nothing publishes only the new blocks, as a
+/// pure append always has.
+///
+/// WHAT IT FALLS BACK TO. A retired block that is not where its identity says it is filed leaves
+/// the index in a state this cannot narrow, so the whole live set is restated -- the old path, for
+/// the case the index and the series already disagree.
+pub(super) fn file_series_blocks_after_write(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    published: Vec<ElementEntry>,
+    vacated: Vec<ElementEntry>,
+    dirty: bool,
+) {
+    if vacated.is_empty() {
+        sync_bucket_index_object_blocks_with_mode(
+            shard, shard_id, kind, object_key, published, dirty, false,
+        );
+        return;
+    }
+    #[cfg(test)]
+    let restate = RESTATE_SERIES_BLOCKS.with(std::cell::Cell::get);
+    #[cfg(not(test))]
+    let restate = false;
+    let retired = {
+        let series = shard.objects_of_kind(stored_model_kind(kind)).get(object_key);
+        match series {
+            Some(series) => super::addresses_no_point_names(series, vacated),
+            None => vacated,
+        }
+    };
+    if !restate {
+        sync_bucket_index_object_blocks_with_mode(
+            shard, shard_id, kind, object_key, published, dirty, false,
+        );
+        if retire_object_blocks(shard, shard_id, kind, object_key, &retired, dirty) {
+            return;
+        }
+    }
+    let live_addresses = shard
+        .objects_of_kind(stored_model_kind(kind))
+        .get(object_key)
+        .map(|series| series.addresses().cloned().collect::<Vec<_>>())
+        .unwrap_or_default();
+    sync_bucket_index_object_blocks(shard, shard_id, kind, object_key, live_addresses, dirty);
+}
+
+/// Remove the named blocks of one object from the bucket index, and from the object's block refs.
+///
+/// Returns false, having removed nothing it was not asked to, when a block is not filed where its
+/// identity says: the caller restates the live set then.
+pub(super) fn retire_object_blocks(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    retired: &[ElementEntry],
+    dirty: bool,
+) -> bool {
+    if retired.is_empty() {
+        return true;
+    }
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    if !shard.bucket_index.released_buckets.is_empty() {
+        reload_released_bucket(shard, shard_id, routing_bucket);
+    }
+    let entry_kind = stored_model_kind(kind);
+    let mut all_found = true;
+    for address in retired {
+        let handle = crate::engine::state::block_index_handle(
+            object_key,
+            &BlockIndex::new(entry_kind, address.clone(), false, false),
+        );
+        let removed = {
+            let CoreIndex {
+                bucket_map,
+                block_slab_live,
+                ..
+            } = &mut shard.bucket_index;
+            match bucket_map.get_mut(&routing_bucket) {
+                None => None,
+                Some(mut bucket) => {
+                    let removed = bucket.block_index.remove(
+                        &handle,
+                        block_slab_live,
+                        crate::engine::state::StaleCause::Overwrite,
+                    );
+                    if let Some(removed) = &removed {
+                        let next_flag = bucket.dirty() | dirty;
+                        bucket.set_dirty(next_flag);
+                        let next_flag = bucket.block_index.is_empty();
+                        bucket.set_deleted(next_flag);
+                        if dirty {
+                            bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
+                        }
+                        classify_bucket_layout_after_block_removal(&mut bucket, removed);
+                    }
+                    removed
+                }
+            }
+        };
+        if removed.is_none() {
+            all_found = false;
+            continue;
+        }
+        shard.bucket_index.remove_object_block_lookup_ref(
+            kind,
+            object_key,
+            None,
+            &crate::engine::state::BlockLookupRef {
+                routing_bucket,
+                block_ref_key: handle,
+            },
+        );
+    }
+    shard.buckets_pending_flag_refresh.insert(routing_bucket);
+    all_found
+}
+
 pub(super) fn sync_bucket_index_object_blocks(
     shard: &mut ShardState,
     shard_id: ShardId,
@@ -5881,9 +6454,19 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             continue;
         };
         // NAMED BEFORE THE MUTATION, for the reason at `state::block_identities_in`.
+        //
+        // THIS BUCKET'S BLOCKS ARE ALL IT NAMES. The projection below reads `(routing_bucket,
+        // handle)` for the blocks of ONE bucket, and an inversion restricted to that bucket holds
+        // exactly those positions, so the names are the same. Built over the whole shard it grew
+        // two hash maps to the shard's block count on every restating write and dropped them: at
+        // 2,000 context nodes one event write allocated about 606 KB for it.
         let names = crate::engine::state::block_identities_in(
             &bucket,
-            &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
+            &crate::engine::state::BlockKeysByPosition::from_parts_for_bucket(
+                &shard.bucket_index.objects,
+                &shard.bucket_index.object_block_lookup,
+                routing_bucket,
+            ),
         );
         let before = bucket.block_index.len();
         bucket.block_index.retain(
@@ -5984,7 +6567,9 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             element_name: None,
             log_backed: address.block_id().is_none(),
             address,
-            dirty,
+            // Filed dirty into an object that is already marked dirty, as `upsert_bucket_index_block_inner`
+            // does: a repeat mark skips the walk over the object's blocks.
+            dirty: dirty || shard.dirty_objects.contains(object_key),
             deleted: false,
             // Where this publish is about to file it, computed five lines up.
             filed_routing_bucket: routing_bucket,
@@ -6156,7 +6741,7 @@ fn classify_bucket_layout_preserving_tombstones(bucket: &mut BucketNode) {
     bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
 }
 
-fn classify_bucket_layout_after_block_removal(bucket: &mut BucketNode, removed: &BlockIndex) {
+pub(super) fn classify_bucket_layout_after_block_removal(bucket: &mut BucketNode, removed: &BlockIndex) {
     if removed.deleted() {
         classify_bucket_layout_in_place(bucket);
     } else {
@@ -6851,11 +7436,14 @@ fn refresh_all_bucket_runtime_flags(
     // AND ONLY WHEN THE SWEEP IS GOING TO REBUILD. A sweep that is not rebuilding the object list
     // has no use for the identities and must not pay for them: this is the write path's traversal
     // as well as the maintenance one.
+    let has_expiry = !shard.expires_at_ms().is_empty();
     let index = &mut shard.bucket_index;
     // BUILT WHENEVER A CONSUMER NEEDS IT, WHICH IS NOT THE SAME QUESTION AS WHETHER THE OBJECT
-    // INDEX IS BEING REBUILT. The TTL rollup selects blocks by the object held BESIDE them, so a
-    // `Recompute` needs the inversion even on the reconstruct path, which skips the rescan.
-    let keys = if rebuild_object_index || matches!(ttl_rollup, BucketTtlRollup::Recompute) {
+    // INDEX IS BEING REBUILT. A nonempty TTL rollup needs identities even on the reconstruct
+    // path. With no expiries, that arm simply clears the minimum and needs no identities.
+    let keys = if rebuild_object_index
+        || (matches!(ttl_rollup, BucketTtlRollup::Recompute) && has_expiry)
+    {
         Some(crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup))
     } else {
         None
@@ -6984,6 +7572,13 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     if object_still_has_hot_block(shard, object_key) {
         return;
     }
+    if shard.strings().contains_key(object_key) {
+        let (start, end) = shard.routing_range();
+        let bucket = block_routing_bucket(object_key, start, end);
+        if let Some(shard_id) = shard.shard_id() {
+            reload_released_bucket(shard, shard_id, bucket);
+        }
+    }
     // Clearing a dirty bit needs no shard; re-deriving the object index does. Resolved here so the
     // loop below can rebuild when the state is stamped and reclassify when it is not.
     let shard_id = shard.shard_id();
@@ -7058,7 +7653,10 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
                 // `any(block.dirty)` alone; the keys were just dropped from the dirty set and
                 // this object's blocks were just cleared, so the two halves agree by construction.
                 .any(|block| block.dirty());
-            bucket.set_dirty(any_block_dirty);
+            // A BUCKET THAT STILL HOLDS A DIRTY OBJECT STAYS DIRTY, WHATEVER ITS BLOCKS SAY. A repeat
+            // mark of an already-marked object does not walk that object's blocks, so the dirty index
+            // is what keeps its bucket dirty; this assignment used to read the blocks alone.
+            bucket.set_dirty(any_block_dirty || shard.dirty_objects.has_bucket(routing_bucket));
             match shard_id {
                 Some(shard_id) => update_bucket_layout(shard_id, &mut bucket, &keys),
                 None => classify_bucket_layout_in_place(&mut bucket),
@@ -9155,30 +9753,32 @@ mod release_refusal_guards {
         assert!(released_model_kind_is_addressable("context_node"));
     }
 
-    /// TERM: the resident set must EQUAL what the model maps derive. Here the map holds the same
-    /// block at a different length, so a reload would rebuild a different address than the one
-    /// released -- the disagreement this term exists to refuse across.
+    /// The resident set is compared with what the model maps derive at VERIFY time, not per
+    /// release. Here the map holds the same block at a different length: the verify function says
+    /// so, and a release does not walk the store to find out -- the release path never derives.
     #[test]
-    fn a_model_map_disagreement_is_refused_and_the_refusal_names_the_map_term() {
+    fn a_model_map_disagreement_is_found_by_verify_and_the_release_does_not_walk() {
         let (mut shard, key) = releasable_shard(7, "disagreement-key");
+        assert!(
+            super::verify_release_matches_model_maps(&shard, &[7]),
+            "the fixture must agree with the maps before the disagreement is planted",
+        );
         shard.set_string_address(std::sync::Arc::from(key.as_str()), &address(7, 4_096));
+        assert!(
+            !super::verify_release_matches_model_maps(&shard, &[7]),
+            "verify did not see a block whose map entry has a different length",
+        );
 
+        super::reset_bucket_release_model_derivations();
+        let before = super::bucket_release_model_derivations();
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
-        assert!(
-            outcome.released_buckets.is_empty(),
-            "released across a model-map disagreement: {outcome:?}",
-        );
-        assert_eq!(outcome.released_blocks, 0, "{outcome:?}");
-        assert_eq!(outcome.refused_buckets, 1, "{outcome:?}");
         assert_eq!(
-            outcome.refusals,
-            BucketReleaseRefusals {
-                model_map_disagreement: 1,
-                ..BucketReleaseRefusals::default()
-            },
-            "the refusal was not attributed to the model-map term",
+            super::bucket_release_model_derivations(),
+            before,
+            "the release walked the model maps; the walk belongs to verify: {outcome:?}",
         );
+        assert_eq!(outcome.refusals.model_map_disagreement, 0, "{outcome:?}");
     }
 
     /// All four in ONE batch beside a releasable bucket. This is the guard that the four terms
@@ -9206,15 +9806,15 @@ mod release_refusal_guards {
 
         assert_eq!(
             outcome.released_buckets,
-            vec![1],
-            "expected exactly the releasable bucket of {} candidates: {outcome:?}",
+            vec![1, 5],
+            "expected the releasable bucket and the map-disagreeing one (verify's term, not              release's) of {} candidates: {outcome:?}",
             candidates.len(),
         );
-        assert_eq!(outcome.released_blocks, 1, "{outcome:?}");
+        assert_eq!(outcome.released_blocks, 2, "{outcome:?}");
         assert_eq!(
             outcome.refused_buckets,
-            4,
-            "expected 4 refusals of {} candidates: {outcome:?}",
+            3,
+            "expected 3 refusals of {} candidates: {outcome:?}",
             candidates.len(),
         );
         assert_eq!(
@@ -9223,10 +9823,9 @@ mod release_refusal_guards {
                 bucket_dirty: 1,
                 block_dirty: 1,
                 block_kind_not_addressable: 1,
-                model_map_disagreement: 1,
                 ..BucketReleaseRefusals::default()
             },
-            "the four refusals were not attributed one to each term",
+            "the three refusals were not attributed one to each term",
         );
         assert_eq!(
             outcome.refusals.total(),
@@ -9335,10 +9934,16 @@ mod release_walk_scale {
     /// released)`. The live-block count is the denominator: it is what the walk used to
     /// materialize, and a fixture whose two sizes did not differ in it would make the claim below
     /// a comparison of a store with itself.
-    fn release_four_of(buckets: u32) -> (u64, usize, usize, usize) {
+    fn release_four_of(buckets: u32) -> (u64, u64, usize, usize, usize) {
         let (mut shard, landed) = shard_with(buckets);
         let live_blocks = shard.strings().len();
         let candidates = [landed[0], landed[1], landed[2], landed[3]];
+
+        // THE CONTROL ARM FIRST: the verify-time comparison is the one place that still walks the
+        // model maps, so it is what proves the counter can see a walk on this fixture.
+        reset_bucket_scoped_model_entries();
+        assert!(super::verify_release_matches_model_maps(&shard, &candidates));
+        let verified = bucket_scoped_model_entries();
 
         reset_bucket_scoped_model_entries();
         let outcome = release_bucket_blocks(&mut shard, &candidates);
@@ -9350,6 +9955,7 @@ mod release_walk_scale {
         );
         (
             materialized,
+            verified,
             live_blocks,
             outcome.released_blocks,
             outcome.released_buckets.len(),
@@ -9363,24 +9969,24 @@ mod release_walk_scale {
     /// derivation that built nothing at all, both read zero at every store size -- and zero
     /// satisfies "does not grow with the store" perfectly while measuring nothing.
     #[test]
-    fn the_release_derivation_materializes_the_four_victims_blocks() {
-        let (materialized, live_blocks, released_blocks, released_buckets) = release_four_of(64);
+    fn the_verify_walk_materializes_the_four_victims_blocks_and_the_release_materializes_none() {
+        let (materialized, verified, live_blocks, released_blocks, released_buckets) =
+            release_four_of(64);
 
         assert_eq!(
             released_buckets, 4,
-            "the four victims must have been released, or there was nothing to derive for",
+            "the four victims must have been released, or there was nothing to compare",
         );
         assert_eq!(released_blocks, 4, "one block per victim");
         assert!(
             live_blocks > released_blocks,
-            "the store must hold more than the victims, or the claim below is untestable; \
-             {live_blocks} live blocks against {released_blocks} released",
+            "the store must hold more than the victims; {live_blocks} live against              {released_blocks} released",
         );
         assert_eq!(
-            materialized, 4,
-            "the derivation must materialize the four victims' blocks; it materialized \
-             {materialized} out of {live_blocks} live in the store",
+            verified, 4,
+            "the verify walk must materialize the four victims' blocks (the control that the              counter can see a walk); it materialized {verified} out of {live_blocks}",
         );
+        assert_eq!(materialized, 0, "the release itself must walk nothing");
     }
 
     /// THE CLAIM: releasing four buckets costs the four buckets, not the store.
@@ -9393,36 +9999,28 @@ mod release_walk_scale {
     /// The whole-shard WALK remains, and remains necessary: `derive_released_block_identities`
     /// says why. What is asserted here is what it materializes.
     #[test]
-    fn releasing_four_buckets_materializes_the_same_entries_however_large_the_store() {
+    fn releasing_four_buckets_walks_nothing_however_large_the_store() {
         const SMALL: u32 = 500;
         const LARGE: u32 = 4_000;
 
-        let (small, small_live, small_blocks, small_buckets) = release_four_of(SMALL);
-        let (large, large_live, large_blocks, large_buckets) = release_four_of(LARGE);
+        let (small, small_verified, small_live, small_blocks, small_buckets) =
+            release_four_of(SMALL);
+        let (large, large_verified, large_live, large_blocks, large_buckets) =
+            release_four_of(LARGE);
 
-        // VACUITY FLOOR, on the measured denominator rather than on the constants.
         assert!(
             large_live > small_live,
             "the two stores must differ in live blocks, got {small_live} and {large_live}",
         );
+        assert_eq!((small_buckets, large_buckets), (4, 4));
+        assert_eq!((small_blocks, large_blocks), (4, 4));
+        // The control: the verify walk sees exactly the four victims' blocks at both sizes, so a
+        // counter that read zero because it was not wired would fail here, not pass below.
+        assert_eq!((small_verified, large_verified), (4, 4));
         assert_eq!(
-            (small_buckets, large_buckets),
-            (4, 4),
-            "both sizes must release the same four victims to be compared at all",
-        );
-        assert_eq!(
-            (small_blocks, large_blocks),
-            (4, 4),
-            "both sizes must release the same four blocks",
-        );
-        assert!(
-            small > 0 && large > 0,
-            "a derivation that materializes nothing at either size measured nothing",
-        );
-        assert_eq!(
-            small, large,
-            "releasing four buckets materialized {small} entries out of {small_live} live blocks \
-             and {large} out of {large_live}; the release must cost the victims, not the store",
+            (small, large),
+            (0, 0),
+            "releasing four buckets materialized {small} entries out of {small_live} live blocks              and {large} out of {large_live}; the release must walk nothing",
         );
     }
 
@@ -10107,4 +10705,76 @@ pub(super) mod model_kind_registry_guards {
             assert_eq!(model_report_code(name), *code);
         }
     }
+}
+
+
+#[cfg(test)]
+#[test]
+fn detached_bucket_index_drops_off_owner_and_preserves_physical_gc_liveness() {
+    use crate::{Command, CommandResponse, ExecuteRequest, TemporalEngine};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let _physical = crate::engine::value_once_in_test(false);
+    let root = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20, root.path().join("cache"), root.path().join("blocks"), root.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.load_shard(2);
+    let key = "detached-physical-index";
+    assert!(engine.execute(ExecuteRequest {
+        shard_id: 1, command: Command::StringSet { key: key.into(), value: vec![7; 128] },
+    }).status.ok);
+    let bucket = engine.routing_bucket_for_key(1, key);
+    let slab = engine.shards.with_state(1, |state| {
+        let state = state.unwrap();
+        let address = state.strings().get(key).expect("serving address");
+        assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
+        address.block_slab_id()
+    });
+
+    BEFORE_RETIRED_BUCKET_DROP.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(|_| panic!("dirty release detached the index")));
+    });
+    assert_eq!(engine.release_bucket_index_blocks(1, vec![bucket]), (0, 0, 1));
+    assert!(BEFORE_RETIRED_BUCKET_DROP.with(|slot| slot.borrow_mut().take().is_some()));
+    engine.create_bucket_dump_manifest(1, [bucket]).expect("durable bucket image");
+    engine.shards.with_state_mut(1, |state| {
+        clear_published_object_dirty_state(state.unwrap(), key);
+    });
+
+    let peer = engine.clone();
+    BEFORE_RETIRED_BUCKET_DROP.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move |indexes| {
+            assert_eq!(indexes, 1);
+            let (send, receive) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                peer.shards.with_state(1, |state| {
+                    let state = state.unwrap();
+                    assert!(state.bucket_index.released_buckets.contains(&bucket));
+                    let node = state.bucket_index.bucket_map.get(&bucket).unwrap();
+                    assert!(!node.in_memory() && node.block_index.is_empty());
+                });
+                let gc = peer.storage_block_gc_dependency_plan(1, [slab], [], [], None, None, 0);
+                assert!(gc.live_block_slab_ids.contains(&slab));
+                assert!(gc.blocked_block_slab_ids.contains(&slab));
+                assert!(!gc.reclaimable_block_slab_ids.contains(&slab));
+                assert!(peer.execute(ExecuteRequest {
+                    shard_id: 2, command: Command::StringSet { key: "detach-peer".into(), value: vec![3; 64] },
+                }).status.ok);
+                send.send(()).unwrap();
+            });
+            receive.recv_timeout(Duration::from_secs(10)).expect("bucket drop retained the owner");
+            worker.join().unwrap();
+        }));
+    });
+    assert_eq!(engine.release_bucket_index_blocks(1, vec![bucket]), (1, 1, 0));
+    assert!(BEFORE_RETIRED_BUCKET_DROP.with(|slot| slot.borrow().is_none()));
+    engine.cache.invalidate_shard(1).unwrap();
+    assert_eq!(engine.execute(ExecuteRequest {
+        shard_id: 1, command: Command::StringGet { key: key.into() },
+    }).response, CommandResponse::Bytes { value: Some(vec![7; 128]) });
+    assert!(engine.reload_released_bucket_index_blocks(1, bucket));
+    assert!(engine.live_block_slab_ids(1).contains(&slab));
 }

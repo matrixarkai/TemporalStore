@@ -387,7 +387,7 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("block/map_key/kind", Scale::PerBlock, Nature::Identity, ""),
     ("block/map_key/object_key", Scale::PerBlock, Nature::Identity, ""),
     (
-        "block/map_key/component_slot",
+        "block/map_key/element_name_slot",
         Scale::PerBlock,
         Nature::Envelope,
         "",
@@ -448,7 +448,7 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
 ];
 
 /// The one term that is structurally empty and is asserted EXACTLY zero rather than non-zero.
-const STRUCTURALLY_EMPTY: &str = "block/map_key/component_slot";
+const STRUCTURALLY_EMPTY: &str = "block/map_key/element_name_slot";
 
 /// The declared scale and nature of a label, or a panic naming the label.
 fn declared(label: &str) -> (Scale, Nature, &'static str) {
@@ -541,7 +541,7 @@ const BLOCK_KEY_TERMS: &[&str] = &[
     "block/map_key_quotes",
     "block/map_key/kind",
     "block/map_key/object_key",
-    "block/map_key/component_slot",
+    "block/map_key/element_name_slot",
     "block/map_key/block_slab_id",
     "block/map_key/offset",
     "block/map_key/length",
@@ -696,83 +696,84 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
         assert!(response.status.ok, "the seed must ack at {ordinal}: {response:?}");
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
-    assert_eq!(
-        keys,
-        shard.strings().len(),
-        "[CLAUSE seed-landed] the fixture acked {keys} string object(s) and the index holds {}, so \
-         the denominator every figure below is taken against is not the corpus",
-        shard.strings().len()
-    );
+    engine.shards.with_state(SHARD, |shard_state| {
+        let shard = shard_state.expect("shard is loaded");
+        assert_eq!(
+            keys,
+            shard.strings().len(),
+            "[CLAUSE seed-landed] the fixture acked {keys} string object(s) and the index holds {}, so \
+             the denominator every figure below is taken against is not the corpus",
+            shard.strings().len()
+        );
 
-    let buckets = shard.bucket_index.bucket_map.len();
-    let blocks: usize = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .map(|node| node.block_index.len())
-        .sum();
+        let buckets = shard.bucket_index.bucket_map.len();
+        let blocks: usize = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|node| node.block_index.len())
+            .sum();
 
-    // THE JOIN FROM A WRITTEN KEY TO THE HANDLE THE LIVE MAP FILES THE BLOCK UNDER.
-    //
-    // Built through the encoder's own renderer, which is legitimate HERE and nowhere else in this
-    // module: this is bookkeeping for a counterfactual, not the redundancy claim. The claim is
-    // taken in the other direction -- the key rebuilt from the entry's WRITTEN BYTES -- because a
-    // comparison against `block_index_written_key` would be a renderer compared with itself.
-    let identity_keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    let mut handles_by_written_key = BTreeMap::new();
-    for node in shard.bucket_index.bucket_map.values() {
-        let identities = crate::engine::state::block_identities_in(node, &identity_keys);
-        for (handle, block) in node.block_index.iter() {
-            let object_key = identities.get(handle).unwrap_or_else(|| {
-                panic!(
-                    "[CLAUSE join-total] the block at handle {handle} in bucket {} has no identity \
-                     beside it, so no counterfactual over block keys can be priced",
-                    node.routing_bucket
-                )
-            });
-            let written = crate::engine::state::block_index_written_key(object_key, block);
-            assert!(
-                handles_by_written_key.insert(written.clone(), *handle).is_none(),
-                "[CLAUSE join-total] two blocks render the written key `{written}`, so a key is not \
-                 a block's name and the join below is not one-to-one"
-            );
+        // THE JOIN FROM A WRITTEN KEY TO THE HANDLE THE LIVE MAP FILES THE BLOCK UNDER.
+        //
+        // Built through the encoder's own renderer, which is legitimate HERE and nowhere else in this
+        // module: this is bookkeeping for a counterfactual, not the redundancy claim. The claim is
+        // taken in the other direction -- the key rebuilt from the entry's WRITTEN BYTES -- because a
+        // comparison against `block_index_written_key` would be a renderer compared with itself.
+        let identity_keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+        let mut handles_by_written_key = BTreeMap::new();
+        for node in shard.bucket_index.bucket_map.values() {
+            let identities = crate::engine::state::block_identities_in(node, &identity_keys);
+            for (handle, block) in node.block_index.iter() {
+                let object_key = identities.get(handle).unwrap_or_else(|| {
+                    panic!(
+                        "[CLAUSE join-total] the block at handle {handle} in bucket {} has no identity \
+                         beside it, so no counterfactual over block keys can be priced",
+                        node.routing_bucket
+                    )
+                });
+                let written = crate::engine::state::block_index_written_key(object_key, block);
+                assert!(
+                    handles_by_written_key.insert(written.clone(), *handle).is_none(),
+                    "[CLAUSE join-total] two blocks render the written key `{written}`, so a key is not \
+                     a block's name and the join below is not one-to-one"
+                );
+            }
         }
-    }
-    assert_eq!(
-        handles_by_written_key.len(),
-        blocks,
-        "[CLAUSE join-total] the join names {} block(s) against {blocks} resident",
-        handles_by_written_key.len()
-    );
+        assert_eq!(
+            handles_by_written_key.len(),
+            blocks,
+            "[CLAUSE join-total] the join names {} block(s) against {blocks} resident",
+            handles_by_written_key.len()
+        );
 
-    let container = crate::engine::encode_index_bytes(shard);
-    let msgpack = msgpack_payload_of(&container);
-    let frame_start = container
-        .windows(4)
-        .position(|window| window == [0x28, 0xb5, 0x2f, 0xfd])
-        .expect("the container must hold a zstd frame");
-    let container_at_counterfactual_level_len = frame_start
-        + zstd::stream::encode_all(msgpack.as_slice(), COUNTERFACTUAL_ZSTD_LEVEL)
-            .expect("the payload compresses")
-            .len();
-    let json = serde_json::to_vec(shard).expect("the index must serialize as JSON");
-    let value = serde_json::to_value(shard).expect("the index must serialize as a value");
+        let container = crate::engine::encode_index_bytes(shard);
+        let msgpack = msgpack_payload_of(&container);
+        let frame_start = container
+            .windows(4)
+            .position(|window| window == [0x28, 0xb5, 0x2f, 0xfd])
+            .expect("the container must hold a zstd frame");
+        let container_at_counterfactual_level_len = frame_start
+            + zstd::stream::encode_all(msgpack.as_slice(), COUNTERFACTUAL_ZSTD_LEVEL)
+                .expect("the payload compresses")
+                .len();
+        let json = serde_json::to_vec(shard).expect("the index must serialize as JSON");
+        let value = serde_json::to_value(shard).expect("the index must serialize as a value");
 
-    Reading {
-        objects: keys,
-        blocks,
-        buckets,
-        width,
-        shape,
-        value,
-        json_len: json.len(),
-        msgpack_len: msgpack.len(),
-        container_len: container.len(),
-        container_at_counterfactual_level_len,
-        handles_by_written_key,
-    }
+        Reading {
+            objects: keys,
+            blocks,
+            buckets,
+            width,
+            shape,
+            value,
+            json_len: json.len(),
+            msgpack_len: msgpack.len(),
+            container_len: container.len(),
+            container_at_counterfactual_level_len,
+            handles_by_written_key,
+        }
+    })
 }
 
 /// The pre-compression payload the default codec writes, pulled back out of the container.
@@ -1097,7 +1098,7 @@ fn walk(reading: &Reading) -> Walked {
             let slots = split_written_key(block_key);
             tally.add("block/map_key/kind", slots.kind.len(), 0);
             tally.add("block/map_key/object_key", slots.object_key.len(), 0);
-            tally.add("block/map_key/component_slot", slots.element_name.len(), 0);
+            tally.add("block/map_key/element_name_slot", slots.element_name.len(), 0);
             tally.add("block/map_key/block_slab_id", slots.block_slab_id.len(), 0);
             tally.add("block/map_key/offset", slots.offset.len(), 0);
             tally.add("block/map_key/length", slots.length.len(), 0);
@@ -1797,7 +1798,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
         (tally.bytes_of("block/map_key_quotes")
             + tally.bytes_of("block/map_key/kind")
             + tally.bytes_of("block/map_key/object_key")
-            + tally.bytes_of("block/map_key/component_slot")
+            + tally.bytes_of("block/map_key/element_name_slot")
             + tally.bytes_of("block/map_key/block_slab_id")
             + tally.bytes_of("block/map_key/offset")
             + tally.bytes_of("block/map_key/length")

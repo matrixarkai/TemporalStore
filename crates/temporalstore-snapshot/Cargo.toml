@@ -14,13 +14,13 @@ async-trait = "0.1"
 bytes = "1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "serde"] }
 hex = "0.4"
+matrixobject-client = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "1ca38c65d0b8e8a92dbb65840a77037f9c897777" }
 prometheus-client = "=0.22.3"
 prost = "0.13"
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
 sha2 = "0.10"
 thiserror = "1"
-tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "time"] }
+tokio = { version = "1", features = ["fs", "io-util", "macros", "rt-multi-thread", "sync", "time"] }
 uuid = { version = "=1.8.0", features = ["v4", "serde"] }
 
 [build-dependencies]
@@ -29,4 +29,6 @@ prost-build = "0.13"
 protoc-bin-vendored = "3"
 
 [dev-dependencies]
+# The AWS smoke test parses the AWS CLI's own JSON output.
+serde_json = "1"
 tempfile = "=3.10.1"

@@ -110,47 +110,48 @@ fn a_digest_equals_exactly_when_the_lines_were_equal() {
         manifests.len()
     );
 
-    let shards = engine.shards.read().unwrap();
-    let live = shards.get(&1).expect("shard 1");
-    let live_lines = crate::engine::storage_reporting::bucket_generation_fingerprints_by_bucket(1, live);
-    let live_digests = crate::engine::storage_reporting::bucket_generation_digests_by_bucket(1, live);
-    assert_eq!(
-        live_lines.keys().collect::<Vec<_>>(),
-        live_digests.keys().collect::<Vec<_>>(),
-        "the digest names exactly the buckets the lines named"
-    );
+    engine.shards.with_state(1, |owner| {
+        let live = owner.expect("shard 1");
+        let live_lines = crate::engine::storage_reporting::bucket_generation_fingerprints_by_bucket(1, live);
+        let live_digests = crate::engine::storage_reporting::bucket_generation_digests_by_bucket(1, live);
+        assert_eq!(
+            live_lines.keys().collect::<Vec<_>>(),
+            live_digests.keys().collect::<Vec<_>>(),
+            "the digest names exactly the buckets the lines named"
+        );
 
-    let (mut equal_pairs, mut unequal_pairs, mut absent_pairs) = (0usize, 0usize, 0usize);
-    for manifest in &manifests {
-        let state = crate::engine::decode_index_bytes(&manifest.index_bytes).expect("decodes");
-        let lines = crate::engine::storage_reporting::bucket_generation_fingerprints_by_bucket(1, &state);
-        let digests = crate::engine::storage_reporting::bucket_generation_digests_by_bucket(1, &state);
-        assert_eq!(lines.keys().collect::<Vec<_>>(), digests.keys().collect::<Vec<_>>());
-        let buckets = lines
-            .keys()
-            .chain(live_lines.keys())
-            .copied()
-            .collect::<std::collections::BTreeSet<_>>();
-        for bucket in buckets {
-            let by_lines = lines.get(&bucket) == live_lines.get(&bucket);
-            let by_digest = digests.get(&bucket) == live_digests.get(&bucket);
-            assert_eq!(
-                by_lines, by_digest,
-                "bucket {bucket} of manifest {}: the lines said equal={by_lines}, the digest said equal={by_digest}",
-                manifest.manifest_id
-            );
-            match (lines.get(&bucket), live_lines.get(&bucket)) {
-                (Some(_), Some(_)) if by_lines => equal_pairs += 1,
-                (Some(_), Some(_)) => unequal_pairs += 1,
-                _ => absent_pairs += 1,
+        let (mut equal_pairs, mut unequal_pairs, mut absent_pairs) = (0usize, 0usize, 0usize);
+        for manifest in &manifests {
+            let state = crate::engine::decode_index_bytes(&manifest.index_bytes).expect("decodes");
+            let lines = crate::engine::storage_reporting::bucket_generation_fingerprints_by_bucket(1, &state);
+            let digests = crate::engine::storage_reporting::bucket_generation_digests_by_bucket(1, &state);
+            assert_eq!(lines.keys().collect::<Vec<_>>(), digests.keys().collect::<Vec<_>>());
+            let buckets = lines
+                .keys()
+                .chain(live_lines.keys())
+                .copied()
+                .collect::<std::collections::BTreeSet<_>>();
+            for bucket in buckets {
+                let by_lines = lines.get(&bucket) == live_lines.get(&bucket);
+                let by_digest = digests.get(&bucket) == live_digests.get(&bucket);
+                assert_eq!(
+                    by_lines, by_digest,
+                    "bucket {bucket} of manifest {}: the lines said equal={by_lines}, the digest said equal={by_digest}",
+                    manifest.manifest_id
+                );
+                match (lines.get(&bucket), live_lines.get(&bucket)) {
+                    (Some(_), Some(_)) if by_lines => equal_pairs += 1,
+                    (Some(_), Some(_)) => unequal_pairs += 1,
+                    _ => absent_pairs += 1,
+                }
             }
         }
-    }
-    // NON-VACUITY. A history that produced only equal pairs, or only unequal ones, would let a
-    // digest that always agrees (or never does) satisfy the loop above.
-    assert!(equal_pairs > 0, "no bucket kept its lines across a dump, so nothing was held equal");
-    assert!(unequal_pairs > 0, "no bucket changed after a dump, so nothing was held unequal");
-    assert!(absent_pairs > 0, "no bucket was present on one side only");
+        // NON-VACUITY. A history that produced only equal pairs, or only unequal ones, would let a
+        // digest that always agrees (or never does) satisfy the loop above.
+        assert!(equal_pairs > 0, "no bucket kept its lines across a dump, so nothing was held equal");
+        assert!(unequal_pairs > 0, "no bucket changed after a dump, so nothing was held unequal");
+        assert!(absent_pairs > 0, "no bucket was present on one side only");
+    });
 }
 
 #[test]
@@ -161,6 +162,8 @@ fn a_retained_manifest_is_decoded_once_across_plans() {
     let manifests = engine.list_bucket_dump_manifests(1).len();
     assert!(manifests >= 3, "need several retained manifests, got {manifests}");
 
+    // Exercise a cold listing rather than the publisher's captured-state seed.
+    crate::engine::bucket_dump_io::clear_bucket_dump_manifest_parse_memo();
     // WITH THE MEMO.
     crate::engine::reset_manifest_digest_memo_counts();
     let first = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());

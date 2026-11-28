@@ -46,6 +46,8 @@ pub mod client;
 pub mod context_workflow;
 pub mod control;
 pub mod data_node;
+pub mod metaserver_files;
+pub mod metaserver_files_proto;
 pub mod e2e;
 pub mod durability_metrics;
 pub mod flush_gate;
@@ -57,8 +59,9 @@ pub mod index_log;
 pub mod ingestion;
 pub mod llm_context;
 pub(crate) mod log_framing;
-#[cfg(feature = "matrixobject")]
-pub mod matrixobject_store;
+pub mod matrixobject_direct;
+#[cfg(test)]
+pub(crate) mod matrixobject_test_plane;
 pub mod meta;
 pub mod partition_id;
 pub mod proxy;
@@ -105,6 +108,8 @@ mod real_capture_tests;
 /// which is a different failure and had no gate at all until this module.
 #[cfg(test)]
 mod foreign_type_name_guard;
+#[cfg(test)]
+pub(crate) mod wire_check;
 
 pub use block_store::{
     ElementEntry, BlockStoreSlabDescriptor, BlockStoreSlabState, BlockStoreSlabSummary,
@@ -339,8 +344,6 @@ pub use rebalance::{
 };
 pub use redis::{execute_redis_command, read_command, serve_redis_proxy, RespValue};
 pub use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, CacheStats, MultiLayerCache};
-#[cfg(feature = "matrixobject")]
-pub use matrixobject_store::MatrixObjectObjectStore;
 pub use shared_store::{
     ReplayReport, SharedStoreCheckpointManifest, SharedStoreFlushReport, SharedStoreGcReport,
     SharedStoreWalEntry, SharedStoreBlockSlab, SharedStoreReplayCursor,

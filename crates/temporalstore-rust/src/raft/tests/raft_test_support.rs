@@ -292,6 +292,7 @@ pub(super) fn topology_for_shard(
             serving_options: crate::meta::TableServingOptions::default(),
         }),
         shards: vec![TableShard {
+            raft_route: None,
             load_version: 0,
             shard_id,
             start_bucket: 0,
@@ -310,6 +311,7 @@ pub(super) fn topology_for_shard(
 
 pub(super) fn server_meta(addr: &str, node_id: u64, state: MetaEntityState) -> ServerMetaInfo {
     ServerMetaInfo {
+        grpc_addr: None,
         registered_at_ms: 0,
         reported_record_count: 0,
         reported_storage_bytes: 0,

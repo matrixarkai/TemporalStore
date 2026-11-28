@@ -111,6 +111,19 @@ bash scripts/mem0_scale_local.sh --infer false --records 100000 --batch-size 128
 The report includes its `infer` mode. Progress counters describe benchmark acknowledgments,
 not ingested message contents. The serving path adds no external ingestion log.
 
+### Index Log Footprint
+
+Index-log compression remains opt-in. Set `TS_INDEX_LOG_COMPRESSION_ENABLED=1` to use the
+existing zstd codec. `TS_INDEX_LOG_COMPRESSION_LEVEL=1` prioritizes encode CPU; level 3
+remains the default. The supported level range is 1 through 22.
+`TS_INDEX_LOG_COMPRESSION_MIN_BYTES=16384` keeps compression off records smaller than
+16 KiB; without an override the existing 256-byte threshold is retained. A compressed
+record is used only when it is smaller. WAL durability and index-log contents are unchanged.
+`TS_INDEX_LOG_COMPRESSION_ENABLED=0` disables compression for future writes. Binaries used for rollback
+must understand the existing compressed codec: disabling compression does not convert
+records already on disk. This controls durable bytes, not the batch algorithm's candidate
+count or working-set size.
+
 ## Model Selection On Updates
 
 Single-memory updates accept the same optional `provider` object as add and search. Batch

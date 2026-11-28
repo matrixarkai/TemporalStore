@@ -21,6 +21,8 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
         Command::CommonTtl { key, .. }
         | Command::CommonExists { key, .. }
         | Command::StringGet { key, .. }
+        | Command::StringLen { key }
+        | Command::StringGetRange { key, .. }
         | Command::HashGet { key, .. }
         | Command::HashMultiGet { key, .. }
         | Command::HashGetAll { key, .. }
@@ -35,7 +37,7 @@ pub(super) fn command_read_key(command: &Command) -> Option<&str> {
         | Command::FeatureAggQuery { key, .. }
         | Command::FeatureProtoAggQuery { key, .. }
         | Command::SequenceQuery { key, .. }
-        | Command::CellRankQuery { key, .. } => Some(key.as_str()),
+        | Command::WindowReduceRank { key, .. } => Some(key.as_str()),
         _ => None,
     }
 }
@@ -160,14 +162,20 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::HashDelete { key, .. }
         | Command::SetAdd { key, .. }
         | Command::SetRemove { key, .. }
+        | Command::SetAddMany { key, .. }
+        | Command::SetRemoveMany { key, .. }
         | Command::ListPush { key, .. }
         | Command::ListPop { key, .. }
+        | Command::ListPushMany { key, .. }
+        | Command::ListPopMany { key, .. }
         | Command::ListRange { key, .. }
         | Command::ListLen { key }
         | Command::ListSet { key, .. }
         | Command::ListRemove { key, .. }
         | Command::ListTrim { key, .. }
         | Command::ZSetAdd { key, .. }
+        | Command::ZSetAddMany { key, .. }
+        | Command::ZSetRemoveMany { key, .. }
         | Command::ZSetScore { key, .. }
         | Command::ZSetRemove { key, .. }
         | Command::ZSetCard { key }
@@ -185,8 +193,8 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::FeatureAppendWithTtl { key, .. }
         | Command::FeatureAppendWithPolicy { key, .. }
         | Command::FeatureReplace { key, .. }
-        | Command::CellRollup { key, .. }
-        | Command::CellRemove { key, .. }
+        | Command::WindowReduceRollup { key, .. }
+        | Command::WindowReduceRemove { key, .. }
         | Command::FeatureDelete { key }
         | Command::SequenceAdd { key, .. }
         | Command::ControlStateIncrement { key, .. }
@@ -348,11 +356,13 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
             ..
         } => CommandObjectKeys::one(context_compression_key(*tenant_hash, *node_hash)),
         Command::SequenceBatchQuery { .. }
-        | Command::CellFanInRankQuery { .. }
-        | Command::CellRankBatchQuery { .. }
+        | Command::WindowReduceFanInRank { .. }
+        | Command::WindowReduceRankBatch { .. }
         | Command::CommonTtl { .. }
         | Command::CommonExists { .. }
         | Command::StringGet { .. }
+        | Command::StringLen { .. }
+        | Command::StringGetRange { .. }
         | Command::HashGet { .. }
         | Command::HashMultiGet { .. }
         | Command::HashGetAll { .. }
@@ -368,7 +378,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::FeatureAggQuery { .. }
         | Command::FeatureProtoAggQuery { .. }
         | Command::SequenceQuery { .. }
-        | Command::CellRankQuery { .. }
+        | Command::WindowReduceRank { .. }
         | Command::ControlStateCount { .. }
         | Command::ControlStateQuery { .. }
         | Command::ControlStateDetail { .. }
@@ -406,6 +416,9 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
     matches!(
         command,
         Command::CommonDelete { .. }
+            // TTL edits leave blocks in place; lazy expiry uses the same filed deletion path.
+            | Command::CommonExpire { .. }
+            | Command::CommonPersist { .. }
             | Command::StringDelete { .. }
             | Command::StringSet { .. }
             | Command::StringSetEx { .. }
@@ -420,12 +433,18 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
+            | Command::SetAddMany { .. }
+            | Command::SetRemoveMany { .. }
             | Command::ListPush { .. }
             | Command::ListPop { .. }
+            | Command::ListPushMany { .. }
+            | Command::ListPopMany { .. }
             | Command::ListSet { .. }
             | Command::ListRemove { .. }
             | Command::ListTrim { .. }
             | Command::ZSetAdd { .. }
+            | Command::ZSetAddMany { .. }
+            | Command::ZSetRemoveMany { .. }
             | Command::ZSetRemove { .. }
             | Command::ZSetIncrBy { .. }
             | Command::ZSetCountAdjust { .. }
@@ -444,8 +463,8 @@ pub(super) fn command_updates_bucket_index_directly(command: &Command) -> bool {
             | Command::FeatureAppendWithTtl { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
-            | Command::CellRollup { .. }
-            | Command::CellRemove { .. }
+            | Command::WindowReduceRollup { .. }
+            | Command::WindowReduceRemove { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
     )
@@ -490,12 +509,18 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::HashDelete { .. }
             | Command::SetAdd { .. }
             | Command::SetRemove { .. }
+            | Command::SetAddMany { .. }
+            | Command::SetRemoveMany { .. }
             | Command::ListPush { .. }
             | Command::ListPop { .. }
+            | Command::ListPushMany { .. }
+            | Command::ListPopMany { .. }
             | Command::ListSet { .. }
             | Command::ListRemove { .. }
             | Command::ListTrim { .. }
             | Command::ZSetAdd { .. }
+            | Command::ZSetAddMany { .. }
+            | Command::ZSetRemoveMany { .. }
             | Command::ZSetRemove { .. }
             | Command::ZSetIncrBy { .. }
             | Command::ZSetCountAdjust { .. }
@@ -506,8 +531,8 @@ pub(crate) fn is_write_command(command: &Command) -> bool {
             | Command::FeatureAppendWithTtl { .. }
             | Command::FeatureAppendWithPolicy { .. }
             | Command::FeatureReplace { .. }
-            | Command::CellRollup { .. }
-            | Command::CellRemove { .. }
+            | Command::WindowReduceRollup { .. }
+            | Command::WindowReduceRemove { .. }
             | Command::FeatureDelete { .. }
             | Command::SequenceAdd { .. }
             | Command::ControlStateIncrement { .. }
@@ -649,6 +674,66 @@ pub(super) fn validate_command_preconditions(
     command: &Command,
 ) -> Result<(), Status> {
     match command {
+        Command::ListPushMany { members, .. }
+            if members.is_empty() || members.len() > crate::types::MAX_LIST_ELEMENTS_PER_COMMAND =>
+        {
+            return Err(Status::error(
+                "invalid_argument",
+                format!(
+                    "a list push names between 1 and {} elements, not {}",
+                    crate::types::MAX_LIST_ELEMENTS_PER_COMMAND,
+                    members.len()
+                ),
+            ));
+        }
+        Command::ListPopMany { count, .. }
+            if *count == 0 || *count > crate::types::MAX_LIST_ELEMENTS_PER_COMMAND =>
+        {
+            return Err(Status::error(
+                "invalid_argument",
+                format!(
+                    "a list pop takes between 1 and {} elements, not {}",
+                    crate::types::MAX_LIST_ELEMENTS_PER_COMMAND,
+                    count
+                ),
+            ));
+        }
+        Command::ZSetAddMany { members, .. }
+            if members.is_empty() || members.len() > crate::types::MAX_ZSET_MEMBERS_PER_COMMAND =>
+        {
+            return Err(Status::error(
+                "invalid_argument",
+                format!(
+                    "a sorted set command names between 1 and {} members, not {}",
+                    crate::types::MAX_ZSET_MEMBERS_PER_COMMAND,
+                    members.len()
+                ),
+            ));
+        }
+        Command::ZSetRemoveMany { members, .. }
+            if members.is_empty() || members.len() > crate::types::MAX_ZSET_MEMBERS_PER_COMMAND =>
+        {
+            return Err(Status::error(
+                "invalid_argument",
+                format!(
+                    "a sorted set command names between 1 and {} members, not {}",
+                    crate::types::MAX_ZSET_MEMBERS_PER_COMMAND,
+                    members.len()
+                ),
+            ));
+        }
+        Command::SetAddMany { members, .. } | Command::SetRemoveMany { members, .. }
+            if members.is_empty() || members.len() > crate::types::MAX_SET_MEMBERS_PER_COMMAND =>
+        {
+            return Err(Status::error(
+                "invalid_argument",
+                format!(
+                    "a set command names between 1 and {} members, not {}",
+                    crate::types::MAX_SET_MEMBERS_PER_COMMAND,
+                    members.len()
+                ),
+            ));
+        }
         Command::SetScan { limit, .. } if *limit == 0 || *limit > 10_000 => {
             return Err(Status::error(
                 "invalid_argument",
@@ -669,10 +754,10 @@ pub(super) fn validate_command_preconditions(
                 "timestamp_nanos must be between 0 and 999999999",
             ));
         }
-        // A ranked cell read is refused at admission for everything that needs no snapshot: the
+        // A ranked cell read is refused at admission for everything that needs no sample: the
         // bounds, the window, the score parameters. Names are checked against the key's header when
         // the read runs.
-        Command::CellRankQuery { spec, .. } => {
+        Command::WindowReduceRank { spec, .. } => {
             if let Err(why) = super::window_reduce_rank::validate_spec(spec) {
                 return Err(Status::error("invalid_argument", why));
             }
@@ -680,14 +765,14 @@ pub(super) fn validate_command_preconditions(
         // A batch is refused at admission for how many reads it carries and for any one read a
         // single-key read would be refused for (its member set, anchor and quota included): the
         // whole request, before any key is read.
-        Command::CellRankBatchQuery { queries } => {
+        Command::WindowReduceRankBatch { queries } => {
             if let Err(why) = super::window_reduce_fan_in::validate_batch(queries) {
                 return Err(Status::error("invalid_argument", why));
             }
         }
-        // A fan-in read is refused at admission for what needs no snapshot too: how many keys,
+        // A fan-in read is refused at admission for what needs no sample too: how many keys,
         // a key named twice (it would count twice), and everything a one-key read is refused for.
-        Command::CellFanInRankQuery { keys, spec } => {
+        Command::WindowReduceFanInRank { keys, spec } => {
             if let Err(why) = super::window_reduce_fan_in::validate_keys(keys) {
                 return Err(Status::error("invalid_argument", why));
             }
@@ -795,10 +880,10 @@ pub(super) fn validate_command_preconditions(
             }
         }
         // A rollup is refused HERE, before the log, like a merge-reduce append: the plan reads the
-        // snapshots below the cutoff and runs the pure rollup, so a name the key does not declare,
-        // a bucket over the snapshot limit and a snapshot that is not a cell snapshot all write
+        // samples below the cutoff and runs the pure rollup, so a name the key does not declare,
+        // a bucket over the sample limit and a sample that is not a cell sample all write
         // nothing. The plan is thrown away; execution plans again (see `window_reduce_rollup_apply`).
-        Command::CellRollup { key, spec } => {
+        Command::WindowReduceRollup { key, spec } => {
             let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
             // A key past its deadline reads as absent, as it does everywhere else.
             let expired = shard
@@ -816,11 +901,11 @@ pub(super) fn validate_command_preconditions(
                 spec,
             )?;
         }
-        // A removal is refused HERE, before the log, as a rollup is: the plan counts the snapshots
+        // A removal is refused HERE, before the log, as a rollup is: the plan counts the samples
         // inside the window, reads them and selects the cells, so a name the key does not declare,
-        // a window over the snapshot limit and a snapshot that is not a cell snapshot all write
+        // a window over the sample limit and a sample that is not a cell sample all write
         // nothing. The plan is thrown away; execution plans again (see `window_reduce_remove_apply`).
-        Command::CellRemove { key, spec } => {
+        Command::WindowReduceRemove { key, spec } => {
             let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
             let expired = shard
                 .expires_at_ms()
@@ -1365,6 +1450,26 @@ struct CachedValues {
     values: Vec<Option<Vec<u8>>>,
 }
 
+#[derive(serde::Deserialize)]
+struct CachedFeaturePoints {
+    points: Vec<crate::types::FeaturePoint>,
+}
+
+#[derive(serde::Deserialize)]
+struct CachedFeaturePointGroups {
+    groups: Vec<(String, Vec<crate::types::FeaturePoint>)>,
+}
+
+#[derive(serde::Deserialize)]
+struct CachedSequenceRows {
+    rows: Vec<crate::types::SequenceFeatureRow>,
+}
+
+#[derive(serde::Deserialize)]
+struct CachedSequenceRowGroups {
+    groups: Vec<(String, Vec<crate::types::SequenceFeatureRow>)>,
+}
+
 /// Encode a cached response.
 ///
 /// Nothing on disk depends on this being msgpack rather than anything else, but it does depend on
@@ -1393,9 +1498,19 @@ pub(super) fn decode_cached_response(bytes: &[u8]) -> Option<CommandResponse> {
         "values" => Some(CommandResponse::Values {
             values: rmp_serde::from_slice::<CachedValues>(bytes).ok()?.values,
         }),
-        // Every other shape carries no bulk payload, so the buffering costs nothing worth avoiding
-        // and the whole enum reads back as itself. A variant added later lands here: slower than it
-        // could be, never wrong.
+        "feature_points" => Some(CommandResponse::FeaturePoints {
+            points: rmp_serde::from_slice::<CachedFeaturePoints>(bytes).ok()?.points,
+        }),
+        "feature_point_groups" => Some(CommandResponse::FeaturePointGroups {
+            groups: rmp_serde::from_slice::<CachedFeaturePointGroups>(bytes).ok()?.groups,
+        }),
+        "sequence_rows" => Some(CommandResponse::SequenceRows {
+            rows: rmp_serde::from_slice::<CachedSequenceRows>(bytes).ok()?.rows,
+        }),
+        "sequence_row_groups" => Some(CommandResponse::SequenceRowGroups {
+            groups: rmp_serde::from_slice::<CachedSequenceRowGroups>(bytes).ok()?.groups,
+        }),
+        // Retain the general decoder for the other response shapes.
         _ => rmp_serde::from_slice::<CommandResponse>(bytes).ok(),
     }
 }
@@ -1464,6 +1579,10 @@ pub(super) fn cached_bytes_with<R>(
 #[cfg(test)]
 #[path = "tests/borrowed_cache.rs"]
 mod borrowed_cache_tests;
+
+#[cfg(test)]
+#[path = "tests/series_cache.rs"]
+mod series_cache_tests;
 
 pub(super) fn invalidate_if_cached(cache: &MultiLayerCache, key: CacheKey) {
     invalidate_if_cached_ref(cache, &key);

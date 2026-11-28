@@ -113,13 +113,14 @@ fn member_bytes(index: usize) -> Vec<u8> {
 /// here is whether the row reached the log and came back, and the durable map is what a replay
 /// reconstructs.
 fn resident_members(engine: &TemporalEngine) -> BTreeSet<Vec<u8>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    shard
-        .bucket_index.sets
-        .get(KEY)
-        .map(|members| members.iter().map(|(member, _)| member.clone()).collect())
-        .unwrap_or_default()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        shard
+            .bucket_index.sets
+            .get(KEY)
+            .map(|members| members.iter().map(|(member, _)| member.clone()).collect())
+            .unwrap_or_default()
+    })
 }
 
 /// The listing, PRINTED rather than asserted, for the reason given on `resident_members`.
@@ -330,74 +331,75 @@ fn the_gate_does_not_reach_the_element_name_the_index_log_item_is_built_from() {
         assert!(response.status.ok, "write {index} failed");
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
 
-    // (1) THE MECHANISM: the element name the log item is built from comes off the COMMAND, so the
-    //     collapsed index entry cannot reach it.
-    let command = Command::SetAdd {
-        key: KEY.to_string(),
-        member: member_bytes(0),
-    };
-    let named = crate::engine::command_upsert_element_names(&command, shard)
-        .expect("a set add must name an upsert element name");
-    println!("\n=== asked directly, under the gate ===");
-    println!("  command_upsert_element_names -> {named:?}");
-    assert_eq!(
-        1,
-        named.len(),
-        "a single set add named {} element names",
-        named.len()
-    );
-    let (kind, object_key, element_name) = named[0].clone();
-    assert_eq!("set", kind, "the element name is filed under {kind}");
-    assert_eq!(KEY, object_key.as_str(), "it names object {object_key}");
-    let element_name = element_name.expect(
-        "THE GATE REACHED THE RECORD. `command_upsert_element_names` no longer names an element name for \
-         a set add, so `collect_upsert_index_items` would fall to its `_ => None` arm, build no \
-         item, and the write would never reach the index log",
-    );
-    assert_eq!(
-        "\u{1b}member-00000",
-        element_name,
-        "the element name is spelled {element_name}, not as the set arm decodes it"
-    );
+        // (1) THE MECHANISM: the element name the log item is built from comes off the COMMAND, so the
+        //     collapsed index entry cannot reach it.
+        let command = Command::SetAdd {
+            key: KEY.to_string(),
+            member: member_bytes(0),
+        };
+        let named = crate::engine::command_upsert_element_names(&command, shard)
+            .expect("a set add must name an upsert element name");
+        println!("\n=== asked directly, under the gate ===");
+        println!("  command_upsert_element_names -> {named:?}");
+        assert_eq!(
+            1,
+            named.len(),
+            "a single set add named {} element names",
+            named.len()
+        );
+        let (kind, object_key, element_name) = named[0].clone();
+        assert_eq!("set", kind, "the element name is filed under {kind}");
+        assert_eq!(KEY, object_key.as_str(), "it names object {object_key}");
+        let element_name = element_name.expect(
+            "THE GATE REACHED THE RECORD. `command_upsert_element_names` no longer names an element name for \
+             a set add, so `collect_upsert_index_items` would fall to its `_ => None` arm, build no \
+             item, and the write would never reach the index log",
+        );
+        assert_eq!(
+            "\u{1b}member-00000",
+            element_name,
+            "the element name is spelled {element_name}, not as the set arm decodes it"
+        );
 
-    // (2) GIVEN WHAT THE REAL CALLER GIVES IT, an item is built.
-    let with_element_name = crate::engine::collect_upsert_index_items(
-        shard,
-        1,
-        &[("set", KEY.to_string(), Some(element_name.clone()))],
-        0,
-        1023,
-    );
-    println!("  with the command's element_name -> {} item(s)", with_element_name.len());
+        // (2) GIVEN WHAT THE REAL CALLER GIVES IT, an item is built.
+        let with_element_name = crate::engine::collect_upsert_index_items(
+            shard,
+            1,
+            &[("set", KEY.to_string(), Some(element_name.clone()))],
+            0,
+            1023,
+        );
+        println!("  with the command's element_name -> {} item(s)", with_element_name.len());
 
-    // (3) THE NEGATIVE CONTROL: the same call with no element name builds NOTHING. This is the
-    //     failure 7b names, demonstrated rather than asserted about.
-    let without_element_name = crate::engine::collect_upsert_index_items(
-        shard,
-        1,
-        &[("set", KEY.to_string(), None)],
-        0,
-        1023,
-    );
-    println!("  with no element_name    -> {} item(s)", without_element_name.len());
+        // (3) THE NEGATIVE CONTROL: the same call with no element name builds NOTHING. This is the
+        //     failure 7b names, demonstrated rather than asserted about.
+        let without_element_name = crate::engine::collect_upsert_index_items(
+            shard,
+            1,
+            &[("set", KEY.to_string(), None)],
+            0,
+            1023,
+        );
+        println!("  with no element_name    -> {} item(s)", without_element_name.len());
 
-    assert_eq!(
-        1,
-        with_element_name.len(),
-        "the builder made {} items for one element name, so the counts below are not comparable",
-        with_element_name.len()
-    );
-    assert!(
-        without_element_name.is_empty(),
-        "THE NEGATIVE CONTROL DID NOT HOLD: a `(\"set\", None)` element name built {} item(s), so the \
-         `_ => None` fallthrough no longer drops the row and the mechanism asserted above is no \
-         longer what protects the index log. If a later step gave the builder a block-named arm, \
-         THIS is the assertion to change -- deliberately, saying so",
-        without_element_name.len()
-    );
+        assert_eq!(
+            1,
+            with_element_name.len(),
+            "the builder made {} items for one element name, so the counts below are not comparable",
+            with_element_name.len()
+        );
+        assert!(
+            without_element_name.is_empty(),
+            "THE NEGATIVE CONTROL DID NOT HOLD: a `(\"set\", None)` element name built {} item(s), so the \
+             `_ => None` fallthrough no longer drops the row and the mechanism asserted above is no \
+             longer what protects the index log. If a later step gave the builder a block-named arm, \
+             THIS is the assertion to change -- deliberately, saying so",
+            without_element_name.len()
+        );
+    })
 }
 
 
@@ -444,13 +446,14 @@ fn field_value(index: usize) -> Vec<u8> {
 
 /// What REPLAY rebuilt, read from the durable map -- the hash analogue of `resident_members`.
 fn resident_hash_fields(engine: &TemporalEngine) -> BTreeSet<String> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    shard
-        .bucket_index.hashes
-        .get(HASH_KEY)
-        .map(|fields| fields.iter().map(|(name, _)| name.to_string()).collect())
-        .unwrap_or_default()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        shard
+            .bucket_index.hashes
+            .get(HASH_KEY)
+            .map(|fields| fields.iter().map(|(name, _)| name.to_string()).collect())
+            .unwrap_or_default()
+    })
 }
 
 struct HashReplayArm {
@@ -602,75 +605,76 @@ fn the_gate_does_not_reach_the_element_name_the_hash_index_log_item_is_built_fro
         assert!(response.status.ok, "write {index} failed");
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
 
-    // (1) THE MECHANISM: the element name the log item is built from comes off the COMMAND for hash
-    //     too, so the collapsed index entry cannot reach it.
-    let command = Command::HashSet {
-        key: HASH_KEY.to_string(),
-        field: field_name(0),
-        value: field_value(0),
-    };
-    let named = crate::engine::command_upsert_element_names(&command, shard)
-        .expect("a hash set must name an upsert element name");
-    println!("\n=== asked directly, under the gate (hash) ===");
-    println!("  command_upsert_element_names -> {named:?}");
-    assert_eq!(
-        1,
-        named.len(),
-        "a single hash set named {} element names",
-        named.len()
-    );
-    let (kind, object_key, element_name) = named[0].clone();
-    assert_eq!("hash", kind, "the element name is filed under {kind}");
-    assert_eq!(HASH_KEY, object_key.as_str(), "it names object {object_key}");
-    let element_name = element_name.expect(
-        "THE GATE REACHED THE RECORD. `command_upsert_element_names` no longer names an element name for \
-         a hash set, so `collect_upsert_index_items` would fall to its `_ => None` arm, build no \
-         item, and the write would never reach the index log",
-    );
-    assert_eq!(
-        field_name(0),
-        element_name,
-        "the element name is spelled {element_name}, not the field name `command_upsert_element_names` \
-         should have taken straight off the command"
-    );
+        // (1) THE MECHANISM: the element name the log item is built from comes off the COMMAND for hash
+        //     too, so the collapsed index entry cannot reach it.
+        let command = Command::HashSet {
+            key: HASH_KEY.to_string(),
+            field: field_name(0),
+            value: field_value(0),
+        };
+        let named = crate::engine::command_upsert_element_names(&command, shard)
+            .expect("a hash set must name an upsert element name");
+        println!("\n=== asked directly, under the gate (hash) ===");
+        println!("  command_upsert_element_names -> {named:?}");
+        assert_eq!(
+            1,
+            named.len(),
+            "a single hash set named {} element names",
+            named.len()
+        );
+        let (kind, object_key, element_name) = named[0].clone();
+        assert_eq!("hash", kind, "the element name is filed under {kind}");
+        assert_eq!(HASH_KEY, object_key.as_str(), "it names object {object_key}");
+        let element_name = element_name.expect(
+            "THE GATE REACHED THE RECORD. `command_upsert_element_names` no longer names an element name for \
+             a hash set, so `collect_upsert_index_items` would fall to its `_ => None` arm, build no \
+             item, and the write would never reach the index log",
+        );
+        assert_eq!(
+            field_name(0),
+            element_name,
+            "the element name is spelled {element_name}, not the field name `command_upsert_element_names` \
+             should have taken straight off the command"
+        );
 
-    // (2) GIVEN WHAT THE REAL CALLER GIVES IT, an item is built.
-    let with_element_name = crate::engine::collect_upsert_index_items(
-        shard,
-        1,
-        &[("hash", HASH_KEY.to_string(), Some(element_name.clone()))],
-        0,
-        1023,
-    );
-    println!("  with the command's element_name -> {} item(s)", with_element_name.len());
+        // (2) GIVEN WHAT THE REAL CALLER GIVES IT, an item is built.
+        let with_element_name = crate::engine::collect_upsert_index_items(
+            shard,
+            1,
+            &[("hash", HASH_KEY.to_string(), Some(element_name.clone()))],
+            0,
+            1023,
+        );
+        println!("  with the command's element_name -> {} item(s)", with_element_name.len());
 
-    // (3) THE NEGATIVE CONTROL: the same call with no element name builds NOTHING.
-    let without_element_name = crate::engine::collect_upsert_index_items(
-        shard,
-        1,
-        &[("hash", HASH_KEY.to_string(), None)],
-        0,
-        1023,
-    );
-    println!("  with no element_name    -> {} item(s)", without_element_name.len());
+        // (3) THE NEGATIVE CONTROL: the same call with no element name builds NOTHING.
+        let without_element_name = crate::engine::collect_upsert_index_items(
+            shard,
+            1,
+            &[("hash", HASH_KEY.to_string(), None)],
+            0,
+            1023,
+        );
+        println!("  with no element_name    -> {} item(s)", without_element_name.len());
 
-    assert_eq!(
-        1,
-        with_element_name.len(),
-        "the builder made {} items for one element name, so the counts below are not comparable",
-        with_element_name.len()
-    );
-    assert!(
-        without_element_name.is_empty(),
-        "THE NEGATIVE CONTROL DID NOT HOLD: a (\"hash\", None) element name built {} item(s), so the \
-         `_ => None` fallthrough no longer drops the row and the mechanism asserted above is no \
-         longer what protects the index log. If a later step gave the builder a block-named arm, \
-         THIS is the assertion to change -- deliberately, saying so",
-        without_element_name.len()
-    );
+        assert_eq!(
+            1,
+            with_element_name.len(),
+            "the builder made {} items for one element name, so the counts below are not comparable",
+            with_element_name.len()
+        );
+        assert!(
+            without_element_name.is_empty(),
+            "THE NEGATIVE CONTROL DID NOT HOLD: a (\"hash\", None) element name built {} item(s), so the \
+             `_ => None` fallthrough no longer drops the row and the mechanism asserted above is no \
+             longer what protects the index log. If a later step gave the builder a block-named arm, \
+             THIS is the assertion to change -- deliberately, saying so",
+            without_element_name.len()
+        );
+    })
 }
 
 /// EVERY KIND THAT DECLARES AN UPSERT ELEMENT NAME MUST HAVE A COLLECTOR ARM FOR IT.
@@ -787,88 +791,89 @@ fn every_declared_element_name_builds_an_index_item() {
         );
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
 
-    println!();
-    println!("  kind      element names   items   items without the element name");
-    let mut checked = 0usize;
-    for (label, command) in &commands {
-        // POST-WRITE, which is when the real caller asks: a list push files under a sequence only
-        // knowable after the write, and a feature append under the timestamp it stored.
-        let named = crate::engine::command_upsert_element_names(command, shard).unwrap_or_else(|| {
-            panic!(
-                "`command_upsert_element_names` names nothing for a {label} write. If that is now \
-                 deliberate -- the kind went back to the whole-object snapshot path -- remove it \
-                 from this test's list and say why; a silent `None` here is a cost regression, \
-                 not a loss."
-            )
-        });
-        assert!(
-            !named.is_empty(),
-            "a {label} write named an EMPTY element name list, which takes the delta path and then \
-             has nothing to put in the record"
-        );
+        println!();
+        println!("  kind      element names   items   items without the element name");
+        let mut checked = 0usize;
+        for (label, command) in &commands {
+            // POST-WRITE, which is when the real caller asks: a list push files under a sequence only
+            // knowable after the write, and a feature append under the timestamp it stored.
+            let named = crate::engine::command_upsert_element_names(command, shard).unwrap_or_else(|| {
+                panic!(
+                    "`command_upsert_element_names` names nothing for a {label} write. If that is now \
+                     deliberate -- the kind went back to the whole-object snapshot path -- remove it \
+                     from this test's list and say why; a silent `None` here is a cost regression, \
+                     not a loss."
+                )
+            });
+            assert!(
+                !named.is_empty(),
+                "a {label} write named an EMPTY element name list, which takes the delta path and then \
+                 has nothing to put in the record"
+            );
 
-        let items = crate::engine::collect_upsert_index_items(shard, 1, &named, 0, 1023);
-        // THE STRIPPED FORM: the same element names with the element name dropped. This is what the
-        // collector sees when a kind has no arm, and it must build nothing.
-        let stripped: Vec<(&'static str, String, Option<String>)> = named
-            .iter()
-            .map(|(kind, key, _)| (*kind, key.clone(), None))
-            .collect();
-        let without = crate::engine::collect_upsert_index_items(shard, 1, &stripped, 0, 1023);
+            let items = crate::engine::collect_upsert_index_items(shard, 1, &named, 0, 1023);
+            // THE STRIPPED FORM: the same element names with the element name dropped. This is what the
+            // collector sees when a kind has no arm, and it must build nothing.
+            let stripped: Vec<(&'static str, String, Option<String>)> = named
+                .iter()
+                .map(|(kind, key, _)| (*kind, key.clone(), None))
+                .collect();
+            let without = crate::engine::collect_upsert_index_items(shard, 1, &stripped, 0, 1023);
 
-        println!(
-            "  {label:<9} {:>10}   {:>5}   {:>26}",
-            named.len(),
-            items.len(),
-            without.len()
-        );
+            println!(
+                "  {label:<9} {:>10}   {:>5}   {:>26}",
+                named.len(),
+                items.len(),
+                without.len()
+            );
 
+            assert_eq!(
+                named.len(),
+                items.len(),
+                "a {label} write named {} element_name(s) and the collector built {} item(s). The \
+                 missing arm is `(\"{label}\", Some(..))` in `collect_upsert_index_items`: the caller \
+                 takes the delta path on the strength of the element name being named, so an item that \
+                 is not built is a block the record never mentions -- and the record gets SMALLER, so \
+                 it reads as a saving.",
+                named.len(),
+                items.len()
+            );
+            checked += 1;
+        }
+
+        // --- DENOMINATOR: the loop must actually have run over every kind, or this passes by
+        // --- iterating nothing. The count is spelled out so adding a kind to the list without
+        // --- bumping it is a failure rather than a silent narrowing.
         assert_eq!(
-            named.len(),
-            items.len(),
-            "a {label} write named {} element_name(s) and the collector built {} item(s). The \
-             missing arm is `(\"{label}\", Some(..))` in `collect_upsert_index_items`: the caller \
-             takes the delta path on the strength of the element name being named, so an item that \
-             is not built is a block the record never mentions -- and the record gets SMALLER, so \
-             it reads as a saving.",
-            named.len(),
-            items.len()
+            checked,
+            commands.len(),
+            "the pairing was checked for {checked} of {} kinds",
+            commands.len()
         );
-        checked += 1;
-    }
+        assert_eq!(
+            6, checked,
+            "this guard covers six kinds; a kind added to `command_upsert_element_names` belongs in this \
+             list too, and the number here is what makes leaving it out visible"
+        );
 
-    // --- DENOMINATOR: the loop must actually have run over every kind, or this passes by
-    // --- iterating nothing. The count is spelled out so adding a kind to the list without
-    // --- bumping it is a failure rather than a silent narrowing.
-    assert_eq!(
-        checked,
-        commands.len(),
-        "the pairing was checked for {checked} of {} kinds",
-        commands.len()
-    );
-    assert_eq!(
-        6, checked,
-        "this guard covers six kinds; a kind added to `command_upsert_element_names` belongs in this \
-         list too, and the number here is what makes leaving it out visible"
-    );
-
-    // --- AND THE NEGATIVE CONTROL, once, on the kind whose element name is richest. A collector that
-    // --- answered an item for anything would satisfy every assertion above.
-    let string_only = crate::engine::collect_upsert_index_items(
-        shard,
-        1,
-        &[("hash", "pair-hash".to_string(), None)],
-        0,
-        1023,
-    );
-    assert!(
-        string_only.is_empty(),
-        "the collector built {} item(s) for a hash with NO element name named. It is meant to answer \
-         only for an element name it can resolve, so building something here means the assertions \
-         above prove nothing.",
-        string_only.len()
-    );
+        // --- AND THE NEGATIVE CONTROL, once, on the kind whose element name is richest. A collector that
+        // --- answered an item for anything would satisfy every assertion above.
+        let string_only = crate::engine::collect_upsert_index_items(
+            shard,
+            1,
+            &[("hash", "pair-hash".to_string(), None)],
+            0,
+            1023,
+        );
+        assert!(
+            string_only.is_empty(),
+            "the collector built {} item(s) for a hash with NO element name named. It is meant to answer \
+             only for an element name it can resolve, so building something here means the assertions \
+             above prove nothing.",
+            string_only.len()
+        );
+    })
 }

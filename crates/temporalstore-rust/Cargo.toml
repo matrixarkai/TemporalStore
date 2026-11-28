@@ -11,12 +11,14 @@ keywords = ["temporalstore", "database", "storage", "raft", "memory"]
 categories = ["database-implementations", "data-structures"]
 
 [dependencies]
+tempfile = "=3.10.1"
 ahash = "0.8"
 async-trait = "0.1"
 bytes = "1"
 crc32c = "0.6.9"
 rmp-serde = "1.3"
 hex = "0.4"
+parking_lot = "0.12.5"
 prost = "0.13"
 serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
@@ -24,8 +26,8 @@ base64 = "0.22"
 bloomfilter = { version = "3.0.2", default-features = false }
 sha2 = "0.10"
 matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "58fb9573db087635877323dfbc2bb2ddf2e65702" }
-matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "5db2696701f3900e8d88f19977c02e1de2369c6f", features = ["rocksdb-ssd"] }
-matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "b2c9f5a832ba9e7c5b23f970f3b57730e0cec50f", optional = true }
+matrixcache = { git = "https://github.com/matrixarkai/matrixcache.git", rev = "8b5f929fa686c02f02a681d15cb283ddf30ed258", features = ["rocksdb-ssd"] }
+matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "1ca38c65d0b8e8a92dbb65840a77037f9c897777" }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }
@@ -34,6 +36,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "=1.8.0", features = ["v4", "serde"] }
 zstd = "0.13"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "0.38.44", features = ["fs"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3"
@@ -51,47 +56,10 @@ open-source-surface = []
 # tool has no business perturbing the suite that is meant to be checking the change.
 #   cargo test --features alloc-probe --lib what_a_retrieve_allocates -- --ignored --nocapture
 alloc-probe = []
-# The object-store backend, used to put a shared store behind a set of
-# otherwise stateless nodes. The store crate is Apache-2.0 open source and is
-# pinned by revision above, exactly as the cache and consensus dependencies
-# are, so this feature builds from a clean checkout with nothing to re-add.
-#
-# It is OFF BY DEFAULT and the code is fully gated by
-# `#[cfg(feature = "matrixobject")]`, because the backend is a deployment
-# choice rather than a default: a single-node store needs nothing of it.
-#
-# It was an inert stub for as long as the crate had no public source, and
-# "inert" meant nobody compiled it -- the examples drifted out of step with
-# the store's API while the stub hid it. Enabling it in CI is what keeps that
-# from happening again.
-matrixobject = ["dep:matrixobjectstore-rs"]
-
-# This example links the optional MatrixObjectStore crate; gate it behind the
-# `matrixobject` feature so the default `cargo build --all-targets` does not try
-# to compile it without the dependency enabled.
-[[example]]
-name = "shared_store_append_blob_conformance_report"
-required-features = ["matrixobject"]
-
-[[example]]
-name = "shared_store_append_blob_smoke"
-required-features = ["matrixobject"]
-
-[[example]]
-name = "three_node_shared_store_report"
-required-features = ["matrixobject"]
-
-[[example]]
-name = "scale_shared_store_report"
-required-features = ["matrixobject"]
-
-[[example]]
-name = "one_append_amplification_report"
-required-features = ["matrixobject"]
-
-[[example]]
-name = "batched_append_amplification_report"
-required-features = ["matrixobject"]
+# MatrixObject is reached only through a cluster, directly or through a gateway, and the
+# crate that does it is an ordinary dependency (Apache-2.0, pinned by revision above like the
+# cache and consensus dependencies). There is no feature to switch it on: a build that
+# compiled without it could not serve the cluster path every node is configured for.
 
 [[bin]]
 # Needs the counting allocator to say anything; it refuses to run without it rather than printing
@@ -128,10 +96,10 @@ name = "native_persistence_workflow"
 path = "src/bin/native_persistence_workflow.rs"
 
 [dev-dependencies]
+matrixobject-client = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "1ca38c65d0b8e8a92dbb65840a77037f9c897777" }
 async-trait = "0.1"
 fastcdc = { version = "5.0", default-features = false }
 syn = { version = "2", features = ["full", "visit"] }
-tempfile = "=3.10.1"
 
 [[bin]]
 name = "client"
@@ -140,3 +108,6 @@ path = "src/bin/temporalstore_command_client.rs"
 [[bin]]
 name = "server"
 path = "src/bin/temporalstore_data_server.rs"
+
+[[example]]
+name = "matrixobject_single_append_growth"

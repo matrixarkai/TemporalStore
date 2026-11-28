@@ -392,14 +392,12 @@ pub(crate) fn string_getrange_response(
         Ok(value) => value,
         Err(err) => return RespValue::Error(err),
     };
-    match execute(Command::StringGet {
+    match execute(Command::StringGetRange {
         key: name_arg(&args[1]),
+        start,
+        end: stop,
     }) {
-        Ok(CommandResponse::Bytes { value }) => {
-            let value = value.unwrap_or_default();
-            let (start, stop) = normalize_range(start, stop, value.len());
-            RespValue::Bulk(Some(value[start..stop].to_vec()))
-        }
+        Ok(CommandResponse::Bytes { value }) => RespValue::Bulk(Some(value.unwrap_or_default())),
         Ok(_) => RespValue::Error("ERR invalid getrange response".to_string()),
         Err(err) => RespValue::Error(format!("ERR {err}")),
     }

@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! `REMOVE` and `DELETE` of the cell protocol as the one command that removes cells
-//! ([`Command::CellRemove`]), and the engine's receipt back as a wire response. Like the rest of
+//! ([`Command::WindowReduceRemove`]), and the engine's receipt back as a wire response. Like the rest of
 //! the translator it reads no engine state and writes nothing; a refused request yields no command.
 //!
 //! # REMOVE
@@ -17,8 +17,9 @@
 //! # DELETE
 //!
 //! The selector names the key (`kind`, `channel`), the label predicate and the member set, over
-//! every sample. It maps to the same command and never to the deletion of the key: a delete that
-//! names no label and no member would empty the key and is refused, the way a removal is.
+//! every sample. It maps to the same command; a delete that names no label (the table has none) and
+//! no member leaves every part open, which is the deletion of the whole key in one record. A delete
+//! of a key that holds nothing answers NO_DATA.
 //!
 //! Every translated spec also passes the engine's own admission ([`window_reduce_remove::validate_spec`]),
 //! so a request the translator accepts is one the command accepts.
@@ -27,7 +28,7 @@ use crate::engine::window_reduce_remove;
 use super::cell_set::{within, EntityValue};
 use super::{invalid, key_of, entity_of, wire, WindowReduceStatusCode, Refusal, TableProfile, MAX_MEMBER_LIST};
 use crate::types::{
-    CellMemberFilter, CellMemberId, CellRemoveSpec, Command, FeatureFilter, FeatureFilterOp,
+    CellMemberFilter, CellMemberId, WindowReduceRemoveSpec, Command, FeatureFilter, FeatureFilterOp,
 };
 
 /// The members of a selector or a remove request: `members` is the include set (present when
@@ -68,9 +69,9 @@ fn span_ms(span: &wire::TimeSpan) -> Result<(u64, u64), Refusal> {
     Ok((first as u64, last as u64))
 }
 
-fn command_of(key: String, spec: CellRemoveSpec) -> Result<Command, Refusal> {
+fn command_of(key: String, spec: WindowReduceRemoveSpec) -> Result<Command, Refusal> {
     window_reduce_remove::validate_spec(&spec).map_err(invalid)?;
-    Ok(Command::CellRemove { key, spec })
+    Ok(Command::WindowReduceRemove { key, spec })
 }
 
 /// A remove request as the engine's removal.
@@ -94,15 +95,20 @@ pub(crate) fn translate_remove(
         Some(label) => label_filter(profile, label)?.into_iter().collect(),
         None => Vec::new(),
     };
-    command_of(
-        key,
-        CellRemoveSpec {
-            start_ms,
-            end_ms,
-            members: members_of(&request.members, request.has_members, &request.excluded_members),
-            filters,
-        },
-    )
+    let spec = WindowReduceRemoveSpec {
+        start_ms,
+        end_ms,
+        members: members_of(&request.members, request.has_members, &request.excluded_members),
+        filters,
+    };
+    // A removal that lost its arguments must not look like the deletion of the key: that is `DELETE`.
+    if window_reduce_remove::removes_the_whole_key(&spec) {
+        return Err(invalid(
+            "a removal names no window, member or predicate, so it would empty the key: \
+             use a delete to remove the whole key",
+        ));
+    }
+    command_of(key, spec)
 }
 
 /// A delete request as the engine's removal.
@@ -117,7 +123,7 @@ pub(crate) fn translate_delete(
     let key = key_of(profile, entity, selector.channel, selector.kind)?;
     command_of(
         key,
-        CellRemoveSpec {
+        WindowReduceRemoveSpec {
             start_ms: None,
             end_ms: None,
             members: members_of(&selector.members, selector.has_members, &selector.excluded_members),
@@ -129,8 +135,8 @@ pub(crate) fn translate_delete(
 /// The counts of the engine's receipt, in the order the wire carries them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Receipt {
-    pub(crate) snapshots_before: u64,
-    pub(crate) snapshots_after: u64,
+    pub(crate) samples_before: u64,
+    pub(crate) samples_after: u64,
     pub(crate) cells_before: u64,
     pub(crate) cells_removed: u64,
 }
@@ -139,8 +145,8 @@ pub(crate) fn remove_response(request: &wire::WindowReduceRemoveRequest, receipt
     wire::WindowReduceRemoveResponse {
         code: WindowReduceStatusCode::Ok as i32,
         span: request.span.clone(),
-        samples_before: receipt.snapshots_before,
-        samples_after: receipt.snapshots_after,
+        samples_before: receipt.samples_before,
+        samples_after: receipt.samples_after,
         cells_before: receipt.cells_before,
         cells_removed: receipt.cells_removed,
         ..Default::default()
@@ -158,10 +164,13 @@ pub(crate) fn refused_remove_response(request: &wire::WindowReduceRemoveRequest,
 }
 
 pub(crate) fn delete_response(receipt: Receipt) -> wire::WindowReduceDeleteResponse {
+    // A key that held no sample has nothing to delete: NO_DATA, as a read of nothing is not an error
+    // but a delete of nothing is not a deletion.
+    let code = if receipt.samples_before == 0 { WindowReduceStatusCode::NoData } else { WindowReduceStatusCode::Ok };
     wire::WindowReduceDeleteResponse {
-        code: WindowReduceStatusCode::Ok as i32,
-        samples_before: receipt.snapshots_before,
-        samples_after: receipt.snapshots_after,
+        code: code as i32,
+        samples_before: receipt.samples_before,
+        samples_after: receipt.samples_after,
         cells_before: receipt.cells_before,
         cells_removed: receipt.cells_removed,
         ..Default::default()

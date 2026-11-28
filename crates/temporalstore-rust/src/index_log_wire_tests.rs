@@ -97,6 +97,27 @@ fn catalog() -> Vec<SlabCatalogEntry> {
 fn record(items: Vec<IndexItem>) -> IndexDeltaRecord {
     let mut slabs = catalog();
     slabs.sort_by_key(|entry| entry.block_slab_id);
+    // A relocation's old placements: the same items at other addresses, one per item.
+    let relocated_from: Vec<IndexItem> = items
+        .iter()
+        .map(|item| {
+            let mut old = item.clone();
+            if let Some(entry) = item.entry.as_ref() {
+                // A DIFFERENT, IN-RANGE ADDRESS: the widest item sits at the top of the address
+                // word, where adding to either half names no block, so step down from there.
+                let slab = entry.block_slab_id();
+                let offset = entry.offset();
+                old.entry = Some(slab_entry(
+                    if slab > 0 { slab - 1 } else { slab + 1 },
+                    if offset >= 8 { offset - 8 } else { offset + 8 },
+                    entry.length(),
+                    entry.block_id(),
+                ));
+            }
+            old
+        })
+        .collect();
+    let relocated_elements: Vec<String> = (0..relocated_from.len()).map(|n| format!("element-{n}")).collect();
     IndexDeltaRecord {
         shard_id: 3,
         sequence: 41,
@@ -112,6 +133,8 @@ fn record(items: Vec<IndexItem>) -> IndexDeltaRecord {
         key_states: vec![serde_json::json!({"ttl": [1, 2, 3]}), serde_json::json!("x")],
         upsert: true,
         shared_object_key: Some(String::new()),
+        relocated_from,
+        relocated_elements,
     }
 }
 
@@ -254,6 +277,8 @@ fn every_field_the_live_record_adds_is_load_bearing() {
         ("upsert", Box::new(|w| w.upsert = false)),
         ("shared_object_key", Box::new(|w| w.shared_object_key = None)),
         ("key_states", Box::new(|w| w.key_states.clear())),
+        ("relocated_from", Box::new(|w| w.relocated_from.clear())),
+        ("relocated_elements", Box::new(|w| w.relocated_elements.clear())),
         ("wal_sequence presence", Box::new(|w| w.wal_sequence = None)),
         ("overflow_slabs", Box::new(|w| w.meta_item.as_mut().unwrap().overflow_slabs.clear())),
         (
@@ -307,7 +332,7 @@ fn what_the_schema_costs_against_the_positional_row() {
             )
         })
         .collect::<Vec<_>>();
-    let record = IndexDeltaRecord {
+    let record: IndexDeltaRecord = IndexDeltaRecord {
         shard_id: 1,
         sequence: 1_000,
         items,
@@ -316,6 +341,8 @@ fn what_the_schema_costs_against_the_positional_row() {
         key_states: Vec::new(),
         upsert: true,
         shared_object_key: Some("feature:series:42".to_string()),
+        relocated_from: Vec::new(),
+        relocated_elements: Vec::new(),
     };
     let positional = encode_index_payload(&record, INDEX_LOG_SHAPE_DELTA).expect("encode").len();
     let protobuf = encode_delta_record(&record).expect("encode").len();

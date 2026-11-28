@@ -40,6 +40,12 @@ fn lexical_score_to_micros(raw: u32) -> i64 {
     raw.saturating_mul(LEXICAL_MATCH_MICROS) / LEXICAL_SCORE_SATURATION
 }
 
+fn context_evidence_score(semantic_score: Option<i64>, lexical_score: i64) -> i64 {
+    // Preserve both signals before bounded selection. Taking only their maximum
+    // discards a lexical match whenever cosine happens to be slightly larger.
+    semantic_score.unwrap_or_default().max(0).saturating_add(lexical_score)
+}
+
 #[path = "context_workflow/context_workflow_benchmark.rs"]
 mod benchmark;
 mod embed_drainer;
@@ -2147,7 +2153,7 @@ pub(crate) fn prepare_context_gated_prepared_with_ids(
             confidence: 1.0,
             importance: context_importance(&request.body),
             text: request.body.clone(),
-            source_ref: request.source_id.clone(),
+            source_ref: String::new(),
             related_node_hashes: Vec::new(),
             compact_attrs: Vec::new(),
             vector: Vec::new(),
@@ -3044,6 +3050,8 @@ fn retrieve_context_candidates(
         include_debug.then(|| Vec::with_capacity(summary_candidate_count));
     let mut serving_summary_scores =
         (!include_debug).then(|| BinaryHeap::with_capacity(summary_node_limit));
+    // Metadata is already bounded by the prefetch budget. Apply every available
+    // ranking signal before the smaller summary heap can discard its source.
     for node_hash in &node_hashes {
         let (mut best_score, found) = summary_scores_by_node
             .get(node_hash)
@@ -3066,11 +3074,34 @@ fn retrieve_context_candidates(
                 ));
             }
         }
+        let (summary_score, freshness_ms, agent_scope_boost) =
+            if let Some(node) = prefetched_nodes.get(node_hash) {
+                scoring_text.clear();
+                scoring_text.push_str(&node.l0);
+                scoring_text.push(' ');
+                scoring_text.push_str(&node.l1_ref);
+                let summary_score = context_relevance_score_plan(&query_plan, &scoring_text);
+                let agent_scope_boost = if request.prefer_current_agent
+                    && context_record_scope_matches(
+                        &node.raw_metadata_ref,
+                        &request.current_agent_scope_key,
+                    ) {
+                    125_000i64
+                } else {
+                    0i64
+                };
+                (summary_score, node.last_event_time_ms, agent_scope_boost)
+            } else {
+                (0, 0, 0)
+            };
+        best_score = best_score
+            .saturating_add((summary_score as i64).saturating_mul(1_000))
+            .saturating_add(agent_scope_boost);
         let candidate = (
             Reverse(best_score),
             Reverse(found),
-            Reverse(0u32),
-            Reverse(0u64),
+            Reverse(summary_score),
+            Reverse(freshness_ms),
             *node_hash,
         );
         if let Some(summary_scores) = debug_summary_scores.as_mut() {
@@ -3096,39 +3127,6 @@ fn retrieve_context_candidates(
         .max(1)
         .min(summary_node_limit.max(1))
         .min(query_aware_event_limit);
-    let rerank_node_limit = summary_node_limit.min(summary_scores.len());
-    // Rerank the exact node versions whose vectors produced the first score. Besides avoiding a
-    // second decode, this keeps a concurrent update from mixing two node versions in one ranking.
-    // The candidates are already the sorted prefix, so mutate that prefix directly instead of
-    // allocating their hashes and searching the same vector once per candidate.
-    for (Reverse(score), _, Reverse(summary_score_slot), Reverse(freshness_slot), node_hash) in
-        summary_scores.iter_mut().take(rerank_node_limit)
-    {
-        let Some(node) = prefetched_nodes.get(node_hash) else {
-            continue;
-        };
-        scoring_text.clear();
-        scoring_text.push_str(&node.l0);
-        scoring_text.push(' ');
-        scoring_text.push_str(&node.l1_ref);
-        let summary_score = context_relevance_score_plan(&query_plan, &scoring_text);
-        let freshness_ms = node.last_event_time_ms;
-        let agent_scope_boost = if request.prefer_current_agent
-            && context_record_scope_matches(
-                &node.raw_metadata_ref,
-                &request.current_agent_scope_key,
-            ) {
-            125_000i64
-        } else {
-            0i64
-        };
-        *score = score
-            .saturating_add((summary_score as i64).saturating_mul(1_000))
-            .saturating_add(agent_scope_boost);
-        *summary_score_slot = summary_score;
-        *freshness_slot = freshness_ms;
-    }
-    summary_scores.sort_unstable();
     node_hashes = summary_scores
         .iter()
         .take(summary_node_limit)
@@ -3400,7 +3398,7 @@ fn retrieve_context_candidates(
                         .map(|hit| (hit.score * 1_000_000.0) as i64);
                     let lexical_score =
                         lexical_score_to_micros(context_relevance_score_plan(&query_plan, &text));
-                    let score = semantic_score.unwrap_or_default().max(lexical_score);
+                    let score = context_evidence_score(semantic_score, lexical_score);
                     let source_ref = format!("entity:{:016x}", entity.entity_hash);
                     let uri = format!(
                         "context://tenant/{:016x}/entity/{:016x}",
@@ -3535,7 +3533,7 @@ fn retrieve_context_candidates(
                         &query_plan,
                         &event.text,
                     ));
-                    let score = semantic_score.unwrap_or_default().max(lexical_score);
+                    let score = context_evidence_score(semantic_score, lexical_score);
                     let uri =
                         context_event_uri(request.tenant_hash, node_hash, event.event_time_ms);
                     let estimated_tokens = estimate_tokens(&event.text);
@@ -3578,8 +3576,7 @@ fn retrieve_context_candidates(
                 ranked_scores_by_uri
                     .get(&block.uri)
                     .copied()
-                    .unwrap_or_default()
-                    .max(lexical_score_to_micros(context_relevance_score_plan(
+                    .unwrap_or_else(|| lexical_score_to_micros(context_relevance_score_plan(
                         &query_plan,
                         &block.text,
                     ))),

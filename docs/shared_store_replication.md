@@ -168,6 +168,36 @@ shared store wal -> command replay -> catch up after checkpoint
 
 ## Local Storage Modes Harness
 
+## The shared WAL is a run of segments
+
+In the default (append-blob) layout the shared WAL of a shard is a run of SEGMENTS under
+`<cluster>/shards/<shard>/shared/wal/`, each a pair of objects named by the first WAL index it holds:
+
+```
+seg_<first index, 20 digits>.wal.protobuf.blob     the log: one append per batch
+seg_<first index, 20 digits>.index.protobuf.blob   its offset index: one append per batch
+```
+
+The object stores this log lives on bound the extents of one object, and what it costs to describe an
+object grows with them, so no object may grow with the log. A writer starts the next segment once the
+current one has taken a quota of appends: `TS_SHARED_STORE_WAL_SEGMENT_APPENDS` (builder
+`with_wal_segment_appends`). The default is 256, sized for plain publication; a store that publishes
+compactly can take 2048 (`SHARED_STORE_WAL_SEGMENT_APPENDS_COMPACT`). It is counted per BATCH, because a
+batch is one append to each object and never spans two segments. A writer that starts always opens a new
+segment, named by the next index, so it never has to learn how many extents an earlier owner left.
+
+- **Replay** reads only the index segments that can hold an entry above the starting position and checks the
+  union for a hole, so a missing or shortened segment is a `ReplayGap` at the boundary.
+- **A start** reads the highest index segment, not the history.
+- **Collection** (`collect_to_checkpoint` -> `gc_wal_before`) deletes sealed segments wholly below the
+  retention point, index first and then log, sweeps a log no index names, and never deletes the highest
+  index segment (a restart finds the last index there) or the highest segment of all (the next append goes
+  on to it). It still honours the replay-cursor clamp.
+- **The pre-segment layout** (`wal.protobuf.blob` and `wal.offset_index.protobuf.blob`) is refused by name
+  with `WalLayoutUnsupported`, never read as empty. The per-key compatibility mode
+  (`SharedStoreWalAppendMode::PerKeyObject`) is a separately selected mode and is unchanged; the default
+  mode does not read its objects.
+
 Run the harness below when changing shared-store storage, replay, or local Raft WAL behavior:
 
 ```bash
@@ -197,6 +227,28 @@ cargo run --release -p temporalstore-rust --bin storage_modes_harness -- \
 The output is JSON and includes per-write publish/queue status, async flush progress, replay
 position, restored read value, dynamic per-event replication decisions, and the local WAL segment
 files used by each Raft replica.
+
+## A failed publish does not leave a hole
+
+A commit takes a WAL index before it publishes. If the publish then fails, the index would be
+missing from the log while every later index lands, and a replay would stop at it with a missing-index error.
+The writer therefore never moves on past a failed publish:
+
+- A refused append is retried at the SAME index (default 3 attempts within 5 s, 100 ms apart;
+  `with_publish_retry` changes them).
+- A failure that may have committed is resolved by reading the object at the offset the append was
+  sent to. The single writer is fenced, so the bytes there are either this entry or nothing.
+  If they are this entry it is not appended again; if the read itself fails the outcome is
+  `AppendOutcomeUnknown` and nothing is repeated.
+- When the retries run out the writer fails stop: it records the hole, names it in
+  `UnresolvedWalHole` and refuses every later write, so no entry is numbered above it.
+  A group-commit batch is remembered whole.
+- A checkpoint at or above the hole's last index covers it (`resolve_hole_through`); replay starts
+  after the checkpoint and never reads the missing entries.
+
+The data server logs the hole once and exposes `temporalstore_shared_wal_hole_open`,
+`temporalstore_shared_wal_hole_first_index` and `temporalstore_shared_wal_hole_last_index` on
+`/metrics`. The shared log does not catch up by itself after a hole; it needs a checkpoint.
 
 ## What Is Still Missing For Production
 

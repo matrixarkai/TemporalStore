@@ -44,11 +44,16 @@ use temporalstore_rust::{
 };
 use tracing::{debug, error, info, warn};
 
+#[path = "metaserver/grpc.rs"]
+mod grpc;
+
 fn main() {
     temporalstore_rust::telemetry::init();
-    let addr = temporalstore_rust::env_flag::env_value("TS_META_BIND_ADDR")
-        .or_else(|| temporalstore_rust::env_flag::env_value("TS_META_ADDR"))
-        .unwrap_or_else(|| "127.0.0.1:17001".to_string());
+    let explicit_bind = temporalstore_rust::env_flag::env_value("TS_META_BIND_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_META_ADDR"));
+    let grpc_bind = temporalstore_rust::env_flag::env_value("TS_META_GRPC_BIND_ADDR")
+        .or_else(|| explicit_bind.is_none().then(|| "127.0.0.1:17201".to_owned()));
+    let addr = explicit_bind.unwrap_or_else(|| "127.0.0.1:17001".to_owned());
     let backend = MetaBackend::from_env().expect("failed to initialize metaserver backend");
     let scheduler =
         MetaTaskScheduler::from_env().expect("failed to initialize metaserver scheduler");
@@ -354,6 +359,10 @@ fn main() {
     // security-relevant setting. Changing the variable on a running process
     // deliberately does nothing.
     let admin_token = temporalstore_rust::meta::admin_auth_token();
+    if let Some(grpc_addr) = grpc_bind {
+        grpc::start(&grpc_addr, backend.clone(), admin_token.clone())
+            .expect("metaserver gRPC bind failed");
+    }
     if admin_token.is_some() {
         info!("metaserver admin token required (TS_META_ADMIN_TOKEN is set)");
     }
@@ -1384,17 +1393,120 @@ fn decode_meta_scheduler_file(
     DeterministicTaskScheduler,
     Vec<MetaSchedulerExecutionRecord>,
 )> {
-    if let Ok(snapshot) = serde_json::from_slice::<MetaSchedulerDurableSnapshot>(bytes) {
-        return Ok((
-            DeterministicTaskScheduler::restore_snapshot(snapshot.scheduler)
-                .map_err(io::Error::other)?,
-            snapshot.executions,
-        ));
-    }
+    // ONE SHAPE: the durable wrapper, as a protobuf message behind the container byte. The bare
+    // scheduler snapshot this used to fall back to, and the JSON both arms read, are refused like
+    // any other file.
+    let message = temporalstore_rust::metaserver_files::unframe::<
+        temporalstore_rust::sdk::v1::MetaSchedulerDurableSnapshot,
+    >(bytes, "the scheduler file")?;
+    let scheduler = message
+        .scheduler
+        .ok_or_else(|| io::Error::other("the scheduler file has no scheduler snapshot"))?;
+    let scheduler = temporalstore_rust::metaserver_files_proto::task_scheduler_snapshot_from_proto(scheduler)
+        .map_err(io::Error::other)?;
+    let executions = message
+        .executions
+        .into_iter()
+        .map(scheduler_execution_from_proto)
+        .collect::<Result<Vec<_>, String>>()
+        .map_err(io::Error::other)?;
     Ok((
-        DeterministicTaskScheduler::decode_snapshot(bytes).map_err(io::Error::other)?,
-        Vec::new(),
+        DeterministicTaskScheduler::restore_snapshot(scheduler).map_err(io::Error::other)?,
+        executions,
     ))
+}
+
+fn scheduler_execution_to_proto(
+    record: &MetaSchedulerExecutionRecord,
+) -> temporalstore_rust::sdk::v1::MetaSchedulerExecutionRecord {
+    use temporalstore_rust::metaserver_files_proto as convert;
+    use temporalstore_rust::sdk::v1;
+    let MetaSchedulerExecutionRecord {
+        task_id,
+        node_addr,
+        status,
+        scheduler_result,
+        retry_times,
+        next_run_time_ms,
+        calls,
+        lifecycle_token,
+        lifecycle_state,
+        raft_membership_report,
+        queue_len,
+    } = record;
+    v1::MetaSchedulerExecutionRecord {
+        task_id: *task_id,
+        node_addr: node_addr.clone(),
+        status: Some(convert::status_to_proto(status)),
+        scheduler_result: convert::scheduler_task_result_to_proto(scheduler_result),
+        retry_times: *retry_times,
+        next_run_time_ms: *next_run_time_ms,
+        calls: calls
+            .iter()
+            .map(|call| {
+                let MetaSchedulerNodeCall { path, skipped, status } = call;
+                v1::MetaSchedulerNodeCall {
+                    path: path.clone(),
+                    skipped: *skipped,
+                    status: Some(convert::status_to_proto(status)),
+                }
+            })
+            .collect(),
+        lifecycle_token: lifecycle_token
+            .as_ref()
+            .map(convert::scheduler_lifecycle_token_to_proto),
+        lifecycle_state: lifecycle_state
+            .as_ref()
+            .map(convert::data_node_shard_lifecycle_state_to_proto),
+        raft_membership_report: raft_membership_report
+            .as_ref()
+            .map(convert::raft_membership_change_report_to_proto),
+        queue_len: *queue_len as u64,
+    }
+}
+
+fn scheduler_execution_from_proto(
+    message: temporalstore_rust::sdk::v1::MetaSchedulerExecutionRecord,
+) -> Result<MetaSchedulerExecutionRecord, String> {
+    use temporalstore_rust::metaserver_files_proto as convert;
+    let calls = message
+        .calls
+        .into_iter()
+        .map(|call| -> Result<MetaSchedulerNodeCall, String> {
+            Ok(MetaSchedulerNodeCall {
+                path: call.path,
+                skipped: call.skipped,
+                status: convert::status_from_proto(
+                    call.status.ok_or("a scheduler node call has no status")?,
+                )?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    Ok(MetaSchedulerExecutionRecord {
+        task_id: message.task_id,
+        node_addr: message.node_addr,
+        status: convert::status_from_proto(
+            message.status.ok_or("a scheduler execution has no status")?,
+        )?,
+        scheduler_result: convert::scheduler_task_result_from_proto(message.scheduler_result)?,
+        retry_times: message.retry_times,
+        next_run_time_ms: message.next_run_time_ms,
+        calls,
+        lifecycle_token: message
+            .lifecycle_token
+            .map(convert::scheduler_lifecycle_token_from_proto)
+            .transpose()?,
+        lifecycle_state: message
+            .lifecycle_state
+            .map(convert::data_node_shard_lifecycle_state_from_proto)
+            .transpose()?,
+        raft_membership_report: message
+            .raft_membership_report
+            .map(convert::raft_membership_change_report_from_proto)
+            .transpose()?,
+        queue_len: usize::try_from(message.queue_len)
+            .map_err(|_| "a scheduler execution queue length is out of range".to_string())?,
+    })
 }
 
 fn save_scheduler_snapshot(
@@ -1417,15 +1529,16 @@ fn save_scheduler_snapshot(
             .truncate(true)
             .write(true)
             .open(&tmp_path)?;
-        serde_json::to_writer_pretty(
-            &mut file,
-            &MetaSchedulerDurableSnapshot {
-                scheduler: snapshot.clone(),
-                executions: executions.to_vec(),
+        file.write_all(&temporalstore_rust::metaserver_files::frame(
+            &temporalstore_rust::sdk::v1::MetaSchedulerDurableSnapshot {
+                scheduler: Some(
+                    temporalstore_rust::metaserver_files_proto::task_scheduler_snapshot_to_proto(
+                        snapshot,
+                    ),
+                ),
+                executions: executions.iter().map(scheduler_execution_to_proto).collect(),
             },
-        )
-        .map_err(io::Error::other)?;
-        file.write_all(b"\n")?;
+        ))?;
         file.sync_data()?;
     }
     fs::rename(tmp_path, path)?;
@@ -1452,8 +1565,8 @@ fn save_meta_snapshot_file(path: &str, snapshot: &MetaSnapshot) -> Result<(), St
             .write(true)
             .open(&tmp_path)
             .map_err(|err| err.to_string())?;
-        serde_json::to_writer_pretty(&mut file, snapshot).map_err(|err| err.to_string())?;
-        file.write_all(b"\n").map_err(|err| err.to_string())?;
+        file.write_all(&temporalstore_rust::metaserver_files::encode_meta_snapshot(snapshot))
+            .map_err(|err| err.to_string())?;
         file.sync_data().map_err(|err| err.to_string())?;
     }
     fs::rename(tmp_path, path).map_err(|err| err.to_string())
@@ -2104,6 +2217,10 @@ struct MasterTableOptionsRequest {
     io_timeout_ms: Option<u64>,
     #[serde(default)]
     connect_timeout_ms: Option<u64>,
+    #[serde(default)]
+    cache_class: Option<bool>,
+    #[serde(default)]
+    cache_budget_bytes: Option<u64>,
 }
 
 impl MasterTableOptionsRequest {
@@ -2129,6 +2246,8 @@ impl MasterTableOptionsRequest {
             continuous_failed_time_ms: self.continuous_failed_time_ms,
             io_timeout_ms: self.io_timeout_ms,
             connect_timeout_ms: self.connect_timeout_ms,
+            cache_class: self.cache_class,
+            cache_budget_bytes: self.cache_budget_bytes,
         }
     }
 }
@@ -2475,6 +2594,7 @@ mod tests {
 
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -2670,6 +2790,7 @@ mod tests {
         let scheduler = MetaTaskScheduler::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -2883,6 +3004,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(index, (records, bytes))| temporalstore_rust::meta::ServerShardServingState {
+                    raft_role: None,
                     shard_id: index as temporalstore_rust::types::ShardId + 1,
                     serving_state: "serving".to_string(),
                     worker_index: 0,
@@ -2926,6 +3048,7 @@ mod tests {
 
     fn joined(meta: &SingleNodeMeta, addr: &str) {
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: addr.to_string(),
             node_id: 1,
@@ -2999,6 +3122,7 @@ mod tests {
         // had no way to say so.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3022,6 +3146,7 @@ mod tests {
         // trap as the placement figures beside it.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3043,6 +3168,7 @@ mod tests {
     fn a_node_that_has_said_nothing_reports_nothing() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3203,6 +3329,7 @@ mod tests {
     fn metaserver_metrics_expose_inventory_state_and_scheduler() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "metrics-server-a".to_string(),
@@ -3397,6 +3524,7 @@ mod tests {
         let snapshot_path = dir.path().join("meta-route-snapshot.json");
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-route-a".to_string(),
@@ -3534,6 +3662,7 @@ mod tests {
     fn metaserver_safe_mode_route_reports_frozen_cooldown_resources() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "safe-server".to_string(),
@@ -3631,6 +3760,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: "raft-server-a".to_string(),
@@ -4132,6 +4262,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: node_addr.clone(),
@@ -5175,7 +5306,7 @@ mod tests {
     }
 
     #[test]
-    fn metaserver_scheduler_loads_legacy_task_only_snapshot_file() {
+    fn metaserver_scheduler_refuses_the_legacy_task_only_snapshot_file() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("legacy-scheduler.json");
         let mut scheduler = DeterministicTaskScheduler::default();
@@ -5188,12 +5319,19 @@ mod tests {
                 node_id: 5,
             }),
         );
+        // The bare scheduler snapshot as the JSON this file used to fall back to: refused now.
         fs::write(
             &path,
             serde_json::to_vec_pretty(&scheduler.export_snapshot()).unwrap(),
         )
         .unwrap();
+        assert!(
+            MetaTaskScheduler::with_snapshot_path(path.clone()).is_err(),
+            "a scheduler file in the retired JSON shape must be refused, not read"
+        );
 
+        // The current shape, written by the real writer, restores the same task.
+        save_scheduler_snapshot(&path, &scheduler.export_snapshot(), &[]).unwrap();
         let restored = MetaTaskScheduler::with_snapshot_path(path).unwrap();
         assert_eq!(restored.executions().executions.len(), 0);
         assert_eq!(restored.queue_len(), 1);

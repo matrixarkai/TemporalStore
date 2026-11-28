@@ -401,10 +401,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/CellRankBatchQuery") => {
-                match parse_json::<ProxyCellRankBatchQueryCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/WindowReduceRankBatch") => {
+                match parse_json::<ProxyWindowReduceRankBatchCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::CellRankBatchQuery { queries: req.queries };
+                        let command = Command::WindowReduceRankBatch { queries: req.queries };
                         json_response(
                             200,
                             &self.table_execute(ProxyTableExecuteRequest {
@@ -417,10 +417,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/CellFanInRankQuery") => {
-                match parse_json::<ProxyCellFanInRankQueryCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/WindowReduceFanInRank") => {
+                match parse_json::<ProxyWindowReduceFanInRankCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::CellFanInRankQuery { keys: req.keys, spec: req.spec };
+                        let command = Command::WindowReduceFanInRank { keys: req.keys, spec: req.spec };
                         json_response(
                             200,
                             &self.table_execute(ProxyTableExecuteRequest {
@@ -433,10 +433,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/CellRankQuery") => {
-                match parse_json::<ProxyCellRankQueryCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/WindowReduceRank") => {
+                match parse_json::<ProxyWindowReduceRankCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::CellRankQuery { key: req.key, spec: req.spec };
+                        let command = Command::WindowReduceRank { key: req.key, spec: req.spec };
                         json_response(
                             200,
                             &self.table_execute(ProxyTableExecuteRequest {
@@ -449,10 +449,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/CellRollup") => {
-                match parse_json::<ProxyCellRollupCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/WindowReduceRollup") => {
+                match parse_json::<ProxyWindowReduceRollupCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::CellRollup { key: req.key, spec: req.spec };
+                        let command = Command::WindowReduceRollup { key: req.key, spec: req.spec };
                         json_response(
                             200,
                             &self.table_execute(ProxyTableExecuteRequest {
@@ -465,10 +465,10 @@ impl ProxyService {
                     Err(err) => self.bad_execute_request(err),
                 }
             }
-            ("POST", "/ProxyService/CellRemove") => {
-                match parse_json::<ProxyCellRemoveCommandRequest>(&request.body) {
+            ("POST", "/ProxyService/WindowReduceRemove") => {
+                match parse_json::<ProxyWindowReduceRemoveCommandRequest>(&request.body) {
                     Ok(req) => {
-                        let command = Command::CellRemove { key: req.key, spec: req.spec };
+                        let command = Command::WindowReduceRemove { key: req.key, spec: req.spec };
                         json_response(
                             200,
                             &self.table_execute(ProxyTableExecuteRequest {

@@ -82,6 +82,9 @@ fn compact_batch_write_keeps_shared_wal_mirroring() {
                 .expect("recording sink lock poisoned")
                 .push(command.clone());
         }
+        fn record_outcomes(&self, _: ShardId, _: &[crate::wal::WalOutcomeItem]) {
+            panic!("unexpected maintenance frame");
+        }
     }
 
     let engine = TemporalEngine::default();
@@ -1121,3 +1124,54 @@ fn data_node_grpc_streaming_contract_exposes_callbacks_and_job_status() {
     assert!(contract.tonic_surface_ready);
 }
 
+
+#[test]
+fn shared_wal_failure_marks_only_applied_writes_after_the_confirmed_prefix() {
+    #[derive(Debug)]
+    struct PrefixSink;
+
+    impl SharedWalSink for PrefixSink {
+        fn record_write(&self, _: ShardId, _: &Command) {}
+        fn record_outcomes(&self, _: ShardId, _: &[crate::wal::WalOutcomeItem]) {}
+
+        fn publish_owned_writes(&self, _: ShardId, commands: Vec<Command>) -> Result<(), usize> {
+            assert_eq!(commands.len(), 2);
+            Err(1)
+        }
+    }
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let runtime = DataNodeRuntime::new_without_workers_for_test(engine, 4);
+    runtime.set_shared_wal_sink(Arc::new(PrefixSink));
+    let insert = |key: &str, value: u8| Command::StringSetConditional {
+        key: key.to_owned(),
+        value: vec![value],
+        ttl_ms: None,
+        condition: crate::types::StringSetCondition::IfNotExists,
+        return_old: false,
+        keep_ttl: false,
+    };
+    let batch = runtime.batch_execute(BatchExecuteRequest {
+        shard_id: 1,
+        commands: vec![
+            insert("first", 1),
+            Command::StringGet { key: "first".to_owned() },
+            insert("second", 2),
+            insert("first", 9),
+        ],
+    });
+    assert!(batch.status.ok);
+    let [first, read, second, duplicate] = batch.responses.as_slice() else {
+        panic!("expected one response per command");
+    };
+    assert!(first.status.ok);
+    assert_eq!(first.response, CommandResponse::Integer { value: 1 });
+    assert!(read.status.ok);
+    assert_eq!(read.response, CommandResponse::Bytes { value: Some(vec![1]) });
+    assert!(!second.status.ok);
+    assert_eq!(second.status.code, "write_durability_unconfirmed");
+    assert_eq!(second.response, CommandResponse::Empty);
+    assert!(duplicate.status.ok);
+    assert_eq!(duplicate.response, CommandResponse::Integer { value: 0 });
+}

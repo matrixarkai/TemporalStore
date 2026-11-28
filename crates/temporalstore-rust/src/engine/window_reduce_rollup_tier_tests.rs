@@ -56,8 +56,8 @@ fn snap(timestamp_ms: u64, cells: Vec<Cell>) -> Sample {
     Sample { timestamp_ms, cells }
 }
 
-fn lane_score(name: &str) -> CellScore {
-    CellScore::Lane { lane: name.to_string() }
+fn lane_score(name: &str) -> WindowReduceScore {
+    WindowReduceScore::Lane { lane: name.to_string() }
 }
 
 fn tier(older_than: u64, bucket_ms: u64) -> TierSpec {
@@ -84,8 +84,8 @@ fn with_cap(mut spec: PlanSpec, group_by: Option<&str>, keep: usize, ppm: u32, o
     spec
 }
 
-fn bytes_of(snapshots: &[Sample]) -> Vec<(u64, Vec<u8>)> {
-    snapshots.iter().map(|s| (s.timestamp_ms, encode_sample(&header(), &s.cells).unwrap())).collect()
+fn bytes_of(samples: &[Sample]) -> Vec<(u64, Vec<u8>)> {
+    samples.iter().map(|s| (s.timestamp_ms, encode_sample(&header(), &s.cells).unwrap())).collect()
 }
 
 fn members(cells: &[Cell]) -> Vec<u64> {
@@ -203,13 +203,13 @@ fn a_tiered_rollup_equals_an_independent_fold_with_a_bucket_per_tier() {
     for (spec, cutoffs) in &cases {
         let want = independent_fold(&snaps, cutoffs);
         let got = rollup_tiered(&header(), snaps.clone(), spec, newest).unwrap();
-        assert_eq!(got.snapshots, want, "{spec:?}");
+        assert_eq!(got.samples, want, "{spec:?}");
         let s = got.stats;
-        assert_eq!(s.snapshots_after, want.len() as u64);
+        assert_eq!(s.samples_after, want.len() as u64);
         assert_eq!(s.cells_before, snaps.iter().map(|x| x.cells.len() as u64).sum::<u64>());
         assert_eq!(s.cells_before, s.cells_after + s.cells_combined + s.cells_dropped);
         compared_cells += want.iter().map(|x| x.cells.len()).sum::<usize>();
-        folded_runs += (s.snapshots_after < s.snapshots_before) as usize;
+        folded_runs += (s.samples_after < s.samples_before) as usize;
     }
     assert!(compared_cells > 5_000, "only {compared_cells} cells were compared");
     assert_eq!(folded_runs, cases.len(), "every case folded something");
@@ -220,7 +220,7 @@ fn a_tiered_rollup_equals_an_independent_fold_with_a_bucket_per_tier() {
 // ------------------------------------------------------------------------------------------
 
 #[test]
-fn a_snapshot_takes_the_coarsest_tier_whose_cutoff_is_above_it_and_each_cutoff_is_strict() {
+fn a_sample_takes_the_coarsest_tier_whose_cutoff_is_above_it_and_each_cutoff_is_strict() {
     // Tiers: below 1000 buckets of 100; below 500 buckets of 500.
     //   499 is below both: the coarser tier, start 0.   500 is AT the second cutoff: tier 0, start 500.
     //   999 is below only the first cutoff: start 900.   1000 is AT the first cutoff: not rolled.
@@ -232,9 +232,9 @@ fn a_snapshot_takes_the_coarsest_tier_whose_cutoff_is_above_it_and_each_cutoff_i
         snap(1000, vec![shown(1, 0, 4)]),
     ];
     let got = rollup_tiered(&header(), snaps, &spec, 0).unwrap();
-    let stamps: Vec<u64> = got.snapshots.iter().map(|s| s.timestamp_ms).collect();
+    let stamps: Vec<u64> = got.samples.iter().map(|s| s.timestamp_ms).collect();
     assert_eq!(stamps, vec![0, 500, 900, 1000]);
-    assert_eq!(got.snapshots.iter().map(|s| s.cells[0].lanes[SUM]).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
+    assert_eq!(got.samples.iter().map(|s| s.cells[0].lanes[SUM]).collect::<Vec<_>>(), vec![1, 2, 3, 4]);
     assert_eq!(got.stats.cells_combined, 0);
 }
 
@@ -253,7 +253,7 @@ fn a_cutoff_that_is_not_a_multiple_of_the_finer_width_is_aligned_down_to_it() {
     ];
     let got = rollup_tiered(&header(), snaps.clone(), &spec, 0).unwrap();
     assert_eq!(
-        got.snapshots,
+        got.samples,
         vec![snap(0, vec![shown(9, 0, 5)]), snap(500, vec![cell(1, 0, [30, 2, 2, 1, 1, 2])])]
     );
     // The same request with the cutoff written already aligned is the same request.
@@ -264,7 +264,7 @@ fn a_cutoff_that_is_not_a_multiple_of_the_finer_width_is_aligned_down_to_it() {
 }
 
 #[test]
-fn the_catch_all_tier_holds_everything_older_in_one_snapshot_at_stamp_zero() {
+fn the_catch_all_tier_holds_everything_older_in_one_sample_at_stamp_zero() {
     // Below 1000 buckets of 100; below 400 everything in one sample. 5, 150 and 399 are below
     // 400 and fold into stamp 0; 400 and 450 are tier 0 and fold into 400; 1200 is not rolled.
     let spec = plan(Anchor::Request, &[(1000, 100), (400, CATCH_ALL_BUCKET_MS)]);
@@ -278,7 +278,7 @@ fn the_catch_all_tier_holds_everything_older_in_one_snapshot_at_stamp_zero() {
     ];
     let got = rollup_tiered(&header(), snaps, &spec, 0).unwrap();
     assert_eq!(
-        got.snapshots,
+        got.samples,
         vec![
             snap(0, vec![cell(1, 0, [7, 3, 1, 1, 1, 1]), cell(2, 0, [7, 1, 1, 1, 1, 1])]),
             snap(400, vec![cell(1, 0, [24, 2, 1, 1, 1, 1])]),
@@ -299,7 +299,7 @@ fn an_age_resolves_against_the_newest_stamp_and_a_request_cutoff_ignores_it() {
     let by_stamp = plan(Anchor::Request, &[(9000, 100), (5000, 1000)]);
     let want = rollup_tiered(&header(), snaps.clone(), &by_stamp, 0).unwrap();
     assert_eq!(rollup_tiered(&header(), snaps.clone(), &by_age, 10_000).unwrap(), want);
-    assert!(want.stats.snapshots_after < want.stats.snapshots_before, "DENOMINATOR: it rolled something");
+    assert!(want.stats.samples_after < want.stats.samples_before, "DENOMINATOR: it rolled something");
     // The same ages against another newest stamp are other cutoffs.
     let later = rollup_tiered(&header(), snaps.clone(), &by_age, 10_500).unwrap();
     assert_ne!(later, want);
@@ -309,7 +309,7 @@ fn an_age_resolves_against_the_newest_stamp_and_a_request_cutoff_ignores_it() {
     // An age longer than the series is old saturates at cutoff 0: nothing is below it.
     let too_old = plan(Anchor::NewestMinusAge, &[(20_000, 100)]);
     let untouched = rollup_tiered(&header(), snaps.clone(), &too_old, 10_000).unwrap();
-    assert_eq!(untouched.snapshots, snaps);
+    assert_eq!(untouched.samples, snaps);
 }
 
 // ------------------------------------------------------------------------------------------
@@ -328,10 +328,10 @@ fn a_tiered_capped_result_rolled_again_changes_no_byte() {
         let spec = with_cap(plan(anchor, tiers), Some("slot"), 3, 300_000, 0);
         let once = rollup_tiered(&header(), snaps.clone(), &spec, newest).unwrap();
         assert!(once.stats.cells_dropped > 0 && once.stats.cells_combined > 0, "{anchor:?} did something to be idempotent about");
-        let again = rollup_tiered(&header(), once.snapshots.clone(), &spec, newest).unwrap();
-        assert_eq!(bytes_of(&again.snapshots), bytes_of(&once.snapshots), "{anchor:?}");
+        let again = rollup_tiered(&header(), once.samples.clone(), &spec, newest).unwrap();
+        assert_eq!(bytes_of(&again.samples), bytes_of(&once.samples), "{anchor:?}");
         assert_eq!((again.stats.cells_combined, again.stats.cells_dropped), (0, 0));
-        assert_eq!(again.stats.snapshots_before, again.stats.snapshots_after);
+        assert_eq!(again.stats.samples_before, again.stats.samples_after);
     }
 }
 
@@ -384,12 +384,12 @@ fn a_truncation_acts_only_over_its_trigger_and_then_keeps_the_newest_n() {
 }
 
 #[test]
-fn truncating_a_rolled_series_keeps_the_newest_snapshots_of_what_the_rollup_left() {
+fn truncating_a_rolled_series_keeps_the_newest_samples_of_what_the_rollup_left() {
     let snaps = series(11, 120);
     let newest = snaps.last().unwrap().timestamp_ms;
     let spec = plan(Anchor::Request, &[(newest / 2, 400)]);
     let rolled = rollup_tiered(&header(), snaps, &spec, newest).unwrap();
-    let stamps: Vec<u64> = rolled.snapshots.iter().map(|s| s.timestamp_ms).collect();
+    let stamps: Vec<u64> = rolled.samples.iter().map(|s| s.timestamp_ms).collect();
     let total = stamps.len();
     assert!(total > 10, "{total}");
     // Over a trigger one short of the count: acts, keeps the newest 7.
@@ -425,24 +425,24 @@ fn a_protected_share_of_the_newest_members_survives_whatever_its_score() {
     // Shown after the fold: m1 100, m2 90, m3 80, m4 70, m5 61, m6 51.
     // No protection: the four best by score.
     let none = roll(0);
-    assert_eq!(members(&none.snapshots[0].cells), vec![1, 2, 3, 4]);
+    assert_eq!(members(&none.samples[0].cells), vec![1, 2, 3, 4]);
     assert_eq!(none.stats.cells_dropped, 2);
     // 500 000 ppm of keep 4 is 2: the two newest (5 and 6) are kept, then the best two of the rest
     // (1 and 2) fill the other slots. 3 and 4 go although they outscore 5 and 6.
     let half = roll(500_000);
-    assert_eq!(members(&half.snapshots[0].cells), vec![1, 2, 5, 6]);
+    assert_eq!(members(&half.samples[0].cells), vec![1, 2, 5, 6]);
     assert_eq!(half.stats.cells_dropped, 2);
     // 300 000 ppm of 4 is 1.2, rounded DOWN to 1: the newest by stamp, ties by the smaller member,
     // is m5; then the best three of the rest.
-    assert_eq!(members(&roll(300_000).snapshots[0].cells), vec![1, 2, 3, 5]);
+    assert_eq!(members(&roll(300_000).samples[0].cells), vec![1, 2, 3, 5]);
     // The whole of keep protected: newest first (5, 6), then the stamp-10 ties by member (1, 2).
-    assert_eq!(members(&roll(1_000_000).snapshots[0].cells), vec![1, 2, 5, 6]);
+    assert_eq!(members(&roll(1_000_000).samples[0].cells), vec![1, 2, 5, 6]);
     // The protected members' lanes are the folded ones.
-    assert_eq!(half.snapshots[0].cells[2], cell(5, 0, [61, 2, 1, 1, 1, 1]));
+    assert_eq!(half.samples[0].cells[2], cell(5, 0, [61, 2, 1, 1, 1, 1]));
 }
 
 #[test]
-fn a_member_is_as_new_as_the_newest_snapshot_that_wrote_it() {
+fn a_member_is_as_new_as_the_newest_sample_that_wrote_it() {
     // m3 is written at 10 and again at 20, so it is as new as m5 and m6; m1 and m2 only at 10.
     // Protecting two of keep 3 (666 666 ppm of 3 is 1.99, rounded down to 1) keeps one: the newest
     // of the three at stamp 20 is the smallest member, m3.
@@ -453,11 +453,11 @@ fn a_member_is_as_new_as_the_newest_snapshot_that_wrote_it() {
     let spec = with_cap(plan(Anchor::Request, &[(1000, 100)]), None, 3, 666_666, 0);
     let got = rollup_tiered(&header(), snaps.clone(), &spec, 0).unwrap();
     // m3 protected; then m1 and m2 by score.
-    assert_eq!(members(&got.snapshots[0].cells), vec![1, 2, 3]);
+    assert_eq!(members(&got.samples[0].cells), vec![1, 2, 3]);
     // With 999 999 ppm of 3 (2.99, rounded down to 2) m3 and m5 are protected, then m1.
     let spec = with_cap(plan(Anchor::Request, &[(1000, 100)]), None, 3, 999_999, 0);
     let got = rollup_tiered(&header(), snaps, &spec, 0).unwrap();
-    assert_eq!(members(&got.snapshots[0].cells), vec![1, 3, 5]);
+    assert_eq!(members(&got.samples[0].cells), vec![1, 3, 5]);
 }
 
 #[test]
@@ -470,12 +470,12 @@ fn a_group_is_cut_only_when_it_is_over_its_keep_plus_the_trigger_and_then_down_t
         .collect();
     let spec = with_cap(plan(Anchor::Request, &[(1000, 100)]), Some("slot"), 3, 0, 2);
     let got = rollup_tiered(&header(), vec![snap(10, cells.clone())], &spec, 0).unwrap();
-    assert_eq!(members(&got.snapshots[0].cells), vec![1, 2, 3, 4, 5, 9, 10, 11]);
+    assert_eq!(members(&got.samples[0].cells), vec![1, 2, 3, 4, 5, 9, 10, 11]);
     assert_eq!(got.stats.cells_dropped, 3);
     // Without the trigger both groups are cut to 3.
     let spec = with_cap(plan(Anchor::Request, &[(1000, 100)]), Some("slot"), 3, 0, 0);
     let got = rollup_tiered(&header(), vec![snap(10, cells)], &spec, 0).unwrap();
-    assert_eq!(members(&got.snapshots[0].cells), vec![3, 4, 5, 9, 10, 11]);
+    assert_eq!(members(&got.samples[0].cells), vec![3, 4, 5, 9, 10, 11]);
     assert_eq!(got.stats.cells_dropped, 5);
     // One group of no label: 6 members, keep 3, trigger 2: cut; 5 members: left alone.
     let flat = |n: u64| (1..=n).map(|m| shown(m, 0, m as i64)).collect::<Vec<_>>();
@@ -550,7 +550,7 @@ fn truncation_and_cap_controls_are_bounded_at_exactly_the_limit() {
 }
 
 #[test]
-fn snapshots_below_the_first_cutoff_are_bounded_at_exactly_the_limit_whatever_the_tiers() {
+fn samples_below_the_first_cutoff_are_bounded_at_exactly_the_limit_whatever_the_tiers() {
     let many = |n: usize| (0..n as u64).map(|i| snap(i + 1, Vec::new())).collect::<Vec<_>>();
     let spec = plan(Anchor::Request, &[(u64::MAX, 1_000_000), (u64::MAX - 1, 4_000_000)]);
     assert!(rollup_tiered(&header(), many(MAX_ROLLUP_SAMPLES), &spec, 0).is_ok());
@@ -566,10 +566,10 @@ mod probe {
     use super::*;
     use crate::alloc_probe::Probe;
 
-    /// `snapshots` samples of `members` cells, every member in every sample, all stamped below
+    /// `samples` samples of `members` cells, every member in every sample, all stamped below
     /// both cutoffs so they fall into the coarse tier's one bucket.
-    fn dataset(members: u64, snapshots: u64) -> Vec<Sample> {
-        (1..=snapshots)
+    fn dataset(members: u64, samples: u64) -> Vec<Sample> {
+        (1..=samples)
             .map(|ts| {
                 let cells = (0..members)
                     .map(|m| cell(m, m % 7, [(m * 31 + ts) as i64 % 1000, 1, 3, 4, 5, ts as i64]))
@@ -579,20 +579,20 @@ mod probe {
             .collect()
     }
 
-    fn allocations(members: u64, snapshots: u64, protect: bool) -> u64 {
-        let snaps = dataset(members, snapshots);
+    fn allocations(members: u64, samples: u64, protect: bool) -> u64 {
+        let snaps = dataset(members, samples);
         let base = plan(Anchor::Request, &[(1_000_000, 1 << 20), (500_000, 1 << 40)]);
         let spec = if protect { with_cap(base, Some("slot"), 5, 400_000, 1) } else { base };
         let header = header();
         let probe = Probe::start();
         let got = rollup_tiered(&header, snaps, &spec, 0).unwrap();
         let spent = probe.stop().allocs;
-        assert_eq!(got.snapshots.len(), 1);
+        assert_eq!(got.samples.len(), 1);
         spent
     }
 
-    fn allocations_of_a_cloning_table(members: u64, snapshots: u64) -> u64 {
-        let snaps = dataset(members, snapshots);
+    fn allocations_of_a_cloning_table(members: u64, samples: u64) -> u64 {
+        let snaps = dataset(members, samples);
         let probe = Probe::start();
         let mut table: BTreeMap<Member, Vec<Cell>> = BTreeMap::new();
         for s in &snaps {
@@ -610,7 +610,7 @@ mod probe {
     /// cells grows with both.
     #[test]
     #[ignore = "measurement: run with --features alloc-probe --ignored"]
-    fn a_tiered_rollup_allocates_the_same_over_few_snapshots_and_many_and_few_members_and_many() {
+    fn a_tiered_rollup_allocates_the_same_over_few_samples_and_many_and_few_members_and_many() {
         for protect in [false, true] {
             let base = allocations(50, 4, protect);
             let more_samples = allocations(50, 64, protect);

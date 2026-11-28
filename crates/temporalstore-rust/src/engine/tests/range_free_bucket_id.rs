@@ -575,7 +575,7 @@ fn removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_combination(
         WIDTH_BEFORE - round(without_narrow_id)
     );
     println!(
-        "    both together : payload {without_both} B -> width {} B  (saves {})",
+        "    both together                    : payload {without_both} B -> width {} B  (saves {})",
         round(without_both),
         WIDTH_BEFORE - round(without_both)
     );

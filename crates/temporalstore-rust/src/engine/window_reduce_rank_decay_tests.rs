@@ -10,11 +10,11 @@
 use super::*;
 use crate::engine::window_reduce_rank::{MAX_HALF_LIFE_MS, MIN_HALF_LIFE_MS};
 
-fn decay(lane_name: &str, half_life_ms: u64) -> CellScore {
-    CellScore::Decay { lane: lane_name.to_string(), half_life_ms }
+fn decay(lane_name: &str, half_life_ms: u64) -> WindowReduceScore {
+    WindowReduceScore::Decay { lane: lane_name.to_string(), half_life_ms }
 }
 
-fn ranked_by(score: CellScore, window: CellWindow, snaps: &Samples, now_ms: u64) -> RankedCells {
+fn ranked_by(score: WindowReduceScore, window: WindowReduceWindow, snaps: &Samples, now_ms: u64) -> RankedCells {
     run_on(&spec(window, score, 10), snaps, now_ms).expect("the query is valid")
 }
 
@@ -35,7 +35,7 @@ fn recency_outweighs_volume_exactly_when_the_half_life_says_it_does() {
 }
 
 #[test]
-fn a_decayed_sum_is_the_hand_computed_total_as_of_the_newest_snapshot_of_the_window() {
+fn a_decayed_sum_is_the_hand_computed_total_as_of_the_newest_sample_of_the_window() {
     // Half-life 100, newest 400: weights 400 -> 1, 300 -> 1/2, 200 -> 1/4, 100 -> 1/8. The `shown`
     // values each member's samples store:
     //   m1  10@100 10@200 10@300         10 * (1/8 + 1/4 + 1/2)     = 8.75
@@ -45,13 +45,13 @@ fn a_decayed_sum_is_the_hand_computed_total_as_of_the_newest_snapshot_of_the_win
     //   zz  5@300                        5/2                        = 2.5
     let all = ranked_by(decay("shown", 100), ALL, &data(), 400);
     assert_eq!(pairs(&all), vec![(3, 62.5), (2, 20.0), (1, 8.75), (4, 4.0), (99, 2.5)]);
-    assert_eq!((all.snapshots, all.unscored), (4, 0));
+    assert_eq!((all.samples, all.unscored), (4, 0));
 
     // A window that stops at 300 is as of 300: weights 300 -> 1, 200 -> 1/2, 100 -> 1/4.
     //   m1 10/4 + 10/2 + 10 = 17.5   m2 20/4 + 30/2 = 20   m3 100/4 + 100 = 125   m4 8/2 = 4   zz 5
     // Taken as of 400 instead, m3 would be 62.5: this is the number only the window's own newest
     // sample can produce.
-    let early = ranked_by(decay("shown", 100), CellWindow::Between { start_ms: 100, end_ms: 300 }, &data(), 400);
+    let early = ranked_by(decay("shown", 100), WindowReduceWindow::Between { start_ms: 100, end_ms: 300 }, &data(), 400);
     assert_eq!(pairs(&early), vec![(3, 125.0), (2, 20.0), (1, 17.5), (99, 5.0), (4, 4.0)]);
 
     // The clock never enters: any `now` gives the same answer.
@@ -61,7 +61,7 @@ fn a_decayed_sum_is_the_hand_computed_total_as_of_the_newest_snapshot_of_the_win
 }
 
 #[test]
-fn a_decay_reads_the_values_the_snapshots_store_and_not_the_lanes_reduction() {
+fn a_decay_reads_the_values_the_samples_store_and_not_the_lanes_reduction() {
     // `peak` is a Max lane, whose reduction over the window is m1 9, m2 8, m3 6, m4 2, zz 1. Decayed
     // from what each sample stored (half-life 100, newest 400):
     //   m1  5@100 9@200 4@300     5/8 + 9/4 + 4/2        = 4.875
@@ -83,7 +83,7 @@ fn a_decay_equals_an_independent_fold_exactly_on_whole_half_lives_and_closely_ot
         let dyadic = round % 2 == 0;
         let count = 1 + rng.next() % 10;
         let mut stamp = 0u64;
-        let snapshots: Samples = (1..=count)
+        let samples: Samples = (1..=count)
             .map(|_| {
                 // Whole half-lives apart for the exact rounds, arbitrary distances for the others.
                 stamp += if dyadic { half_life * (1 + rng.next() % 3) } else { 1 + rng.next() % (2 * half_life) };
@@ -96,11 +96,11 @@ fn a_decay_equals_an_independent_fold_exactly_on_whole_half_lives_and_closely_ot
                 (stamp, cells)
             })
             .collect();
-        let as_of = snapshots.last().unwrap().0;
+        let as_of = samples.last().unwrap().0;
 
         // The fold: one table per member, every stored value weighted from its own age.
         let mut table: std::collections::BTreeMap<u64, f64> = Default::default();
-        for (ts, cells) in &snapshots {
+        for (ts, cells) in &samples {
             let age = as_of - ts;
             for c in cells {
                 let Member::U64(m) = c.member else { unreachable!() };
@@ -114,7 +114,7 @@ fn a_decay_equals_an_independent_fold_exactly_on_whole_half_lives_and_closely_ot
             }
         }
         // k past the members, so every member is ranked and compared.
-        let got = run_on(&spec(ALL, decay("shown", half_life), 1000), &snapshots, 0).unwrap();
+        let got = run_on(&spec(ALL, decay("shown", half_life), 1000), &samples, 0).unwrap();
         assert_eq!(got.rows.len(), table.len(), "round {round}");
         for (member, score) in pairs(&got) {
             let want = table[&member];
@@ -225,7 +225,7 @@ mod probe {
             })
             .collect();
         let views = views(&snaps);
-        let query = spec(CellWindow::LastN { n: 8 }, decay("shown", 25), 10);
+        let query = spec(WindowReduceWindow::LastN { n: 8 }, decay("shown", 25), 10);
         let plan = Plan::compile(&header(), &query).unwrap();
         let probe = Probe::start();
         let ranked = plan.run(100, &views).unwrap();

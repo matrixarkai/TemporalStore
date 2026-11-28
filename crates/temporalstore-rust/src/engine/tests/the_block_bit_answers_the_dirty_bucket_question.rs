@@ -10,7 +10,7 @@
 //! object's *blocks* while not being that object's *routing* bucket. Every other reader of the set
 //! wants dirty BUCKETS, which `BucketNode` already records itself.
 //!
-//! **The replacement is already in the sibling arm of that same function** — the one taken when the
+//! **The replacement is already in the sibling arm of that same function** â€” the one taken when the
 //! object lookup is empty:
 //!
 //! ```text
@@ -27,7 +27,7 @@
 //!
 //! This computes the dirty-bucket set **both ways** on the same shard and asserts they agree. The
 //! fixture puts an object's blocks in buckets other than its routing bucket, because that is the
-//! only case where the two could differ — a fixture where every object sits alone in its routing
+//! only case where the two could differ â€” a fixture where every object sits alone in its routing
 //! bucket would agree trivially and prove nothing.
 //!
 //! Deleting the object-keyed set is safe exactly as far as this holds, and if it ever stops
@@ -44,36 +44,38 @@ const KEYS: usize = 48;
 
 /// The dirty buckets, found the way the object-keyed set finds them.
 fn by_object_set(engine: &crate::TemporalEngine) -> BTreeSet<u32> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    let mut buckets: BTreeSet<u32> = shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .filter_map(|(id, bucket)| bucket.dirty().then_some(*id))
-        .collect();
-    for object_key in shard.dirty_objects.iter() {
-        buckets.extend(crate::engine::bucket_index_target_buckets_for_object_key(
-            shard, object_key,
-        ));
-    }
-    buckets
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
+        let mut buckets: BTreeSet<u32> = shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .filter_map(|(id, bucket)| bucket.dirty().then_some(*id))
+            .collect();
+        for object_key in shard.dirty_objects.iter() {
+            buckets.extend(crate::engine::bucket_index_target_buckets_for_object_key(
+                shard, object_key,
+            ));
+        }
+        buckets
+    })
 }
 
 /// The dirty buckets, found the way the sibling arm finds them: the bucket's own bit, or any block
 /// of it carrying one.
 fn by_block_bit(engine: &crate::TemporalEngine) -> BTreeSet<u32> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .filter_map(|(id, bucket)| {
-            let dirty = bucket.dirty() || bucket.block_index.values().any(|block| block.dirty());
-            dirty.then_some(*id)
-        })
-        .collect()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .filter_map(|(id, bucket)| {
+                let dirty = bucket.dirty() || bucket.block_index.values().any(|block| block.dirty());
+                dirty.then_some(*id)
+            })
+            .collect()
+    })
 }
 
 #[test]
@@ -131,12 +133,13 @@ fn the_block_bit_answers_the_dirty_bucket_question() {
     });
 
     let (after_dump_objects, after_dump_dirty) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
-        (
-            shard.dirty_objects.len(),
-            shard.bucket_index.bucket_map.values().filter(|b| b.dirty()).count(),
-        )
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1");
+            (
+                shard.dirty_objects.len(),
+                shard.bucket_index.bucket_map.values().filter(|b| b.dirty()).count(),
+            )
+        })
     };
     println!("    after the dump: {after_dump_objects} dirty object(s), {after_dump_dirty} dirty bucket(s)");
 
@@ -156,18 +159,19 @@ fn the_block_bit_answers_the_dirty_bucket_question() {
     let via_blocks = by_block_bit(&engine);
 
     let (object_count, bucket_count, blocks) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
-        (
-            shard.dirty_objects.len(),
-            shard.bucket_index.bucket_map.len(),
-            shard
-                .bucket_index
-                .bucket_map
-                .values()
-                .map(|b| b.block_index.len())
-                .sum::<usize>(),
-        )
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1");
+            (
+                shard.dirty_objects.len(),
+                shard.bucket_index.bucket_map.len(),
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .values()
+                    .map(|b| b.block_index.len())
+                    .sum::<usize>(),
+            )
+        })
     };
 
     println!();
