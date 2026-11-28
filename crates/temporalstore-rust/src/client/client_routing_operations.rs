@@ -169,7 +169,7 @@ mod bucket_ownership_tests {
         );
         assert_ne!(
             routed, first_shard_id,
-            "and it is NOT the shard whose published range contains bucket {bucket} -- if this              now holds, routing became range-based and the report and this comment need updating"
+            "and it is NOT the shard whose published range contains bucket {bucket} -- if this now holds, routing became range-based and the report and this comment need updating"
         );
     }
 }

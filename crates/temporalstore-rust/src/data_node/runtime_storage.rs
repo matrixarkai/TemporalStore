@@ -773,7 +773,7 @@ impl DataNodeRuntime {
                 Err(error) => {
                     tracing::warn!(
                         %error,
-                        "storage manager could not pre-allocate the next data slab;                          the next append will roll inline"
+                        "storage manager could not pre-allocate the next data slab; the next append will roll inline"
                     );
                 }
             }

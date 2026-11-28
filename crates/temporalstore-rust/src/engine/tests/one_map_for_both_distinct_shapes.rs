@@ -479,7 +479,7 @@ fn the_conversion_no_longer_shrinks_the_membership_sum() {
         );
         assert_eq!(
             before, after,
-            "the conversion changed the membership sum. If it SHRANK, the capture fires again and the          consequence this test documents has gone away -- which would be fine, but the doc above          is then wrong and should be deleted rather than left to mislead."
+            "the conversion changed the membership sum. If it SHRANK, the capture fires again and the consequence this test documents has gone away -- which would be fine, but the doc above is then wrong and should be deleted rather than left to mislead."
         );
     })
 }
@@ -527,7 +527,7 @@ fn the_stored_image_no_longer_carries_the_control_state_blocks_key() {
             let shard = state.expect("the shard is loaded");
             assert!(
                 !shard.control_state_blocks().is_empty(),
-                "denominator: the fixture wrote no control-state block, so the absence of the stored              key below would be satisfied by an empty store and would mean nothing"
+                "denominator: the fixture wrote no control-state block, so the absence of the stored key below would be satisfied by an empty store and would mean nothing"
             );
         })
     }
@@ -545,11 +545,11 @@ fn the_stored_image_no_longer_carries_the_control_state_blocks_key() {
         top_level.iter().filter(|k| k.contains("control")).collect::<Vec<_>>());
     assert!(
         value.get("control_state_blocks").is_none(),
-        "the stored image still spells the top-level `control_state_blocks` key. That is the          compatibility shim, and the stamp bump in this change is what paid for taking it out;          leaving it means the stamp was spent and the cost it was spent on is still being paid."
+        "the stored image still spells the top-level `control_state_blocks` key. That is the compatibility shim, and the stamp bump in this change is what paid for taking it out; leaving it means the stamp was spent and the cost it was spent on is still being paid."
     );
     assert!(
         value.get("objects").is_some(),
-        "denominator: the consolidated map is absent from the stored image, so the rows have no          home at all rather than having moved"
+        "denominator: the consolidated map is absent from the stored image, so the rows have no home at all rather than having moved"
     );
 
     // AND THE ROWS COME BACK. Reload and read them through the consolidated map.
@@ -561,7 +561,7 @@ fn the_stored_image_no_longer_carries_the_control_state_blocks_key() {
         println!("  control-state blocks after reload: {}", shard.control_state_blocks().len());
         assert!(
             !shard.control_state_blocks().is_empty(),
-            "the control-state blocks did not survive a reload through the consolidated map alone.          That is the loss the compatibility shim existed to prevent, arriving because the shim was          removed without the consolidated map carrying the rows."
+            "the control-state blocks did not survive a reload through the consolidated map alone. That is the loss the compatibility shim existed to prevent, arriving because the shim was removed without the consolidated map carrying the rows."
         );
     })
 }

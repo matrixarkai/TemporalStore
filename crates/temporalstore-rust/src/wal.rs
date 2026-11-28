@@ -6936,8 +6936,8 @@ fn scan_wal_tail(
 /// meets it sees bytes that are not a frame and concludes the log ended. It does not -- it
 /// continues in the next block. Returns the offset the reader should now be at.
 ///
-/// This is the cost of a footer, and it is the reason the reference's readers know about blocks
-/// rather than treating a stream as a flat run of records.
+/// A footer lets walking readers locate the next block instead of treating the stream as a flat
+/// run of records.
 
 /// Whether the block holding `at` has been closed, i.e. its footer slot is written.
 ///
@@ -10171,14 +10171,13 @@ mod tests {
         assert!(whole > 0);
     }
 
-    /// What their item SHAPE costs us, since we already have the type.
+    /// What the flat operation-log item occupies compared with the command sum type.
     ///
-    /// `WalItem` mirrors their operation-log item field for field -- the field numbers match
-    /// one-for-one and a test pins that. It is one flat message with optional fields, where
-    /// `Command` is a 99-variant sum type as wide as its widest arm. That difference, not any
-    /// individual field, is why our record is bigger than theirs.
+    /// `WalItem` is one flat message with optional fields, and a test pins its field numbers.
+    /// `Command` is a 99-variant sum type as wide as its widest arm. This probe reports the
+    /// storage occupied by both representations and the current record.
     ///
-    /// If the record carried the flat item the way theirs does, this is what it would occupy.
+    /// It also reports the computed record size with the command field replaced by the flat item.
     #[test]
     #[ignore]
     fn what_their_item_shape_would_cost() {
@@ -10186,14 +10185,14 @@ mod tests {
         let wal_item = size_of::<crate::wal_record::WalItem>();
         let command = size_of::<Option<Command>>();
         let record = size_of::<WriteAheadLogRecord>();
-        println!("  SHAPE WalItem (their item, our type)  {wal_item:>4} B");
+        println!("  SHAPE WalItem (flat message)          {wal_item:>4} B");
         println!("  SHAPE Option<Command> (a sum type)    {command:>4} B");
         println!("  SHAPE record as it stands             {record:>4} B");
         println!(
             "  SHAPE record with the flat item instead {:>4} B  (record - command + item)",
             record - command + wal_item
         );
-        println!("  their item is ~20 B of scalars plus the message, held by value");
+        println!("  the flat item is ~20 B of scalars plus the message, held by value");
         assert!(wal_item > 0);
     }
 
@@ -10340,7 +10339,7 @@ mod tests {
         // above what the record itself needs and far below anything with a hidden buffer in it.
         assert!(
             per_write < 2_000.0,
-            "a 256-byte write allocated {per_write:.0} B: something is allocating a buffer per              append again"
+            "a 256-byte write allocated {per_write:.0} B: something is allocating a buffer per append again"
         );
     }
 
@@ -10395,7 +10394,7 @@ mod tests {
         assert_eq!(
             read.len(),
             512,
-            "the batch wrote 512 records and the log reads back {}; a carried physical length              that missed a growth puts records at the wrong offset",
+            "the batch wrote 512 records and the log reads back {}; a carried physical length that missed a growth puts records at the wrong offset",
             read.len()
         );
 
@@ -10457,11 +10456,11 @@ mod tests {
 
         assert!(
             one_at_a_time >= 64,
-            "the control opened {one_at_a_time} times for 64 single appends, so the counter is              not counting opens and the batch figure below means nothing"
+            "the control opened {one_at_a_time} times for 64 single appends, so the counter is not counting opens and the batch figure below means nothing"
         );
         assert_eq!(
             batched, 1,
-            "a batch of 64 records opened the piece {batched} times; it holds the append lock and              the inner lock across the whole loop and rolls only afterwards, so one open covers it"
+            "a batch of 64 records opened the piece {batched} times; it holds the append lock and the inner lock across the whole loop and rolls only afterwards, so one open covers it"
         );
 
         // The same argument covers the physical length. Under preallocation each record asked the
@@ -10470,7 +10469,7 @@ mod tests {
         // copy when it grows the file.
         assert!(
             one_at_a_time_stats >= 1,
-            "the control never asked for the physical length ({one_at_a_time_stats}), so the              batch figure below is not measuring anything"
+            "the control never asked for the physical length ({one_at_a_time_stats}), so the batch figure below is not measuring anything"
         );
         assert_eq!(
             batched_stats, 1,
@@ -10767,11 +10766,11 @@ mod tests {
         let (never_keep_most, _, _, _) = run(Some(0), 0.10);
         let (default_keep_most, _, _, _) = run(None, 0.10);
         println!(
-            "  keeping most: never rolling copied {never_keep_most} B, at the default              {default_keep_most} B"
+            "  keeping most: never rolling copied {never_keep_most} B, at the default {default_keep_most} B"
         );
         assert!(
             default_keep_most * 4 < never_keep_most,
-            "rolling should confine the rewrite to the boundary piece: {default_keep_most} vs              {never_keep_most}"
+            "rolling should confine the rewrite to the boundary piece: {default_keep_most} vs {never_keep_most}"
         );
     }
 
@@ -10971,7 +10970,7 @@ mod tests {
             let envelope = per_record - value_len as f64;
             assert!(
                 envelope < 80.0,
-                "envelope is {envelope:.0} B at {value_len}B: that is the text fallback's shape,                  not the binary one -- has a default flipped?"
+                "envelope is {envelope:.0} B at {value_len}B: that is the text fallback's shape, not the binary one -- has a default flipped?"
             );
         }
     }
@@ -12733,7 +12732,7 @@ mod tests {
         let overhead = encoded.len() as f64 / block.len() as f64;
         assert!(
             overhead < 1.6,
-            "a staged block should cost about a third over its contents, got {overhead:.2}x              ({} bytes of record for {} bytes of block)",
+            "a staged block should cost about a third over its contents, got {overhead:.2}x ({} bytes of record for {} bytes of block)",
             encoded.len(),
             block.len()
         );

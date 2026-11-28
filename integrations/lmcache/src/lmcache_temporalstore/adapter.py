@@ -562,6 +562,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 self._lookup_retry_at = 0.0
             # Reserve before the metadata read so eviction cannot invalidate a hit.
             with self._lock:
+                if self._closed:
+                    return
                 for index, key in enumerate(keys):
                     if key not in self._evicting and key not in self._publishing:
                         self._locked[key] = self._locked.get(key, 0) + 1

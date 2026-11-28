@@ -3539,7 +3539,7 @@ fn note_stored_slots_repeated_an_id(count: u64) {
     STORED_SLOTS_REPEATED_AN_ID.fetch_add(count, std::sync::atomic::Ordering::Relaxed);
     tracing::warn!(
         repeated = count,
-        "a stored object list named the same object in more than one slot; the first slot wins and          the rest are left as placeholders so nothing above them renumbers"
+        "a stored object list named the same object in more than one slot; the first slot wins and the rest are left as placeholders so nothing above them renumbers"
     );
 }
 
@@ -5339,7 +5339,7 @@ impl BlockIndexNamedBy<'_> {
                     .position(|object| block_index_handle(object, block) == *handle)
                     .unwrap_or_else(|| {
                         panic!(
-                            "no object named by this fixture is filed at handle {handle}; the                              named objects are {:?}",
+                            "no object named by this fixture is filed at handle {handle}; the named objects are {:?}",
                             self.1
                         )
                     });
@@ -5349,7 +5349,7 @@ impl BlockIndexNamedBy<'_> {
             .collect();
         if let Some(at) = used.iter().position(|hit| !hit) {
             panic!(
-                "this fixture names the object {:?}, which accounts for none of the {} block(s)                  in the map; a name left behind by a fixture that stopped writing it would go on                  passing",
+                "this fixture names the object {:?}, which accounts for none of the {} block(s) in the map; a name left behind by a fixture that stopped writing it would go on passing",
                 self.1[at],
                 paired.len()
             );
@@ -8840,7 +8840,7 @@ impl CoreIndex {
         } = rebuilt;
         debug_assert!(
             rebuilt_objects.is_empty(),
-            "a reconstruct built {} object kind(s) of its own. It cannot: the object map is the              durable record of which objects exist and is carried from the index being replaced,              so anything built here is a second, younger copy that would win silently",
+            "a reconstruct built {} object kind(s) of its own. It cannot: the object map is the durable record of which objects exist and is carried from the index being replaced, so anything built here is a second, younger copy that would win silently",
             rebuilt_objects.len()
         );
         // THE CARRIED REFS ARE MERGED AND THEN PRUNED, WHICH IS THE ONLY RULE THAT HOLDS FOR
@@ -9957,7 +9957,7 @@ mod element_name_lookup_tests {
         let held = refs.as_slice();
         assert!(
             held.windows(2).all(|pair| pair[0] < pair[1]),
-            "the refs in the slot are not strictly ascending, so `BlockRefs::remove`'s binary              search can miss a ref that is present: {held:?}"
+            "the refs in the slot are not strictly ascending, so `BlockRefs::remove`'s binary search can miss a ref that is present: {held:?}"
         );
 
         // THE REF INSERTED LAST IS AT THE FRONT, which an append cannot achieve.
@@ -9968,7 +9968,7 @@ mod element_name_lookup_tests {
         assert_eq!(
             Some(&lowest),
             held.first(),
-            "the lowest ref went in last and is not at the front, so the insert is not placing by              order: {held:?}"
+            "the lowest ref went in last and is not at the front, so the insert is not placing by order: {held:?}"
         );
 
         // AND `remove` FINDS IT. This is the failure an append-style insert actually produces: the
@@ -12295,7 +12295,7 @@ mod a_records_blocks_can_live_on_the_shard_beside_the_record {
         let b = serde_json::to_vec(&with).expect("encoding a shard failed");
         assert_ne!(
             a, b,
-            "a filed layout did NOT change the stored bytes, so the field is skipped again and a              reload would drop where a multi-block record's blocks are"
+            "a filed layout did NOT change the stored bytes, so the field is skipped again and a reload would drop where a multi-block record's blocks are"
         );
 
         let back: ShardState =
@@ -12303,7 +12303,7 @@ mod a_records_blocks_can_live_on_the_shard_beside_the_record {
         assert_eq!(
             1,
             back.object_block_layouts.len(),
-            "the layout did not survive the round trip, so the field is written but not readable              back -- which is the same loss as not writing it"
+            "the layout did not survive the round trip, so the field is written but not readable back -- which is the same loss as not writing it"
         );
     }
 }

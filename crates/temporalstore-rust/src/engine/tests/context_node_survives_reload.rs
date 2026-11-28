@@ -460,7 +460,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
         println!("[orphan] dead-block control after the reconcile: {dead_after} (must be false)");
         assert!(
             !dead_after,
-            "THE LIVE FILTER NEVER FIRES: an element pointing at a block nothing holds also survived,          so the first result above cannot be read as `the block was live`"
+            "THE LIVE FILTER NEVER FIRES: an element pointing at a block nothing holds also survived, so the first result above cannot be read as `the block was live`"
         );
         // MEASURED, and it REFUTED the prediction this test was written to confirm: a container-only
         // element whose BLOCK is live SURVIVES. `LiveBlockKey` is `(slab_id, offset, length)` -- a block
@@ -468,7 +468,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
         // block is still there, never whether the index names this element.
         assert!(
             orphan_after,
-            "a container-only element on a LIVE block was dropped, contradicting the measured behaviour          this assertion records"
+            "a container-only element on a LIVE block was dropped, contradicting the measured behaviour this assertion records"
         );
     });
 }

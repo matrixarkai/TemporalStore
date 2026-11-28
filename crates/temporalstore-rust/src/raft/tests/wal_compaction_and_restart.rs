@@ -738,7 +738,7 @@ fn replaying_an_append_only_log_never_rescans_it() {
     println!("replay of {records} append-only records examined {scanned} accumulated entries");
     assert_eq!(
         scanned, 0,
-        "replaying {records} plain appends examined {scanned} accumulated entries;          scanning the running log per record makes replay quadratic in record count"
+        "replaying {records} plain appends examined {scanned} accumulated entries; scanning the running log per record makes replay quadratic in record count"
     );
 
     // ...and the replay must still be right, not merely cheap.

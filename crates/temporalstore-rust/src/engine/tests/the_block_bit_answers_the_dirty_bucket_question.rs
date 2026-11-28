@@ -203,7 +203,7 @@ fn the_block_bit_answers_the_dirty_bucket_question() {
     // ---- something.
     assert!(
         via_objects.len() < bucket_count,
-        "every one of the {bucket_count} buckets reads dirty, so both methods return the whole          map and agreeing proves nothing. The dump above was supposed to leave most of them          clean -- check what it actually cleared before trusting the equality below"
+        "every one of the {bucket_count} buckets reads dirty, so both methods return the whole map and agreeing proves nothing. The dump above was supposed to leave most of them clean -- check what it actually cleared before trusting the equality below"
     );
 
     // ---- AND THEY MUST AGREE. This is the whole claim: the block bit is sufficient, so the

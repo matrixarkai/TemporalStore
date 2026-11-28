@@ -1254,7 +1254,7 @@ fn a_read_only_batch_reaches_the_replica_and_a_write_batch_the_primary() {
     assert_eq!(
         reads.responses[0].response,
         CommandResponse::Bytes { value: Some(b"replica".to_vec()) },
-        "a batch carrying no writes must follow the table's replica policy, as its reads do          one at a time"
+        "a batch carrying no writes must follow the table's replica policy, as its reads do one at a time"
     );
 
     let mixed = table

@@ -269,7 +269,7 @@ fn no_context_node_entry_arrives_through_a_load_with_no_base_index() {
         })
     });
     println!(
-        "  from the same blob: deadline arrived {deadline_arrived}, string arrived          {string_arrived}, anchor {anchor:?}"
+        "  from the same blob: deadline arrived {deadline_arrived}, string arrived {string_arrived}, anchor {anchor:?}"
     );
 
     let arrived = planted_arrived(&reloaded);
@@ -325,7 +325,7 @@ fn with_no_index_log_either_the_deadline_shows_which_source_delivered_it() {
         })
     });
     println!(
-        "  no base index AND no index log -> deadline {deadline}, string {string}, planted          {planted}, anchor {anchor:?}"
+        "  no base index AND no index log -> deadline {deadline}, string {string}, planted {planted}, anchor {anchor:?}"
     );
 
     // The one thing that is a finding either way, and the reason this arm is safe to assert on:
@@ -333,6 +333,6 @@ fn with_no_index_log_either_the_deadline_shows_which_source_delivered_it() {
     // no command writes this map.
     assert!(
         !planted,
-        "with no base index and no index log, the entry still arrived -- so something other than          those two is writing this map, and the door census is incomplete"
+        "with no base index and no index log, the entry still arrived -- so something other than those two is writing this map, and the door census is incomplete"
     );
 }
