@@ -484,6 +484,45 @@ class TableClientTest(unittest.TestCase):
                 self.assertAlmostEqual(first.execute.call_args.kwargs["timeout_seconds"], 1.0)
                 self.assertAlmostEqual(second.execute.call_args.kwargs["timeout_seconds"], 0.4)
 
+    def test_unary_read_recovers_exact_bytes_from_the_refreshed_grpc_endpoint(self):
+        payload = bytes(range(256)) * 256
+        calls = []
+
+        class Datashard(TemporalStoreServiceServicer):
+            def __init__(self, role):
+                self.role = role
+
+            def ExecuteChecked(self, request, context):
+                calls.append((self.role, request.shard_id, request.load_version, request.command.string_get.key))
+                if self.role == "old":
+                    context.abort(grpc.StatusCode.UNAVAILABLE, "primary changed")
+                return commands.ExecuteResponse(
+                    status=commands.Status(ok=True), response=commands.CommandResponse(value=payload),
+                )
+
+        with ExitStack() as stack:
+            pool = stack.enter_context(ThreadPoolExecutor(max_workers=2))
+            topologies = []
+            for role, version in (("old", 7), ("new", 8)):
+                server = grpc.server(pool)
+                add_TemporalStoreServiceServicer_to_server(Datashard(role), server)
+                port = server.add_insecure_port("127.0.0.1:0")
+                server.start()
+                stack.callback(lambda server=server: server.stop(0).wait(timeout=3))
+                topologies.append(TableTopology("kvcache", "model", version, 73, 1, (
+                    Shard(73, None, (), version, f"127.0.0.1:{port}"),
+                )))
+
+            metadata = Mock()
+            metadata.table_topology.side_effect = topologies
+            with TableClient(metadata, "kvcache", "model", timeout_seconds=2) as table:
+                reply = table.execute(get("chunk"))
+
+        self.assertTrue(reply.status.ok)
+        self.assertEqual(reply.response.value, payload)
+        self.assertEqual(calls, [("old", 73, 7, "chunk"), ("new", 73, 8, "chunk")])
+        self.assertEqual(metadata.table_topology.call_count, 2)
+
     def test_missing_elected_leader_refreshes_before_normal_topology_ttl(self):
         metadata = Mock()
         metadata.table_topology.side_effect = [
