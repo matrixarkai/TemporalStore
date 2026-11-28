@@ -1123,10 +1123,13 @@ impl TemporalEngine {
 
         #[cfg(test)]
         restore_phase_probe::begin();
-        let (loaded, replay_watermark, catalog) = if wal_single_barrier() {
+        let (loaded, replay_watermark, catalog, _wal_proof) = if wal_single_barrier() {
             // Only the selected durable image sets the replay frontier. Ordinary unsynced
             // deltas cannot advance it; the same scan recovers relocations and slab metadata.
-            self.load_durable_index_with_catalog(request.shard_id, self.eager_cache_warm())
+            match self.load_durable_index_with_catalog(request.shard_id, self.eager_cache_warm()) {
+                Ok(loaded) => loaded,
+                Err(status) => return LoadShardResponse { status },
+            }
         } else {
             // If the latest durable dump manifest is newer than the served index, install
             // it as the load base first (recovers data already dumped into a manifest and
@@ -1161,7 +1164,7 @@ impl TemporalEngine {
                         .unwrap_or_else(|| self.wal_store.stats(request.shard_id).last_sequence),
                 },
             };
-            (loaded, replay_watermark, catalog)
+            (loaded, replay_watermark, catalog, None)
         };
         // What this load decided to SKIP. A recovery that loses a write loses it by choosing a
         // watermark, and that choice is invisible from outside: the shard loads clean, no error

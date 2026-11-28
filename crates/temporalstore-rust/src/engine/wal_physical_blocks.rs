@@ -115,7 +115,7 @@ pub(super) fn bindings(
         .collect()
 }
 
-fn folded(key: PhysicalKey) -> u64 {
+pub(super) fn folded(key: PhysicalKey) -> u64 {
     let mut hash = 0xcbf2_9ce4_8422_2325u64;
     for byte in b"physical-frame-v1"
         .iter()

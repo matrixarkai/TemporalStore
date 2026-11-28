@@ -3388,7 +3388,7 @@ pub(crate) fn execute_on_shard(
             ) {
                 // THE INSTALL BELOW FILES THIS BLOCK, and records its outcome once. Filing it here as
                 // well wrote the same outcome into the log record twice.
-                super::recorded_map::install_element::<super::recorded_map::ListKind>(
+                super::recorded_map::install_appended_element::<super::recorded_map::ListKind>(
                     shard,
                     shard_id,
                     &key,

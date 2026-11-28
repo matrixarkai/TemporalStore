@@ -34,6 +34,7 @@ const SHARD: ShardId = 7;
 /// drops reads back as its default and the equality assertion names it.
 fn a_manifest_with_every_field_set() -> BucketDumpManifest {
     BucketDumpManifest {
+        wal_frames: Vec::new(),
         version: 3,
         shard_id: SHARD,
         manifest_id: "7-4242-1700000000123".to_string(),
@@ -741,4 +742,20 @@ fn no_json_path_is_left_for_a_manifest_or_a_marker() {
             "{name} still names serde_json: a JSON arm survives for a manifest or marker"
         );
     }
+}
+
+#[test]
+fn committed_wal_frames_are_in_the_canonical_manifest_digest() {
+    let mut manifest = a_manifest_with_every_field_set();
+    manifest.version = 4;
+    manifest.wal_frames.push(crate::engine::reports::DumpWalFrameCommitment {
+        log_id: 29, sha256: "aa".repeat(32),
+    });
+    let raw = encode_bucket_dump_manifest(&manifest);
+    let protobuf = crate::sdk::v1::DurableBucketDumpManifest::decode(raw.as_slice()).unwrap();
+    assert_eq!(raw, protobuf.encode_to_vec());
+    assert_eq!(decode_bucket_dump_manifest(&raw).unwrap(), manifest);
+    let digest = bucket_dump_protobuf_digest(&manifest);
+    manifest.wal_frames[0].sha256 = "bb".repeat(32);
+    assert_ne!(bucket_dump_protobuf_digest(&manifest), digest);
 }

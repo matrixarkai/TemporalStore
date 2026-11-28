@@ -48,6 +48,10 @@ use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedBlock};
 #[path = "wal_physical_blocks.rs"]
 mod physical;
 
+pub(super) fn wal_resident_address_key(object: u64, address: super::LiveBlockKey) -> u64 {
+    physical::folded((object, address))
+}
+
 #[path = "wal_read_snapshot.rs"]
 mod read_snapshot;
 pub(super) use read_snapshot::ReadSnapshotGuard;
@@ -245,6 +249,36 @@ fn inspect_registration_outcomes(
         super::HOT_BLOCK_OFFSET.fetch_max(maximum.saturating_add(1), std::sync::atomic::Ordering::Relaxed);
     }
     packed
+}
+
+/// Apply the same element naming rules as rehydration without making a registration.
+pub(super) fn block_has_exact_manifest_element(
+    record: &crate::wal::WriteAheadLogRecord,
+    block: &StagedBlock,
+    kind: &str,
+    expected: Option<&str>,
+) -> bool {
+    use super::container_blocks::{
+        decode_container_block, element_name_from_element_key, ContainerBlockDecode, ElementKeySpelling,
+    };
+    let packed = record.outcomes.iter()
+        .filter(|item| item.kind == "hash" && !item.deleted)
+        .map(|item| item.object_id)
+        .collect();
+    let names = registration_names(block, &packed, &mut std::collections::HashSet::new());
+    if names.iter().filter(|name| name.as_deref() == expected).count() != 1 {
+        return false;
+    }
+    if let Some(spelling) = ElementKeySpelling::for_kind(kind) {
+        let Some(expected) = expected else { return false; };
+        let ContainerBlockDecode::Framed { spelling: actual, items, .. } =
+            decode_container_block(&block.bytes)
+        else { return false; };
+        return spelling == actual && items.iter().filter(|item| {
+            !item.deleted && element_name_from_element_key(spelling, &item.key).as_deref() == Some(expected)
+        }).count() == 1;
+    }
+    true
 }
 
 fn registration_names(

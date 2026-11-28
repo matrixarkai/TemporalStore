@@ -38,8 +38,7 @@ use super::*;
 use crate::sdk::v1;
 use prost::Message;
 
-/// Field numbers the digest streams by hand. Declared in `temporalstore.proto`, where the note on
-/// `DurableBucketDumpManifest` says why they must stay the two highest.
+/// Field numbers the digest streams by hand. The commitment tail follows the image and checksum in wire order.
 const INDEX_BYTES_FIELD: u32 = 22;
 const CHECKSUM_FIELD: u32 = 23;
 
@@ -153,6 +152,7 @@ fn manifest_head_to_proto(manifest: &BucketDumpManifest) -> v1::DurableBucketDum
         index_sha256: manifest.index_sha256.clone(),
         index_bytes: Vec::new(),
         checksum: String::new(),
+        wal_frames: Vec::new(),
     }
 }
 
@@ -201,6 +201,9 @@ fn manifest_from_proto(manifest: v1::DurableBucketDumpManifest) -> BucketDumpMan
         index_bytes: manifest.index_bytes,
         index_sha256: manifest.index_sha256,
         checksum: manifest.checksum,
+        wal_frames: manifest.wal_frames.into_iter().map(|frame| super::DumpWalFrameCommitment {
+            log_id: frame.log_id, sha256: frame.sha256,
+        }).collect(),
     }
 }
 
@@ -262,6 +265,18 @@ pub(crate) fn decode_bucket_dump_install_marker(
 /// Streamed in the order prost writes the message: the head (every field below the index image),
 /// then the image's tag and length and the image itself from the borrowed slice. `checksum` is the
 /// highest tag and is empty here, so it contributes nothing.
+fn encoded_wal_frame_tail(manifest: &BucketDumpManifest) -> Vec<u8> {
+    if manifest.wal_frames.is_empty() {
+        return Vec::new();
+    }
+    v1::DurableBucketDumpManifest {
+        wal_frames: manifest.wal_frames.iter().map(|frame| v1::DurableBucketDumpWalFrame {
+            log_id: frame.log_id, sha256: frame.sha256.clone(),
+        }).collect(),
+        ..Default::default()
+    }.encode_to_vec()
+}
+
 pub(crate) fn bucket_dump_protobuf_digest(manifest: &BucketDumpManifest) -> (String, u64) {
     let head = manifest_head_to_proto(manifest).encode_to_vec();
     let mut hasher = Sha256::new();
@@ -273,6 +288,9 @@ pub(crate) fn bucket_dump_protobuf_digest(manifest: &BucketDumpManifest) -> (Str
         hasher.update(&manifest.index_bytes);
         hashed += (header.len() + manifest.index_bytes.len()) as u64;
     }
+    let commitments = encoded_wal_frame_tail(manifest);
+    hasher.update(&commitments);
+    hashed += commitments.len() as u64;
     let hex = hasher
         .finalize()
         .iter()
@@ -290,6 +308,7 @@ pub(crate) fn bucket_dump_protobuf_digest_payload(manifest: &BucketDumpManifest)
         payload.extend(index_bytes_field_header(manifest.index_bytes.len()));
         payload.extend_from_slice(&manifest.index_bytes);
     }
+    payload.extend(encoded_wal_frame_tail(manifest));
     payload
 }
 
@@ -312,6 +331,7 @@ pub(crate) fn encode_bucket_dump_manifest(manifest: &BucketDumpManifest) -> Vec<
         prost::encoding::encode_varint(manifest.checksum.len() as u64, &mut out);
         out.extend_from_slice(manifest.checksum.as_bytes());
     }
+    out.extend(encoded_wal_frame_tail(manifest));
     out
 }
 

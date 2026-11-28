@@ -12428,6 +12428,12 @@ fn reclaim_is_refused_while_the_shard_is_recovering() {
             max_background_queue_depth: 8,
         },
     );
+    let periodic = runtime.run_wal_reclaim_slot_for_test(1, &StorageManagerOptions::default());
+    assert_eq!(periodic.skipped_stages, ["shard_recovering"]);
+    assert!(periodic.executed_stages.is_empty());
+    assert!(!periodic.wal_reclaim_round.dumped);
+    assert_eq!(periodic.wal_reclaim_round.moved_blocks, 0);
+    assert!(periodic.lifecycle_report.is_none());
     let submitted = runtime.submit_gc(
         GcRequest {
             shard_id: 1,

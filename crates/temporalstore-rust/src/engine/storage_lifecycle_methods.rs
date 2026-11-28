@@ -1791,7 +1791,7 @@ impl TemporalEngine {
                                         // The retention check consumes this same immutable image.
                                         // Share its floor before dropping the validated decode.
                                         let _ = bucket_dump_io::manifest_wal_floor_memoised(
-                                            manifest, || Ok(wal_floor_of_index_image(&manifest_state)),
+                                            manifest, || self.retained_dump_wal_floor(manifest, &manifest_state),
                                         );
                                         // The shard this plan is FOR. A decoded manifest state
                                         // carries no stamp of its own -- only `install_shard_state`
@@ -1920,7 +1920,7 @@ impl TemporalEngine {
                 bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
                     let image = decode_index_bytes(installable_image(manifest).map_err(|_| ())?)
                         .map_err(|_| ())?;
-                    Ok(wal_floor_of_index_image(&image))
+                    self.retained_dump_wal_floor(manifest, &image)
                 }).is_ok()
             });
             let manifest_anchor = recovery_manifest.map_or(0, |manifest| manifest.wal_sequence);
@@ -2061,14 +2061,31 @@ impl TemporalEngine {
     /// and what the persisted served index names. An image counts only when a served block in it
     /// still names a WAL-resident address; placement metadata that outlived its frames does not.
     pub(crate) fn refresh_wal_retention_floor(&self, shard_id: ShardId) -> Result<(), ()> {
+        let revision = self.wal_store.manifest_floor_revision(shard_id);
         let persisted = self.persisted_images_wal_floor(shard_id)?;
         let registered =
             super::block_in_wal::min_registered_sequence(&self.block_store, shard_id, &self.wal_store);
-        match registered.into_iter().chain(persisted).min() {
-            Some(sequence) => self.wal_store.set_block_retention_floor(shard_id, sequence),
-            None => self.wal_store.clear_block_retention_floor(shard_id),
+        self.wal_store.replace_manifest_floor_if_current(
+            shard_id,
+            revision,
+            registered.into_iter().chain(persisted).min(),
+        )
+    }
+
+    fn retained_dump_wal_floor(
+        &self,
+        manifest: &BucketDumpManifest,
+        snapshot: &ShardState,
+    ) -> Result<Option<u64>, ()> {
+        if manifest.version < 4 && manifest.wal_frames.is_empty() {
+            return Ok(wal_floor_of_index_image(snapshot));
         }
-        Ok(())
+        let entries = super::storage_bucket_internals::collect_live_block_entries(snapshot);
+        let proof = self
+            .verify_committed_dump_wal(manifest, snapshot, &entries)
+            .map_err(|_| ())?
+            .ok_or(())?;
+        Ok(proof.floor())
     }
 
     /// The lowest WAL sequence any PERSISTED image still needs, or `None` when none needs the log.
@@ -2084,7 +2101,7 @@ impl TemporalEngine {
             let image = bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
                 let snapshot = decode_index_bytes(installable_image(manifest).map_err(|_| ())?)
                     .map_err(|_| ())?;
-                Ok(wal_floor_of_index_image(&snapshot))
+                self.retained_dump_wal_floor(manifest, &snapshot)
             })?;
             if let Some(sequence) = image {
                 floor = Some(floor.map_or(sequence, |old: u64| old.min(sequence)));
@@ -2125,6 +2142,7 @@ impl TemporalEngine {
     fn apply_storage_wal_reclaim_under_publication(
         &self, mut plan: StorageWalReclaimPlan,
     ) -> StorageWalReclaimReport {
+        let revision = self.wal_store.manifest_floor_revision(plan.shard_id);
         let manifests = match list_bucket_dump_manifests_shared_at(&self.index_dir, plan.shard_id) {
             Ok(manifests) => manifests,
             Err(_) => {
@@ -2139,7 +2157,7 @@ impl TemporalEngine {
             let floor = bucket_dump_io::manifest_wal_floor_memoised(manifest, || {
                 let snapshot = decode_index_bytes(installable_image(manifest).map_err(|_| ())?)
                     .map_err(|_| ())?;
-                Ok(wal_floor_of_index_image(&snapshot))
+                self.retained_dump_wal_floor(manifest, &snapshot)
             });
             match floor {
                 Ok(Some(sequence)) => manifest_floor = Some(manifest_floor.map_or(sequence, |old: u64| old.min(sequence))),
@@ -2187,9 +2205,19 @@ impl TemporalEngine {
             plan.shard_id,
             &self.wal_store,
         );
-        match registered_floor.into_iter().chain(manifest_floor).min() {
-            Some(sequence) => self.wal_store.set_block_retention_floor(plan.shard_id, sequence),
-            None => self.wal_store.clear_block_retention_floor(plan.shard_id),
+        let retention_floor = registered_floor.into_iter().chain(manifest_floor).min();
+        if self
+            .wal_store
+            .replace_manifest_floor_if_current(plan.shard_id, revision, retention_floor)
+            .is_err()
+        {
+            plan.safe_to_reclaim = false;
+            plan.blocker_reasons.push("reclaim_manifest_floor_changed".into());
+            return StorageWalReclaimReport {
+                plan,
+                applied: false,
+                ..StorageWalReclaimReport::default()
+            };
         }
         #[cfg(test)]
         planning_order_tests::before_wal_reclaim_truncate();
@@ -5303,10 +5331,35 @@ pub(super) fn wal_floor_of_index_image(snapshot: &ShardState) -> Option<u64> {
         .bucket_index
         .bucket_map
         .values()
-        .flat_map(|bucket| bucket.block_index.values())
-        .any(|block| {
-            visited += 1;
-            crate::wal_record::is_wal_resident(block.address.block_slab_id())
+        .any(|bucket| {
+            let mut portable_rows = None;
+            bucket.block_index.values().any(|block| {
+                visited += 1;
+                let slab = block.address.block_slab_id();
+                if !crate::wal_record::is_wal_resident(slab) {
+                    return false;
+                }
+                if !block.deleted() || slab != super::HOT_BLOCK_SLAB_ID {
+                    return true;
+                }
+                // A legacy deletion without a unique, valid description may still name
+                // a frame that recovery needs. Build the lookup only for WAL tombstones.
+                let rows = portable_rows.get_or_insert_with(|| {
+                    let mut rows = std::collections::BTreeMap::new();
+                    for row in bucket.tombstone_elements.iter()
+                        .filter(|row| row.block.0 == super::HOT_BLOCK_SLAB_ID)
+                    {
+                        rows.entry(row.block).and_modify(|entry| *entry = None).or_insert(Some(row));
+                    }
+                    rows
+                });
+                let address = super::live_block_key(&block.address);
+                !rows.get(&address).copied().flatten().is_some_and(|row| {
+                    super::dump_wal_dependencies::verify_hot_tombstone(
+                        snapshot, row, block.model_id().as_str(), &block.address,
+                    )
+                })
+            })
         });
     storage_bucket_internals::note_bucket_block_visits(visited);
     let needs_wal = indexed_wal || {

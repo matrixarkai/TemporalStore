@@ -225,7 +225,7 @@ impl TemporalEngine {
                 .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
             (snapshot, Some(bytes), publication)
         } else {
-            let (snapshot, publication) = self.capture_shard_checkpoint(shard_id)
+            let (snapshot, publication) = self.capture_bucket_dump_checkpoint(shard_id)
                 .ok_or_else(|| Status::error("checkpoint_unavailable",
                     "shard is unloaded or its WAL application is incomplete"))?;
             (snapshot, None, publication)
@@ -249,6 +249,7 @@ impl TemporalEngine {
         let mut block_slab_ids = BTreeSet::new();
         let mut described_wal_blocks = 0usize;
         let mut lifecycle = ObjectLifecycleAccumulator::default();
+        let mut legacy_deleted = ObjectLifecycleAccumulator::default();
         let mut coverage_digests = crate::engine::storage_reporting::BucketDigestBuilder::default();
         // Consume block facts once without retaining a temporary row per field in the shard.
         let mut observe_entry = |entry: &LiveBlockEntry| {
@@ -262,7 +263,11 @@ impl TemporalEngine {
             }
             let bucket = entry.filed_bucket().unwrap_or_else(|| self.routing_bucket_for_key(shard_id, &entry.object_key));
             if selected_buckets.is_empty() || selected_buckets.contains(&bucket) {
-                lifecycle.observe(shard_id, entry);
+                if entry.deleted {
+                    legacy_deleted.observe(shard_id, entry);
+                } else {
+                    lifecycle.observe(shard_id, entry);
+                }
                 coverage_digests.observe(shard_id, entry);
             }
         };
@@ -273,7 +278,8 @@ impl TemporalEngine {
             .get(&shard_id)
             .map(|info| (info.start_routing_bucket, info.end_routing_bucket))
             .unwrap_or((0, u32::MAX));
-        let summaries = bucket_storage_summaries_from_visit(&dump_index_state, start, end, |consume| {
+        let summaries = super::storage_reporting::selected_bucket_storage_summaries_from_visit(
+            &dump_index_state, start, end, &selected_buckets, |consume| {
             visit_live_block_entries(&dump_index_state, |entry| {
                 consume(&entry);
                 observe_entry(&entry);
@@ -291,18 +297,19 @@ impl TemporalEngine {
         let retirements = self.prepare_checkpoint_wal_retirements(
             shard_id, &mut dump_index_state, retained_objects, described_wal_blocks,
         );
-        let captured_wal_floor = super::storage_lifecycle_methods::wal_floor_of_index_image(&dump_index_state);
         if !retirements.is_empty() {
             captured_bytes = None;
         }
-        // Keep the owned capture until its final form is ready. Encoding and then
-        // decoding it here used to duplicate every model map and repack its trees.
-        #[cfg(test)]
-        super::writer_stall_probe::set_phase("dump: serialize_index");
-        let index_bytes = captured_bytes.unwrap_or_else(|| serialize_index(&dump_index_state));
-        #[cfg(test)]
-        super::writer_stall_probe::set_phase("dump: sha256 of the image");
-        let index_sha256 = sha256_hex_bytes(&index_bytes);
+        // Dirty-object bookkeeping is process-local and was absent from the decoded
+        // checkpoint previously used for this durable report.
+        dump_index_state.dirty_objects.clear();
+        let completed_released_rows =
+            captured_bytes.is_none() && !dump_index_state.bucket_index.released_buckets.is_empty();
+        if completed_released_rows {
+            super::storage_bucket_internals::restore_released_buckets_in_checkpoint(
+                &mut dump_index_state, shard_id,
+            );
+        }
         // Capture first, then sync, then publish. A writer can advance the served index
         // while the barrier runs; capturing afterwards could publish data it did not cover.
         #[cfg(test)]
@@ -357,17 +364,59 @@ impl TemporalEngine {
         // this against -- under bulk ingest the exported index and the volatile summaries are not
         // the same state. The index walk above is shared with the object-lifecycle report.
         // Retirement additionally checks the model maps when unused registrations need proof.
+        if completed_released_rows {
+            block_slab_ids.clear();
+            visit_live_block_entries(&dump_index_state, |entry| {
+                block_slab_ids.insert(entry.address.block_slab_id());
+            });
+        }
         let block_slab_ids = block_slab_ids.into_iter().collect::<Vec<_>>();
-        // Dirty-object bookkeeping is process-local and was absent from the decoded
-        // checkpoint previously used for this durable report.
-        dump_index_state.dirty_objects.clear();
+
+        let mut wal_proof = if block_slab_ids.iter().copied().any(crate::wal_record::is_wal_resident) {
+            // A reused bulk image was decoded before capture. A new image
+            // was encoded from this completed owned state.
+            let entries = collect_live_block_entries(&dump_index_state);
+            let proof = self.read_local_dump_wal_dependencies(
+                shard_id,
+                wal_sequence,
+                &dump_index_state,
+                &entries,
+                super::dump_wal_dependencies::DumpWalSource::RecoveryCapture,
+            )?.ok_or_else(|| Status::error("slot_dump_invalid_wal_binding",
+                "captured resident dump has no verified WAL dependencies"))?;
+            Some(proof)
+        } else {
+            None
+        };
+        if let Some(proof) = &wal_proof {
+            if proof.prune_capture_placements(&mut dump_index_state) {
+                captured_bytes = None;
+            }
+        }
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: serialize_index");
+        let index_bytes = captured_bytes.unwrap_or_else(|| serialize_index(&dump_index_state));
+        #[cfg(test)]
+        super::writer_stall_probe::set_phase("dump: sha256 of the image");
+        let index_sha256 = sha256_hex_bytes(&index_bytes);
+        let captured_wal_floor =
+            super::storage_lifecycle_methods::wal_floor_of_index_image(&dump_index_state);
+        let captured_wal_floor = wal_proof.as_ref()
+            .and_then(|proof| proof.floor()).into_iter().chain(captured_wal_floor).min();
+        // The v4 report describes live objects. Keep the legacy v3 report
+        // shape for physical images and existing readers.
+        if wal_proof.is_none() {
+            lifecycle.merge(legacy_deleted);
+        }
         let object_lifecycle = lifecycle.finish(
             &dump_index_state,
             &selected_buckets,
             |key| self.routing_bucket_for_key(shard_id, key),
         );
+
         let mut manifest = BucketDumpManifest {
-            version: 3,
+            version: if wal_proof.is_some() { 4 } else { 3 },
+            wal_frames: wal_proof.as_ref().map(|proof| proof.commitments.clone()).unwrap_or_default(),
             shard_id,
             manifest_id,
             manifest_kind: "slot_dump".to_string(),
@@ -409,6 +458,9 @@ impl TemporalEngine {
         #[cfg(test)]
         super::writer_stall_probe::set_phase("dump: persist manifest + mark_dumped");
         let published = self.checkpoint_publications.publish(&publication, || {
+            if let Some(proof) = &mut wal_proof {
+                proof.arm_adoption();
+            }
             let metadata = self.persist_bucket_dump_manifest_metadata(&manifest, true)?;
             self.wal_store.mark_dumped(shard_id);
             Ok(metadata)
@@ -470,6 +522,50 @@ impl TemporalEngine {
                     shard.mark_items_dumped();
                 }
             });
+        }
+        Ok(manifest)
+    }
+
+    /// Derive a transfer image from a committed local dump. The sender must keep
+    /// the source dump and its storage dependencies available during the transfer.
+    /// Live WAL-backed blocks still require their original frames. Only deleted
+    /// element rows can be transferred without their WAL payloads.
+    pub fn portable_bucket_dump_manifest(
+        &self,
+        mut manifest: BucketDumpManifest,
+    ) -> Result<BucketDumpManifest, Status> {
+        if manifest.manifest_kind != "slot_dump" {
+            return Err(Status::error(
+                "slot_dump_invalid",
+                "portable export requires a full slot dump",
+            ));
+        }
+        self.validate_bucket_dump_manifest(&manifest)?;
+        if manifest.wal_frames.is_empty() {
+            return Ok(manifest);
+        }
+
+        let mut snapshot = decode_index_bytes(&manifest.index_bytes)
+            .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
+        rebuild_unserialized_model_maps_from_bucket_index(&mut snapshot);
+        let entries = collect_live_block_entries(&snapshot);
+        let proof = self.read_local_dump_wal_dependencies(
+            manifest.shard_id,
+            manifest.wal_sequence,
+            &snapshot,
+            &entries,
+            super::dump_wal_dependencies::DumpWalSource::PortableCapture,
+        )?.ok_or_else(|| Status::error(
+            "slot_dump_invalid_wal_binding",
+            "portable export has no verified WAL dependencies",
+        ))?;
+        if proof.prune_capture_placements(&mut snapshot) {
+            manifest.manifest_id.push_str("-portable");
+            manifest.index_bytes = serialize_index(&snapshot);
+            manifest.index_sha256 = sha256_hex_bytes(&manifest.index_bytes);
+            manifest.wal_frames = proof.commitments.clone();
+            manifest.dump_generation_id = bucket_dump_generation_id(&manifest);
+            manifest.checksum = bucket_dump_manifest_checksum_in_place(&mut manifest)?;
         }
         Ok(manifest)
     }
@@ -572,7 +668,7 @@ impl TemporalEngine {
             ));
         }
         debug_assert!(source_manifest_count >= 1);
-        self.persist_bucket_dump_manifest(&manifest)
+        self.store_bucket_dump_manifest(&manifest)
             .map_err(|err| Status::error("slot_dump_failed", err.to_string()))?;
         Ok(manifest)
     }
@@ -601,7 +697,22 @@ impl TemporalEngine {
         &self,
         manifest: &BucketDumpManifest,
     ) -> Result<(), std::io::Error> {
-        self.persist_bucket_dump_manifest(manifest)
+        let mut wal_proof = None;
+        if manifest.version >= 4 || !manifest.wal_frames.is_empty() {
+            let invalid = || std::io::Error::new(std::io::ErrorKind::InvalidData,
+                "cannot verify local WAL dependencies for stored manifest");
+            self.validate_bucket_dump_manifest(manifest).map_err(|_| invalid())?;
+            let state = decode_index_bytes(installable_image(manifest).map_err(|_| invalid())?)
+                .map_err(|_| invalid())?;
+            let mut proof = self.verify_committed_dump_wal(
+                manifest, &state, &collect_live_block_entries(&state),
+            ).map_err(|_| invalid())?.ok_or_else(invalid)?;
+            proof.arm_adoption();
+            wal_proof = Some(proof);
+        }
+        let result = self.persist_bucket_dump_manifest(manifest);
+        drop(wal_proof);
+        result
     }
 
     pub fn interrupted_bucket_dump_installs(&self, shard_id: ShardId) -> Vec<BucketDumpInstallMarker> {
@@ -830,7 +941,7 @@ impl TemporalEngine {
                         ))?;
                     #[cfg(test)]
                     prune_failure_tests::before_write(&manifest);
-                    self.persist_bucket_dump_manifest(&manifest)?;
+                    self.store_bucket_dump_manifest(&manifest)?;
                 }
                 Ok(())
             })();
@@ -972,24 +1083,6 @@ impl TemporalEngine {
                 "slot dump manifest index checksum mismatch",
             ));
         }
-        let existing_slabs = self
-            .block_store
-            .slab_ids()
-            .map_err(|err| Status::error("slot_dump_invalid", err.to_string()))?
-            .into_iter()
-            .collect::<BTreeSet<_>>();
-        let missing = manifest
-            .block_slab_ids
-            .iter()
-            .copied()
-            .filter(|id| !existing_slabs.contains(id))
-            .collect::<Vec<_>>();
-        if !missing.is_empty() {
-            return Err(Status::error(
-                "slot_dump_missing_block_segments",
-                format!("slot dump references missing block segments: {missing:?}"),
-            ));
-        }
         let mut restored = crate::engine::decode_index_bytes(image)
             .map_err(|err| Status::error("slot_dump_invalid_index", err.to_string()))?;
         // THE STAMP, ON THIS DOOR TOO, AND IT IS THE DECODE'S. Every install calls this function
@@ -1043,6 +1136,26 @@ impl TemporalEngine {
             ));
         }
         let all_live_block_entries = collect_live_block_entries(&restored);
+        let wal_proof = self.verify_committed_dump_wal(manifest, &restored, &all_live_block_entries)?;
+        let existing_slabs = self
+            .block_store
+            .slab_ids()
+            .map_err(|err| Status::error("slot_dump_invalid", err.to_string()))?
+            .into_iter()
+            .collect::<BTreeSet<_>>();
+        let missing = manifest
+            .block_slab_ids
+            .iter()
+            .copied()
+            .filter(|id| !existing_slabs.contains(id) && !(wal_proof.is_some() && crate::wal_record::is_wal_resident(*id)))
+            .collect::<Vec<_>>();
+        if !missing.is_empty() {
+            return Err(Status::error(
+                "slot_dump_missing_block_segments",
+                format!("slot dump references missing block segments: {missing:?}"),
+            ));
+        }
+
         // The slabs the WHOLE embedded index needs, which is what `block_slab_ids` now carries and
         // what the collector holds back. Taken off the same walk the per-bucket entries below come
         // from, so this costs no extra pass over the index.
@@ -1113,12 +1226,21 @@ impl TemporalEngine {
             ));
         }
         if manifest.version >= 3 {
-            let expected_object_lifecycle = storage_object_lifecycle_report_for_buckets(
-                manifest.shard_id,
-                &restored,
-                &manifest_buckets,
-                |key| self.routing_bucket_for_key(manifest.shard_id, key),
-            );
+            let expected_object_lifecycle = if manifest.version >= 4 {
+                let mut lifecycle = ObjectLifecycleAccumulator::default();
+                for entry in live_block_entries.iter().filter(|entry| !entry.deleted) {
+                    lifecycle.observe(manifest.shard_id, entry);
+                }
+                lifecycle.finish(&restored, &manifest_buckets,
+                    |key| self.routing_bucket_for_key(manifest.shard_id, key))
+            } else {
+                storage_object_lifecycle_report_for_buckets(
+                    manifest.shard_id,
+                    &restored,
+                    &manifest_buckets,
+                    |key| self.routing_bucket_for_key(manifest.shard_id, key),
+                )
+            };
             // Also derive the lifecycle from the serialized model maps. For a
             // consistent index the two agree; a manifest whose model maps disagree
             // with its bucket index (e.g. a tampered object_id that the bucket-index
@@ -1189,6 +1311,9 @@ impl TemporalEngine {
         let mut unreadable_block_refs = 0usize;
         let mut unreadable_block_bytes = 0u64;
         for entry in live_block_entries {
+            if wal_proof.is_some() && crate::wal_record::is_wal_resident(entry.address.block_slab_id()) {
+                continue;
+            }
             if self.block_store.read(&entry.address).is_err() {
                 unreadable_block_refs = unreadable_block_refs.saturating_add(1);
                 unreadable_block_bytes = unreadable_block_bytes.saturating_add(entry.address.length());
@@ -1227,6 +1352,16 @@ impl TemporalEngine {
         manifest: &BucketDumpManifest,
         readable_probe_limit: usize,
     ) -> BucketDumpInstallPreflightReport {
+        let wal_proof = if manifest.version >= 4 || !manifest.wal_frames.is_empty() {
+            (|| {
+                let image = installable_image(manifest).ok()?;
+                let restored = crate::engine::decode_index_bytes(image).ok()?;
+                let entries = collect_live_block_entries(&restored);
+                self.verify_committed_dump_wal(manifest, &restored, &entries).ok().flatten()
+            })()
+        } else {
+            None
+        };
         let current_wal_sequence = self.wal_store.stats(manifest.shard_id).last_sequence;
         let current_index_log_sequence =
             self.index_log_store.stats(manifest.shard_id).last_sequence;
@@ -1240,7 +1375,7 @@ impl TemporalEngine {
             .block_slab_ids
             .iter()
             .copied()
-            .filter(|id| !existing_slabs.contains(id))
+            .filter(|id| !existing_slabs.contains(id) && !(wal_proof.is_some() && crate::wal_record::is_wal_resident(*id)))
             .collect::<Vec<_>>();
         let corrupt_block_slab_ids = self
             .block_store
@@ -1251,6 +1386,9 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         let stale_manifest = current_index_log_sequence > manifest.index_log_sequence;
         let mut blockers = Vec::new();
+        if (manifest.version >= 4 || !manifest.wal_frames.is_empty()) && wal_proof.is_none() {
+            blockers.push("invalid_wal_binding".to_string());
+        }
         if stale_manifest {
             blockers.push("stale_manifest_sequence".to_string());
         }
@@ -1285,6 +1423,9 @@ impl TemporalEngine {
                             continue;
                         }
                         probed_block_refs += 1;
+                        if wal_proof.is_some() && crate::wal_record::is_wal_resident(entry.address.block_slab_id()) {
+                            continue;
+                        }
                         if self.block_store.read(&entry.address).is_err() {
                             unreadable_block_ref_count = unreadable_block_ref_count.saturating_add(1);
                             unreadable_block_bytes =
@@ -1817,7 +1958,17 @@ impl TemporalEngine {
         // and they are recoverable: the addresses stay unrouted, so a later rebuild over the live
         // model maps re-derives their placement from the shard's own range.
         rebuild_bucket_block_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
+        let mut wal_proof = if manifest.version == 4 {
+            let source = crate::engine::decode_index_bytes(installable_image(manifest)
+                .map_err(|_| Status::error("slot_dump_invalid_index", "cannot decode resident manifest"))?)
+                .map_err(|_| Status::error("slot_dump_invalid_index", "cannot decode resident manifest"))?;
+            self.verify_committed_dump_wal(manifest, &source, &collect_live_block_entries(&source))?
+        } else { None };
         let restored_index_bytes = serialize_index(&restored);
+        if let Some(proof) = &mut wal_proof {
+            proof.arm_adoption();
+            self.persist_bucket_dump_manifest(manifest).map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
+        }
         self.persist_bucket_dump_install_marker(manifest, "prepare")
             .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
         // THE INSTALL IS WHAT PUTS THE STATE ON DISK, SO THE INSTALL IS WHAT RECORDS ITS
@@ -1897,8 +2048,10 @@ impl TemporalEngine {
         // ahead of it -- so a later load finds the manifest, installs it, and re-derives the
         // suffix from the WAL. Persisting it after the replay would leave a failed install with
         // no lineage to recover from.
-        self.persist_bucket_dump_manifest(manifest)
-            .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
+        if wal_proof.is_none() {
+            self.persist_bucket_dump_manifest(manifest)
+                .map_err(|err| Status::error("slot_dump_install_failed", err.to_string()))?;
+        }
         if shard_was_loaded {
             // A RESTORE IS THE INSTALL PLUS THE REPLAY. The manifest's watermark is the anchor
             // carried INSIDE its embedded index, so every record written after the dump lives

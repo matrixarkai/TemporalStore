@@ -106,6 +106,16 @@ impl ObjectLifecycleAccumulator {
         self.observe_identity(object_id, term);
     }
 
+    pub(super) fn merge(&mut self, other: Self) {
+        self.live_block_refs += other.live_block_refs;
+        self.reused.extend(other.reused);
+        for (object_id, term) in other.owners {
+            if self.owners.insert(object_id, term).is_some_and(|prior| prior != term) {
+                self.reused.insert(object_id);
+            }
+        }
+    }
+
     fn observe_identity(&mut self, object_id: u64, term: u64) {
         self.live_block_refs += 1;
         // One term plus a conflict bit is enough to answer whether an id has multiple owners.
@@ -566,6 +576,7 @@ pub(super) fn bucket_storage_summaries_from_visit(
         end_routing_bucket,
         visit,
         &bucket_node_facts(shard),
+        None,
     )
 }
 
@@ -582,7 +593,62 @@ fn summaries_from_listing(
         end_routing_bucket,
         |consume| entries.iter().for_each(consume),
         facts,
+        None,
     )
+}
+
+/// Summarize selected owners from the caller's full-image traversal.
+pub(super) fn selected_bucket_storage_summaries_from_visit(
+    shard: &ShardState,
+    start_routing_bucket: u32,
+    end_routing_bucket: u32,
+    selected: &BTreeSet<u32>,
+    visit: impl FnOnce(&mut dyn FnMut(&LiveBlockEntry)),
+) -> Vec<BucketStorageSummary> {
+    if selected.is_empty() {
+        return bucket_storage_summaries_from_visit(
+            shard, start_routing_bucket, end_routing_bucket, visit,
+        );
+    }
+
+    let mut facts = BucketNodeFacts {
+        nodes: Vec::with_capacity(selected.len()),
+        dirty_object_counts: Vec::new(),
+    };
+    for &routing_bucket in selected {
+        #[cfg(test)]
+        SELECTED_SUMMARY_WORK.with(|work| {
+            let (entries, nodes, dirty) = work.get();
+            work.set((entries, nodes + 1, dirty + 1));
+        });
+        if let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) {
+            facts.nodes.push((
+                routing_bucket,
+                bucket.dirty(),
+                bucket.object_index.object_count() as u64,
+                bucket.dirty_generation,
+            ));
+        }
+        let count = shard.dirty_objects.bucket_count(routing_bucket);
+        if count != 0 {
+            facts.dirty_object_counts.push((routing_bucket, count));
+        }
+    }
+    summaries_from_visit_and_facts(
+        start_routing_bucket, end_routing_bucket, visit, &facts, Some(selected),
+    )
+}
+
+#[cfg(test)]
+thread_local! {
+    // Accumulated entries, node lookups, and dirty-count lookups on the selected path.
+    static SELECTED_SUMMARY_WORK: std::cell::Cell<(usize, usize, usize)> =
+        const { std::cell::Cell::new((0, 0, 0)) };
+}
+
+#[cfg(test)]
+pub(super) fn take_selected_summary_work() -> (usize, usize, usize) {
+    SELECTED_SUMMARY_WORK.with(|work| work.replace((0, 0, 0)))
 }
 
 fn summaries_from_visit_and_facts(
@@ -590,6 +656,7 @@ fn summaries_from_visit_and_facts(
     end_routing_bucket: u32,
     visit: impl FnOnce(&mut dyn FnMut(&LiveBlockEntry)),
     facts: &BucketNodeFacts,
+    selected: Option<&BTreeSet<u32>>,
 ) -> Vec<BucketStorageSummary> {
     let mut buckets = BTreeMap::<u32, BucketStorageSummary>::new();
     let mut block_slabs_by_bucket = BTreeMap::<u32, BTreeSet<u64>>::new();
@@ -625,6 +692,16 @@ fn summaries_from_visit_and_facts(
         let routing_bucket = entry.filed_bucket().unwrap_or_else(|| {
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
+        if let Some(selected) = selected {
+            if !selected.contains(&routing_bucket) {
+                return;
+            }
+            #[cfg(test)]
+            SELECTED_SUMMARY_WORK.with(|work| {
+                let (entries, nodes, dirty) = work.get();
+                work.set((entries + 1, nodes, dirty));
+            });
+        }
         let summary = buckets.entry(routing_bucket).or_insert(BucketStorageSummary {
             routing_bucket,
             ..BucketStorageSummary::default()

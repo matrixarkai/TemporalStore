@@ -289,6 +289,70 @@ fn owned_dump_capture_preserves_model_state_and_reports_during_retirement() {
 }
 
 #[test]
+fn bucket_dump_capture_omits_deadline_tree_but_keeps_the_ttl_ledger() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    for key in ["selected-ttl", "other-ttl"] {
+        execute(&engine, Command::StringSet { key: key.into(), value: vec![7; 64] });
+        execute(&engine, Command::CommonExpire { key: key.into(), ttl_ms: 3_600_000 });
+    }
+    assert_eq!(engine.materialize_synthetic_blocks(1), 2);
+    let (full, _) = engine.capture_shard_checkpoint(1).unwrap();
+    let (dump, _) = engine.capture_bucket_dump_checkpoint(1).unwrap();
+    assert_eq!(full.expiry_by_deadline.len(), 2);
+    assert!(dump.expiry_by_deadline.is_empty());
+    assert_eq!(serialize_index(&dump), serialize_index(&full));
+    let selected = engine.routing_bucket_for_key(1, "selected-ttl");
+    assert_ne!(selected, engine.routing_bucket_for_key(1, "other-ttl"));
+    let manifest = engine.create_bucket_dump_manifest(1, [selected]).unwrap();
+    assert_eq!(manifest.bucket_ids, [selected]);
+    assert_eq!(manifest.wal_sequence, full.applied_wal_sequence.unwrap());
+    let (after, _) = engine.capture_shard_checkpoint(1).unwrap();
+    assert_eq!(after.expiry_by_deadline, full.expiry_by_deadline,
+        "dump capture must not consume the live expiry scheduler");
+    let image = decode_index_bytes(&manifest.index_bytes).unwrap();
+    for key in ["selected-ttl", "other-ttl"] {
+        let deadline = full.expires_at_ms().get(key).unwrap();
+        assert_eq!(image.expires_at_ms().get(key), Some(deadline));
+        assert!(image.string_address(key).is_some());
+    }
+    drop(engine);
+    let restored = TemporalEngine::with_local_dirs(
+        16 << 20, dir.path().join("manifest-cache"), dir.path().join("blocks"),
+        dir.path().join("manifest-indexes"),
+    );
+    restored.load_shard(1);
+    assert_eq!(restored.wal_store.stats_without_rescan(1).last_sequence, 0);
+    restored.install_bucket_dump_manifest(&manifest).unwrap();
+    restored.sweep_expired_records(1).unwrap();
+    assert_eq!(restored.wal_store.stats_without_rescan(1).last_sequence, 0,
+        "TTL recovery must not depend on the source WAL");
+    restored.shards.with_state(1, |state| {
+        assert_eq!(state.unwrap().expiry_by_deadline, full.expiry_by_deadline);
+    });
+    for key in ["selected-ttl", "other-ttl"] {
+        check_catalog_wal_models(&restored, &[(
+            Command::StringGet { key: key.into() },
+            CommandResponse::Bytes { value: Some(vec![7; 64]) },
+        )]);
+    }
+    drop(restored);
+    let reopened = engine_at(dir.path());
+    for key in ["selected-ttl", "other-ttl"] {
+        check_catalog_wal_models(&reopened, &[(
+            Command::StringGet { key: key.into() },
+            CommandResponse::Bytes { value: Some(vec![7; 64]) },
+        )]);
+    }
+    reopened.shards.with_state(1, |state| {
+        let shard = state.unwrap();
+        for key in ["selected-ttl", "other-ttl"] {
+            assert_eq!(shard.expires_at_ms().get(key), full.expires_at_ms().get(key));
+        }
+    });
+}
+
+#[test]
 fn owned_dump_capture_encodes_once_after_registration_retirement() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_at(dir.path());
@@ -307,10 +371,22 @@ fn owned_dump_capture_encodes_once_after_registration_retirement() {
     assert!(state.string_address("live").is_some());
     assert!(state.string_address("gone").is_none());
     assert_eq!(manifest.index_sha256, sha256_hex_bytes(&manifest.index_bytes));
-    // This image retains a WAL dependency; only the slab-backed case is portable
-    // without carrying source logs.
-    let status = engine.validate_bucket_dump_manifest(&manifest).unwrap_err();
-    assert_eq!(status.code, "slot_dump_missing_block_segments");
+    assert_eq!(manifest.version, 4);
+    assert_eq!(manifest.wal_frames.len(), 1);
+    engine.validate_bucket_dump_manifest(&manifest).unwrap();
+    let unrelated_root = tempfile::tempdir().unwrap();
+    let unrelated = engine_at(unrelated_root.path());
+    let before_index = std::fs::read(unrelated.index_path(1)).ok();
+    let before_manifests = unrelated.list_bucket_dump_manifests(1);
+    let (before, _) = unrelated.capture_shard_checkpoint(1).unwrap();
+    let status = unrelated.validate_bucket_dump_manifest(&manifest).unwrap_err();
+    assert_eq!(status.code, "slot_dump_invalid_wal_binding");
+    let status = unrelated.install_bucket_dump_manifest(&manifest).unwrap_err();
+    assert_eq!(status.code, "slot_dump_invalid_wal_binding");
+    assert_eq!(std::fs::read(unrelated.index_path(1)).ok(), before_index);
+    assert_eq!(unrelated.list_bucket_dump_manifests(1), before_manifests);
+    let (after, _) = unrelated.capture_shard_checkpoint(1).unwrap();
+    assert_eq!(serialize_index(&before), serialize_index(&after));
     drop(engine);
     let restored = engine_at(dir.path());
     for (key, expected) in [("live", Some(vec![7; 256])), ("gone", None)] {
@@ -446,7 +522,9 @@ fn streamed_bucket_facts_match_collected_facts_with_deletes_and_released_buckets
             assert_eq!(bucket_storage_summaries(shard, start, end),
                 bucket_storage_summaries_from_entries(shard, start, end, &entries));
             let selected = entries.iter().take(8).map(|entry| entry.filed_bucket().unwrap()).collect::<BTreeSet<_>>();
-            for selected in [BTreeSet::new(), selected] {
+            let released = shard.bucket_index.released_buckets.clone();
+            for selected in [BTreeSet::new(), released, selected] {
+                assert_selected_summaries(shard, start, end, &entries, &selected);
                 let report = storage_object_lifecycle_report_for_buckets(1, shard, &selected,
                     &resolve_bucket);
                 let mut owners = BTreeMap::<u64, BTreeSet<u64>>::new();
@@ -576,4 +654,106 @@ fn loaded_manifest_install_failure_after_rename_keeps_tail_recoverable() {
     exact(&reopened, get(1, "base"), b"manifest");
     exact(&reopened, get(1, "tail"), b"drain committed");
     exact(&reopened, get(2, "peer"), b"peer committed");
+}
+
+
+fn assert_selected_summaries(
+    shard: &ShardState,
+    start: u32,
+    end: u32,
+    entries: &[LiveBlockEntry],
+    selected: &BTreeSet<u32>,
+) {
+    use super::super::storage_reporting::{
+        selected_bucket_storage_summaries_from_visit, take_selected_summary_work,
+    };
+    let full = bucket_storage_summaries_from_entries(shard, start, end, entries);
+    let expected = full.into_iter().filter(|summary| {
+        selected.is_empty() || selected.contains(&summary.routing_bucket)
+    }).collect::<Vec<_>>();
+    let _ = take_selected_summary_work();
+    let mut global_visits = 0;
+    let actual = selected_bucket_storage_summaries_from_visit(
+        shard, start, end, selected, |consume| {
+            for entry in entries {
+                consume(entry);
+                global_visits += 1;
+            }
+        },
+    );
+    assert_eq!(actual, expected);
+    assert_eq!(global_visits, entries.len(), "the whole-image observer still sees all entries");
+    let expected_work = if selected.is_empty() {
+        (0, 0, 0)
+    } else {
+        let refs = expected.iter().map(|summary| summary.block_ref_count as usize).sum();
+        (refs, selected.len(), selected.len())
+    };
+    assert_eq!(take_selected_summary_work(), expected_work);
+}
+
+#[test]
+fn selected_summaries_use_filing_and_bound_work_as_clean_state_grows() {
+    use super::super::hashing::block_routing_bucket;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = engine_at(dir.path());
+    let key = "misfiled-dump-owner";
+    let original = engine.routing_bucket_for_key(1, key);
+    let filed = original.wrapping_add(1);
+    let dirty_only = original.wrapping_add(2);
+    let missing = original.wrapping_add(3);
+    let tombstone_only = original.wrapping_add(4);
+    execute(&engine, Command::StringSet { key: key.into(), value: vec![7; 128] });
+    for (start_index, stop_index) in [(0, 8), (8, 256)] {
+        for index in start_index..stop_index {
+            let mut candidate = format!("clean-dump-{index}");
+            while [original, filed, dirty_only, missing, tombstone_only]
+                .contains(&engine.routing_bucket_for_key(1, &candidate))
+            {
+                candidate.push('x');
+            }
+            execute(&engine, Command::StringSet { key: candidate, value: vec![8; 32] });
+        }
+        let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
+        engine.clear_dumped_bucket_dirty_state(1, &manifest);
+        let (mut snapshot, _) = engine.capture_shard_checkpoint(1).unwrap();
+        assert_eq!(snapshot.dirty_objects.bucket_count(original), 0);
+        // Preserve the original owner lookup and move the indexed handle to a different bucket.
+        // The full walk must find its key by handle, while reporting the actual filed bucket.
+        let mut node = snapshot.bucket_index.bucket_map.remove(&original).unwrap();
+        assert_eq!(node.block_index.len(), 1);
+        node.routing_bucket = filed;
+        assert!(snapshot.bucket_index.bucket_map.insert(filed, node).is_none());
+        snapshot.dirty_objects.insert("dirty-only-dump-owner", dirty_only);
+        assert!(!snapshot.bucket_index.bucket_map.contains_key(&dirty_only));
+        let mut tombstone = super::super::state::BucketNode::default();
+        tombstone.routing_bucket = tombstone_only;
+        tombstone.dirty_generation = 41;
+        tombstone.deleted_object_index.insert(1);
+        tombstone.set_dirty(true);
+        assert!(snapshot.bucket_index.bucket_map.insert(tombstone_only, tombstone).is_none());
+        let mut entries = collect_live_block_entries(&snapshot);
+        assert_eq!(entries.len(), stop_index + 1);
+        let entry = entries.iter().find(|entry| entry.object_key.as_ref() == key).unwrap();
+        assert_eq!(entry.filed_bucket(), Some(filed));
+        // Add a model-map style entry with no filing so the supplied range is observable.
+        let mut unfenced = entry.clone();
+        unfenced.object_key = Arc::from("unfiled-dump-owner");
+        unfenced.filing_is_known = false;
+        entries.push(unfenced);
+        for (start, end) in [(0, u32::MAX), (17, 47)] {
+            let derived = block_routing_bucket("unfiled-dump-owner", start, end);
+            assert_ne!(derived, missing);
+            for selected in [
+                BTreeSet::from([filed]),
+                BTreeSet::from([derived, dirty_only]),
+                BTreeSet::from([missing]),
+                BTreeSet::from([tombstone_only]),
+                BTreeSet::new(),
+            ] {
+                assert_selected_summaries(&snapshot, start, end, &entries, &selected);
+            }
+        }
+    }
 }
