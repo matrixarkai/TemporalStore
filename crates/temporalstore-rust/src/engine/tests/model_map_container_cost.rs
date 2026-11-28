@@ -347,7 +347,7 @@ fn the_context_node_write_path_produces_exactly_one_field_per_hash() {
     // then have someone "fix" this test by lowering the expected count to zero.
     assert!(
         execute.contains("install_element_staged_only"),
-        "the context-node install is not findable by name in `execute_on_shard.rs`, so the count          below would be zero for the wrong reason"
+        "the context-node install is not findable by name in `execute_on_shard.rs`, so the count below would be zero for the wrong reason"
     );
 
     println!("context-node inner-map readers spelling the one constant field: {readers}");

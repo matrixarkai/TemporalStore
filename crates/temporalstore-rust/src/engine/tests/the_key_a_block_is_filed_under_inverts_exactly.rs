@@ -1074,7 +1074,7 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
         );
         assert!(
             placement_json <= PLACEMENT_JSON_CEILING && placement_container <= PLACEMENT_CONTAINER_CEILING,
-            "[CLAUSE wal-placement-has-its-own-ceiling] on {} keys a WAL placement costs              {placement_json:.3} B of JSON and {placement_container:.3} B of container against              {PLACEMENT_JSON_CEILING} and {PLACEMENT_CONTAINER_CEILING} measured at 5b265a12d",
+            "[CLAUSE wal-placement-has-its-own-ceiling] on {} keys a WAL placement costs {placement_json:.3} B of JSON and {placement_container:.3} B of container against {PLACEMENT_JSON_CEILING} and {PLACEMENT_CONTAINER_CEILING} measured at 5b265a12d",
             shape.label()
         );
         drop(seeded);

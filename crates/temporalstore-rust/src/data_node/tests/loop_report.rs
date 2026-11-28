@@ -632,7 +632,7 @@ fn a_quiet_round_for_the_profiler() {
     let (lifecycle_plans, wal_plans) = crate::engine::storage_plan_build_counts();
     let (digest_hits, digest_computed) = crate::engine::manifest_digest_memo_counts();
     eprintln!(
-        "QUIET_PLANS keys={keys} lifecycle_plans={lifecycle_plans} wal_reclaim_plans={wal_plans}          manifest_digest_hits={digest_hits} manifest_digests_computed={digest_computed}          manifests_retained={}",
+        "QUIET_PLANS keys={keys} lifecycle_plans={lifecycle_plans} wal_reclaim_plans={wal_plans} manifest_digest_hits={digest_hits} manifest_digests_computed={digest_computed} manifests_retained={}",
         runtime.engine().list_bucket_dump_manifests(1).len()
     );
     eprintln!(

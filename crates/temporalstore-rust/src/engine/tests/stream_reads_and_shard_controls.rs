@@ -127,7 +127,7 @@ fn a_scan_cut_short_by_its_budget_does_not_claim_the_stream_ended() {
     );
     assert!(
         !cut.end_of_stream,
-        "the budget stopped this scan with records still in the window, so it must not report          the stream as ended"
+        "the budget stopped this scan with records still in the window, so it must not report the stream as ended"
     );
 }
 
@@ -2392,7 +2392,7 @@ fn bucket_index_is_authoritative_when_secondary_views_are_missing() {
             let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
             assert!(
                 surrendered > 0,
-                "denominator: no string row carried refs, so clearing the rows is not the missing              secondary view this test means to simulate"
+                "denominator: no string row carried refs, so clearing the rows is not the missing secondary view this test means to simulate"
             );
             shard.bucket_index.hashes.clear_for_test();
             shard.bucket_index.sets.clear_for_test();
@@ -2573,7 +2573,7 @@ fn cold_read_uses_bucket_block_address_after_cache_and_model_maps_are_cleared() 
             let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
             assert!(
                 surrendered > 0,
-                "denominator: no string row carried refs, so clearing the rows is not the eviction              this test means to simulate"
+                "denominator: no string row carried refs, so clearing the rows is not the eviction this test means to simulate"
             );
         })
     }
@@ -2644,7 +2644,7 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
     let surrendered = clear_string_rows_keeping_their_blocks_named(&mut damaged);
     assert!(
         surrendered > 0,
-        "denominator: no string row carried refs, so this fixture is not injecting the damage it          describes and would pass however the clear is written"
+        "denominator: no string row carried refs, so this fixture is not injecting the damage it describes and would pass however the clear is written"
     );
     std::fs::write(&index_path, crate::engine::encode_index_bytes(&damaged)).unwrap();
 
