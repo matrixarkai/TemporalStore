@@ -2165,8 +2165,28 @@ pub trait SharedWalSink: std::fmt::Debug + Send + Sync {
         }
     }
 
+    /// Report whether the serving path confirmed publication of an applied command.
+    fn publish_owned_write(&self, shard_id: ShardId, command: Command) -> bool {
+        self.record_owned_write(shard_id, command);
+        true
+    }
+
+    /// On failure, return the confirmed prefix length within this request.
+    fn publish_owned_writes(&self, shard_id: ShardId, commands: Vec<Command>) -> Result<(), usize> {
+        self.record_owned_writes(shard_id, commands);
+        Ok(())
+    }
+
     /// Record one successfully applied maintenance frame without widening its record scope.
     fn record_outcomes(&self, shard_id: ShardId, outcomes: &[crate::wal::WalOutcomeItem]);
+}
+
+fn mark_shared_write_unconfirmed(response: &mut ExecuteResponse) {
+    response.status = Status::error(
+        "write_durability_unconfirmed",
+        "Write applied locally but shared WAL publication was not confirmed",
+    );
+    response.response = CommandResponse::Empty;
 }
 
 /// What this node knows about its own role for one shard. THREE states, not two.
@@ -2711,16 +2731,29 @@ impl DataNodeRuntime {
     fn mirror_writes(
         &self,
         shard_id: ShardId,
-        commands: Vec<Command>,
-        responses: &[ExecuteResponse],
+        mut commands: Vec<Command>,
+        responses: &mut [ExecuteResponse],
     ) {
         let Some(sink) = self.inner.shared_wal_sink.get() else {
             return;
         };
-        let commands = commands.into_iter().zip(responses).filter_map(|(command, response)| {
-            command_was_applied(&command, response).then_some(command)
-        }).collect();
-        sink.record_owned_writes(shard_id, commands);
+        let mut applied = Vec::new();
+        let mut position = 0;
+        commands.retain(|command| {
+            let current = position;
+            position += 1;
+            let did_apply = responses.get(current)
+                .is_some_and(|response| command_was_applied(command, response));
+            if did_apply {
+                applied.push(current);
+            }
+            did_apply
+        });
+        if let Err(confirmed) = sink.publish_owned_writes(shard_id, commands) {
+            for index in applied.into_iter().skip(confirmed) {
+                mark_shared_write_unconfirmed(&mut responses[index]);
+            }
+        }
     }
 
     pub fn storage_cache_inspection_report(
@@ -2952,7 +2985,7 @@ impl DataNodeRuntime {
             }
             return response;
         }
-        let response = self.inner.engine.execute(request.clone());
+        let mut response = self.inner.engine.execute(request.clone());
         if command_was_applied(&request.command, &response) {
             mark_dirty(
                 &self.inner.dirty,
@@ -2960,7 +2993,9 @@ impl DataNodeRuntime {
                 command_key(&request.command).as_deref(),
             );
             if let Some(sink) = shared_wal_sink {
-                sink.record_owned_write(request.shard_id, request.command);
+                if !sink.publish_owned_write(request.shard_id, request.command) {
+                    mark_shared_write_unconfirmed(&mut response);
+                }
             }
         }
         response
@@ -3007,7 +3042,7 @@ impl DataNodeRuntime {
             }
             return response;
         }
-        let response = self.inner.engine.execute_checked(request.clone());
+        let mut response = self.inner.engine.execute_checked(request.clone());
         if response.status.ok && command_was_applied(&request.command, &response.response) {
             mark_dirty(
                 &self.inner.dirty,
@@ -3015,7 +3050,10 @@ impl DataNodeRuntime {
                 command_key(&request.command).as_deref(),
             );
             if let Some(sink) = shared_wal_sink {
-                sink.record_owned_write(request.shard_id, request.command);
+                if !sink.publish_owned_write(request.shard_id, request.command) {
+                    mark_shared_write_unconfirmed(&mut response.response);
+                    response.status = response.response.status.clone();
+                }
             }
         }
         response
@@ -3181,14 +3219,14 @@ impl DataNodeRuntime {
             );
             return response;
         }
-        let response = self.inner.engine.batch_execute(request.clone());
+        let mut response = self.inner.engine.batch_execute(request.clone());
         mark_dirty_for_successful_commands(
             &self.inner.dirty,
             request.shard_id,
             &request.commands,
             &response.responses,
         );
-        self.mirror_writes(request.shard_id, request.commands, &response.responses);
+        self.mirror_writes(request.shard_id, request.commands, &mut response.responses);
         response
     }
 
@@ -3459,7 +3497,7 @@ impl DataNodeRuntime {
             }
             return response;
         }
-        let response = self.inner.engine.batch_execute_checked(request.clone());
+        let mut response = self.inner.engine.batch_execute_checked(request.clone());
         if response.status.ok {
             mark_dirty_for_successful_commands(
                 &self.inner.dirty,
@@ -3470,7 +3508,7 @@ impl DataNodeRuntime {
             self.mirror_writes(
                 request.shard_id,
                 request.commands,
-                &response.response.responses,
+                &mut response.response.responses,
             );
         }
         response

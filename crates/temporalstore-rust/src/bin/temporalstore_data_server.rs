@@ -2341,15 +2341,31 @@ impl temporalstore_rust::SharedWalSink for MatrixObjectNetworkedWalSink {
         self.record_entry(shard_id, Some(command), Vec::new());
     }
 
-    fn record_owned_writes(&self, shard_id: u64, mut commands: Vec<Command>) {
+    fn record_owned_writes(&self, shard_id: u64, commands: Vec<Command>) {
+        let _ = self.publish_owned_writes(shard_id, commands);
+    }
+
+    fn publish_owned_write(&self, shard_id: u64, command: Command) -> bool {
+        self.record_entry(shard_id, Some(command), Vec::new())
+    }
+
+    fn publish_owned_writes(&self, shard_id: u64, mut commands: Vec<Command>) -> Result<(), usize> {
         if commands.len() < 2 {
-            if let Some(command) = commands.pop() {
-                self.record_owned_write(shard_id, command);
-            }
-            return;
+            return match commands.pop() {
+                Some(command) => self.publish_owned_write(shard_id, command).then_some(()).ok_or(0),
+                None => Ok(()),
+            };
         }
-        let result = self.handle.block_on(self.writer.write_sync_batch(shard_id, commands));
-        self.observe_write_result(shard_id, result);
+        match self.handle.block_on(self.writer.write_sync_batch_counted(shard_id, commands)) {
+            Ok(()) => {
+                self.observe_write_result(shard_id, Ok(()));
+                Ok(())
+            }
+            Err((confirmed, error)) => {
+                self.observe_write_result(shard_id, Err(error));
+                Err(confirmed)
+            }
+        }
     }
 
     fn record_outcomes(&self, shard_id: u64, outcomes: &[temporalstore_rust::wal::WalOutcomeItem]) {
@@ -2363,7 +2379,7 @@ impl MatrixObjectNetworkedWalSink {
         shard_id: u64,
         command: Option<Command>,
         outcomes: Vec<temporalstore_rust::wal::WalOutcomeItem>,
-    ) {
+    ) -> bool {
         let writer = Arc::clone(&self.writer);
         let result = self
             .handle
@@ -2373,7 +2389,9 @@ impl MatrixObjectNetworkedWalSink {
                     None => writer.write_outcomes(shard_id, outcomes).await,
                 }
             });
+        let published = result.is_ok();
         self.observe_write_result(shard_id, result.map(|_| ()));
+        published
     }
 
     fn observe_write_result(
