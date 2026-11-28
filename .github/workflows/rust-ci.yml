@@ -622,6 +622,34 @@ jobs:
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/wal-segment-gate.log
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/wal-segment-gate.log || { echo "guard did not run and pass: $t"; exit 1; }
           done
+      - name: cargo test (pending owner and durable image, three named tests, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -euo pipefail
+          export CARGO_TERM_COLOR=never
+          passed_tests=0
+          for t in \
+            engine::tests::expiry_command_boundaries::first_index_rebuild_keeps_ttl_owner_through_later_exists_and_real_readd \
+            engine::tests::expiry_command_boundaries::first_index_rebuild_preserves_real_batch_ttl_and_exists_in_both_orders \
+            engine::persistence::selected_durable_manifest_load_is_clean_before_replaying_a_real_suffix
+          do
+            cargo test --locked --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 --color never 2>&1 | tee /tmp/pending-owner-durable-image-gate.log
+            running=$(grep -Ec '^running [0-9]+ tests?$' /tmp/pending-owner-durable-image-gate.log || true)
+            one=$(grep -Fxc 'running 1 test' /tmp/pending-owner-durable-image-gate.log || true)
+            rows=$(grep -Ec '^test .* \.\.\. ' /tmp/pending-owner-durable-image-gate.log || true)
+            exact_ok=$(grep -Fxc "test $t ... ok" /tmp/pending-owner-durable-image-gate.log || true)
+            summaries=$(grep -Ec '^test result:' /tmp/pending-owner-durable-image-gate.log || true)
+            passed=$(grep -Ec '^test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(\.[0-9]+)?s$' /tmp/pending-owner-durable-image-gate.log || true)
+            if [ "$running" != "1" ] || [ "$one" != "1" ] || [ "$rows" != "1" ] \
+              || [ "$exact_ok" != "1" ] || [ "$summaries" != "1" ] || [ "$passed" != "1" ]; then
+              echo "::error::$t: expected one named passing test with zero failed, ignored or measured tests"
+              exit 1
+            fi
+            passed_tests=$((passed_tests + 1))
+          done
+          [ "$passed_tests" -eq 3 ] || { echo '::error::expected all three owner and durable-image controls'; exit 1; }
+
       - name: cargo test (read-safety guards, hard gate)
         timeout-minutes: 20
         run: |
@@ -633,6 +661,8 @@ jobs:
               engine::tests::a_detail_read_carries_its_own_bound::a_detail_read_with_no_count_is_bounded_by_the_configured_cap \
               engine::tests::a_detail_read_carries_its_own_bound::a_count_larger_than_the_cap_is_still_capped \
               engine::tests::a_detail_read_carries_its_own_bound::a_named_count_under_the_cap_is_honoured \
+              engine::tests::hash_read_union_divergence::under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable \
+              engine::tests::manifest_restore_model_maps::a_manifest_restore_on_the_default_recovery_arm_keeps_the_blocks_only_the_index_names \
               wal::registration_records::tests::mutations_match_an_independent_slot_model \
               wal::registration_records::tests::uniform_expectations_stay_inline_and_conflicts_release_their_storage \
               engine::block_in_wal::physical::registration_summary_tests::summaries_combine_domains_and_follow_replacement_retirement_and_clear \

@@ -2730,12 +2730,19 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     let hashes = HashMap::<super::state::ModelKey, super::hash_field_map::HashFieldMap>::new();
     // THE SAME LIVE-ADDRESS SET THE RECONCILE BUILDS, and built from the same walk the derived view
     // below is built from, so the filter can only ever remove what the derived view also lacks.
-    let walked = collect_bucket_index_live_block_entries(shard);
-    let live_blocks_by_address: std::collections::HashSet<super::LiveBlockKey> = walked
-        .iter()
-        .filter(|entry| !entry.deleted)
-        .map(|entry| super::live_block_key(&entry.address))
-        .collect();
+    // An empty persisted map has no fields to filter. Reconciliation still runs below to
+    // invalidate its cached ordinals and timestamp hints, without naming unrelated blocks.
+    let live_blocks_by_address: std::collections::HashSet<super::LiveBlockKey> =
+        if shard.bucket_index.hashes.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            let walked = collect_bucket_index_live_block_entries(shard);
+            walked
+                .iter()
+                .filter(|entry| !entry.deleted)
+                .map(|entry| super::live_block_key(&entry.address))
+                .collect()
+        };
     // MERGED, NOT ASSIGNED, AND THE `is_empty` GATE WENT WITH THE ASSIGNMENT. While `hashes` was
     // `skip_serializing` there was nothing in `shard.bucket_index.hashes` to protect, so overwriting it whenever
     // the index said anything was harmless and the gate only avoided clearing it to empty. It is
@@ -8083,6 +8090,14 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     }
 }
 
+#[cfg(test)]
+thread_local! { static FIRST_INDEX_REBUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+pub(super) fn first_index_rebuilds_for_test() -> u64 {
+    FIRST_INDEX_REBUILDS.with(std::cell::Cell::get)
+}
+
 pub(super) fn rebuild_bucket_first_index(
     shard_id: ShardId,
     shard: &mut ShardState,
@@ -8102,18 +8117,21 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
     end_routing_bucket: u32,
     mut finalize: impl FnMut(&mut BucketNode, &BTreeSet<u64>),
 ) {
-    // Preserve tombstone (deleted) object ids across the rebuild. A delete removes the object
-    // from the model maps (strings/hashes/...), so collect_model_live_block_entries no longer
-    // sees it, but the object manager must keep reporting it as a tombstone until GC reclaims
-    // the slot. The deserialize + reconcile load path keeps deleted_object_index; a
-    // promote/rebuild reconstruct (flush or the WAL-replay tail) would otherwise silently drop
-    // it, undercounting objects after a reconstruct-based reload.
-    let prior_deleted_object_index: BTreeMap<u32, DeletedObjectIndex> = shard
+    #[cfg(test)]
+    FIRST_INDEX_REBUILDS.with(|count| count.set(count.get().saturating_add(1)));
+    // Model-derived blocks cannot reconstruct pending owner receipts or whole-object
+    // deletions. Carry only those fields in the existing owner capture pass, never
+    // old BlockIndex entries or their addresses. Rebuild is not durable completion.
+    let prior_owners: BTreeMap<u32, (bool, bool, u64, u64, u64, DeletedObjectIndex)> = shard
         .bucket_index
         .bucket_map
         .iter()
-        .filter(|(_, bucket)| !bucket.deleted_object_index.is_empty())
-        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.deleted_object_index.clone()))
+        .map(|(routing_bucket, bucket)| (*routing_bucket, (
+            bucket.dirty() || shard.dirty_objects.has_bucket(*routing_bucket),
+            bucket.deleted(), bucket.dirty_generation,
+            bucket.first_dirty_wal_sequence, bucket.first_dirty_index_log_sequence,
+            bucket.deleted_object_index.clone(),
+        )))
         .collect();
     // AND THE TOMBSTONE ENTRIES, FOR THE SAME REASON ONE STEP DOWN.
     //
@@ -8208,23 +8226,6 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
         for (routing_bucket, mut bucket) in bucket_index.bucket_map.iter_mut() {
             finalize(&mut bucket, live_object_ids_by_bucket.get(routing_bucket).unwrap_or(&no_live_objects));
         }
-    }
-    // Re-attach the tombstone ids captured above. Keep them in object_index too so the object
-    // manager's object_count matches the deserialize/reconcile load path (which never dropped
-    // them); a live block entry re-adding the same id is a no-op (BTreeSet).
-    for (routing_bucket, deleted) in prior_deleted_object_index {
-        let mut bucket = bucket_index
-            .bucket_map
-            .entry(routing_bucket)
-            .or_insert_with(|| BucketNode {
-                routing_bucket,
-                flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
-                ..BucketNode::default()
-            });
-        for object_id in &deleted {
-            bucket.object_index.insert(*object_id);
-        }
-        bucket.deleted_object_index.extend(deleted);
     }
     // Re-attach the tombstone ENTRIES captured above, skipping any whose element the rebuild has just
     // filed as LIVE. A re-add clears its tombstone through the upsert's retain, and a rebuild has to
@@ -8322,6 +8323,32 @@ fn rebuild_bucket_first_index_with_layout<const BATCHED: bool>(
     // `insert_object_block_lookup` returns early on a deleted block -- so nothing the second loop
     // files could belong here anyway.
     file_rebuilt_block_refs(&mut bucket_index, &mut filed_blocks);
+    for (routing_bucket, (dirty, deleted, generation, wal_claim, index_claim, deleted_ids)) in prior_owners {
+        let live_ids = live_object_ids_by_bucket.get(&routing_bucket);
+        let deleted_ids: DeletedObjectIndex = deleted_ids.into_iter()
+            .filter(|id| !live_ids.is_some_and(|live| live.contains(id))).collect();
+        let pending = dirty || deleted || wal_claim != 0 || index_claim != 0 || !deleted_ids.is_empty();
+        if !pending && !bucket_index.bucket_map.contains_key(&routing_bucket) {
+            continue;
+        }
+        let mut bucket = bucket_index.bucket_map.entry(routing_bucket).or_insert_with(|| BucketNode {
+            routing_bucket,
+            flags: BucketFlags::default().with(BucketFlags::META_LOADED, true),
+            ..BucketNode::default()
+        });
+        bucket.dirty_generation = bucket.dirty_generation.max(generation);
+        bucket.first_dirty_wal_sequence = wal_claim;
+        bucket.first_dirty_index_log_sequence = index_claim;
+        let remains_dirty = bucket.dirty() || dirty;
+        bucket.set_dirty(remains_dirty);
+        bucket.object_index.extend(deleted_ids.iter().copied());
+        bucket.deleted_object_index.extend(deleted_ids);
+        if bucket.block_index.is_empty() {
+            bucket.set_deleted(deleted && !shard.blockless_owners.contains_key(&routing_bucket));
+        } else if shard.blockless_owners.contains_key(&routing_bucket) {
+            bucket.set_deleted(false);
+        }
+    }
     // The same removal as in `rebuild_bucket_block_ownership`, and the verification that stood in
     // its place is spent with its scaffold: it read the blocks' own copies of the identity, which
     // the entry no longer holds. `engine_storage_state.rs` carries the reasoning and names what the obligation
