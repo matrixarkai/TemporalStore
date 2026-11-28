@@ -145,16 +145,18 @@ fn each_range_read_answers_while_the_shared_lock_is_held() {
     append(&engine, (0..60).map(|i| row_point(i, i)).collect());
     let mut answered = 0usize;
     for (label, command) in reads() {
-        let held = engine.shards.read().expect("engine lock poisoned");
-        let (sender, receiver) = mpsc::channel();
-        let worker = {
-            let engine = Arc::clone(&engine);
-            std::thread::spawn(move || {
-                let _ = sender.send(run(&engine, command));
-            })
-        };
-        let got = receiver.recv_timeout(Duration::from_secs(5));
-        drop(held);
+        let (got, worker) = engine.shards.with_state(1, |owner| {
+            assert!(owner.is_some());
+            let (sender, receiver) = mpsc::channel();
+            let worker = {
+                let engine = Arc::clone(&engine);
+                std::thread::spawn(move || {
+                    let _ = sender.send(run(&engine, command));
+                })
+            };
+            let got = receiver.recv_timeout(Duration::from_secs(5));
+            (got, worker)
+        });
         worker.join().expect("the read thread");
         assert!(
             got.is_ok(),
@@ -188,24 +190,34 @@ fn a_captured_feature_window_survives_delete_and_reclaim() {
             .collect::<Vec<_>>();
         append(&engine, expected.clone());
         {
-            let shards = engine.shards.read().unwrap();
-            let window = shards[&1]
-                .features()
-                .get("s")
-                .unwrap()
-                .range(0..=u64::MAX)
-                .collect::<Vec<_>>();
-            assert_eq!(window.len(), expected.len());
-            assert!(window.iter().all(|(_, address)| {
-                crate::wal_record::is_wal_resident(address.block_slab_id())
-            }));
+            engine.shards.with_state(1, |owner| {
+                let window = owner.expect("shard 1")
+                    .features()
+                    .get("s")
+                    .unwrap()
+                    .range(0..=u64::MAX)
+                    .collect::<Vec<_>>();
+                assert_eq!(window.len(), expected.len());
+                assert!(window.iter().all(|(_, address)| {
+                    crate::wal_record::is_wal_resident(address.block_slab_id())
+                }));
+            });
         }
         engine.cache.invalidate_shard(1).unwrap();
         let writer = Arc::clone(&engine);
         crate::engine::AFTER_FAST_READ_PLAN.with(|slot| {
             assert!(slot.borrow().is_none());
             *slot.borrow_mut() = Some(Box::new(move || {
-                assert!(writer.shards.try_write().is_ok());
+                let (unlocked, observed) = mpsc::channel();
+                let probe = Arc::clone(&writer);
+                let acquisition = std::thread::spawn(move || {
+                    probe.shards.with_state_mut(1, |owner| {
+                        assert!(owner.is_some());
+                        unlocked.send(()).unwrap();
+                    });
+                });
+                observed.recv_timeout(Duration::from_secs(5)).expect("fast read released the owner");
+                acquisition.join().unwrap();
                 std::thread::spawn(move || {
                     run(&writer, Command::CommonDelete { key: "s".into() });
                     writer.cache.invalidate_shard(1).unwrap();

@@ -526,7 +526,7 @@ mod tests {
         assert_ne!(
             crate::engine::HOT_BLOCK_SLAB_ID,
             u64::MAX,
-            "a copy of this sentinel hardcoded u64::MAX; if the real one ever becomes u64::MAX,              find every site that assumes otherwise before changing this"
+            "a copy of this sentinel hardcoded u64::MAX; if the real one ever becomes u64::MAX, find every site that assumes otherwise before changing this"
         );
         assert_ne!(WAL_LOG_SLAB_ID, u64::MAX);
         assert_eq!(crate::engine::HOT_BLOCK_SLAB_ID, u32::MAX as u64);
@@ -605,7 +605,7 @@ mod tests {
         assert_eq!(
             hits.len(),
             1,
-            "HOT_BLOCK_SLAB_ID must be declared exactly once (engine_constants.rs); a second              declaration is how the checkpoint barrier came to compare against u64::MAX. Found: {hits:#?}"
+            "HOT_BLOCK_SLAB_ID must be declared exactly once (engine_constants.rs); a second declaration is how the checkpoint barrier came to compare against u64::MAX. Found: {hits:#?}"
         );
         assert!(
             hits[0].contains("engine_constants.rs"),

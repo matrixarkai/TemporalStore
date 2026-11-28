@@ -20,15 +20,12 @@ use crate::types::{
 
 /// THE FIRST BYTE OF A BINARY MANIFEST.
 ///
-/// A JSON manifest starts with `{` (0x7B), optionally behind JSON whitespace -- and this writer
-/// uses `to_vec_pretty`, so that whitespace is really in the durable bytes. 0x01 is not a brace,
-/// not whitespace and not valid JSON in any position, so one byte decides the shape.
+/// A document that does not start with it is not a manifest this build wrote, and is refused.
 pub(crate) const MANIFEST_CONTAINER_PROTOBUF: u8 = 0x01;
 
-/// The binary body of a manifest, or `None` when the bytes are the JSON shape.
+/// The binary body of a manifest, or `None` when the bytes do not start with the container byte.
 ///
-/// THE ONLY PLACE THAT DECIDES, so the four readers cannot tell the shapes apart four different
-/// ways.
+/// THE ONLY PLACE THAT DECIDES, so the four readers cannot judge a document four different ways.
 fn manifest_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
     match bytes.split_first() {
         Some((&MANIFEST_CONTAINER_PROTOBUF, body)) => Some(body),
@@ -36,18 +33,9 @@ fn manifest_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
     }
 }
 
-// THE MANIFEST WRITER IS UNCONDITIONAL AS OF THIS CHANGE, AND NO JSON ENCODE PATH IS LEFT.
-//
-// `TS_SNAPSHOT_MANIFEST_PROTOBUF_ENABLED` and the per-thread override that went with it are
-// gone, along with `encode_manifest`'s `serde_json::to_vec_pretty` arm. The gate existed so the
-// binary writer could land while the reader rolled out; the reader has shipped and has never
-// consulted the gate, so there is nothing left for it to protect.
-//
-// THE ENCODER IS DELETED AND THE DECODER IS KEPT, FOR OPPOSITE REASONS. An encoder that no
-// caller reaches is how a retired format comes back -- some future branch finds the function and
-// calls it. A decoder with no caller in THIS tree is still reached by every snapshot already on
-// disk: the hold is on the installed base, not on which writer runs today. See the note above
-// `decode_manifest`, which decides per document from the first byte and never from a setting.
+// THE MANIFEST HAS ONE ENCODING. The writer is unconditional and the reader refuses anything that
+// does not start with the container byte, so there is no setting to turn and no second shape to
+// keep readable. The first release has no snapshot on disk that this build did not write.
 
 fn compression_to_proto(format: CompressionFormat) -> crate::manifest_proto::CompressionFormat {
     match format {
@@ -72,20 +60,13 @@ fn compression_from_proto(value: i32) -> Result<CompressionFormat, SnapshotStore
     }
 }
 
-/// Decode a manifest in EITHER shape.
+/// Decode a manifest. ONE SHAPE: the binary one. A document that does not start with the container
+/// byte is refused by name rather than guessed at.
 ///
-/// Every reader goes through this. The JSON arm is what every snapshot written before the writer
-/// flip carries, and removing it would make those snapshots unreadable -- which is why it stays
-/// PERMANENTLY, now that no writer in this tree can produce that shape.
-///
-/// THE HOLD RULE: a reader stays if ANY build that ever shipped could have written data a live
-/// store still holds. "Which writer runs today" is the wrong question -- this writer no longer
-/// writes JSON and that is exactly why the arm below can never be deleted from evidence found in
-/// this tree. The shape is decided per document from the first byte, never from a setting, so a
-/// node that has never written a JSON manifest still reads one correctly.
+/// Every reader goes through this.
 fn decode_manifest(bytes: &[u8]) -> Result<SnapshotManifest, SnapshotStoreError> {
     let Some(body) = manifest_protobuf_body(bytes) else {
-        return Ok(serde_json::from_slice(bytes)?);
+        return Err(SnapshotStoreError::NotABinaryManifest(bytes.first().copied()));
     };
     let proto = <crate::manifest_proto::SnapshotManifest as prost::Message>::decode(body)
         .map_err(|err| SnapshotStoreError::Io(std::io::Error::other(err)))?;
@@ -134,11 +115,6 @@ fn decode_manifest(bytes: &[u8]) -> Result<SnapshotManifest, SnapshotStoreError>
 }
 
 /// Encode a manifest. ONE SHAPE: the binary one, with no gate to pick another.
-///
-/// `SnapshotManifest` still derives `Serialize`, so building JSON from one remains POSSIBLE --
-/// the tests below do exactly that to plant a legacy document. What is gone is any path a
-/// running node can take to write it. See `decode_manifest` for why the read side keeps its JSON
-/// arm permanently.
 fn encode_manifest(manifest: &SnapshotManifest) -> Result<Bytes, SnapshotStoreError> {
     let proto = crate::manifest_proto::SnapshotManifest {
         cluster_id: manifest.cluster_id.clone(),
@@ -195,8 +171,8 @@ pub enum SnapshotStoreError {
     ObjectStore(#[from] ObjectStoreError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
+    #[error("a snapshot manifest must start with the binary container byte, found {0:?}")]
+    NotABinaryManifest(Option<u8>),
     #[error("checksum mismatch for {path}: expected {expected}, got {actual}")]
     ChecksumMismatch {
         path: String,
@@ -931,40 +907,25 @@ mod tests {
         }
     }
 
-    /// BOTH SHAPES DECODE, AND THE ENCODING DOES NOT CHANGE THE VALUE.
+    /// A MANIFEST ROUND TRIPS, AND ITS ORDER IS PRESERVED.
     ///
-    /// The second half is the one that matters. The published snapshot digest folds the checksum
-    /// entries in ITERATION ORDER, so order is part of the value: modelling the list as a proto
-    /// `map` -- which is the tidier-looking choice -- would leave every file verifying
-    /// individually while the snapshot's own digest changed for every snapshot already written.
-    /// Asserting the decoded manifests are EQUAL is stronger than comparing one digest, because
-    /// any digest computed from equal manifests is equal.
+    /// The published snapshot digest folds the checksum entries in ITERATION ORDER, so order is
+    /// part of the value: modelling the list as a proto `map` -- which is the tidier-looking choice
+    /// -- would leave every file verifying individually while the snapshot's own digest changed.
+    /// Asserting the decoded manifest is EQUAL to the original is stronger than comparing one
+    /// digest, because any digest computed from equal manifests is equal.
     #[test]
-    fn a_manifest_decodes_from_both_shapes_and_the_encoding_does_not_change_it() {
+    fn a_manifest_round_trips_and_keeps_its_order() {
         let original = manifest_with_ordered_entries();
 
-        // The shape every snapshot on disk today carries.
-        let json = serde_json::to_vec_pretty(&original).unwrap();
-        assert_eq!(json[0], b'{', "the JSON shape must still start with a brace");
-        let from_json = decode_manifest(&json).expect("the JSON shape must still decode");
-        assert_eq!(from_json, original, "JSON round trip changed the manifest");
-
-        // The shape THIS build writes, with nothing to turn on.
         let binary = encode_manifest(&original).unwrap();
         assert_eq!(
             binary[0], MANIFEST_CONTAINER_PROTOBUF,
-            "the writer is unconditional as of the flip, so this is the only shape it can produce"
+            "the writer is unconditional, so this is the only shape it can produce"
         );
-        assert!(
-            serde_json::from_slice::<serde_json::Value>(&binary).is_err(),
-            "the binary shape must not parse as JSON, or the container byte proves nothing"
-        );
+        assert_ne!(binary[0], b'{', "a binary manifest must not look like a JSON document");
         let from_binary = decode_manifest(&binary).expect("the binary shape must decode");
         assert_eq!(from_binary, original, "binary round trip changed the manifest");
-
-        // THE DIGEST-NEUTRALITY ASSERTION: the two shapes decode to the same value, so anything
-        // derived from them -- including the published digest -- is the same.
-        assert_eq!(from_json, from_binary, "the two shapes decode to different manifests");
 
         // ORDER, SPELLED OUT. Equality above would catch a reorder, but naming it here is what
         // tells the next person the order is load-bearing rather than incidental.
@@ -988,6 +949,23 @@ mod tests {
         );
         // And the timestamp survives exactly, which is why it travels as text rather than millis.
         assert_eq!(from_binary.created_at, original.created_at);
+    }
+
+    /// A DOCUMENT THAT IS NOT THE BINARY SHAPE IS REFUSED BY NAME.
+    ///
+    /// Driven on a JSON-looking document and on an empty one, because the refusal is what stands
+    /// between a reader and a manifest it would otherwise misread.
+    #[test]
+    fn a_document_that_is_not_the_binary_shape_is_refused() {
+        let json = br#"{"cluster_id":"c","shard_id":1}"#;
+        match decode_manifest(json) {
+            Err(SnapshotStoreError::NotABinaryManifest(Some(b'{'))) => {}
+            other => panic!("a JSON-looking document was not refused by name: {other:?}"),
+        }
+        match decode_manifest(&[]) {
+            Err(SnapshotStoreError::NotABinaryManifest(None)) => {}
+            other => panic!("an empty document was not refused by name: {other:?}"),
+        }
     }
 
     /// AN UNREADABLE COMPRESSION TAG IS REFUSED, NOT DEFAULTED.
@@ -1014,130 +992,56 @@ mod tests {
         }
     }
 
-    /// THE WRITER IS BINARY WITH NOTHING TO TURN ON, AND A JSON MANIFEST IS STILL READ.
+    /// THE WRITER IS BINARY WITH NOTHING TO TURN ON, AND EVERY READER READS IT.
     ///
     /// Driven through the real upload, list, verify and download paths, because the four readers
     /// are what a running node uses -- a codec that round-trips in isolation proves nothing about
     /// them.
     ///
-    /// THE JSON ARM IS DRIVEN ON BYTES PLANTED DIRECTLY INTO THE OBJECT STORE, because the writer
-    /// that used to produce them no longer exists. A test that round-tripped through the writer
-    /// would have had nothing left to drive after the flip, and would have quietly become a test
-    /// of the binary arm twice over. The plant is reconstructed from a REAL uploaded manifest, so
-    /// the document is a valid snapshot in every respect except its encoding.
-    ///
     /// `list_snapshots` asserts a COUNT rather than an error, because a manifest the listing
     /// cannot see produces a SHORT LIST, which is a successful call.
     ///
-    /// NOTE ON THE KEY: the manifest keeps the name `manifest.json` even when its body is binary.
-    /// That is deliberate -- it is fetched by an exact key, and deployed binaries open it by that
-    /// name, so renaming it is the one-way door. The listing widening landed separately is what
-    /// makes a future rename possible, not something this change needs.
+    /// NOTE ON THE KEY: the manifest keeps the name `manifest.json` even though its body is binary.
+    /// It is fetched by an exact key, so renaming it is a separate change.
     #[tokio::test]
-    async fn a_manifest_is_written_binary_and_a_planted_json_one_is_still_read() {
+    async fn a_manifest_is_written_binary_and_every_reader_reads_it() {
         let tmp = TempDir::new().unwrap();
         let store = Arc::new(FileObjectStore::new(tmp.path().join("objects")));
         let snapshots =
             S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store.clone());
 
-        // ---- THE SHIPPED DEFAULT IS THE BINARY SHAPE, with nothing to turn on.
-        let local = sample_snapshot(&tmp.path().join("source-default"), 42, 100).await;
-        let uploaded = snapshots.upload_snapshot(local).await.unwrap();
-        let key = format!("{}{MANIFEST}", prefix_from_ref(&uploaded));
-        let first = store.get(&key).await.unwrap();
+        let first_local = sample_snapshot(&tmp.path().join("source-default"), 42, 100).await;
+        let first_ref = snapshots.upload_snapshot(first_local).await.unwrap();
+        let first_key = format!("{}{MANIFEST}", prefix_from_ref(&first_ref));
+        let first = store.get(&first_key).await.unwrap();
         assert_eq!(
             first[0], MANIFEST_CONTAINER_PROTOBUF,
-            "the shipped default must write the binary shape as of the flip"
+            "the shipped default must write the binary shape"
         );
-        assert_ne!(
-            first[0], b'{',
-            "the default still writes a JSON manifest, so the encode arm this change deleted is \
-             reachable after all"
-        );
+        assert_ne!(first[0], b'{', "the default wrote a JSON-looking manifest");
 
-        // ---- AND THE INSTALLED BASE IS STILL READ. The JSON bytes are built from a real
-        // ---- uploaded manifest and written STRAIGHT INTO THE OBJECT STORE, because the writer
-        // ---- that used to produce them has been deleted -- which is the whole point of deleting
-        // ---- it. `Serialize` survives on the type, so a test can still build the shape even
-        // ---- though no production path can.
-        let legacy = sample_snapshot(&tmp.path().join("source-legacy"), 42, 150).await;
-        let legacy_ref = snapshots.upload_snapshot(legacy).await.unwrap();
-        let legacy_key = format!("{}{MANIFEST}", prefix_from_ref(&legacy_ref));
-        let as_binary = store.get(&legacy_key).await.unwrap();
-        let as_json = {
-            let manifest = decode_manifest(&as_binary).expect("the binary manifest must decode");
-            Bytes::from(serde_json::to_vec_pretty(&manifest).expect("the JSON shape must build"))
-        };
-        assert_eq!(
-            as_json[0], b'{',
-            "the planted legacy manifest is not the JSON shape, so the reader arm under test is \
-             being driven on the wrong bytes"
-        );
-        store
-            .put(&legacy_key, as_json)
-            .await
-            .expect("planting the legacy manifest must succeed");
-        assert_eq!(
-            store.get(&legacy_key).await.unwrap()[0],
-            b'{',
-            "the plant did not take, so nothing below reads a JSON manifest"
-        );
+        let second_local = sample_snapshot(&tmp.path().join("source-proto"), 42, 200).await;
+        let second_ref = snapshots.upload_snapshot(second_local).await.unwrap();
 
-        // ---- a second binary snapshot, so the listing walks a MIXTURE of both shapes.
-        let local = sample_snapshot(&tmp.path().join("source-proto"), 42, 200).await;
-        let binary_ref = snapshots.upload_snapshot(local).await.unwrap();
-
-        let binary_key = format!("{}{MANIFEST}", prefix_from_ref(&binary_ref));
-        let on_disk = store.get(&binary_key).await.unwrap();
-        assert_eq!(
-            on_disk[0], MANIFEST_CONTAINER_PROTOBUF,
-            "with the gate on, the manifest must be written in the binary shape"
-        );
-        assert!(
-            serde_json::from_slice::<serde_json::Value>(&on_disk).is_err(),
-            "the binary manifest must not parse as JSON"
-        );
-
-        // ---- THE LOAD-BEARING PART: every reader, over a MIXTURE of both shapes on disk.
         let listed = snapshots.list_snapshots(42).await.unwrap();
-        assert_eq!(
-            listed.len(),
-            3,
-            "all three snapshots must be listed -- two binary and one planted as JSON: {listed:?}"
-        );
-        assert!(
-            listed.iter().any(|s| s.snapshot_id == binary_ref.snapshot_id),
-            "the binary-bodied snapshot is missing from the listing"
-        );
-        assert!(
-            listed
-                .iter()
-                .any(|s| s.snapshot_id == legacy_ref.snapshot_id),
-            "the snapshot whose manifest is JSON ON DISK was not listed, so the decode arm this \
-             change keeps has stopped working and every snapshot written before the flip is \
-             invisible: {listed:?}"
-        );
+        assert_eq!(listed.len(), 2, "both snapshots must be listed: {listed:?}");
+        for snapshot in [&first_ref, &second_ref] {
+            assert!(
+                listed.iter().any(|s| s.snapshot_id == snapshot.snapshot_id),
+                "a snapshot is missing from the listing: {listed:?}"
+            );
+        }
 
-        snapshots
-            .verify_snapshot(&binary_ref)
-            .await
-            .expect("verify must read the binary manifest");
-        snapshots
-            .download_snapshot(&binary_ref, tmp.path().join("restore"))
-            .await
-            .expect("download must read the binary manifest");
-
-        // The same two readers over the PLANTED JSON document. These are separate calls because
-        // each fetches the manifest by its own key and decodes it itself; the listing passing
-        // says nothing about either.
-        snapshots
-            .verify_snapshot(&legacy_ref)
-            .await
-            .expect("verify must still read a JSON manifest");
-        snapshots
-            .download_snapshot(&legacy_ref, tmp.path().join("restore-legacy"))
-            .await
-            .expect("download must still read a JSON manifest");
+        for (n, snapshot) in [&first_ref, &second_ref].into_iter().enumerate() {
+            snapshots
+                .verify_snapshot(snapshot)
+                .await
+                .expect("verify must read the binary manifest");
+            snapshots
+                .download_snapshot(snapshot, tmp.path().join(format!("restore-{n}")))
+                .await
+                .expect("download must read the binary manifest");
+        }
     }
 
     #[tokio::test]

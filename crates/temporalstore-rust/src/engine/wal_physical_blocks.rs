@@ -852,9 +852,9 @@ mod tests {
         )
         .is_empty());
         source.create_bucket_dump_manifest(1, []).unwrap();
-        assert!(source.shards.read().unwrap()[&1]
-            .wal_resident_blocks
-            .contains_key(&folded_key));
+        assert!(source.shards.with_state(1, |state| {
+            state.unwrap().wal_resident_blocks.contains_key(&folded_key)
+        }));
         source.flush_shard_index(1);
         source.wal_store.flush(1).unwrap();
         drop(source);

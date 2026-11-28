@@ -155,10 +155,11 @@ fn a_hash_write_lands_on_a_key_that_already_holds_a_string() {
     // Corroboration only. The command surface above is the authority; this says the two kinds
     // are in fact filed in two separate resident maps under the one key, so the coexistence is
     // two objects and not one map answering twice.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    assert!(shard.strings().contains_key("foo"));
-    assert!(shard.bucket_index.hashes.contains_key("foo"));
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        assert!(shard.strings().contains_key("foo"));
+        assert!(shard.bucket_index.hashes.contains_key("foo"));
+    })
 }
 
 /// The same question in the other order, because a one-directional check cannot tell an
@@ -212,14 +213,15 @@ fn the_membership_sum_does_not_count_either_kind() {
     assert!(string_set(&engine, "baz", b"string-value").ok);
     assert!(hash_set(&engine, "baz", "field-one", b"hash-value").ok);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    assert!(shard.strings().contains_key("baz"));
-    assert!(shard.bucket_index.hashes.contains_key("baz"));
-    assert_eq!(
-        super::super::key_membership_size(shard, "baz"),
-        0,
-        "a key holding two kinds is in NONE of the twelve maps the membership sum adds up, so \
-         the sum is not a kind-presence count and no caller of it can be reading one"
-    );
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        assert!(shard.strings().contains_key("baz"));
+        assert!(shard.bucket_index.hashes.contains_key("baz"));
+        assert_eq!(
+            super::super::key_membership_size(shard, "baz"),
+            0,
+            "a key holding two kinds is in NONE of the twelve maps the membership sum adds up, so \
+             the sum is not a kind-presence count and no caller of it can be reading one"
+        );
+    })
 }

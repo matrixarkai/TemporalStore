@@ -347,7 +347,7 @@ fn the_context_node_write_path_produces_exactly_one_field_per_hash() {
     // then have someone "fix" this test by lowering the expected count to zero.
     assert!(
         execute.contains("install_element_staged_only"),
-        "the context-node install is not findable by name in `execute_on_shard.rs`, so the count          below would be zero for the wrong reason"
+        "the context-node install is not findable by name in `execute_on_shard.rs`, so the count below would be zero for the wrong reason"
     );
 
     println!("context-node inner-map readers spelling the one constant field: {readers}");
@@ -476,11 +476,12 @@ fn seed_sets(engine: &TemporalEngine, keys: usize, members: usize) {
 
 /// The occupancies of every inner map in the loaded shard, ascending.
 fn fields_per_hash(engine: &TemporalEngine) -> Vec<usize> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut occupancies: Vec<usize> = shard.bucket_index.hashes.values().map(|fields| fields.len()).collect();
-    occupancies.sort_unstable();
-    occupancies
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut occupancies: Vec<usize> = shard.bucket_index.hashes.values().map(|fields| fields.len()).collect();
+        occupancies.sort_unstable();
+        occupancies
+    })
 }
 
 fn percentile(sorted: &[usize], p: f64) -> usize {
@@ -1051,106 +1052,107 @@ fn the_object_key_is_stored_twice_and_this_prices_the_second_copy() {
         load_on(&engine);
         seed_context_nodes(&engine, keys);
 
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
 
-        // COPY ONE: the outer model map's own owned key text.
-        let model_keys = shard.bucket_index.hashes.len();
-        let model_key_bytes: usize = shard
-            .bucket_index.hashes
-            .keys()
-            .map(|k| k.len() + std::mem::size_of::<String>())
-            .sum();
+            // COPY ONE: the outer model map's own owned key text.
+            let model_keys = shard.bucket_index.hashes.len();
+            let model_key_bytes: usize = shard
+                .bucket_index.hashes
+                .keys()
+                .map(|k| k.len() + std::mem::size_of::<String>())
+                .sum();
 
-        // COPY TWO: the index side. Counted by DISTINCT Arc allocation.
-        //
-        // THE TEXT IS READ THROUGH THE POSITION MAP AND THE PER-ENTRY POINTER IS GONE. A block
-        // entry holds no `Arc<str>`, so there is no per-entry pointer to charge and no copy on
-        // the block to deduplicate; what the index side costs for this object's TEXT is what the
-        // bucket's own lookup holds, which is one allocation per (kind, object). That is reached
-        // here through the same inversion every reader uses, so the pointer set is still a set of
-        // real allocations and `distinct` still answers the question this census asks: how many
-        // allocations of the key text does the index side hold.
-        //
-        // `arc_pointer_bytes` WAS `entries * size_of::<Arc<str>>()` AND IS NOW ZERO. It was the
-        // fat pointer every block carried whether or not it shared the text, and it was a third of
-        // this comparison. It is stated as a zero with the entry width beside it rather than
-        // dropped, because a table that simply lost the row would read as the pointer having been
-        // forgotten rather than retired.
-        let named = super::BlockObjects::of(&shard.bucket_index);
-        let mut distinct: std::collections::HashSet<*const u8> = std::collections::HashSet::new();
-        let mut entries = 0usize;
-        let mut distinct_text_bytes = 0usize;
-        let mut keys_per_bucket: Vec<usize> = Vec::new();
-        for bucket in shard.bucket_index.bucket_map.values() {
-            let mut in_bucket: std::collections::HashSet<&str> = std::collections::HashSet::new();
-            for (handle, _block) in bucket.block_index.iter() {
-                entries += 1;
-                let object_key = named.at(bucket.routing_bucket, *handle);
-                in_bucket.insert(object_key);
-                let ptr = object_key.as_ptr();
-                if distinct.insert(ptr) {
-                    distinct_text_bytes += object_key.len();
+            // COPY TWO: the index side. Counted by DISTINCT Arc allocation.
+            //
+            // THE TEXT IS READ THROUGH THE POSITION MAP AND THE PER-ENTRY POINTER IS GONE. A block
+            // entry holds no `Arc<str>`, so there is no per-entry pointer to charge and no copy on
+            // the block to deduplicate; what the index side costs for this object's TEXT is what the
+            // bucket's own lookup holds, which is one allocation per (kind, object). That is reached
+            // here through the same inversion every reader uses, so the pointer set is still a set of
+            // real allocations and `distinct` still answers the question this census asks: how many
+            // allocations of the key text does the index side hold.
+            //
+            // `arc_pointer_bytes` WAS `entries * size_of::<Arc<str>>()` AND IS NOW ZERO. It was the
+            // fat pointer every block carried whether or not it shared the text, and it was a third of
+            // this comparison. It is stated as a zero with the entry width beside it rather than
+            // dropped, because a table that simply lost the row would read as the pointer having been
+            // forgotten rather than retired.
+            let named = super::BlockObjects::of(&shard.bucket_index);
+            let mut distinct: std::collections::HashSet<*const u8> = std::collections::HashSet::new();
+            let mut entries = 0usize;
+            let mut distinct_text_bytes = 0usize;
+            let mut keys_per_bucket: Vec<usize> = Vec::new();
+            for bucket in shard.bucket_index.bucket_map.values() {
+                let mut in_bucket: std::collections::HashSet<&str> = std::collections::HashSet::new();
+                for (handle, _block) in bucket.block_index.iter() {
+                    entries += 1;
+                    let object_key = named.at(bucket.routing_bucket, *handle);
+                    in_bucket.insert(object_key);
+                    let ptr = object_key.as_ptr();
+                    if distinct.insert(ptr) {
+                        distinct_text_bytes += object_key.len();
+                    }
+                }
+                if !in_bucket.is_empty() {
+                    keys_per_bucket.push(in_bucket.len());
                 }
             }
-            if !in_bucket.is_empty() {
-                keys_per_bucket.push(in_bucket.len());
-            }
-        }
-        let arc_pointer_bytes = 0usize;
+            let arc_pointer_bytes = 0usize;
 
-        assert_eq!(
-            keys, model_keys,
-            "the fixture did not reach the population it claims: {model_keys} model keys at {keys} \
-             context nodes"
-        );
-        assert!(
-            entries > 0,
-            "no index block entries were found at {keys} context nodes, so the second copy would \
-             read as zero because nothing was walked"
-        );
+            assert_eq!(
+                keys, model_keys,
+                "the fixture did not reach the population it claims: {model_keys} model keys at {keys} \
+                 context nodes"
+            );
+            assert!(
+                entries > 0,
+                "no index block entries were found at {keys} context nodes, so the second copy would \
+                 read as zero because nothing was walked"
+            );
 
-        println!("--- the object key at {keys} context nodes ---");
-        println!(
-            "  model map : {model_keys:>9} keys  {model_key_bytes:>12} B  ({:>6.1} B a key: \
-             {} B of String plus the text)",
-            model_key_bytes as f64 / model_keys as f64,
-            std::mem::size_of::<String>()
-        );
-        println!(
-            "  index     : {entries:>9} blocks  {:>12} B  ({:>6.1} B a block: {} B of Arc pointer \
-             plus {} distinct text allocation(s) totalling {distinct_text_bytes} B)",
-            arc_pointer_bytes + distinct_text_bytes,
-            (arc_pointer_bytes + distinct_text_bytes) as f64 / entries as f64,
-            std::mem::size_of::<Arc<str>>(),
-            distinct.len()
-        );
-        println!(
-            "  a SINGLE-COPY shape would keep the text once and point at it from both sides: \
-             {distinct_text_bytes} B of text plus {} B of pointer, against \
-             {} B spent on the same keys today -- a saving of {:.1}%",
-            (entries + model_keys) * std::mem::size_of::<Arc<str>>(),
-            model_key_bytes + arc_pointer_bytes + distinct_text_bytes,
-            100.0
-                * (1.0
-                    - (distinct_text_bytes + (entries + model_keys) * std::mem::size_of::<Arc<str>>())
-                        as f64
-                        / (model_key_bytes + arc_pointer_bytes + distinct_text_bytes) as f64)
-        );
+            println!("--- the object key at {keys} context nodes ---");
+            println!(
+                "  model map : {model_keys:>9} keys  {model_key_bytes:>12} B  ({:>6.1} B a key: \
+                 {} B of String plus the text)",
+                model_key_bytes as f64 / model_keys as f64,
+                std::mem::size_of::<String>()
+            );
+            println!(
+                "  index     : {entries:>9} blocks  {:>12} B  ({:>6.1} B a block: {} B of Arc pointer \
+                 plus {} distinct text allocation(s) totalling {distinct_text_bytes} B)",
+                arc_pointer_bytes + distinct_text_bytes,
+                (arc_pointer_bytes + distinct_text_bytes) as f64 / entries as f64,
+                std::mem::size_of::<Arc<str>>(),
+                distinct.len()
+            );
+            println!(
+                "  a SINGLE-COPY shape would keep the text once and point at it from both sides: \
+                 {distinct_text_bytes} B of text plus {} B of pointer, against \
+                 {} B spent on the same keys today -- a saving of {:.1}%",
+                (entries + model_keys) * std::mem::size_of::<Arc<str>>(),
+                model_key_bytes + arc_pointer_bytes + distinct_text_bytes,
+                100.0
+                    * (1.0
+                        - (distinct_text_bytes + (entries + model_keys) * std::mem::size_of::<Arc<str>>())
+                            as f64
+                            / (model_key_bytes + arc_pointer_bytes + distinct_text_bytes) as f64)
+            );
 
-        keys_per_bucket.sort_unstable();
-        report_histogram(
-            &format!("distinct object keys per routing bucket at {keys} nodes"),
-            &keys_per_bucket,
-        );
-        println!(
-            "  a FLAT per-bucket vector would scan p50 {} and MAX {} keys, against {} in one \
-             shard-wide vector -- which is why a flat outer shape is a BUCKET-granularity change \
-             and not a container swap.",
-            percentile(&keys_per_bucket, 50.0),
-            keys_per_bucket.last().copied().unwrap_or(0),
-            model_keys
-        );
+            keys_per_bucket.sort_unstable();
+            report_histogram(
+                &format!("distinct object keys per routing bucket at {keys} nodes"),
+                &keys_per_bucket,
+            );
+            println!(
+                "  a FLAT per-bucket vector would scan p50 {} and MAX {} keys, against {} in one \
+                 shard-wide vector -- which is why a flat outer shape is a BUCKET-granularity change \
+                 and not a container swap.",
+                percentile(&keys_per_bucket, 50.0),
+                keys_per_bucket.last().copied().unwrap_or(0),
+                model_keys
+            );
+        })
     }
 
     assert!(
@@ -1340,30 +1342,31 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
 
         // The real store's own pairs, read out once and cloned per arm OUTSIDE every window.
         let (pairs, set_pairs, fields_total) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
-            let pairs: Vec<Vec<(String, ElementEntry)>> = shard
-                .bucket_index.hashes
-                .values()
-                .map(|fields| {
-                    fields
-                        .iter()
-                        .map(|(name, address)| (name.to_string(), address.clone()))
-                        .collect()
-                })
-                .collect();
-            let set_pairs: Vec<Vec<(Vec<u8>, ElementEntry)>> = shard
-                .bucket_index.sets
-                .values()
-                .map(|members| {
-                    members
-                        .iter()
-                        .map(|(member, address)| (member.clone(), address.clone()))
-                        .collect()
-                })
-                .collect();
-            let fields_total: usize = pairs.iter().map(|p| p.len()).sum();
-            (pairs, set_pairs, fields_total)
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard is loaded");
+                let pairs: Vec<Vec<(String, ElementEntry)>> = shard
+                    .bucket_index.hashes
+                    .values()
+                    .map(|fields| {
+                        fields
+                            .iter()
+                            .map(|(name, address)| (name.to_string(), address.clone()))
+                            .collect()
+                    })
+                    .collect();
+                let set_pairs: Vec<Vec<(Vec<u8>, ElementEntry)>> = shard
+                    .bucket_index.sets
+                    .values()
+                    .map(|members| {
+                        members
+                            .iter()
+                            .map(|(member, address)| (member.clone(), address.clone()))
+                            .collect()
+                    })
+                    .collect();
+                let fields_total: usize = pairs.iter().map(|p| p.len()).sum();
+                (pairs, set_pairs, fields_total)
+            })
         };
 
         assert_eq!(
