@@ -357,6 +357,81 @@ class AdapterTest(unittest.TestCase):
                 self.assertTrue(0 < limits[2] < limits[1] < limits[0] == 1)
                 self.assertEqual(backoff.call_count, 1)
 
+    def test_direct_lookup_refreshes_the_stale_shard_without_repeating_the_healthy_read(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from contextlib import ExitStack
+
+        import grpc
+        from temporalstore.v1.temporalstore_pb2_grpc import (
+            MetadataServiceServicer, TemporalStoreServiceServicer,
+            add_MetadataServiceServicer_to_server, add_TemporalStoreServiceServicer_to_server,
+        )
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        elected = threading.Event()
+        calls = {"old": [], "replacement": [], "healthy": []}
+        discoveries = []
+
+        class ShardServer(TemporalStoreServiceServicer):
+            def __init__(self, name, result):
+                self.name, self.result = name, result
+
+            def BatchExecuteChecked(self, request, context):
+                calls[self.name].append((
+                    request.shard_id, request.load_version,
+                    [c.string_len.key for c in request.commands],
+                ))
+                if self.name == "old":
+                    elected.set()
+                    return pb.BatchExecuteResponse(status=pb.Status(code="load_version_mismatch"))
+                return pb.BatchExecuteResponse(status=pb.Status(ok=True), responses=[
+                    pb.CommandResponse(status=pb.Status(ok=True), count=self.result),
+                ])
+
+        class MetadataServer(MetadataServiceServicer):
+            def GetTableTopology(self, request, context):
+                moved = elected.is_set()
+                discoveries.append((request.namespace_name, moved))
+                result = pb.MetadataTableTopologyResponse(
+                    status=pb.Status(ok=True), first_shard_id=73, shard_count=2,
+                    table_id=1, topology_version=2 if moved else 1,
+                )
+                result.shards.add(shard_id=73, uses_raft_route=True,
+                                  primary_grpc=replacement if moved else old,
+                                  load_version=8 if moved else 7)
+                result.shards.add(shard_id=74, uses_raft_route=True,
+                                  primary_grpc=healthy, load_version=11)
+                return result
+
+        with ExitStack() as stack:
+            def start(servicer, register):
+                worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
+                server = grpc.server(worker)
+                register(servicer, server)
+                port = server.add_insecure_port("127.0.0.1:0")
+                server.start()
+                stack.callback(lambda: server.stop(0).wait(timeout=3))
+                return f"127.0.0.1:{port}"
+
+            old = start(ShardServer("old", 0), add_TemporalStoreServiceServicer_to_server)
+            replacement = start(ShardServer("replacement", 4),
+                                add_TemporalStoreServiceServicer_to_server)
+            healthy = start(ShardServer("healthy", 7), add_TemporalStoreServiceServicer_to_server)
+            meta = start(MetadataServer(), add_MetadataServiceServicer_to_server)
+            backend = TableValueBackend(f"grpc://{meta}", "kvcache", 5, 2, 0)
+            stack.callback(backend.close)
+            keys = [Key("alpha"), Key("123456789")]
+            for key in keys:
+                key.model_name, key.kv_rank = "fixture/model", 0
+            self.assertEqual(backend.lengths(keys), [4, 7])
+
+        self.assertEqual(discoveries, [("kvcache", False), ("kvcache", True)])
+        self.assertEqual(calls, {
+            "old": [(73, 7, ["alpha"])],
+            "replacement": [(73, 8, ["alpha"])],
+            "healthy": [(74, 11, ["123456789"])],
+        })
+
     def test_lookup_stops_retrying_when_the_deadline_expires(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
 
