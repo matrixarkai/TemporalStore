@@ -338,6 +338,8 @@ thread_local! {
 
 #[inline]
 fn charge_class_alloc(size: usize) {
+    #[cfg(all(test, feature = "alloc-probe"))]
+    charge_current_thread_allocation();
     let _ = CURRENT_CLASS.try_with(|cell| {
         let slot = cell.get() as usize;
         if slot < CLASS_COUNT {
@@ -691,6 +693,101 @@ pub struct Probe {
     chunk_bytes: u64,
     frees: u64,
     free_bytes: u64,
+}
+
+#[cfg(all(test, feature = "alloc-probe"))]
+thread_local! {
+    static THREAD_ALLOC_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(all(test, feature = "alloc-probe"))]
+#[inline]
+fn charge_current_thread_allocation() {
+    let _ = THREAD_ALLOC_CALLS.try_with(|calls| calls.set(calls.get().wrapping_add(1)));
+}
+
+/// Allocation calls on this thread only, for synchronous test operations.
+/// Global counters remain unchanged and still include other threads' work.
+#[cfg(all(test, feature = "alloc-probe"))]
+pub(crate) struct ThreadAllocationProbe {
+    before: u64,
+    _thread_affine: std::marker::PhantomData<std::rc::Rc<()>>,
+}
+
+#[cfg(all(test, feature = "alloc-probe"))]
+impl ThreadAllocationProbe {
+    pub(crate) fn start() -> Self {
+        Self {
+            before: THREAD_ALLOC_CALLS.with(std::cell::Cell::get),
+            _thread_affine: std::marker::PhantomData,
+        }
+    }
+
+    pub(crate) fn stop(&self) -> u64 {
+        THREAD_ALLOC_CALLS.with(|calls| calls.get().wrapping_sub(self.before))
+    }
+}
+
+#[cfg(all(test, feature = "alloc-probe"))]
+mod thread_allocation_tests {
+    use super::ThreadAllocationProbe;
+
+    #[test]
+    fn a_thread_probe_counts_real_allocations_and_nested_scopes() {
+        const PLANTED: u64 = 64;
+        let outer = ThreadAllocationProbe::start();
+        let inner = ThreadAllocationProbe::start();
+        for _ in 0..PLANTED {
+            drop(std::hint::black_box(vec![0x5au8; 128]));
+        }
+        let inner_calls = inner.stop();
+        let outer_calls = outer.stop();
+        assert_eq!(inner_calls, PLANTED);
+        assert_eq!(outer_calls, PLANTED);
+        let empty = ThreadAllocationProbe::start();
+        assert_eq!(empty.stop(), 0);
+    }
+
+    #[test]
+    fn a_thread_probe_counts_alloc_alloc_zeroed_and_realloc() {
+        use std::alloc::{alloc, alloc_zeroed, dealloc, handle_alloc_error, realloc, Layout};
+
+        let small = Layout::from_size_align(64, 8).unwrap();
+        let large = Layout::from_size_align(128, 8).unwrap();
+        let probe = ThreadAllocationProbe::start();
+        // All pointers below originate from the global allocator and keep the
+        // original alignment on growth. The old pointer is not used after realloc.
+        let (zeroed, grown) = unsafe {
+            let first = std::hint::black_box(alloc(small));
+            if first.is_null() {
+                handle_alloc_error(small);
+            }
+            first.write_bytes(0x5a, small.size());
+            let zeroed = std::hint::black_box(alloc_zeroed(small));
+            if zeroed.is_null() {
+                dealloc(first, small);
+                handle_alloc_error(small);
+            }
+            let grown = std::hint::black_box(realloc(first, small, large.size()));
+            if grown.is_null() {
+                dealloc(first, small);
+                dealloc(zeroed, small);
+                handle_alloc_error(large);
+            }
+            (zeroed, grown)
+        };
+        let calls = probe.stop();
+        let (was_zeroed, preserved) = unsafe {
+            let was_zeroed = std::slice::from_raw_parts(zeroed, small.size()).iter().all(|b| *b == 0);
+            let preserved = std::slice::from_raw_parts(grown, small.size()).iter().all(|b| *b == 0x5a);
+            dealloc(zeroed, small);
+            dealloc(grown, large);
+            (was_zeroed, preserved)
+        };
+        assert_eq!(calls, 3, "alloc, alloc_zeroed and realloc must each be charged once");
+        assert!(was_zeroed);
+        assert!(preserved);
+    }
 }
 
 impl Probe {
