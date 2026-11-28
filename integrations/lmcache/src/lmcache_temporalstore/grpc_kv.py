@@ -309,7 +309,9 @@ class TableValueBackend(ValueBackend):
             if any(response is None for response in responses):
                 raise MetadataError("invalid_batch", "datanode returned incomplete load responses")
             # Large gRPC replies expose slices of one immutable response buffer.
-            for (_, destination), response in zip(batch, responses, strict=True):
+            for index, (_, destination) in enumerate(batch):
+                response = responses[index]
+                responses[index] = None
                 payload = response.value
                 found = bool(payload) and len(payload) == len(destination)
                 if found:
