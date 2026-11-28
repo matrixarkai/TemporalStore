@@ -332,6 +332,12 @@ pub struct TemporalEngine {
     /// The sliced compaction pass each shard has in flight, if any. One slot per shard so a slice
     /// holds only its own shard's lock; see `compaction_slices.rs`.
     compaction_passes: Arc<std::sync::Mutex<HashMap<ShardId, recovery_sweep_compact::PassSlot>>>,
+    /// Metrics-only directory of incarnation-bound summary caches. Each entry
+    /// coalesces its own refresh; no listing runs under this directory mutex.
+    /// Lifecycle retirement detaches the matching entry without waiting for refresh.
+    scrape_bucket_summaries: Arc<
+        std::sync::Mutex<BTreeMap<ShardId, Arc<prometheus_metrics::ScrapeBucketEntry>>>,
+    >,
     /// Slabs a compaction round vacated in MEMORY but whose new index never reached disk.
     ///
     /// Compaction advances no applied sequence and emits no record, so the durable index is the
@@ -3681,7 +3687,11 @@ impl TemporalEngine {
         // `ensure_expiry_order` stays at its call sites as the repair for an emptied mirror.
         ensure_expiry_order(&mut state);
         state.expiry_scan_positions = [None, None];
-        drop(self.shards.install(shard_id, state));
+        let previous_owner = self.shards.handle(shard_id);
+        let retired = self.shards.install(shard_id, state);
+        let scrape_cache = previous_owner.as_ref()
+            .and_then(|owner| self.detach_scrape_bucket_summaries(owner));
+        drop((retired, scrape_cache));
     }
 
     /// What the resident bucket index costs on this shard: one node per bucket, plus one entry

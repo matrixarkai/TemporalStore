@@ -495,8 +495,17 @@ fn owner_install_body(source: &str, method: &str) -> String {
         .collect()
 }
 
+const OWNER_PUBLICATION: &str = "letretired=self.shards.install(shard_id,state);";
+const OWNER_RETIREMENT: &str = concat!(
+    "letprevious_owner=self.shards.handle(shard_id);",
+    "letretired=self.shards.install(shard_id,state);",
+    "letscrape_cache=previous_owner.as_ref()",
+    ".and_then(|owner|self.detach_scrape_bucket_summaries(owner));",
+    "drop((retired,scrape_cache));",
+);
+
 fn owner_install_identity(installer: &str, facade: &str, registry: &str) -> Result<(), &'static str> {
-    let publish = "drop(self.shards.install(shard_id,state));";
+    let publish = OWNER_PUBLICATION;
     let Some(publication) = installer.find(publish) else {
         return Err("engine must publish once through the owner facade");
     };
@@ -508,6 +517,14 @@ fn owner_install_identity(installer: &str, facade: &str, registry: &str) -> Resu
         || !installer.find(stamp).is_some_and(|position| position < publication)
     {
         return Err("engine must stamp the same shard ID before publication");
+    }
+    // Keep the old owner alive through cache detachment, without shadowed retirement bindings.
+    if installer.matches(OWNER_RETIREMENT).count() != 1
+        || installer.matches("previous_owner").count() != 2
+        || installer.matches("retired").count() != 2
+        || installer.matches("scrape_cache").count() != 2
+    {
+        return Err("engine must retire the replaced owner and its scrape cache");
     }
     if facade != "self.owners.replace(shard_id,state)" {
         return Err("facade must forward the stamped state and shard ID");
@@ -550,7 +567,7 @@ fn the_only_production_site_that_installs_a_shard_stamps_the_id_it_inserts_under
     // These controls use the actual method bodies, changing only the link
     // whose absence, incorrect key or ordering the oracle must detect.
     let bypass = installer.replace(
-        "drop(self.shards.install(shard_id,state));",
+        OWNER_PUBLICATION,
         "self.shards.insert(shard_id,state);",
     );
     assert_eq!(
@@ -558,13 +575,45 @@ fn the_only_production_site_that_installs_a_shard_stamps_the_id_it_inserts_under
         Err("engine must publish once through the owner facade"),
     );
     let late_stamp = installer.replace("state.set_shard_id(shard_id);", "").replace(
-        "drop(self.shards.install(shard_id,state));",
-        "drop(self.shards.install(shard_id,state));state.set_shard_id(shard_id);",
+        OWNER_PUBLICATION,
+        &format!("{OWNER_PUBLICATION}state.set_shard_id(shard_id);"),
     );
     assert_eq!(
         owner_install_identity(&late_stamp, &facade, &registry),
         Err("engine must stamp the same shard ID before publication"),
     );
+    assert_eq!(
+        owner_install_identity(
+            &installer.replace(OWNER_PUBLICATION, &format!("{OWNER_PUBLICATION}{OWNER_PUBLICATION}")),
+            &facade, &registry,
+        ),
+        Err("engine must publish once through the owner facade"),
+    );
+    assert_eq!(
+        owner_install_identity(
+            &installer.replace("install(shard_id,state)", "install(other_id,state)"),
+            &facade, &registry,
+        ),
+        Err("engine must publish once through the owner facade"),
+    );
+    for changed in [
+        installer.replace("handle(shard_id)", "handle(other_id)"),
+        installer.replace("previous_owner.as_ref()", "self.shards.handle(shard_id).as_ref()"),
+        installer.replace("detach_scrape_bucket_summaries(owner)", "detach_scrape_bucket_summaries(other_owner)"),
+        installer.replace("drop((retired,scrape_cache));", "drop(retired);"),
+        installer.replace("drop((retired,scrape_cache));", ""),
+        installer.replace("letscrape_cache=", "letretired=other_owner;letscrape_cache="),
+        installer.replace("letscrape_cache=", "letretired:Owner=other_owner;letscrape_cache="),
+        installer.replace(OWNER_RETIREMENT, &format!(
+            "{OWNER_PUBLICATION}letprevious_owner=self.shards.handle(shard_id);letscrape_cache=previous_owner.as_ref().and_then(|owner|self.detach_scrape_bucket_summaries(owner));drop((retired,scrape_cache));",
+        )),
+    ] {
+        assert_ne!(changed, installer, "the control must alter the actual retirement sequence");
+        assert_eq!(
+            owner_install_identity(&changed, &facade, &registry),
+            Err("engine must retire the replaced owner and its scrape cache"),
+        );
+    }
     assert_eq!(
         owner_install_identity(
             &installer, &facade.replace("replace(shard_id,", "replace(other_id,"), &registry,

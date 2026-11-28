@@ -325,8 +325,6 @@ pub(crate) mod probe {
 pub enum IndexLogError {
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
     /// A committed, newline-terminated served-index-log record failed its per-record
     /// integrity envelope (framing length / SHA-256 digest) or violated delta
     /// sequence-continuity. Surfaced as data loss so the load aborts instead of silently
