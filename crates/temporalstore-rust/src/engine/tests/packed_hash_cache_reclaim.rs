@@ -24,20 +24,21 @@ fn put(engine: &TemporalEngine, key: &str, fields: &[&str], value: u8, bytes: us
     });
     assert!(result.status.ok && result.errors.is_empty() && result.applied == 1);
     // These checks exercise retirement of cached frames, whether writes populated them or not.
-    let shards = engine.shards.read().unwrap();
-    let address = shards.get(&1).unwrap().bucket_index.hashes.get(key).unwrap()
-        .get(fields[0]).unwrap();
-    assert!(read_block_frame_shared(&engine.cache, &engine.block_store, 1, address,
+    let address = engine.shards.with_state(1, |state| {
+        state.unwrap().bucket_index.hashes.get(key).unwrap().get(fields[0]).unwrap().clone()
+    });
+    assert!(read_block_frame_shared(&engine.cache, &engine.block_store, 1, &address,
         BlockIdentity::of(1, "hash", key, Some(fields[0])),
         Some(block_routing_bucket(key, 0, 1023))).is_some());
 }
 
 fn page(engine: &TemporalEngine, key: &str, field: &str) -> CacheKey {
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    let address = shard.bucket_index.hashes.get(key).unwrap().get(field).unwrap();
-    CacheKey::page_with_slot(1, address.block_slab_id(), address.offset(), address.length(),
-        Some(block_routing_bucket(key, 0, 1023)))
+    engine.shards.with_state(1, |state| {
+        let shard = state.unwrap();
+        let address = shard.bucket_index.hashes.get(key).unwrap().get(field).unwrap();
+        CacheKey::page_with_slot(1, address.block_slab_id(), address.offset(), address.length(),
+            Some(block_routing_bucket(key, 0, 1023)))
+    })
 }
 
 fn get(engine: &TemporalEngine, key: &str, field: &str) -> Vec<u8> {
@@ -46,6 +47,35 @@ fn get(engine: &TemporalEngine, key: &str, field: &str) -> Vec<u8> {
     assert!(response.status.ok);
     let CommandResponse::Bytes { value: Some(bytes) } = response.response else { panic!("hash value") };
     bytes
+}
+
+#[test]
+fn cold_shared_frame_and_cached_frame_use_the_same_allocation() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    put(&engine, "row", &["a", "b"], 9, 16 * 1024);
+    let cache_key = page(&engine, "row", "a");
+    let expected = engine.cache.get_shared(&cache_key).unwrap().unwrap().to_vec();
+    engine.cache.invalidate(&cache_key).unwrap();
+    assert!(engine.cache.get_shared(&cache_key).unwrap().is_none());
+
+    let address = engine.shards.with_state(1, |state| {
+        state.unwrap().bucket_index.hashes.get("row").unwrap().get("a").unwrap().clone()
+    });
+    let frame = read_block_frame_shared(
+        &engine.cache,
+        &engine.block_store,
+        1,
+        &address,
+        BlockIdentity::of(1, "hash", "row", Some("a")),
+        Some(block_routing_bucket("row", 0, 1023)),
+    )
+    .unwrap();
+    let cached = engine.cache.get_shared(&cache_key).unwrap().unwrap();
+    assert_eq!(frame.as_ref(), expected);
+    assert!(std::sync::Arc::ptr_eq(&frame, &cached));
+    assert_eq!(get(&engine, "row", "a"), vec![9; 16 * 1024]);
+    assert_eq!(get(&engine, "row", "b"), vec![9; 16 * 1024]);
 }
 
 #[test]

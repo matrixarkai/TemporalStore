@@ -212,6 +212,45 @@ class AdapterTest(unittest.TestCase):
             self.assertEqual(batch.call_count, 4)
             self.assertEqual(adapter._locked, {})
 
+    def test_close_finishes_queued_lookups_without_new_network_calls(self):
+        adapter = self.adapter
+        entered = threading.Event()
+        release = threading.Event()
+        probes = []
+
+        def probe(commands):
+            probes.append(commands)
+            entered.set()
+            self.assertTrue(release.wait(2))
+            return [{"kind": "integer", "value": 0} for _ in commands]
+
+        adapter._lookup_data.batch_execute = probe
+        key = Key("unavailable")
+        tasks = [adapter.submit_lookup_and_lock_task([key], {})]
+        self.assertTrue(entered.wait(2))
+        tasks.extend(adapter.submit_lookup_and_lock_task([key], {}) for _ in range(8))
+        draining = threading.Event()
+        shutdown = adapter._lookup_pool.shutdown
+
+        def mark_draining(*args, **kwargs):
+            draining.set()
+            return shutdown(*args, **kwargs)
+
+        with patch.object(adapter._lookup_pool, "shutdown", side_effect=mark_draining):
+            closer = threading.Thread(target=adapter.close)
+            closer.start()
+            try:
+                self.assertTrue(draining.wait(2))
+            finally:
+                release.set()
+                closer.join(3)
+        self.assertFalse(closer.is_alive())
+        self.assertEqual(len(probes), 1)
+        self.assertFalse(adapter._locked)
+        for task_id in tasks:
+            self.assertFalse(adapter.query_lookup_and_lock_result(task_id).test(0))
+            self.assertIsNone(adapter.query_lookup_and_lock_result(task_id))
+
     def test_submissions_after_close_complete_as_cache_misses(self):
         adapter = self.adapter
         key = Key("closed")
@@ -249,30 +288,106 @@ class AdapterTest(unittest.TestCase):
         adapter_module.BlobClient = self.old_blob
         adapter_module.TemporalStoreClient = self.old_data
 
-    def test_table_lookup_retries_a_stale_primary_within_its_original_deadline(self):
+    def test_table_lookup_retries_only_affected_reads_within_its_original_deadline(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
 
         backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
         self.addCleanup(backend.close)
-        client = Mock()
-        client.batch_execute.side_effect = [
-            [
-                pb.CommandResponse(status=pb.Status(code="raft_not_leader")),
-                pb.CommandResponse(status=pb.Status(ok=True), count=7),
-            ],
-            [pb.CommandResponse(status=pb.Status(ok=True), count=4)],
-        ]
-        keys = [Key("after-election"), Key("healthy")]
+        keys = [Key("after-election"), Key("healthy"), Key("absent")]
         for key in keys:
             key.model_name, key.kv_rank = "fixture/model", 0
+        for code in ("raft_not_leader", "read_unavailable", "load_version_mismatch"):
+            with self.subTest(code=code):
+                client = Mock()
+                client.batch_execute.side_effect = [
+                    [
+                        pb.CommandResponse(status=pb.Status(code=code)),
+                        pb.CommandResponse(status=pb.Status(ok=True), count=7),
+                        pb.CommandResponse(status=pb.Status(ok=True), count=0),
+                    ],
+                    [pb.CommandResponse(status=pb.Status(ok=True), count=4)],
+                ]
+                with patch.object(backend, "_table", return_value=client), patch(
+                    "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[10.0, 10.25]
+                ):
+                    self.assertEqual(backend.lengths(keys), [4, 7, 0])
+                first, second = client.batch_execute.call_args_list
+                self.assertEqual(first.kwargs, {"timeout_seconds": 1, "allow_partial_reads": True})
+                self.assertEqual(second.kwargs, {"timeout_seconds": 0.75, "allow_partial_reads": True})
+                self.assertEqual(second.args[0], first.args[0][:1])
+
+    def test_lookup_waits_for_the_new_route_without_retrying_hits(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        for proxy in ("", "127.0.0.1:1"):
+            with self.subTest(proxy=bool(proxy)):
+                backend = TableValueBackend(
+                    "grpc://example.test", "kvcache", 5, 1, 0,
+                    proxy_grpc_target=proxy,
+                )
+                self.addCleanup(backend.close)
+                healthy = pb.CommandResponse(status=pb.Status(ok=True), count=4)
+                unavailable = pb.CommandResponse(status=pb.Status(code="read_unavailable"))
+                recovered = pb.CommandResponse(status=pb.Status(ok=True), count=8)
+                keys = [Key("healthy"), Key("recovering")]
+                for key in keys:
+                    key.model_name, key.kv_rank = "fixture/model", 0
+                client = Mock()
+                client.batch_execute.side_effect = [
+                    [healthy, unavailable], [unavailable], [recovered],
+                ]
+                clock = [10.0]
+
+                def now():
+                    clock[0] += 0.01
+                    return clock[0]
+
+                def wait(delay):
+                    clock[0] += delay
+
+                with patch.object(backend, "_table", return_value=client), patch(
+                    "lmcache_temporalstore.grpc_kv.monotonic", side_effect=now,
+                ), patch("lmcache_temporalstore.grpc_kv.sleep", side_effect=wait) as backoff:
+                    self.assertEqual(backend.lengths(keys), [4, 8])
+
+                first, second, third = client.batch_execute.call_args_list
+                self.assertEqual(second.args[0], first.args[0][1:])
+                self.assertEqual(third.args[0], second.args[0])
+                limits = [call.kwargs["timeout_seconds"] for call in (first, second, third)]
+                self.assertTrue(0 < limits[2] < limits[1] < limits[0] == 1)
+                self.assertEqual(backoff.call_count, 1)
+
+    def test_lookup_stops_retrying_when_the_deadline_expires(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 0.04, 0)
+        self.addCleanup(backend.close)
+        healthy = pb.CommandResponse(status=pb.Status(ok=True), count=4)
+        unavailable = pb.CommandResponse(status=pb.Status(code="read_unavailable"))
+        keys = [Key("healthy"), Key("unavailable")]
+        for key in keys:
+            key.model_name, key.kv_rank = "fixture/model", 0
+        client = Mock()
+        client.batch_execute.side_effect = [[healthy, unavailable], [unavailable]]
+        clock = [10.0]
+
+        def now():
+            clock[0] += 0.01
+            return clock[0]
+
+        def wait(delay):
+            clock[0] += delay
+
         with patch.object(backend, "_table", return_value=client), patch(
-            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[10.0, 10.25]
-        ):
-            self.assertEqual(backend.lengths(keys), [4, 7])
-        first, second = client.batch_execute.call_args_list
-        self.assertEqual(first.kwargs, {"timeout_seconds": 1, "allow_partial_reads": True})
-        self.assertEqual(second.kwargs, {"timeout_seconds": 0.75, "allow_partial_reads": True})
-        self.assertEqual(second.args[0], first.args[0][:1])
+            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=now,
+        ), patch("lmcache_temporalstore.grpc_kv.sleep", side_effect=wait) as backoff:
+            self.assertEqual(backend.lengths(keys), [4, 0])
+
+        first, retry = client.batch_execute.call_args_list
+        self.assertEqual(retry.args[0], first.args[0][1:])
+        self.assertTrue(0 < retry.kwargs["timeout_seconds"] < 0.04)
+        backoff.assert_called_once()
+        self.assertLess(backoff.call_args.args[0], 0.025)
 
     def test_proxy_lookup_keeps_hits_and_retries_only_stale_results(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
@@ -284,12 +399,16 @@ class AdapterTest(unittest.TestCase):
         )
         self.addCleanup(backend.close)
         client = Mock()
-        client.batch_execute.side_effect = [
-            [
+
+        def partial_results():
+            return [
                 pb.CommandResponse(status=pb.Status(code="no_grpc_primary")),
                 pb.CommandResponse(status=pb.Status(ok=True), count=7),
                 pb.CommandResponse(status=pb.Status(code="raft_not_leader")),
-            ],
+            ]
+
+        client.batch_execute.side_effect = [
+            partial_results(),
             [pb.CommandResponse(status=pb.Status(ok=True), count=4)],
             [pb.CommandResponse(status=pb.Status(code="permission_denied"))],
         ]
@@ -303,6 +422,20 @@ class AdapterTest(unittest.TestCase):
             with self.assertRaisesRegex(MetadataError, "permission_denied"):
                 backend.lengths(keys[:1])
         first, second, _ = client.batch_execute.call_args_list
+        self.assertEqual(first.kwargs, {"timeout_seconds": 1})
+        self.assertEqual(second.kwargs, {"timeout_seconds": 0.75})
+        self.assertEqual(second.args[0], first.args[0][2:])
+
+        client.reset_mock()
+        client.batch_execute.side_effect = [
+            partial_results(),
+            MetadataError("deadline_exceeded", "stale shard did not reply"),
+        ]
+        with patch.object(backend, "_table", return_value=client), patch(
+            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[20.0, 20.25],
+        ):
+            self.assertEqual(backend.lengths(keys), [0, 7, 0])
+        first, second = client.batch_execute.call_args_list
         self.assertEqual(first.kwargs, {"timeout_seconds": 1})
         self.assertEqual(second.kwargs, {"timeout_seconds": 0.75})
         self.assertEqual(second.args[0], first.args[0][2:])
@@ -373,11 +506,89 @@ class AdapterTest(unittest.TestCase):
                 self.assertEqual(status["stores"], 0)
                 self.assertEqual(status["bytes_used"], 0)
                 client.iter_batch_responses.assert_called_once()
-                client.batch_execute.assert_called_once()
+                self.assertEqual(client.batch_execute.call_count, 2 if not stored else 1)
                 put = client.iter_batch_responses.call_args.args[0][0]
                 get = client.batch_execute.call_args.args[0][0]
                 self.assertEqual(put.string_set_conditional.key, get.string_get.key)
                 self.assertLessEqual(client.batch_execute.call_args.kwargs["timeout_seconds"], 1)
+
+    def test_unclassified_remote_timeout_preserves_the_error_without_readback(self):
+        import grpc
+
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        class RemoteTimeout(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.CANCELLED
+
+            def details(self):
+                return "Timeout%20expired"
+
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
+        self.addCleanup(backend.close)
+        key = Key("timeout")
+        key.model_name, key.kv_rank = "fixture/model", 0
+        client = Mock()
+        client.iter_batch_responses.side_effect = RemoteTimeout
+        client.batch_execute.return_value = [
+            pb.CommandResponse(status=pb.Status(ok=True), value=b"tensor"),
+        ]
+        with patch.object(backend, "_table", return_value=client):
+            with self.assertRaises(RemoteTimeout):
+                list(backend.iter_store_results([(key, memoryview(b"tensor"))]))
+        self.assertEqual(backend.stores_confirmed_by_read, 0)
+        client.iter_batch_responses.assert_called_once()
+        client.batch_execute.assert_not_called()
+
+    def test_shared_store_timeout_does_not_confirm_an_insert_by_local_read(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        import grpc
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from temporalstore.v1 import temporalstore_pb2_grpc as rpc
+        from temporalstore_sdk import MetadataError
+        from temporalstore_sdk.metadata import Shard, TableTopology
+
+        class LocalOwner(rpc.TemporalStoreServiceServicer):
+            def __init__(self):
+                self.payload = b""
+                self.reads = 0
+
+            def BatchExecuteChecked(self, request, context):
+                command, = request.commands
+                if command.HasField("string_set_conditional"):
+                    self.payload = command.string_set_conditional.value
+                    context.abort(grpc.StatusCode.DEADLINE_EXCEEDED, "shared publication timed out")
+                self.reads += 1
+                return pb.BatchExecuteResponse(
+                    status=pb.Status(ok=True),
+                    responses=[pb.CommandResponse(status=pb.Status(ok=True), value=self.payload)],
+                )
+
+        owner = LocalOwner()
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            server = grpc.server(pool)
+            rpc.add_TemporalStoreServiceServicer_to_server(owner, server)
+            port = server.add_insecure_port("127.0.0.1:0")
+            self.assertGreater(port, 0)
+            server.start()
+            try:
+                backend = TableValueBackend("grpc://example.test", "kvcache", 2, 1, 0)
+                try:
+                    shard = Shard(73, None, (), 7, f"127.0.0.1:{port}")
+                    topology = TableTopology("kvcache", "model", 1, 73, 1, (shard,))
+                    key = Key("locally-applied")
+                    key.model_name, key.kv_rank = "fixture/model", 0
+                    with patch.object(backend._metadata, "table_topology", return_value=topology):
+                        with self.assertRaisesRegex(MetadataError, "write_durability_unconfirmed"):
+                            list(backend.iter_store_results([(key, memoryview(b"tensor"))]))
+                    self.assertEqual(backend.stores_confirmed_by_read, 0)
+                finally:
+                    backend.close()
+            finally:
+                self.assertTrue(server.stop(0).wait(2))
+        self.assertEqual(owner.payload, b"tensor")
+        self.assertEqual(owner.reads, 0)
 
     def test_store_readback_waits_for_a_new_leader_without_writing_again(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
@@ -411,8 +622,81 @@ class AdapterTest(unittest.TestCase):
             [2, 1.75, 1.5],
         )
 
-    def test_proxy_store_readback_retries_a_backend_transport_status(self):
+    def test_unavailable_shard_does_not_use_other_writes_readback_time(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from lmcache.v1.distributed.key_codec import encode_storage_key
+        from temporalstore_sdk import MetadataError, RaftPrimaryUnavailable
+
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 2, 0)
+        self.addCleanup(backend.close)
+        keys = [Key("unavailable-shard"), Key("available-shard")]
+        for key in keys:
+            key.model_name, key.kv_rank = "fixture/model", 0
+        client = Mock()
+        client.iter_batch_responses.return_value = iter([
+            (0, pb.CommandResponse(status=pb.Status(code="raft_error", message="old leader"))),
+            (1, pb.CommandResponse(status=pb.Status(code="write_outcome_unknown"))),
+        ])
+        now = 0.0
+
+        def advance(seconds):
+            nonlocal now
+            now += seconds
+
+        def read(commands, *, timeout_seconds):
+            if commands[0].string_get.key == encode_storage_key(keys[0]):
+                raise RaftPrimaryUnavailable(73)
+            self.assertEqual(commands[0].string_get.key, encode_storage_key(keys[1]))
+            self.assertEqual(timeout_seconds, 1)
+            return [pb.CommandResponse(status=pb.Status(ok=True), value=b"tensor")]
+
+        client.batch_execute.side_effect = read
+        with patch.object(backend, "_table", return_value=client), patch(
+            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=lambda: now,
+        ), patch("lmcache_temporalstore.grpc_kv.sleep", side_effect=advance):
+            results = backend.iter_store_results([(key, memoryview(b"tensor")) for key in keys])
+            self.assertEqual(next(results), (1, False))
+            with self.assertRaisesRegex(MetadataError, "old leader"):
+                next(results)
+
+        self.assertEqual(now, 1)
+        self.assertEqual(backend.stores_confirmed_by_read, 1)
+        client.iter_batch_responses.assert_called_once()
+
+    def test_uncertain_write_can_become_visible_after_the_first_readback(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 2, 0)
+        self.addCleanup(backend.close)
+        key = Key("pending-apply")
+        key.model_name, key.kv_rank = "fixture/model", 0
+        client = Mock()
+        client.iter_batch_responses.return_value = iter([
+            (0, pb.CommandResponse(status=pb.Status(code="raft_error", message="leader changed"))),
+        ])
+        client.batch_execute.side_effect = [
+            [pb.CommandResponse(status=pb.Status(ok=True), value_present=False)],
+            [pb.CommandResponse(status=pb.Status(ok=True), value=b"tensor", value_present=True)],
+        ]
+        with patch.object(backend, "_table", return_value=client), patch(
+            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[0, 0, 0, 0.25],
+        ), patch("lmcache_temporalstore.grpc_kv.sleep") as wait:
+            results = list(backend.iter_store_results([(key, memoryview(b"tensor"))]))
+
+        self.assertEqual(results, [(0, False)])
+        self.assertEqual(backend.stores_confirmed_by_read, 1)
+        client.iter_batch_responses.assert_called_once()
+        wait.assert_called_once_with(0.25)
+        self.assertEqual(
+            [call.kwargs["timeout_seconds"] for call in client.batch_execute.call_args_list],
+            [2, 1.75],
+        )
+        for call in client.batch_execute.call_args_list:
+            self.assertTrue(call.args[0][0].HasField("string_get"))
+
+    def test_proxy_unknown_durability_never_confirms_through_readback(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from temporalstore_sdk import MetadataError
 
         backend = TableValueBackend(
             "grpc://example.test", "kvcache", 5, 1, 0, proxy_grpc_target="proxy.test:17200",
@@ -424,21 +708,82 @@ class AdapterTest(unittest.TestCase):
         client.iter_batch_responses.return_value = iter([
             (0, pb.CommandResponse(status=pb.Status(code="write_outcome_unknown"))),
         ])
-        client.batch_execute.side_effect = [
-            [pb.CommandResponse(status=pb.Status(code="status_error"))],
-            [pb.CommandResponse(status=pb.Status(code="server_error"))],
-            [pb.CommandResponse(status=pb.Status(ok=True), value=b"tensor")],
-        ]
-        with patch.object(backend, "_table", return_value=client), patch(
-            "lmcache_temporalstore.grpc_kv.sleep",
-        ):
-            results = list(backend.iter_store_results([(key, memoryview(b"tensor"))]))
-
-        self.assertEqual(results, [(0, False)])
+        with patch.object(backend, "_table", return_value=client):
+            with self.assertRaisesRegex(MetadataError, "write_outcome_unknown"):
+                list(backend.iter_store_results([(key, memoryview(b"tensor"))]))
         client.iter_batch_responses.assert_called_once()
-        self.assertEqual(client.batch_execute.call_count, 3)
-        for call in client.batch_execute.call_args_list:
-            self.assertTrue(call.args[0][0].HasField("string_get"))
+        client.batch_execute.assert_not_called()
+        self.assertEqual(backend.stores_confirmed_by_read, 0)
+
+
+    def test_proxy_write_unknown_or_cancelled_is_never_confirmed_by_a_read(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        import grpc
+        from temporalstore.v1.temporalstore_pb2_grpc import (
+            ProxyServiceServicer, add_ProxyServiceServicer_to_server,
+        )
+        from temporalstore_sdk import MetadataError
+
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+
+        payload = bytes(range(256)) * (36 * 1024)
+
+        class Proxy(ProxyServiceServicer):
+            def __init__(self, code):
+                self.code = code
+                self.commands = []
+                self.value = None
+
+            def ProxyExecuteStream(self, requests, context):
+                for request in requests:
+                    replies = []
+                    for command in request.batch_execute.commands:
+                        kind = command.WhichOneof("kind")
+                        self.commands.append(kind)
+                        if kind == "string_set_conditional":
+                            self.value = command.string_set_conditional.value
+                            if self.code == "cancelled":
+                                context.abort(grpc.StatusCode.CANCELLED, "grpc_timeout")
+                            replies.append(pb.CommandResponse(status=pb.Status(code=self.code)))
+                        elif kind == "string_get":
+                            replies.append(pb.CommandResponse(
+                                status=pb.Status(ok=True), value=self.value,
+                            ))
+                    yield pb.ProxyStreamEvent(
+                        batch_execute=pb.BatchExecuteResponse(responses=replies),
+                    )
+
+        for code in ("write_outcome_unknown", "write_durability_unconfirmed", "cancelled"):
+            with self.subTest(code=code), ThreadPoolExecutor(max_workers=2) as workers:
+                proxy = Proxy(code)
+                server = grpc.server(workers, options=[
+                    ("grpc.max_receive_message_length", 16 * 1024 * 1024),
+                    ("grpc.max_send_message_length", 16 * 1024 * 1024),
+                ])
+                add_ProxyServiceServicer_to_server(proxy, server)
+                port = server.add_insecure_port("127.0.0.1:0")
+                server.start()
+                backend = TableValueBackend(
+                    "grpc://127.0.0.1:1", "kvcache", 5, 1, 0,
+                    proxy_grpc_target=f"127.0.0.1:{port}",
+                )
+                try:
+                    key = Key("proxy-write")
+                    key.model_name, key.kv_rank = "fixture/model", 0
+                    error_type = grpc.RpcError if code == "cancelled" else MetadataError
+                    with self.assertRaises(error_type) as outcome:
+                        list(backend.iter_store_results([(key, memoryview(payload))]))
+                    if code == "cancelled":
+                        self.assertEqual(outcome.exception.code(), grpc.StatusCode.CANCELLED)
+                    else:
+                        self.assertEqual(outcome.exception.code, code)
+                    self.assertEqual(proxy.value, payload)
+                    self.assertEqual(proxy.commands, ["string_set_conditional"])
+                    self.assertEqual(backend.stores_confirmed_by_read, 0)
+                finally:
+                    backend.close()
+                    server.stop(0).wait()
 
     def test_store_reconciles_received_reply_before_propagating_batch_failure(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
@@ -471,6 +816,33 @@ class AdapterTest(unittest.TestCase):
         write = client.iter_batch_responses.call_args.args[0][0]
         read = client.batch_execute.call_args.args[0][0]
         self.assertEqual(read.string_get.key, write.string_set_conditional.key)
+
+    def test_interrupted_store_preserves_acknowledged_results_and_reports_the_error(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, grpc, pb
+
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
+        self.addCleanup(backend.close)
+        keys = [Key("acknowledged"), Key("interrupted")]
+        for key in keys:
+            key.model_name, key.kv_rank = "fixture/model", 0
+        error = grpc.RpcError("interrupted")
+        chunks = [(key, memoryview(b"tensor")) for key in keys]
+
+        def replies():
+            yield 0, pb.CommandResponse(status=pb.Status(ok=True), count=1)
+            raise error
+
+        client = Mock()
+        client.iter_batch_responses.return_value = replies()
+        with patch.object(backend, "_table", return_value=client):
+            results = backend.iter_store_results(chunks)
+            self.assertEqual(next(results), (0, True))
+            with self.assertRaises(grpc.RpcError) as caught:
+                next(results)
+            self.assertIs(caught.exception, error)
+        self.assertEqual(backend.stores_confirmed_by_read, 0)
+        client.iter_batch_responses.assert_called_once()
+        client.batch_execute.assert_not_called()
 
     def test_lookup_and_store_share_a_table_client_with_distinct_deadlines(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
@@ -522,6 +894,54 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(first.args, retry.args)
         self.assertGreater(retry.kwargs["timeout_seconds"], 0)
         self.assertLessEqual(retry.kwargs["timeout_seconds"], 5)
+
+    def test_borrowed_insert_batch_budget_counts_tensor_bytes(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from temporalstore_sdk.cache_wire import CacheInsert
+
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 2, 0)
+        self.addCleanup(backend.close)
+        keys = [Key("first"), Key("second")]
+        for key in keys:
+            key.model_name, key.kv_rank = "fixture/model", 0
+        tensor_bytes = 8 * 1024 * 1024
+        tensor = memoryview(bytearray(tensor_bytes)).cast("B", shape=(1, tensor_bytes))
+        self.assertEqual((len(tensor), tensor.nbytes), (1, tensor_bytes))
+        success = pb.CommandResponse(status=pb.Status(ok=True), count=1)
+        client = Mock()
+        client.iter_batch_responses.side_effect = [
+            iter([(0, success)]), iter([(0, success)]),
+        ]
+        with patch.object(backend, "_table", return_value=client):
+            self.assertEqual(list(backend.iter_store_results([(key, tensor) for key in keys])),
+                             [(0, True), (1, True)])
+        sent = [call.args[0] for call in client.iter_batch_responses.call_args_list]
+        self.assertEqual([len(batch) for batch in sent], [1, 1])
+        self.assertTrue(all(isinstance(batch[0], CacheInsert) and batch[0].value.nbytes == tensor_bytes
+                            for batch in sent))
+
+    def test_grpc_load_budgets_and_fills_shaped_tensor_views(self):
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from temporalstore_sdk.cache_load_wire import LoadReply
+
+        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
+        self.addCleanup(backend.close)
+        keys = [Key("first"), Key("second")]
+        tensor_bytes = 3 * 1024 * 1024
+        outputs = [bytearray(tensor_bytes) for _ in keys]
+        targets = [memoryview(output).cast("B", shape=(3, tensor_bytes // 3)) for output in outputs]
+        self.assertEqual([len(target) for target in targets], [3, 3])
+        payloads = [b"a" * tensor_bytes, b"b" * tensor_bytes]
+        status = pb.Status(ok=True)
+        replies = [LoadReply(status, memoryview(payload), True) for payload in payloads]
+        with patch.object(backend, "_iter_responses", side_effect=[
+            iter([(0, {}, replies[0])]), iter([(0, {}, replies[1])]),
+        ]) as reads:
+            result = list(backend.load_into(list(zip(keys, targets, strict=True))))
+        self.assertEqual(result, [True, True])
+        self.assertEqual(outputs, payloads)
+        self.assertEqual([len(call.args[0]) for call in reads.call_args_list], [1, 1])
+        self.assertTrue(all(call.kwargs["borrowed_load"] for call in reads.call_args_list))
 
     def test_metaserver_selects_distributed_kv_by_default(self):
         config = adapter_module.TemporalStoreL2AdapterConfig
@@ -649,6 +1069,62 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(client.iter_batch_responses.call_args.args[0], [commands[1], commands[3]])
         wait.assert_called_once_with(0.25)
 
+    def test_cache_load_releases_each_copied_response_before_yielding(self):
+        from weakref import ref
+
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from lmcache_temporalstore.kv import ValueBackend
+
+        class Response(dict):
+            pass
+
+        for mode in ("local", "direct", "proxy"):
+            with self.subTest(mode=mode):
+                if mode == "local":
+                    backend = ValueBackend(Mock(), Mock(), 0)
+                else:
+                    backend = TableValueBackend(
+                        "grpc://127.0.0.1:1", "kvcache", 2, 1, 0,
+                        proxy_grpc_target="127.0.0.1:2" if mode == "proxy" else "",
+                    )
+                keys = [Key("first"), Key("second")]
+                for key in keys:
+                    key.model_name, key.kv_rank = "fixture/model", 0
+                items = [(key, memoryview(bytearray(1024 * 1024))) for key in keys]
+                held = []
+
+                def local_replies(_):
+                    responses = [Response(value=b"a" * len(items[0][1])),
+                                 Response(value=b"b" * len(items[1][1]))]
+                    held.extend(ref(x) for x in responses)
+                    return responses
+
+                def grpc_replies(entries, **_):
+                    for index, (_, document) in enumerate(entries):
+                        response = types.SimpleNamespace(
+                            status=pb.Status(ok=True),
+                            value=memoryview(bytes((97 + index,)) * len(items[index][1])),
+                        )
+                        held.append(ref(response.value))
+                        yield index, document, response
+
+                runner = "_execute" if mode == "local" else "_iter_responses"
+                replies = local_replies if mode == "local" else grpc_replies
+                try:
+                    with patch.object(backend, runner, side_effect=replies):
+                        results = backend.load_into(items)
+                        self.assertTrue(next(results))
+                        self.assertEqual(bytes(items[0][1]), b"a" * len(items[0][1]))
+                        self.assertIsNone(held[0]())
+                        self.assertIsNotNone(held[1]())
+                        self.assertTrue(next(results))
+                        self.assertEqual(bytes(items[1][1]), b"b" * len(items[1][1]))
+                        self.assertIsNone(held[1]())
+                        with self.assertRaises(StopIteration):
+                            next(results)
+                finally:
+                    backend.close()
+
     def test_kv_backend_keeps_one_binary_value_and_rejects_wrong_destination_size(self):
         adapter = adapter_module.TemporalStoreL2Adapter({"storage_backend": "kv"})
         self.addCleanup(adapter.close)
@@ -740,6 +1216,41 @@ class AdapterTest(unittest.TestCase):
         adapter._store_pool.submit(lambda: None).result(timeout=2)
         self.assertEqual(adapter.report_status()["bytes_used"], 0)
         self.assertEqual(len(adapter._blob.values), 0)
+
+    def test_capacity_eviction_batches_small_blobs_and_preserves_locked_keys(self):
+        adapter = self.adapter
+        keys = [Key(str(index)) for index in range(4)]
+        task = adapter.submit_store_task(keys, [Memory(b"x") for _ in keys])
+        self.assertTrue(adapter._store_event.event.wait(2))
+        self.assertTrue(adapter.pop_completed_store_tasks()[task].success)
+        adapter._store_event.event.clear()
+
+        locked = keys[1]
+        task = adapter.submit_lookup_and_lock_task([locked], {})
+        self.assertTrue(adapter._lookup_event.event.wait(2))
+        self.assertTrue(adapter.query_lookup_and_lock_result(task).test(0))
+
+        removed = []
+        delete_many = adapter._blob.delete_many
+
+        def record(names):
+            removed.append(list(names))
+            return delete_many(names)
+
+        adapter._blob.delete_many = record
+        replacement = Key("large")
+        task = adapter.submit_store_task([replacement], [Memory(b"abc")])
+        self.assertTrue(adapter._store_event.event.wait(2))
+        self.assertTrue(adapter.pop_completed_store_tasks()[task].success)
+
+        self.assertEqual(removed, [[adapter._key_names(key)[0] for key in keys if key != locked]])
+        self.assertEqual(adapter._blob.values, {
+            adapter._key_names(locked)[0]: b"x",
+            adapter._key_names(replacement)[0]: b"abc",
+        })
+        self.assertEqual(adapter.report_status()["bytes_used"], 4)
+        self.assertEqual(adapter._evicting, set())
+        adapter.submit_unlock([locked])
 
     def test_lookup_reserves_key_during_metadata_read(self):
         adapter = self.adapter

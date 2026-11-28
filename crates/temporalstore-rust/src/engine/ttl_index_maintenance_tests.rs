@@ -41,22 +41,24 @@ fn seed(engine: &TemporalEngine, count: usize) {
 }
 
 fn live_blocks(engine: &TemporalEngine) -> Vec<String> {
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    let mut rows = super::tests::blocks_with_identity(&shard.bucket_index).into_iter()
-        .filter(|(_, _, _, block)| !block.deleted())
-        .map(|(bucket, _, key, block)| format!(
-            "{bucket}|{key}|{}|{}|{}|{}",
-            block.model_id(), block.address.block_slab_id(),
-            block.address.offset(), block.address.length(),
-        )).collect::<Vec<_>>();
-    rows.sort();
-    rows
+    engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.unwrap();
+        let mut rows = super::tests::blocks_with_identity(&shard.bucket_index).into_iter()
+            .filter(|(_, _, _, block)| !block.deleted())
+            .map(|(bucket, _, key, block)| format!(
+                "{bucket}|{key}|{}|{}|{}|{}",
+                block.model_id(), block.address.block_slab_id(),
+                block.address.offset(), block.address.length(),
+            )).collect::<Vec<_>>();
+        rows.sort();
+        rows
+    })
 }
 
 fn backdate(engine: &TemporalEngine, key: &str) {
-    let mut shards = engine.shards.write().unwrap();
-    set_expiry(shards.get_mut(&1).unwrap(), key.to_owned(), resolve_now_ms().saturating_sub(60_000));
+    engine.shards.with_state_mut(1, |shard_state| {
+        set_expiry(shard_state.unwrap(), key.to_owned(), resolve_now_ms().saturating_sub(60_000));
+    })
 }
 
 fn assert_no_reconstruct() {
@@ -83,7 +85,7 @@ fn ttl_metadata_updates_preserve_block_addresses_without_reconstructing() {
                     run(&engine, batch, command);
                     assert_no_reconstruct();
                     assert_eq!(before, live_blocks(&engine));
-                    assert!(engine.shards.read().unwrap().get(&1).unwrap().dirty_objects.contains(key));
+                    assert!(engine.shards.with_state(1, |state| state.unwrap().dirty_objects.contains(key)));
                 }
             }
         }
@@ -149,12 +151,13 @@ fn ttl_lazy_persist_removes_only_expired_record_owners() {
             key != "s-0" && key != "h-0"
         }).collect::<Vec<_>>();
         assert_eq!(after, expected);
-        let shards = engine.shards.read().unwrap();
-        let shard = shards.get(&1).unwrap();
-        assert!(!shard.strings().contains_key("s-0"));
-        assert!(!shard.bucket_index.hashes.contains_key("h-0"));
-        assert!(!shard.expires_at_ms().contains_key("s-0"));
-        assert!(!shard.expires_at_ms().contains_key("h-0"));
+        engine.shards.with_state(1, |shard_state| {
+            let shard = shard_state.unwrap();
+            assert!(!shard.strings().contains_key("s-0"));
+            assert!(!shard.bucket_index.hashes.contains_key("h-0"));
+            assert!(!shard.expires_at_ms().contains_key("s-0"));
+            assert!(!shard.expires_at_ms().contains_key("h-0"));
+        });
     }
 }
 
@@ -175,12 +178,13 @@ fn ttl_expire_keeps_live_base_when_related_record_expires() {
         let expected = before.into_iter()
             .filter(|row| row.split('|').nth(1).unwrap() != related).collect::<Vec<_>>();
         assert_eq!(after, expected);
-        let shards = engine.shards.read().unwrap();
-        let shard = shards.get(&1).unwrap();
-        assert!(shard.strings().contains_key("s-0"));
-        assert!(shard.expires_at_ms().contains_key("s-0"));
-        assert!(!shard.strings().contains_key(related.as_str()));
-        assert!(!shard.expires_at_ms().contains_key(related.as_str()));
+        engine.shards.with_state(1, |shard_state| {
+            let shard = shard_state.unwrap();
+            assert!(shard.strings().contains_key("s-0"));
+            assert!(shard.expires_at_ms().contains_key("s-0"));
+            assert!(!shard.strings().contains_key(related.as_str()));
+            assert!(!shard.expires_at_ms().contains_key(related.as_str()));
+        });
     }
 }
 
@@ -203,14 +207,15 @@ fn ttl_metadata_and_lazy_deletion_survive_reopen_before_reads() {
         engine.write_ahead_log_store().flush(1).unwrap();
         drop(engine);
         let reopened = open(root.path(), "reopened-cache");
-        let shards = reopened.shards.read().unwrap();
-        let shard = shards.get(&1).unwrap();
-        assert!(!shard.strings().contains_key("s-0"));
-        assert!(!shard.bucket_index.hashes.contains_key("h-0"));
-        assert!(shard.strings().contains_key("s-1"));
-        assert!(shard.bucket_index.hashes.contains_key("h-1"));
-        assert!(shard.expires_at_ms().contains_key("s-1"));
-        assert!(!shard.expires_at_ms().contains_key("h-1"));
-        assert_eq!(shard.bucket_index.objects_naming_blocks(), 30);
+        reopened.shards.with_state(1, |shard_state| {
+            let shard = shard_state.unwrap();
+            assert!(!shard.strings().contains_key("s-0"));
+            assert!(!shard.bucket_index.hashes.contains_key("h-0"));
+            assert!(shard.strings().contains_key("s-1"));
+            assert!(shard.bucket_index.hashes.contains_key("h-1"));
+            assert!(shard.expires_at_ms().contains_key("s-1"));
+            assert!(!shard.expires_at_ms().contains_key("h-1"));
+            assert_eq!(shard.bucket_index.objects_naming_blocks(), 30);
+        });
     }
 }

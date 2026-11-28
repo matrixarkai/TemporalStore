@@ -725,7 +725,7 @@ fn a_sweep_holds_the_lock_every_append_needs() {
     let total = probe::appends_completed();
 
     println!(
-        "  lock hold: the sweep read {} frames and removed {} records; {during} append(s)          completed between the lock being taken and released. Control: {control_landed} append(s)          in a 30 ms window with nothing holding it; {total} appends completed over the test.",
+        "  lock hold: the sweep read {} frames and removed {} records; {during} append(s) completed between the lock being taken and released. Control: {control_landed} append(s) in a 30 ms window with nothing holding it; {total} appends completed over the test.",
         report.records_before, report.records_removed,
     );
 
@@ -929,7 +929,7 @@ fn each_production_driver_reaches_exactly_one_of_the_two_sweeps() {
     let budgeted_after_cycle = probe::sweep_entries_budgeted();
 
     println!(
-        "  reachability, {SEED} records, a separate engine per driver:\n             {DUMP_DRIVER_CALLS} background-timer call(s) -> post-dump sweep {post_dump_after_timer}x,          budgeted sweep {budgeted_after_timer}x\n             {CYCLE_DRIVER_CALLS} cycle call(s), SHIPPED triggers -> budgeted sweep          {budgeted_under_shipped_triggers}x, declined: {shipped_reason:?}\n             {CYCLE_DRIVER_CALLS} cycle call(s), triggers opened -> budgeted sweep          {budgeted_after_cycle}x, post-dump sweep {post_dump_after_cycle}x"
+        "  reachability, {SEED} records, a separate engine per driver:\n             {DUMP_DRIVER_CALLS} background-timer call(s) -> post-dump sweep {post_dump_after_timer}x, budgeted sweep {budgeted_after_timer}x\n             {CYCLE_DRIVER_CALLS} cycle call(s), SHIPPED triggers -> budgeted sweep {budgeted_under_shipped_triggers}x, declined: {shipped_reason:?}\n             {CYCLE_DRIVER_CALLS} cycle call(s), triggers opened -> budgeted sweep {budgeted_after_cycle}x, post-dump sweep {post_dump_after_cycle}x"
     );
 
     // PLANTED AND RECOVERED EXACTLY, both ways round.

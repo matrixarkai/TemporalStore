@@ -10871,7 +10871,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         assert_eq!(response.serving_mode, "serving");
         assert_eq!(
             response.drop_percent, None,
-            "the metaserver holds no per-proxy drop_percent, so a heartbeat must not appear              to set one -- it used to answer 0, which the proxy applied over an operator's drain"
+            "the metaserver holds no per-proxy drop_percent, so a heartbeat must not appear to set one -- it used to answer 0, which the proxy applied over an operator's drain"
         );
         assert_eq!(meta.list_proxies().proxies[0].binary_version, "v2");
 

@@ -113,21 +113,22 @@ fn one_capped_round(engine: &TemporalEngine) {
 
 /// (buckets, dirty buckets, buckets holding a non-zero WAL claim).
 fn dirty_census(engine: &TemporalEngine) -> (usize, usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARE_SHARD).expect("shard is loaded");
-    let mut buckets = 0usize;
-    let mut dirty = 0usize;
-    let mut claiming = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        buckets += 1;
-        if bucket.dirty() {
-            dirty += 1;
+    engine.shards.with_state(SHARE_SHARD, |shard_state| {
+        let shard = shard_state.expect("shard is loaded");
+        let mut buckets = 0usize;
+        let mut dirty = 0usize;
+        let mut claiming = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            buckets += 1;
+            if bucket.dirty() {
+                dirty += 1;
+            }
+            if bucket.first_dirty_wal_sequence > 0 {
+                claiming += 1;
+            }
         }
-        if bucket.first_dirty_wal_sequence > 0 {
-            claiming += 1;
-        }
-    }
-    (buckets, dirty, claiming)
+        (buckets, dirty, claiming)
+    })
 }
 
 fn write_corpus(engine: &TemporalEngine, keys: &[String], tag: u8) {

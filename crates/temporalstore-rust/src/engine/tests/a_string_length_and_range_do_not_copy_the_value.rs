@@ -231,12 +231,7 @@ fn cold_string_lengths_use_only_address_or_header_bytes() {
         set(&engine, "chunk", &payload);
         let address = engine
             .shards
-            .read()
-            .unwrap()
-            .get(&1)
-            .unwrap()
-            .string_address("chunk")
-            .unwrap();
+            .with_state(1, |shard| shard.unwrap().string_address("chunk").unwrap());
         assert_eq!(address.block_slab_id() == HOT_BLOCK_SLAB_ID, async_storage);
         if compression_enabled {
             assert!(address.length() < VALUE_BYTES as u64);

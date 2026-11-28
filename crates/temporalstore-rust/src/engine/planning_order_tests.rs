@@ -157,13 +157,14 @@ fn pressure_plan_reuses_one_claim_snapshot_without_changing_dump_decisions() {
         }
         for unknown_claim in [false, true] {
             let restore_claim = if unknown_claim {
-                let mut shards = engine.shards.write().unwrap();
-                let shard = shards.get_mut(&1).unwrap();
-                let bucket = *shard.bucket_index.bucket_map.dirty_buckets().first().unwrap();
-                let mut node = shard.bucket_index.bucket_map.get_mut(&bucket).unwrap();
-                let claim = node.first_dirty_wal_sequence;
-                node.first_dirty_wal_sequence = 0;
-                Some((bucket, claim))
+                engine.shards.with_state_mut(1, |state| {
+                    let shard = state.unwrap();
+                    let bucket = *shard.bucket_index.bucket_map.dirty_buckets().first().unwrap();
+                    let mut node = shard.bucket_index.bucket_map.get_mut(&bucket).unwrap();
+                    let claim = node.first_dirty_wal_sequence;
+                    node.first_dirty_wal_sequence = 0;
+                    Some((bucket, claim))
+                })
             } else {
                 None
             };
@@ -187,8 +188,10 @@ fn pressure_plan_reuses_one_claim_snapshot_without_changing_dump_decisions() {
                 }
             }
             if let Some((bucket, claim)) = restore_claim {
-                engine.shards.write().unwrap().get_mut(&1).unwrap()
-                    .bucket_index.bucket_map.get_mut(&bucket).unwrap().first_dirty_wal_sequence = claim;
+                engine.shards.with_state_mut(1, |state| {
+                    state.unwrap()
+                        .bucket_index.bucket_map.get_mut(&bucket).unwrap().first_dirty_wal_sequence = claim;
+                });
             }
         }
     }
@@ -221,27 +224,28 @@ fn captured_claim_summary_matches_independent_bucket_validation() {
     for clean_stride in [0, 2, 1] {
         let dir = tempfile::tempdir().unwrap();
         let engine = pressure_engine(dir.path());
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&1).unwrap();
-        let ids: Vec<_> = shard.bucket_index.bucket_map.keys().copied().collect();
-        assert!(!ids.is_empty());
-        assert_eq!(shard.bucket_index.bucket_map.dirty_buckets().len(), ids.len());
-        if clean_stride > 0 {
-            for (index, key) in ids.iter().enumerate() {
-                if index % clean_stride == 0 {
-                    shard.bucket_index.bucket_map.get_mut(key).unwrap().set_dirty(false);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.unwrap();
+            let ids: Vec<_> = shard.bucket_index.bucket_map.keys().copied().collect();
+            assert!(!ids.is_empty());
+            assert_eq!(shard.bucket_index.bucket_map.dirty_buckets().len(), ids.len());
+            if clean_stride > 0 {
+                for (index, key) in ids.iter().enumerate() {
+                    if index % clean_stride == 0 {
+                        shard.bucket_index.bucket_map.get_mut(key).unwrap().set_dirty(false);
+                    }
                 }
             }
-        }
-        let buckets = &shard.bucket_index.bucket_map;
-        let expected: BTreeMap<_, _> = buckets.dirty_buckets().iter().filter_map(|key| {
-            buckets.get(key).map(|node| (*key, (node.first_dirty_wal_sequence, node.first_dirty_index_log_sequence)))
-        }).collect();
-        let expected_marked = expected.keys().all(|key| buckets.get(key).unwrap().dirty());
-        let (actual, marked) = storage_reporting::dirty_bucket_claims_with_summary_state(shard);
-        assert_eq!(actual, expected);
-        assert_eq!(marked, expected_marked);
-        assert_eq!(storage_reporting::dirty_bucket_claims(shard), expected);
+            let buckets = &shard.bucket_index.bucket_map;
+            let expected: BTreeMap<_, _> = buckets.dirty_buckets().iter().filter_map(|key| {
+                buckets.get(key).map(|node| (*key, (node.first_dirty_wal_sequence, node.first_dirty_index_log_sequence)))
+            }).collect();
+            let expected_marked = expected.keys().all(|key| buckets.get(key).unwrap().dirty());
+            let (actual, marked) = storage_reporting::dirty_bucket_claims_with_summary_state(shard);
+            assert_eq!(actual, expected);
+            assert_eq!(marked, expected_marked);
+            assert_eq!(storage_reporting::dirty_bucket_claims(shard), expected);
+        });
     }
 }
 
@@ -249,13 +253,11 @@ fn captured_claim_summary_matches_independent_bucket_validation() {
 fn inconsistent_dirty_membership_still_requires_authoritative_summaries() {
     let dir = tempfile::tempdir().unwrap();
     let engine = pressure_engine(dir.path());
-    let changed_bucket;
-    {
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&1).unwrap();
+    let changed_bucket = engine.shards.with_state_mut(1, |state| {
+        let shard = state.unwrap();
         let buckets = &mut shard.bucket_index.bucket_map;
         assert_eq!(buckets.dirty_buckets().len(), buckets.len());
-        changed_bucket = *buckets.dirty_buckets().first().unwrap();
+        let changed_bucket = *buckets.dirty_buckets().first().unwrap();
         let mut node = buckets.get_mut(&changed_bucket).unwrap();
         node.set_dirty(false);
         // Simulate stale membership without running the mutation guard.
@@ -264,7 +266,8 @@ fn inconsistent_dirty_membership_still_requires_authoritative_summaries() {
         let (claims, all_marked) = storage_reporting::dirty_bucket_claims_with_summary_state(shard);
         assert!(claims.contains_key(&changed_bucket));
         assert!(!all_marked);
-    }
+        changed_bucket
+    });
     let request = StorageLifecycleRequest {
         shard_id: 1, max_dump_buckets_per_round: 2, ..Default::default()
     };
@@ -273,31 +276,31 @@ fn inconsistent_dirty_membership_still_requires_authoritative_summaries() {
     assert!(conservative.bucket_summaries.is_some());
     assert_eq!(conservative.dirty_buckets, detailed.dirty_buckets);
     assert_eq!(conservative.selected_dump_buckets, detailed.selected_dump_buckets);
-    engine.shards.write().unwrap().get_mut(&1).unwrap().bucket_index.bucket_map
-        .get_mut(&changed_bucket).unwrap().set_dirty(true);
+    engine.shards.with_state_mut(1, |state| {
+        state.unwrap().bucket_index.bucket_map
+            .get_mut(&changed_bucket).unwrap().set_dirty(true);
+    });
 }
 
 #[test]
 fn uncovered_dirty_log_pins_agree_with_full_reclaim_refusal() {
     let dir = tempfile::tempdir().unwrap();
     let engine = pressure_engine(dir.path());
-    let pin = {
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&1).unwrap();
+    let pin = engine.shards.with_state_mut(1, |state| {
+        let shard = state.unwrap();
         for node in shard.bucket_index.bucket_map.values_mut() {
             node.first_dirty_wal_sequence = 2;
             node.first_dirty_index_log_sequence = 2;
         }
         *shard.bucket_index.bucket_map.keys().next().unwrap()
-    };
+    });
     for wal in [0, 1, 2, u64::MAX] {
         for index in [0, 1, 2, u64::MAX] {
-            {
-                let mut shards = engine.shards.write().unwrap();
-                let mut node = shards.get_mut(&1).unwrap().bucket_index.bucket_map.get_mut(&pin).unwrap();
+            engine.shards.with_state_mut(1, |state| {
+                let mut node = state.unwrap().bucket_index.bucket_map.get_mut(&pin).unwrap();
                 node.first_dirty_wal_sequence = wal;
                 node.first_dirty_index_log_sequence = index;
-            }
+            });
             crate::engine::reset_live_block_scan_entries();
             let pinned = engine.periodic_wal_reclaim_is_pinned(1);
             assert_eq!(pinned, wal <= 1 || index == 0, "wal={wal} index={index}");
@@ -319,31 +322,33 @@ fn uncovered_dirty_log_pins_agree_with_full_reclaim_refusal() {
 fn covered_clean_and_stale_dirty_membership_do_not_supply_a_log_pin() {
     let dir = tempfile::tempdir().unwrap();
     let engine = pressure_engine(dir.path());
-    let pin = {
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&1).unwrap();
+    let pin = engine.shards.with_state_mut(1, |state| {
+        let shard = state.unwrap();
         for node in shard.bucket_index.bucket_map.values_mut() {
             node.first_dirty_wal_sequence = 2;
             node.first_dirty_index_log_sequence = 2;
         }
         *shard.bucket_index.bucket_map.keys().next().unwrap()
-    };
-    engine.shards.write().unwrap().get_mut(&1).unwrap().bucket_index.bucket_map
-        .get_mut(&pin).unwrap().first_dirty_wal_sequence = 1;
+    });
+    engine.shards.with_state_mut(1, |state| {
+        state.unwrap().bucket_index.bucket_map
+            .get_mut(&pin).unwrap().first_dirty_wal_sequence = 1;
+    });
     assert!(engine.periodic_wal_reclaim_is_pinned(1));
-    {
-        let mut shards = engine.shards.write().unwrap();
-        let buckets = &mut shards.get_mut(&1).unwrap().bucket_index.bucket_map;
+    engine.shards.with_state_mut(1, |state| {
+        let buckets = &mut state.unwrap().bucket_index.bucket_map;
         assert!(buckets.dirty_buckets().contains(&pin));
         let mut node = buckets.get_mut(&pin).unwrap();
         node.set_dirty(false);
         // A stale cached membership must not invent a dirty generation.
         std::mem::forget(node);
         assert!(buckets.dirty_buckets().contains(&pin));
-    }
+    });
     assert!(!engine.periodic_wal_reclaim_is_pinned(1));
-    engine.shards.write().unwrap().get_mut(&1).unwrap().bucket_index.bucket_map
-        .get_mut(&pin).unwrap().set_dirty(true);
+    engine.shards.with_state_mut(1, |state| {
+        state.unwrap().bucket_index.bucket_map
+            .get_mut(&pin).unwrap().set_dirty(true);
+    });
     let manifest = engine.create_bucket_dump_manifest(1, vec![pin]).unwrap();
     assert!(manifest.bucket_summaries.iter().any(|summary| summary.routing_bucket == pin));
     assert!(!engine.periodic_wal_reclaim_is_pinned(1));
@@ -369,13 +374,12 @@ fn periodic_page_log_declines_a_proven_pin_and_retries_after_dump() {
             };
             assert!(engine.execute(ExecuteRequest { shard_id: 1, command }).status.ok);
         }
-        let (pin, other) = {
-            let shards = engine.shards.read().unwrap();
-            let nodes = &shards.get(&1).unwrap().bucket_index.bucket_map;
+        let (pin, other) = engine.shards.with_state(1, |state| {
+            let nodes = &state.unwrap().bucket_index.bucket_map;
             let pin = *nodes.iter().find(|(_, node)| node.first_dirty_wal_sequence == 1).unwrap().0;
             let other = *nodes.keys().find(|bucket| **bucket != pin).unwrap();
             (pin, other)
-        };
+        });
         let manifest = engine.create_bucket_dump_manifest(1, vec![other]).unwrap();
         engine.clear_dumped_bucket_dirty_state(1, &manifest);
         assert!(engine.storage_dump_wal_sequence(1).unwrap() > 0);
@@ -399,8 +403,9 @@ fn periodic_page_log_declines_a_proven_pin_and_retries_after_dump() {
         let manifest = engine.create_bucket_dump_manifest(1, vec![pin]).unwrap();
         engine.clear_dumped_bucket_dirty_state(1, &manifest);
         // Fully publish the rest so no other unknown claim can stand in for the first pin.
-        let buckets = engine.shards.read().unwrap().get(&1).unwrap().bucket_index.bucket_map
-            .dirty_buckets().iter().copied().collect::<Vec<_>>();
+        let buckets = engine.shards.with_state(1, |state| {
+            state.unwrap().bucket_index.bucket_map.dirty_buckets().iter().copied().collect::<Vec<_>>()
+        });
         assert!(!buckets.is_empty());
         let manifest = engine.create_bucket_dump_manifest(1, buckets).unwrap();
         engine.clear_dumped_bucket_dirty_state(1, &manifest);
@@ -416,5 +421,165 @@ fn periodic_page_log_declines_a_proven_pin_and_retries_after_dump() {
             assert_eq!(engine.execute(ExecuteRequest { shard_id: 1, command }).response,
                 CommandResponse::Bytes { value: Some(vec![b'v'; 64]) });
         }
+    }
+}
+
+#[test]
+fn wal_reclaim_refuses_a_plan_from_before_a_durable_base_replacement() {
+    let root = tempfile::tempdir().unwrap();
+    let open = || TemporalEngine::with_local_dirs(
+        16 << 20, root.path().join("cache"), root.path().join("blocks"), root.path().join("indexes"),
+    );
+    let engine = open();
+    engine.load_shard(1);
+    let write = |key: &str, value: u8| {
+        let response = engine.execute_durable(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: key.into(), value: vec![value; 4096] },
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+    };
+    write("base", 1);
+    engine.materialize_synthetic_blocks(1);
+    engine.flush_shard_index(1);
+    let index_path = engine.index_path(1);
+    let old_bytes = std::fs::read(&index_path).unwrap();
+    let old_anchor = base_checkpoint_anchor::read(&index_path);
+    assert!(old_anchor > 0);
+    for (key, value) in [("tail-a", 2), ("tail-b", 3), ("tail-c", 4)] {
+        write(key, value);
+    }
+    engine.materialize_synthetic_blocks(1);
+    engine.flush_shard_index(1);
+    let newer_anchor = base_checkpoint_anchor::read(&index_path);
+    assert!(newer_anchor >= old_anchor + 3);
+    assert_eq!(engine.synthetic_address_count_for_test(1), 0);
+
+    let current = engine.create_bucket_dump_manifest(1, []).unwrap();
+    assert_eq!(current.wal_sequence, newer_anchor);
+    engine.clear_dumped_bucket_dirty_state(1, &current);
+    assert!(engine.storage_lifecycle_plan(StorageLifecycleRequest {
+        shard_id: 1, ..Default::default()
+    }).dirty_buckets.is_empty());
+    // Remove the redundant manifest from this fixture while the durable base
+    // still covers the same records, leaving that base as the sole replay image.
+    std::fs::remove_file(bucket_dump_manifest_path(&engine.index_dir, 1, &current.manifest_id)).unwrap();
+    assert!(engine.list_bucket_dump_manifests(1).is_empty());
+    let stale = engine.storage_wal_reclaim_plan(1, [], []);
+    assert!(stale.safe_to_reclaim, "{stale:?}");
+    assert_eq!(stale.current_wal_sequence, newer_anchor);
+    assert_eq!(stale.durable_bucket_generation_frontier_wal_sequence, newer_anchor);
+    assert_eq!(stale.retain_from_wal_sequence, newer_anchor + 1);
+    engine.install_index_bytes(1, &old_bytes,
+        crate::engine::routing_range_stamp::RoutingRangeStamp {
+            start_routing_bucket: 0, end_routing_bucket: u32::MAX,
+        },
+    ).unwrap();
+    assert_eq!(std::fs::read(&index_path).unwrap(), old_bytes);
+    assert_eq!(base_checkpoint_anchor::read(&index_path), old_anchor);
+
+    let collected = engine.apply_storage_wal_reclaim(stale);
+    assert!(!collected.applied, "{collected:?}");
+    assert!(collected.plan.blocker_reasons.iter().any(|reason| reason == "reclaim_replay_anchor_changed"));
+    assert_eq!(collected.wal_records_removed, 0);
+    drop(engine);
+    let reopened = open();
+    reopened.load_shard(1);
+    for (key, value) in [("base", 1), ("tail-a", 2), ("tail-b", 3), ("tail-c", 4)] {
+        let response = reopened.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key: key.into() },
+        });
+        assert!(response.status.ok, "{key}: {:?}", response.status);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![value; 4096]) });
+    }
+}
+thread_local! {
+    static BEFORE_WAL_RECLAIM_TRUNCATE: std::cell::RefCell<Option<Box<dyn FnOnce()>>>
+        = const { std::cell::RefCell::new(None) };
+}
+
+pub(super) fn before_wal_reclaim_truncate() {
+    let hook = BEFORE_WAL_RECLAIM_TRUNCATE.with(|slot| slot.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[test]
+fn manifest_install_drains_admitted_wal_reclaim_without_blocking_peer_publication() {
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+
+    let timeout = Duration::from_secs(10);
+    let root = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        16 << 20, root.path().join("cache"), root.path().join("blocks"), root.path().join("indexes"),
+    );
+    for id in [1, 2] {
+        engine.load_shard(id);
+    }
+    let write = |id, key: &str| engine.execute_durable(ExecuteRequest {
+        shard_id: id,
+        command: Command::StringSet { key: key.into(), value: vec![7; 4096] },
+    });
+    assert!(write(1, "base").status.ok);
+    engine.materialize_synthetic_blocks(1);
+    engine.flush_shard_index(1);
+    let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
+    engine.clear_dumped_bucket_dirty_state(1, &manifest);
+    assert!(engine.bucket_dump_install_preflight_report(&manifest).install_safe);
+    let plan = engine.storage_wal_reclaim_plan(1, [], []);
+    assert!(plan.safe_to_reclaim && plan.retain_from_wal_sequence > 1, "{plan:?}");
+
+    let before = engine.checkpoint_publications.capture(1);
+    assert_eq!(engine.checkpoint_publications.publish(&before, || Ok(())).unwrap(), Some(()));
+    let old_base = std::fs::read(engine.index_path(1)).unwrap();
+    std::thread::scope(|scope| {
+        let (proven_tx, proven_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let collecting = &engine;
+        let collector = scope.spawn(move || {
+            BEFORE_WAL_RECLAIM_TRUNCATE.with(|slot| *slot.borrow_mut() = Some(Box::new(move || {
+                proven_tx.send(()).unwrap();
+                release_rx.recv_timeout(timeout).unwrap();
+            })));
+            collecting.apply_storage_wal_reclaim(plan)
+        });
+        proven_rx.recv_timeout(timeout).unwrap();
+        let install = scope.spawn(|| engine.install_bucket_dump_manifest(&manifest));
+        let deadline = Instant::now() + timeout;
+        while engine.checkpoint_publications.is_current_after_publish(&before) {
+            assert!(Instant::now() < deadline, "install never marked the publication closing");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(engine.pass_slot(1).try_lock().is_err());
+        let markers = engine.interrupted_bucket_dump_installs(1);
+        assert!(markers.iter().any(|marker| marker.phase == "prepare"));
+        assert!(!markers.iter().any(|marker| marker.phase == "install"));
+        assert_eq!(std::fs::read(engine.index_path(1)).unwrap(), old_base);
+
+        let (peer_tx, peer_rx) = channel();
+        let peer_engine = &engine;
+        let peer_write = &write;
+        let peer = scope.spawn(move || {
+            let result = peer_write(2, "peer");
+            peer_engine.flush_shard_index(2);
+            peer_tx.send((result, base_checkpoint_anchor::read(&peer_engine.index_path(2)))).unwrap();
+        });
+        let progress = peer_rx.recv_timeout(timeout);
+        release_tx.send(()).unwrap();
+        peer.join().unwrap();
+        let (response, anchor) = progress.expect("peer append or publication waited for shard 1");
+        assert!(response.status.ok);
+        assert!(anchor > 0);
+        assert!(collector.join().unwrap().applied);
+        install.join().unwrap().unwrap();
+    });
+    for (id, key) in [(1, "base"), (2, "peer")] {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: id, command: Command::StringGet { key: key.into() },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![7; 4096]) });
     }
 }

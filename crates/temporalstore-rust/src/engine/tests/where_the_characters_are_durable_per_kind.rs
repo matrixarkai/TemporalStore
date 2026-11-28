@@ -492,7 +492,7 @@ fn an_event_object_with_no_timeline_entry_now_has_a_durable_home() {
     );
     assert!(
         !reloaded.context_event_timeline.contains_key(key.as_str()),
-        "the timeline entry was removed before the trip and must still be absent, or this arm is          not about the state it claims to construct"
+        "the timeline entry was removed before the trip and must still be absent, or this arm is not about the state it claims to construct"
     );
 }
 

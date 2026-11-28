@@ -147,14 +147,7 @@ fn resident_count(engine: &TemporalEngine) -> usize {
         assert_eq!(entries.folded_counts.as_ref().unwrap().values().sum::<usize>(), entries.len());
     }
     drop(logical);
-    engine
-        .shards
-        .read()
-        .unwrap()
-        .get(&1)
-        .unwrap()
-        .wal_resident_blocks
-        .len()
+    engine.shards.with_state(1, |state| state.unwrap().wal_resident_blocks.len())
 }
 
 #[test]
@@ -254,17 +247,15 @@ fn shared_hash_frame_retirement_preserves_logical_fold_collisions() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path(), false);
     write(&engine, &["a"], &[1]);
-    let (key, held) = {
-        let shards = engine.shards.read().unwrap();
-        let (key, held) = shards
-            .get(&1)
+    let (key, held) = engine.shards.with_state(1, |shard_state| {
+        let (key, held) = shard_state
             .unwrap()
             .wal_resident_blocks
             .iter()
             .next()
             .unwrap();
         (*key, *held)
-    };
+    });
     register_at(
         &engine.block_store,
         1,
@@ -275,14 +266,7 @@ fn shared_hash_frame_retirement_preserves_logical_fold_collisions() {
         &engine.wal_store,
     );
     write(&engine, &["a"], &[2]);
-    assert!(engine
-        .shards
-        .read()
-        .unwrap()
-        .get(&1)
-        .unwrap()
-        .wal_resident_blocks
-        .contains_key(&key));
+    assert!(engine.shards.with_state(1, |state| state.unwrap().wal_resident_blocks.contains_key(&key)));
     check(&engine, &["a"], &[Some(2)]);
 }
 
@@ -302,19 +286,9 @@ fn shared_hash_legacy_fallback_refuses_an_unbound_address() {
             .status
             .ok
     );
-    let address = engine
-        .shards
-        .read()
-        .unwrap()
-        .get(&1)
-        .unwrap()
-        .bucket_index
-        .hashes
-        .get("row")
-        .unwrap()
-        .get("b")
-        .unwrap()
-        .clone();
+    let address = engine.shards.with_state(1, |state| {
+        state.unwrap().bucket_index.hashes.get("row").unwrap().get("b").unwrap().clone()
+    });
     configure(&engine, 3, false);
     write(&engine, &["a"], &[3]);
     let object = crate::engine::stable_block_object_id(1, "hash", "row");

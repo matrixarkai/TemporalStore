@@ -58,29 +58,51 @@ class ValueBackend:
             ], lookup=True)
         ]
 
-    def load_into(self, items: list[tuple[ObjectKey, memoryview]]) -> Iterator[bool]:
+    @staticmethod
+    def _load_batches(items, *, pair_large=False):
         offset = 0
         while offset < len(items):
             end, size = offset, 0
-            # The command client limits request bytes. GET keys are small, so
-            # apply a second bound based on the expected response payloads.
-            while end < min(len(items), offset + 128):
-                length = len(items[end][1])
-                if end > offset and size + length > 4 * 1024 * 1024:
+            # GET keys are small. Bound batches by expected response bytes too.
+            byte_limit = 4 * 1024 * 1024
+            count_limit = 128
+            first_length = items[offset][1].nbytes
+            if pair_large and offset + 1 < len(items) and first_length > byte_limit:
+                second_length = items[offset + 1][1].nbytes
+                if second_length > byte_limit and first_length + second_length <= 18 * 1024 * 1024:
+                    byte_limit = 18 * 1024 * 1024
+                    count_limit = 2
+            while end < min(len(items), offset + count_limit):
+                length = items[end][1].nbytes
+                if end > offset and size + length > byte_limit:
                     break
                 size += length
                 end += 1
             batch = items[offset:end]
-            responses = self._execute([
+            for index, (key, destination) in enumerate(batch):
+                if destination.ndim != 1 or destination.format != "B":
+                    batch[index] = (key, destination.cast("B"))
+            entries = [
                 (key, {"kind": "string_get", "key": encode_storage_key(key)}) for key, _ in batch
-            ])
-            for (_, destination), answer in zip(batch, responses, strict=True):
+            ]
+            yield batch, entries
+            offset = end
+
+    def load_into(self, items: list[tuple[ObjectKey, memoryview]]) -> Iterator[bool]:
+        for batch, entries in self._load_batches(items):
+            responses = self._execute(entries)
+            if len(responses) != len(batch):
+                raise ValueError("storage returned the wrong number of load responses")
+            for index, (_, destination) in enumerate(batch):
+                answer = responses[index]
+                responses[index] = None
                 payload = decode_bytes(answer.get("value"))
                 found = payload is not None and len(payload) == len(destination)
                 if found:
                     destination[:] = payload
+                del payload, answer
                 yield found
-            offset = end
+            del responses
 
     def delete_batch(self, keys: list[ObjectKey]) -> None:
         self._execute([

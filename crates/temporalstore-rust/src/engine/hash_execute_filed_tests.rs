@@ -63,24 +63,25 @@ fn read(engine: &TemporalEngine, fields: &[&str]) -> Vec<Option<Vec<u8>>> {
 }
 
 fn assert_dirty_hash_blocks(engine: &TemporalEngine) {
-    let shards = engine.shards.read().unwrap();
-    let shard = &shards[&1];
-    assert!(shard.dirty_objects.contains("row"));
-    for at in shard
-        .bucket_index
-        .block_refs_for("hash", "row", None)
-        .unwrap()
-    {
-        assert!(shard
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.expect("shard 1");
+        assert!(shard.dirty_objects.contains("row"));
+        for at in shard
             .bucket_index
-            .bucket_map
-            .get(&at.routing_bucket)
+            .block_refs_for("hash", "row", None)
             .unwrap()
-            .block_index
-            .get(&at.block_ref_key)
-            .unwrap()
-            .dirty());
-    }
+        {
+            assert!(shard
+                .bucket_index
+                .bucket_map
+                .get(&at.routing_bucket)
+                .unwrap()
+                .block_index
+                .get(&at.block_ref_key)
+                .unwrap()
+                .dirty());
+        }
+    })
 }
 
 #[test]
@@ -109,37 +110,38 @@ fn single_hash_write_preserves_layout_and_avoids_repeated_filing_at_growing_size
             if count == 0 {
                 continue;
             }
-            let mut shards = engine.shards.write().unwrap();
-            let shard = shards.get_mut(&1).unwrap();
-            let fields = shard.bucket_index.hashes.get("row").unwrap();
-            let addresses = fields
-                .iter()
-                .map(|(_, address)| live_block_key(address))
-                .collect::<std::collections::BTreeSet<_>>();
-            assert_eq!(addresses.len(), count, "small-field layout must not change");
-            assert_eq!(
-                shard
-                    .bucket_index
-                    .block_refs_for("hash", "row", None)
-                    .unwrap()
-                    .len(),
-                count
-            );
-            let names = (0..count)
-                .map(|index| format!("field-{index:04}"))
-                .collect::<Vec<_>>();
-            let before = storage_bucket_internals::bucket_block_upserts();
-            assert!(storage_bucket_internals::sync_written_hash_fields(
-                shard,
-                1,
-                "row",
-                names.iter().map(String::as_str)
-            ));
-            assert_eq!(
-                storage_bucket_internals::bucket_block_upserts() - before,
-                count as u64,
-                "the negative control must still detect the old redundant sync"
-            );
+            engine.shards.with_state_mut(1, |owner| {
+                let shard = owner.unwrap();
+                let fields = shard.bucket_index.hashes.get("row").unwrap();
+                let addresses = fields
+                    .iter()
+                    .map(|(_, address)| live_block_key(address))
+                    .collect::<std::collections::BTreeSet<_>>();
+                assert_eq!(addresses.len(), count, "small-field layout must not change");
+                assert_eq!(
+                    shard
+                        .bucket_index
+                        .block_refs_for("hash", "row", None)
+                        .unwrap()
+                        .len(),
+                    count
+                );
+                let names = (0..count)
+                    .map(|index| format!("field-{index:04}"))
+                    .collect::<Vec<_>>();
+                let before = storage_bucket_internals::bucket_block_upserts();
+                assert!(storage_bucket_internals::sync_written_hash_fields(
+                    shard,
+                    1,
+                    "row",
+                    names.iter().map(String::as_str)
+                ));
+                assert_eq!(
+                    storage_bucket_internals::bucket_block_upserts() - before,
+                    count as u64,
+                    "the negative control must still detect the old redundant sync"
+                );
+            });
         }
     }
 }
@@ -186,15 +188,16 @@ fn single_hash_duplicates_delete_readd_and_siblings_survive_cold_reopen() {
         drop(engine);
         let recovered = open(dir.path(), async_storage, "cold-cache");
         assert_eq!(read(&recovered, &["a", "b", "c"]), expected);
-        let shards = recovered.shards.read().unwrap();
-        assert_eq!(
-            shards[&1]
-                .bucket_index
-                .block_refs_for("hash", "row", None)
-                .unwrap()
-                .len(),
-            3
-        );
+        recovered.shards.with_state(1, |owner| {
+            assert_eq!(
+                owner.expect("shard 1")
+                    .bucket_index
+                    .block_refs_for("hash", "row", None)
+                    .unwrap()
+                    .len(),
+                3
+            );
+        });
     }
 }
 
@@ -258,33 +261,34 @@ fn repeated_dirty_hash_writes_preserve_block_marks_and_checkpoint_generation() {
     let engine = open(dir.path(), false, "cache");
     write(&engine, vec![("a".into(), vec![1]), ("b".into(), vec![2])]);
     let state = |engine: &TemporalEngine| {
-        let shards = engine.shards.read().unwrap();
-        let shard = &shards[&1];
-        let refs = shard
-            .bucket_index
-            .block_refs_for("hash", "row", None)
-            .unwrap();
-        let marks = refs
-            .iter()
-            .map(|at| {
-                shard
-                    .bucket_index
-                    .bucket_map
-                    .get(&at.routing_bucket)
-                    .unwrap()
-                    .block_index
-                    .get(&at.block_ref_key)
-                    .unwrap()
-                    .dirty()
-            })
-            .collect::<Vec<_>>();
-        let generation = shard
-            .bucket_index
-            .bucket_map
-            .get(&refs[0].routing_bucket)
-            .unwrap()
-            .dirty_generation;
-        (shard.dirty_objects.contains("row"), marks, generation)
+        engine.shards.with_state(1, |owner| {
+            let shard = owner.expect("shard 1");
+            let refs = shard
+                .bucket_index
+                .block_refs_for("hash", "row", None)
+                .unwrap();
+            let marks = refs
+                .iter()
+                .map(|at| {
+                    shard
+                        .bucket_index
+                        .bucket_map
+                        .get(&at.routing_bucket)
+                        .unwrap()
+                        .block_index
+                        .get(&at.block_ref_key)
+                        .unwrap()
+                        .dirty()
+                })
+                .collect::<Vec<_>>();
+            let generation = shard
+                .bucket_index
+                .bucket_map
+                .get(&refs[0].routing_bucket)
+                .unwrap()
+                .dirty_generation;
+            (shard.dirty_objects.contains("row"), marks, generation)
+        })
     };
     let before = state(&engine);
     assert!(before.0 && before.1.iter().all(|dirty| *dirty));
@@ -351,24 +355,25 @@ fn batch_hash_dirty_marks_keep_the_first_cold_mark_and_legacy_fallback() {
         entries: vec![(field.to_string(), vec![value])],
     };
     let dirty = || {
-        let shards = engine.shards.read().unwrap();
-        let shard = &shards[&1];
-        assert!(shard.dirty_objects.contains("row"));
-        for at in shard
-            .bucket_index
-            .block_refs_for("hash", "row", None)
-            .unwrap()
-        {
-            assert!(shard
+        engine.shards.with_state(1, |owner| {
+            let shard = owner.expect("shard 1");
+            assert!(shard.dirty_objects.contains("row"));
+            for at in shard
                 .bucket_index
-                .bucket_map
-                .get(&at.routing_bucket)
+                .block_refs_for("hash", "row", None)
                 .unwrap()
-                .block_index
-                .get(&at.block_ref_key)
-                .unwrap()
-                .dirty());
-        }
+            {
+                assert!(shard
+                    .bucket_index
+                    .bucket_map
+                    .get(&at.routing_bucket)
+                    .unwrap()
+                    .block_index
+                    .get(&at.block_ref_key)
+                    .unwrap()
+                    .dirty());
+            }
+        })
     };
     let visits = storage_bucket_internals::dirty_propagation_visits();
     batch(vec![set("c", 3), set("d", 4)]);
@@ -379,9 +384,7 @@ fn batch_hash_dirty_marks_keep_the_first_cold_mark_and_legacy_fallback() {
     dirty();
     engine.unload_shard(1);
     engine.load_shard(1);
-    assert!(!engine.shards.read().unwrap()[&1]
-        .dirty_objects
-        .contains("row"));
+    assert!(!engine.shards.with_state(1, |owner| owner.unwrap().dirty_objects.contains("row")));
     let visits = storage_bucket_internals::dirty_propagation_visits();
     batch(vec![set("e", 5), set("f", 6)]);
     assert_eq!(
