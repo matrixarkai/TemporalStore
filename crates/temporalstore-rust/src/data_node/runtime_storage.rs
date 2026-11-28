@@ -3,6 +3,10 @@
 
 //! DataNodeRuntime storage-manager scheduling/lifecycle methods, extracted from data_node.rs.
 
+#[cfg(test)]
+#[path = "scalar_pressure_tests.rs"]
+mod scalar_pressure_tests;
+
 use super::round_budget::{
     options_for_slot, BoundedStage, HeavySlot, BlockGcCursor, ShardRoundState, StageBudget,
     StageContext, StageProgress, StageStep,
@@ -574,7 +578,7 @@ impl DataNodeRuntime {
                 invalidate_cache: false,
                 warm_cache: false,
             }, detailed_report);
-        let cache = self.inner.engine.cache().stats();
+        let cache = self.inner.engine.cache().pressure_snapshot();
         // THE NUMBER THAT WAS MISSING. Every memory term below was a cache term, so a shard whose
         // bucket index is large and whose cache is small -- the exact shape eviction exists for --
         // read as carrying no memory and was never asked to give any back.

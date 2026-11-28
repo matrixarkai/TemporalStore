@@ -60,8 +60,8 @@ fn backdate(engine: &TemporalEngine, key: &str) {
     })
 }
 
-/// How many live blocks the shard's index accounts for, and whether a given key's routing
-/// bucket is still one of them.
+/// Live blocks accounted for, and whether this routing bucket retains an owner entry.
+/// A deletion-only pending owner is not a live block.
 fn index_state(engine: &TemporalEngine, key: &str) -> (usize, bool) {
     engine.shards.with_state(1, |shard| {
         let shard = shard.expect("shard 1 is loaded");
@@ -134,10 +134,18 @@ fn pending_writes(engine: &TemporalEngine, key: &str) -> (usize, bool) {
 /// THE CONTROL IS A SECOND KEY THAT IS STILL LIVE. Without it, an index that had been emptied
 /// wholesale -- or a rebuild that dropped everything it touched -- would satisfy the claim and
 /// look like a result.
+///
+/// Empty deleted ownership remains pending until successful durable completion. The block
+/// denominator must fall immediately; its exact deletion authority must survive until then.
 #[test]
 fn a_ttl_that_collects_an_expired_key_maintains_the_block_index() {
+    let _clock = crate::engine::ReplayClockGuard::enter(Some(100_000));
     let engine = TemporalEngine::default();
     engine.load_shard(1);
+    engine.shards.with_state(1, |state| {
+        let state = state.unwrap();
+        assert_eq!(state.source_owner_range, Some(state.routing_range()), "fresh source must qualify actual filing");
+    });
 
     // ---- DENOMINATOR: two records, two blocks, both accounted for -----------------------
     for key in ["ttl:collected", "ttl:live"] {
@@ -160,6 +168,18 @@ fn a_ttl_that_collects_an_expired_key_maintains_the_block_index() {
         "DENOMINATOR: both keys' routing buckets must be in the bucket map before either can \
          be observed leaving it",
     );
+    let collected_bucket = engine.routing_bucket_for_key(1, "ttl:collected");
+    let live_bucket = engine.routing_bucket_for_key(1, "ttl:live");
+    assert_ne!(collected_bucket, live_bucket, "the live control must be an independent owner");
+    let initial = ttl_owner_authority(&engine, collected_bucket);
+    assert!(initial.generation > 0 && initial.wal > 0);
+    assert_eq!(initial.objects.len(), 1);
+    assert!(initial.deleted_ids.is_empty() && !initial.deleted);
+    let (records, truncated) = engine.wal_store.scan_decoded(1, 0, u64::MAX, 1 << 20).unwrap();
+    assert!(!truncated);
+    assert!(records.iter().any(|(_, record)| record.sequence == initial.wal
+        && record.outcomes.iter().any(|item| item.object_key == "ttl:collected" && !item.deleted)),
+        "the retained earliest claim must name an actual acknowledged write");
 
     // Only one of them expires, and it expires without any command seeing it.
     backdate(&engine, "ttl:collected");
@@ -190,10 +210,14 @@ fn a_ttl_that_collects_an_expired_key_maintains_the_block_index() {
          belonging to a record that is no longer there, and reclaim will go on treating it as \
          live.",
     );
-    assert!(
-        !collected_bucket_after,
-        "and the collected key's routing bucket must no longer be in the bucket map",
-    );
+    assert!(collected_bucket_after, "deletion authority remains pending until durable completion");
+    let pending = ttl_owner_authority(&engine, collected_bucket);
+    assert!(pending.dirty && pending.deleted && pending.generation >= initial.generation);
+    assert_eq!(pending.wal, initial.wal, "rebuild must retain the earliest real WAL claim");
+    assert_eq!(pending.index, initial.index, "do not synthesize an Index receipt from a WAL number");
+    assert_eq!(pending.deleted_ids, initial.objects, "the exact collected object identity must remain");
+    assert_eq!(pending.objects, pending.deleted_ids);
+    assert_eq!((pending.blocks, pending.tombstones), (0, 0), "this is whole-object deletion, not a live block or element tombstone");
 
     // ---- CONTROL: the live key's block is untouched -------------------------------------
     // Without this, an index that had simply been emptied would satisfy the claim above.
@@ -216,6 +240,79 @@ fn a_ttl_that_collects_an_expired_key_maintains_the_block_index() {
          {blocks_control}, so the count falls on any TTL at all and says nothing about \
          collection.",
     );
+
+    // Preserve the no-deadline control above, then arm a real future deadline to verify
+    // the unrelated owner's full logical/TTL authority survives selected completion.
+    let expiry = engine.execute(ExecuteRequest { shard_id: 1,
+        command: Command::CommonExpire { key: "ttl:live".into(), ttl_ms: 60_000 } });
+    assert!(expiry.status.ok, "{:?}", expiry.status);
+    assert_eq!(expiry.response, CommandResponse::Empty);
+    let live_deadline = engine.shards.with_state(1, |state| {
+        *state.unwrap().expires_at_ms().get("ttl:live").unwrap()
+    });
+    assert!(live_deadline > crate::engine::resolve_now_ms());
+    let live_pending = ttl_owner_authority(&engine, live_bucket);
+    assert_eq!(ttl_owner_authority(&engine, collected_bucket), pending,
+        "unrelated live deadline writes must not reset pending deletion authority");
+
+    // Publishing without the completion contract must not silently retire live accounting.
+    let capture = engine.create_bucket_dump_manifest(1, [collected_bucket]).unwrap();
+    engine.validate_bucket_dump_manifest(&capture).unwrap();
+    assert_eq!(ttl_owner_authority(&engine, collected_bucket), pending);
+    assert!(crate::engine::decode_index_bytes(&capture.index_bytes).unwrap()
+        .bucket_index.bucket_map.contains_key(&collected_bucket));
+
+    let completed = engine.create_bucket_dump_manifest_and_clear(1, [collected_bucket], true).unwrap();
+    engine.validate_bucket_dump_manifest(&completed).unwrap();
+    assert!(completed.wal_sequence >= pending.wal && completed.wal_sequence > 0);
+    assert_eq!(completed.bucket_ids, vec![collected_bucket]);
+    assert_eq!(completed.bucket_summaries.len(), 1);
+    assert_eq!(completed.bucket_summaries[0].object_count, 0);
+    assert_eq!(completed.live_block_refs, 0);
+    let image = crate::engine::decode_index_bytes(&completed.index_bytes).unwrap();
+    assert!(!image.bucket_index.bucket_map.contains_key(&collected_bucket));
+    assert!(!image.strings().contains_key("ttl:collected"));
+    assert!(!image.expires_at_ms().contains_key("ttl:collected"));
+    assert!(image.strings().contains_key("ttl:live"));
+    assert_eq!(image.expires_at_ms().get("ttl:live"), Some(&live_deadline));
+    assert!(engine.list_bucket_dump_manifests(1).iter().any(|stored|
+        stored.manifest_id == completed.manifest_id && stored.index_bytes == completed.index_bytes
+            && stored.index_sha256 == completed.index_sha256 && stored.checksum == completed.checksum),
+        "completion must be backed by actual persisted recovery coverage");
+    assert_eq!(index_state(&engine, "ttl:collected"), (1, false));
+    assert_eq!(ttl_owner_authority(&engine, live_bucket), live_pending);
+    engine.shards.with_state(1, |state| {
+        let state = state.unwrap();
+        assert_eq!(state.dirty_objects.bucket_count(collected_bucket), 0);
+        assert_eq!(state.expires_at_ms().get("ttl:live"), Some(&live_deadline));
+    });
+    let read = engine.execute(ExecuteRequest { shard_id: 1,
+        command: Command::StringGet { key: "ttl:live".into() } });
+    assert!(read.status.ok, "{:?}", read.status);
+    assert_eq!(read.response, CommandResponse::Bytes { value: Some(b"v".to_vec()) });
+    assert_eq!(shard_state(&engine, "ttl:collected"), (false, false));
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct TtlOwnerAuthority {
+    generation: u64, wal: u64, index: u64, dirty: bool, deleted: bool,
+    objects: std::collections::BTreeSet<u64>, deleted_ids: std::collections::BTreeSet<u64>,
+    blocks: usize, tombstones: usize, dirty_keys: u64,
+}
+
+fn ttl_owner_authority(engine: &TemporalEngine, bucket: u32) -> TtlOwnerAuthority {
+    engine.shards.with_state(1, |state| {
+        let state = state.unwrap();
+        let node = state.bucket_index.bucket_map.get(&bucket).expect("actual pending/live owner");
+        TtlOwnerAuthority {
+            generation: node.dirty_generation, wal: node.first_dirty_wal_sequence,
+            index: node.first_dirty_index_log_sequence, dirty: node.dirty(), deleted: node.deleted(),
+            objects: node.object_index.iter().copied().collect(),
+            deleted_ids: node.deleted_object_index.iter().copied().collect(),
+            blocks: node.block_index.len(), tombstones: node.tombstone_elements.len(),
+            dirty_keys: state.dirty_objects.bucket_count(bucket),
+        }
+    })
 }
 
 // =====================================================================================
@@ -560,4 +657,104 @@ fn expire_on_a_key_whose_deadline_is_exactly_now_is_refused() {
 #[test]
 fn every_drop_if_expired_call_accumulates_into_the_mutation_report() {
     super::deadline_source_guards::assert_mutation_reports(include_str!("../execute_on_shard.rs"));
+}
+
+fn expiry_rebuild_fixture() -> (TemporalEngine, [u32; 3], Vec<TtlOwnerAuthority>) {
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let keys = ["ttl:collected", "ttl:later", "ttl:live"];
+    for key in keys {
+        assert_eq!(resp(&engine, &["SET", key, "v"]), RespValue::SimpleString("OK".into()));
+    }
+    let buckets = keys.map(|key| engine.routing_bucket_for_key(1, key));
+    assert_eq!(buckets.into_iter().collect::<std::collections::BTreeSet<_>>().len(), 3);
+    let initial = buckets.map(|bucket| ttl_owner_authority(&engine, bucket)).into_iter().collect::<Vec<_>>();
+    let (records, truncated) = engine.wal_store.scan_decoded(1, 0, u64::MAX, 1 << 20).unwrap();
+    assert!(!truncated);
+    for (key, owner) in keys.into_iter().zip(&initial) {
+        assert!(owner.wal > 0 && owner.generation > 0 && !owner.deleted);
+        assert!(records.iter().any(|(_, record)| record.sequence == owner.wal
+            && record.outcomes.iter().any(|item| item.object_key == key && !item.deleted)));
+    }
+    (engine, buckets, initial)
+}
+
+fn assert_expired_owner_preserved(owner: &TtlOwnerAuthority, initial: &TtlOwnerAuthority) {
+    assert!(owner.dirty && owner.deleted, "{owner:?}");
+    assert!(owner.generation >= initial.generation, "{owner:?}");
+    assert_eq!((owner.wal, owner.index), (initial.wal, initial.index));
+    assert_eq!(owner.deleted_ids, initial.objects);
+    assert_eq!(owner.objects, owner.deleted_ids);
+    assert_eq!((owner.blocks, owner.tombstones), (0, 0));
+}
+
+#[test]
+fn first_index_rebuild_keeps_ttl_owner_through_later_exists_and_real_readd() {
+    let _clock = crate::engine::ReplayClockGuard::enter(Some(100_000));
+    let (engine, buckets, initial) = expiry_rebuild_fixture();
+    backdate(&engine, "ttl:collected");
+    let before = crate::engine::storage_bucket_internals::first_index_rebuilds_for_test();
+    assert_eq!(resp(&engine, &["TTL", "ttl:collected"]), RespValue::Integer(-2));
+    assert!(crate::engine::storage_bucket_internals::first_index_rebuilds_for_test() > before);
+    let first = ttl_owner_authority(&engine, buckets[0]);
+    assert_expired_owner_preserved(&first, &initial[0]);
+    backdate(&engine, "ttl:later");
+    let before = crate::engine::storage_bucket_internals::first_index_rebuilds_for_test();
+    assert_eq!(resp(&engine, &["EXISTS", "ttl:later"]), RespValue::Integer(0));
+    assert!(crate::engine::storage_bucket_internals::first_index_rebuilds_for_test() > before);
+    assert_eq!(ttl_owner_authority(&engine, buckets[0]), first);
+    let second = ttl_owner_authority(&engine, buckets[1]);
+    assert_expired_owner_preserved(&second, &initial[1]);
+    assert_eq!(shard_state(&engine, "ttl:collected"), (false, false));
+    assert_eq!(shard_state(&engine, "ttl:later"), (false, false));
+    assert_eq!(ttl_owner_authority(&engine, buckets[2]), initial[2]);
+
+    assert_eq!(resp(&engine, &["SET", "ttl:collected", "again"]), RespValue::SimpleString("OK".into()));
+    engine.shards.with_state_mut(1, |state| {
+        let state = state.unwrap(); let (start, end) = state.routing_range();
+        crate::engine::storage_bucket_internals::rebuild_bucket_first_index(1, state, start, end);
+    });
+    let readded = ttl_owner_authority(&engine, buckets[0]);
+    assert!(!readded.deleted);
+    assert!(readded.deleted_ids.is_disjoint(&initial[0].objects));
+    assert_eq!(resp(&engine, &["GET", "ttl:collected"]), RespValue::Bulk(Some(b"again".to_vec())));
+    assert_eq!(ttl_owner_authority(&engine, buckets[1]), second);
+
+    let completed = engine.create_bucket_dump_manifest_and_clear(1, [buckets[1]], true).unwrap();
+    engine.validate_bucket_dump_manifest(&completed).unwrap();
+    assert!(completed.wal_sequence >= second.wal);
+    engine.shards.with_state_mut(1, |state| {
+        let state = state.unwrap(); let (start, end) = state.routing_range();
+        crate::engine::storage_bucket_internals::rebuild_bucket_first_index(1, state, start, end);
+        assert!(!state.bucket_index.bucket_map.contains_key(&buckets[1]));
+    });
+    assert_eq!(resp(&engine, &["GET", "ttl:live"]), RespValue::Bulk(Some(b"v".to_vec())));
+}
+
+#[test]
+fn first_index_rebuild_preserves_real_batch_ttl_and_exists_in_both_orders() {
+    let _clock = crate::engine::ReplayClockGuard::enter(Some(100_000));
+    for ttl_first in [true, false] {
+        let (engine, buckets, initial) = expiry_rebuild_fixture();
+        backdate(&engine, "ttl:collected"); backdate(&engine, "ttl:later");
+        let ttl = Command::CommonTtl { key: "ttl:collected".into() };
+        let exists = Command::CommonExists { key: "ttl:later".into() };
+        let commands = if ttl_first { vec![ttl, exists] } else { vec![exists, ttl] };
+        let before = crate::engine::storage_bucket_internals::first_index_rebuilds_for_test();
+        let result = engine.batch_execute(BatchExecuteRequest { shard_id: 1, commands });
+        assert!(result.status.ok, "{:?}", result.status);
+        assert_eq!(result.responses.len(), 2);
+        let expected = if ttl_first { [-2, 0] } else { [0, -2] };
+        for (response, value) in result.responses.iter().zip(expected) {
+            assert!(response.status.ok, "{:?}", response.status);
+            assert_eq!(response.response, CommandResponse::Integer { value });
+        }
+        assert!(crate::engine::storage_bucket_internals::first_index_rebuilds_for_test() >= before + 2);
+        assert_expired_owner_preserved(&ttl_owner_authority(&engine, buckets[0]), &initial[0]);
+        assert_expired_owner_preserved(&ttl_owner_authority(&engine, buckets[1]), &initial[1]);
+        assert_eq!(shard_state(&engine, "ttl:collected"), (false, false));
+        assert_eq!(shard_state(&engine, "ttl:later"), (false, false));
+        assert_eq!(resp(&engine, &["GET", "ttl:live"]), RespValue::Bulk(Some(b"v".to_vec())));
+        assert_eq!(ttl_owner_authority(&engine, buckets[2]), initial[2]);
+    }
 }

@@ -179,6 +179,8 @@ pub use compaction::{
     reset_container_batch_counts, CONTAINER_BATCH_ELEMENT_CAP,
 };
 mod storage_reporting;
+mod selected_owner_absence;
+mod qualified_empty_owners;
 #[path = "engine/engine_hashing.rs"]
 pub(crate) mod hashing;
 mod bucket_store;
@@ -4237,7 +4239,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// the cost of the step is one replay for each existing store, spent deliberately.
 ///
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 32;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 34;
 
 /// Whether `key`, or one of the control-state family keys the ordinary read would also drop with
 /// it, has a deadline that lapsed. The same three families `remove_if_expired_with` examines, asked
@@ -5015,11 +5017,9 @@ fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
                     .try_into()
                     .map_err(|_| "served index version stamp is malformed".to_string())?,
             );
-            // Checked BEFORE decoding, deliberately. This payload is addressed by field order, so
-            // decoding it against a different struct shape does not error, it produces a plausible
-            // and wrong `ShardState`. Refusing is treated like an absent index: the caller replays
-            // the WAL and the index-log deltas, which is slower and correct.
-            if version != SHARD_INDEX_FORMAT_VERSION {
+            // Positional schema: v34 appends only a defaulted source-authority slot to v32.
+            // Other shapes, including String's v33 encoding, need their own decoder.
+            if version != SHARD_INDEX_FORMAT_VERSION && version != 32 {
                 return Err(format!(
                     "served index was written from struct version {version}, this binary is {}",
                     SHARD_INDEX_FORMAT_VERSION
@@ -5029,6 +5029,10 @@ fn decode_index_bytes_inner(bytes: &[u8]) -> Result<ShardState, String> {
                 .map_err(|error| format!("served index payload did not decompress: {error}"))?;
             let mut state = rmp_serde::from_slice::<ShardState>(&decoded)
                 .map_err(|error| error.to_string())?;
+            if version == 32 {
+                // Legacy images cannot mint routing authority through an extra payload field.
+                state.source_owner_range = None;
+            }
             // THE HEADER IS THE STAMP. The field inside the payload is whatever the writing shard
             // happened to carry -- 0 for one that was never stamped -- and the header is what was
             // checked against `SHARD_INDEX_FORMAT_VERSION` above, so it is the one value here that
@@ -6153,6 +6157,8 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             key,
             blob.get("context_entities"),
         );
+        let (start, end) = shard.routing_range();
+        storage_bucket_internals::refresh_live_blockless_owner(shard, key, start, end);
         // THE FOUR CONTAINER MAPS ARE NOT APPLIED HERE, and the reason is the whole shape of
         // `fold_carried_container_elements`: an element may only be restored once the fold has
         // FINISHED, because a later record in the same fold can take its block away again. See
@@ -8215,6 +8221,8 @@ fn delete_record_exact_with_identity_batch(
     removed |= shard.context_children_mut().remove(key).is_some();
     removed |= shard.context_summaries_mut().remove(key).is_some();
     removed |= shard.context_compressions_mut().remove(key).is_some();
+    let (start, end) = shard.routing_range();
+    storage_bucket_internals::refresh_live_blockless_owner(shard, key, start, end);
     removed
 }
 
@@ -8224,7 +8232,9 @@ const MAX_DELETE_IDENTITY_PROJECTION_REFS: usize = 256;
 ///
 /// An empty bucket retains the deleted id as a tombstone. A mixed bucket must drop it before any
 /// reconciliation, or a normal delete is reported as divergence.
-fn note_object_left_bucket(bucket: &mut BucketNode, deleted_object_ids: &BTreeSet<u64>) {
+fn note_object_left_bucket(
+    bucket: &mut BucketNode, deleted_object_ids: &BTreeSet<u64>, has_live_blockless_owner: bool,
+) {
     if bucket.block_index.is_empty() {
         bucket.object_index.extend(deleted_object_ids.iter().copied());
     } else {
@@ -8233,7 +8243,7 @@ fn note_object_left_bucket(bucket: &mut BucketNode, deleted_object_ids: &BTreeSe
         }
     }
     bucket.set_dirty(true);
-    let next_flag = bucket.block_index.is_empty();
+    let next_flag = bucket.block_index.is_empty() && !has_live_blockless_owner;
     bucket.set_deleted(next_flag);
     bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
     bucket.set_meta_loaded(true);
@@ -8345,7 +8355,9 @@ fn mark_bucket_index_object_deleted_with_identity_batch(
                 );
             }
             if !deleted_object_ids.is_empty() {
-                note_object_left_bucket(&mut bucket, &deleted_object_ids);
+                note_object_left_bucket(
+                    &mut bucket, &deleted_object_ids, shard.blockless_owners.contains_key(&routing_bucket),
+                );
                 bucket.deleted_object_index.extend(deleted_object_ids);
                 if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
                     owners.forget_key(routing_bucket, key);
@@ -8409,7 +8421,9 @@ fn mark_bucket_index_object_deleted_with_identity_batch(
             }
         });
         if !deleted_object_ids.is_empty() {
-            note_object_left_bucket(&mut bucket, &deleted_object_ids);
+            note_object_left_bucket(
+                &mut bucket, &deleted_object_ids, shard.blockless_owners.contains_key(&routing_bucket),
+            );
             // THE REPAIR AT THE REMOVAL SITE, over this bucket's own blocks. A delta over the
             // ids this delete dropped stood here and was wrong -- it left drift that the reconcile
             // it replaced had been repairing silently. All three arms of that reconcile are kept,
@@ -8765,7 +8779,7 @@ fn mark_bucket_index_block_deleted_recording(
             });
             bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.set_dirty(true);
-            let next_flag = bucket.block_index.is_empty();
+            let next_flag = bucket.block_index.is_empty() && !shard.blockless_owners.contains_key(&routing_bucket);
             bucket.set_deleted(next_flag);
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             bucket.set_meta_loaded(true);

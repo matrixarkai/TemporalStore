@@ -617,6 +617,8 @@ pub(super) struct ShardState {
     pub(super) bucket_recency: HashMap<u32, u64>,
     #[serde(skip)]
     pub(super) dirty_objects: DirtyObjectIndex,
+    #[serde(skip)]
+    pub(super) blockless_owners: BTreeMap<u32, BTreeSet<ModelKey>>,
     /// Deleted keys still owed before this shard's next whole-index served checkpoint, counted
     /// DOWN: zero means the next logged-deletion round is DUE.
     ///
@@ -760,14 +762,22 @@ pub(super) struct ShardState {
     shard_id: u64,
     #[serde(skip)]
     shard_id_known: bool,
+    /// Qualified source filing for this complete image, not its consumer's target range.
+    /// Appended positional field: v32 images decode as Unknown and cannot authorize cleanup.
+    #[serde(default)]
+    pub(super) source_owner_range: Option<(u32, u32)>,
 }
 
 impl ShardState {
     /// Record the range this shard is loaded on. Called once, by `install_shard_state`.
     pub(super) fn set_routing_range(&mut self, start_routing_bucket: u32, end_routing_bucket: u32) {
+        if self.source_owner_range.is_some_and(|source| source != (start_routing_bucket, end_routing_bucket)) {
+            self.source_owner_range = None;
+        }
         self.routing_range_start = start_routing_bucket;
         self.routing_range_end = end_routing_bucket;
         self.routing_range_known = true;
+        super::storage_bucket_internals::rebuild_live_blockless_owners(self);
     }
 
     /// The range to file an unrouted block under.
@@ -10459,6 +10469,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         set_listing_from_map: _,
         feature_max_age_ms: _,
         dirty_objects: _,
+        blockless_owners: _,
         // A plain `u64` the decode leaves at 0 because it is `#[serde(skip)]`, and 0 is the value
         // this pass would want anyway: it means the first logged-deletion round after a load is
         // DUE, so a decoded image carries no claim to have checkpointed anything.
@@ -10481,6 +10492,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         routing_range_start: _,
         routing_range_end: _,
         routing_range_known: _,
+        source_owner_range: _,
         shard_id: _,
         shard_id_known: _,
         applied_wal_sequence: _,
