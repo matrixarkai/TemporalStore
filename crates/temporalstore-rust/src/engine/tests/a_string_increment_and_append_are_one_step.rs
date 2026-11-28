@@ -251,12 +251,11 @@ fn a_key_past_its_deadline_starts_again_from_nothing() {
             resp(&engine, &["SET", key, "notanumber"]),
             RespValue::SimpleString("OK".to_string())
         );
-        {
-            let mut shards = engine.shards.write().expect("engine lock poisoned");
-            let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
             let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
             crate::engine::set_expiry(shard, key.to_string(), past);
-        }
+        });
         assert_eq!(
             resp(&engine, &[verb, key, arg]),
             want,

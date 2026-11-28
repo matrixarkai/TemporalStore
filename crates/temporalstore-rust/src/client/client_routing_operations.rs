@@ -19,18 +19,30 @@ pub fn bucket_id_for_key(key: &str) -> u64 {
     crc64_jones(key.as_bytes()) >> 34
 }
 
+const CRC64_JONES_TABLE: [u64; 256] = {
+    let mut table = [0; 256];
+    let mut index = 0;
+    while index < table.len() {
+        let mut entry = index as u64;
+        let mut bit = 0;
+        while bit < 8 {
+            entry = if entry & 1 == 1 {
+                (entry >> 1) ^ 0x95ac9329ac4bc9b5
+            } else {
+                entry >> 1
+            };
+            bit += 1;
+        }
+        table[index] = entry;
+        index += 1;
+    }
+    table
+};
+
 pub fn crc64_jones(bytes: &[u8]) -> u64 {
     let mut crc = 0_u64;
-    for byte in bytes {
-        let mut entry = (crc ^ u64::from(*byte)) & 0xff;
-        for _ in 0..8 {
-            if entry & 1 == 1 {
-                entry = (entry >> 1) ^ 0x95ac9329ac4bc9b5;
-            } else {
-                entry >>= 1;
-            }
-        }
-        crc = entry ^ (crc >> 8);
+    for &byte in bytes {
+        crc = CRC64_JONES_TABLE[usize::from((crc as u8) ^ byte)] ^ (crc >> 8);
     }
     crc
 }
@@ -42,6 +54,51 @@ pub fn stable_key_hash(key: &str) -> u64 {
 pub fn key_is_dropped_by_percent(key: &str, drop_percent: u8) -> bool {
     let drop_percent = drop_percent.min(100);
     drop_percent > 0 && (stable_key_hash(key) % 100) < u64::from(drop_percent)
+}
+
+#[cfg(test)]
+mod crc64_table_tests {
+    use super::*;
+
+    fn bitwise_crc(bytes: &[u8]) -> u64 {
+        let mut crc = 0_u64;
+        for &byte in bytes {
+            crc ^= u64::from(byte);
+            for _ in 0..8 {
+                crc = if crc & 1 == 1 {
+                    (crc >> 1) ^ 0x95ac9329ac4bc9b5
+                } else {
+                    crc >> 1
+                };
+            }
+        }
+        crc
+    }
+
+    #[test]
+    fn table_hash_keeps_the_zero_seed_and_check_vector() {
+        assert_eq!(crc64_jones(b""), 0);
+        assert_eq!(crc64_jones(b"123456789"), 0xe9c6d914c4b8d9ca);
+        for byte in 0..=u8::MAX {
+            assert_eq!(crc64_jones(&[byte]), bitwise_crc(&[byte]));
+        }
+    }
+
+    #[test]
+    fn table_hash_matches_bitwise_for_binary_and_utf8_keys() {
+        for bytes in [b"\0inside\0".as_slice(), "\u{4e2d}\u{6587}\u{1f680}".as_bytes(), &[0x80, 0xff, 0, 0x7f]] {
+            assert_eq!(crc64_jones(bytes), bitwise_crc(bytes));
+        }
+        let mut bytes = [0_u8; 1024];
+        let mut state = 0x0123456789abcdef_u64;
+        for byte in &mut bytes {
+            state = state.wrapping_mul(6364136223846793005).wrapping_add(1);
+            *byte = (state >> 32) as u8;
+        }
+        for length in 0..=bytes.len() {
+            assert_eq!(crc64_jones(&bytes[..length]), bitwise_crc(&bytes[..length]), "length={length}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -112,7 +169,7 @@ mod bucket_ownership_tests {
         );
         assert_ne!(
             routed, first_shard_id,
-            "and it is NOT the shard whose published range contains bucket {bucket} -- if this              now holds, routing became range-based and the report and this comment need updating"
+            "and it is NOT the shard whose published range contains bucket {bucket} -- if this now holds, routing became range-based and the report and this comment need updating"
         );
     }
 }

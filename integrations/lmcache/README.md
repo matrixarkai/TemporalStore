@@ -5,6 +5,22 @@ servers used by vLLM. It stores each KV-cache chunk as one binary value.
 The Python SDK discovers table placement over gRPC and sends protobuf
 commands either directly to the selected datanode or through a gRPC proxy.
 
+
+## Direct shard access
+
+Set `storage_backend` to `"kv"` and set `data_url` and `shard_id` to a
+dedicated, already loaded datanode shard. Leave `blob_url` and `namespace`
+out of this configuration. The adapter stores each chunk under LMCache's
+encoded key as one binary string value. It uses conditional writes to keep
+the first payload, `StringLen` for lookup, and `StringGet` for reads. Reads
+require an exact destination size. `ttl_seconds` applies to the value
+itself, and an existing value keeps its original expiry.
+
+This path requires the datanode's MessagePack batch route. Its capacity
+setting limits individual chunks, and its usage counters reflect entries
+written and tracked by that adapter. Configure a dedicated test shard and
+a TTL for bounded test runs. Use the distributed configuration below for metaserver table discovery and replica failover.
+
 ## Distributed KV tables
 
 Install the SDK and both integration packages from the same checkout.
@@ -144,6 +160,24 @@ For tensor payloads, measure compression before setting
 apply to the cache, WAL, and block store respectively.
 
 
+### Raft write sizing
+
+For Raft-backed tables, size the replication and apply budgets on every
+datanode for the largest encoded tensor write and its batch. The default
+replication budget is 32 KiB and the default apply batch budget is 64 KiB.
+A larger chunk can be rejected even if it fits in the SSD cache. Leave room
+for the command and replication framing.
+
+The 1 MiB tensor test used these settings on each replica:
+
+```bash
+export TS_RAFT_MAX_MEMORY_REPLICATE_LOG_BYTES=16777216
+export TS_RAFT_MAX_APPLY_BATCH_BYTES=16777216
+```
+
+The replication budget also bounds in-flight bytes per follower. Use the
+smallest values that cover the planned writes and batches.
+
 Raft replicas open their serving cache in an isolated storage directory
 under the process temporary directory. Set `TMPDIR` to the intended local
 device before starting the datanode. A snapshot replacement opens a new
@@ -185,6 +219,13 @@ datanodes. After a transport failure, that adapter reports metadata misses for
 one second before retrying on the next lookup. This lets reachable replicas
 serve queued requests while the link recovers. Blob transfers and metadata
 writes still use `timeout_seconds`.
+
+For distributed KV storage, `store_retry_timeout_seconds` sets the retry
+window after the datanode or proxy reports that a cache insert was rejected
+before it started. It defaults to five seconds and cannot exceed
+`timeout_seconds`. Direct Raft writes with an uncertain outcome may be checked
+by exact readback. A timeout with unknown publication durability is returned
+as a failure.
 
 To measure the L2 path independent of model inference, use LMCache's adapter
 benchmark against a disposable datanode:

@@ -186,52 +186,53 @@ fn members_returned(response: &crate::types::CommandResponse) -> Vec<Vec<u8>> {
 /// "which members does this key hold" the serving path is the authority; for "are the bytes still
 /// there" this is.
 fn payload_members(engine: &TemporalEngine, object_key: &str) -> BTreeSet<Vec<u8>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut stated = BTreeSet::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-                || block.deleted()
-            {
-                continue;
-            }
-            let Ok(bytes) = engine.block_store.read(&block.address) else {
-                continue;
-            };
-            if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
-                spelling,
-                items,
-                ..
-            } = crate::engine::container_blocks::decode_container_block(&bytes)
-            {
-                for item in items {
-                    if item.deleted {
-                        continue;
-                    }
-                    if let Some(element_name) =
-                        crate::engine::container_blocks::element_name_from_element_key(
-                            spelling, &item.key,
-                        )
-                    {
-                        // BY THE SHARED READER, not `hex::decode`. This hand-written decode was a
-                        // second implementation of the element name encoding, and it stopped
-                        // agreeing with the write path the moment set and zset filed a tagged
-                        // element name: the payload members came back empty and the equality below
-                        // failed against a listing that was perfectly correct.
-                        if let Some(member) =
-                            crate::engine::container_blocks::member_from_element_name(&element_name)
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut stated = BTreeSet::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                    || block.deleted()
+                {
+                    continue;
+                }
+                let Ok(bytes) = engine.block_store.read(&block.address) else {
+                    continue;
+                };
+                if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
+                    spelling,
+                    items,
+                    ..
+                } = crate::engine::container_blocks::decode_container_block(&bytes)
+                {
+                    for item in items {
+                        if item.deleted {
+                            continue;
+                        }
+                        if let Some(element_name) =
+                            crate::engine::container_blocks::element_name_from_element_key(
+                                spelling, &item.key,
+                            )
                         {
-                            stated.insert(member);
+                            // BY THE SHARED READER, not `hex::decode`. This hand-written decode was a
+                            // second implementation of the element name encoding, and it stopped
+                            // agreeing with the write path the moment set and zset filed a tagged
+                            // element name: the payload members came back empty and the equality below
+                            // failed against a listing that was perfectly correct.
+                            if let Some(member) =
+                                crate::engine::container_blocks::member_from_element_name(&element_name)
+                            {
+                                stated.insert(member);
+                            }
                         }
                     }
                 }
             }
         }
-    }
-    stated
+        stated
+    })
 }
 
 fn block_reads_of<T>(work: impl FnOnce() -> T) -> (T, u64) {
@@ -571,13 +572,14 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_element_name() {
         let from_payload = payload_members(&engine, &key);
 
         let (pairs, named) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
-            let walk = crate::engine::bucket_store::bucket_index_element_name_block_addresses(
-                shard, "set", &key,
-            );
-            let named = walk.iter().filter(|(c, _)| c.is_some()).count();
-            (walk.len(), named)
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard is loaded");
+                let walk = crate::engine::bucket_store::bucket_index_element_name_block_addresses(
+                    shard, "set", &key,
+                );
+                let named = walk.iter().filter(|(c, _)| c.is_some()).count();
+                (walk.len(), named)
+            })
         };
 
         // THE DENOMINATOR.
@@ -649,14 +651,15 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_element_name() {
     ))
     .len();
     let folded_pairs = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        crate::engine::bucket_store::bucket_index_element_name_block_addresses(
-            shard,
-            "set",
-            &folded_key,
-        )
-        .len()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            crate::engine::bucket_store::bucket_index_element_name_block_addresses(
+                shard,
+                "set",
+                &folded_key,
+            )
+            .len()
+        })
     };
     assert_eq!(
         MEMBERS, served_folded,
@@ -758,13 +761,14 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
     // The durable map as a snapshot written BEFORE the removal holds it: both members, with their
     // addresses. Captured from the live map, which is exactly what `set_index_serde` serializes.
     let persisted_before_removal = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard
-            .bucket_index.sets
-            .get(&key)
-            .expect("the seeded key is in the resident map")
-            .clone()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            shard
+                .bucket_index.sets
+                .get(&key)
+                .expect("the seeded key is in the resident map")
+                .clone()
+        })
     };
     assert_eq!(
         2,
@@ -811,52 +815,53 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
     // Now put the durable map back as a snapshot predating the removal would, and run the load
     // path's reconcile over the live block index.
     let in_map: BTreeSet<Vec<u8>> = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
-        shard
-            .bucket_index.sets
-            .insert_elements_for_test(&key, persisted_before_removal);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard is loaded");
+            shard
+                .bucket_index.sets
+                .insert_elements_for_test(&key, persisted_before_removal);
 
-        let live_blocks: usize = shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .map(|bucket| {
-                bucket
-                    .block_index
-                    .values()
-                    .filter(|block| !block.deleted())
-                    .count()
-            })
-            .sum();
-        assert!(
-            live_blocks >= 1,
-            "DENOMINATOR: {live_blocks} live blocks, so the derived view is empty and the merge \
-             below would keep everything for the wrong reason"
-        );
+            let live_blocks: usize = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|bucket| {
+                    bucket
+                        .block_index
+                        .values()
+                        .filter(|block| !block.deleted())
+                        .count()
+                })
+                .sum();
+            assert!(
+                live_blocks >= 1,
+                "DENOMINATOR: {live_blocks} live blocks, so the derived view is empty and the merge \
+                 below would keep everything for the wrong reason"
+            );
 
-        crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
-            &engine.block_store,
-            shard,
-            None,
-        );
+            crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
+                &engine.block_store,
+                shard,
+                None,
+            );
 
-        // THE INDEX WALK, KEPT AS A MEASUREMENT RATHER THAN A POPULATION. It is what used to be
-        // decoded into members; it is reported so that the reason this arm changed shape is a
-        // number in the output and not only a paragraph above.
-        let named =
-            crate::engine::bucket_store::bucket_index_element_name_block_addresses(shard, "set", &key)
-                .iter()
-                .filter(|(element_name, _)| element_name.is_some())
-                .count();
-        println!("\n=== after a removal and a reconcile against a snapshot that predates it ===");
-        println!("  index walk pairs carrying a member name: {named}");
+            // THE INDEX WALK, KEPT AS A MEASUREMENT RATHER THAN A POPULATION. It is what used to be
+            // decoded into members; it is reported so that the reason this arm changed shape is a
+            // number in the output and not only a paragraph above.
+            let named =
+                crate::engine::bucket_store::bucket_index_element_name_block_addresses(shard, "set", &key)
+                    .iter()
+                    .filter(|(element_name, _)| element_name.is_some())
+                    .count();
+            println!("\n=== after a removal and a reconcile against a snapshot that predates it ===");
+            println!("  index walk pairs carrying a member name: {named}");
 
-        shard
-            .bucket_index.sets
-            .get(&key)
-            .map(|members| members.keys().cloned().collect())
-            .unwrap_or_default()
+            shard
+                .bucket_index.sets
+                .get(&key)
+                .map(|members| members.keys().cloned().collect())
+                .unwrap_or_default()
+        })
     };
 
     // THE SERVING PATH, asked with the lock released.

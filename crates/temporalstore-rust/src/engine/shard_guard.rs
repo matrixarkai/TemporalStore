@@ -1,33 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE SHARD TABLE'S LOCK, WITH EVERY HOLD ATTRIBUTED TO THE LINE THAT TOOK IT.
-//!
-//! `TemporalEngine.shards` is one engine-wide `RwLock`, and a guard on it stalls every writer for as
-//! long as it is held. Before this module only the nine sites that used a "marked" guard could be
-//! seen by the lock-hold counters; the other seventy-odd were invisible, so "which site is the
-//! longest hold" had no answer that did not start with reading the source.
-//!
-//! `ShardsLock` has the same `read()`/`write()` as `RwLock` (and the same poisoning behaviour), so no
-//! call site changes. Each call is `#[track_caller]`, and when the probe is ON the guard's `Drop`
-//! adds the hold time to a per-call-site histogram. The probe is OFF by default: a guard then pays one
-//! relaxed load and no clock read.
-//!
-//! The accessors `with_shard` and `with_all_shards_read` are the seam the later stages convert call
-//! sites onto. Their closure receives an [`EntriesVisited`] handle and says how many entries it
-//! touched; that count is recorded per hold, so a guard can state a bound on ENTRIES (flat from 1k
-//! to 64k keys) instead of on time, which is a flaky thing to assert.
-//!
-//! rust-internal: measures this crate's own lock holds, no product behaviour
+//! Shard-local state access with opt-in per-call-site hold measurements.
+//! Registry membership is independent of each owner's read/write lock.
 
 use super::*;
 
 use std::cell::Cell;
 use std::panic::Location;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{
-    LockResult, Mutex, PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError, TryLockResult,
-};
+use std::sync::{Mutex, PoisonError};
 use std::time::Instant;
 
 /// Sites kept in the table. A call site beyond this is counted in `sites_dropped`, not recorded.
@@ -159,8 +141,7 @@ impl SiteStats {
     }
 }
 
-fn record(site: &'static Location<'static>, write: bool, started: Instant, entries: Option<u64>) {
-    let ns = started.elapsed().as_nanos().min(u64::MAX as u128) as u64;
+fn record_ns(site: &'static Location<'static>, write: bool, ns: u64, entries: Option<u64>) {
     let mut table = TABLE.lock().unwrap_or_else(PoisonError::into_inner);
     let index = match table
         .iter()
@@ -211,104 +192,45 @@ impl EntriesVisited {
     }
 }
 
-/// The shard table. Same `read()`/`write()` as `RwLock`, plus per-call-site hold attribution.
+pub use super::shard_state_registry::diagnostics::{
+    measure_shard_locks, ShardLockDiagnostics, ShardLockSite, ShardLockTimes,
+};
+use super::shard_state_registry::{ShardStateHandle, ShardStateRegistry};
+
+pub(super) type ShardHandle = ShardStateHandle<ShardState>;
+
 pub(super) struct ShardsLock {
-    inner: RwLock<HashMap<ShardId, ShardState>>,
+    owners: ShardStateRegistry<ShardState>,
 }
 
-impl ShardsLock {
-    pub(crate) fn new(map: HashMap<ShardId, ShardState>) -> Self {
-        Self { inner: RwLock::new(map) }
-    }
-
-    #[track_caller]
-    pub(crate) fn read(&self) -> LockResult<ShardsReadGuard<'_>> {
-        let site = Location::caller();
-        match self.inner.read() {
-            Ok(guard) => Ok(ShardsReadGuard::new(guard, site)),
-            Err(poisoned) => Err(PoisonError::new(ShardsReadGuard::new(poisoned.into_inner(), site))),
-        }
-    }
-
-    #[track_caller]
-    pub(crate) fn write(&self) -> LockResult<ShardsWriteGuard<'_>> {
-        let site = Location::caller();
-        match self.inner.write() {
-            Ok(guard) => Ok(ShardsWriteGuard::new(guard, site)),
-            Err(poisoned) => Err(PoisonError::new(ShardsWriteGuard::new(poisoned.into_inner(), site))),
-        }
-    }
-
-    /// Like `RwLock::try_read`; a hold is recorded only when the lock was taken.
-    #[track_caller]
-    pub(crate) fn try_read(&self) -> TryLockResult<ShardsReadGuard<'_>> {
-        let site = Location::caller();
-        match self.inner.try_read() {
-            Ok(guard) => Ok(ShardsReadGuard::new(guard, site)),
-            Err(TryLockError::Poisoned(poisoned)) => Err(TryLockError::Poisoned(PoisonError::new(
-                ShardsReadGuard::new(poisoned.into_inner(), site),
-            ))),
-            Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
-        }
-    }
-
-    /// Like `RwLock::try_write`; a hold is recorded only when the lock was taken.
-    #[track_caller]
-    pub(crate) fn try_write(&self) -> TryLockResult<ShardsWriteGuard<'_>> {
-        let site = Location::caller();
-        match self.inner.try_write() {
-            Ok(guard) => Ok(ShardsWriteGuard::new(guard, site)),
-            Err(TryLockError::Poisoned(poisoned)) => Err(TryLockError::Poisoned(PoisonError::new(
-                ShardsWriteGuard::new(poisoned.into_inner(), site),
-            ))),
-            Err(TryLockError::WouldBlock) => Err(TryLockError::WouldBlock),
-        }
-    }
-
-    pub(crate) fn is_poisoned(&self) -> bool {
-        self.inner.is_poisoned()
-    }
-
-    /// Run `f` on one shard under the shared guard. `f` reports the entries it touched.
-    #[track_caller]
-    pub(crate) fn with_shard<R>(
-        &self,
-        shard_id: ShardId,
-        f: impl FnOnce(Option<&ShardState>, &EntriesVisited) -> R,
-    ) -> R {
-        let guard = self.read().expect("engine lock poisoned");
-        let visited = EntriesVisited::default();
-        let result = f(guard.get(&shard_id), &visited);
-        guard.note_entries(visited.get());
-        result
-    }
-
-    /// Run `f` over every shard under the shared guard. `f` reports the entries it touched.
-    #[track_caller]
-    pub(crate) fn with_all_shards_read<R>(
-        &self,
-        f: impl FnOnce(&HashMap<ShardId, ShardState>, &EntriesVisited) -> R,
-    ) -> R {
-        let guard = self.read().expect("engine lock poisoned");
-        let visited = EntriesVisited::default();
-        let result = f(&guard, &visited);
-        guard.note_entries(visited.get());
-        result
-    }
-}
-
-pub(super) struct ShardsReadGuard<'a> {
-    guard: RwLockReadGuard<'a, HashMap<ShardId, ShardState>>,
+struct OwnerObservation {
     site: &'static Location<'static>,
-    started: Option<Instant>,
+    write: bool,
+    enabled: bool,
+    acquired: Cell<Option<Instant>>,
+    released: Cell<Option<Instant>>,
     entries: Cell<Option<u64>>,
 }
 
-impl<'a> ShardsReadGuard<'a> {
-    fn new(guard: RwLockReadGuard<'a, HashMap<ShardId, ShardState>>, site: &'static Location<'static>) -> Self {
+impl OwnerObservation {
+    fn new(site: &'static Location<'static>, write: bool) -> Self {
+        Self {
+            site, write, enabled: hold_probe_on(),
+            acquired: Cell::new(None), released: Cell::new(None), entries: Cell::new(None),
+        }
+    }
+
+    fn enter(&self) -> ActiveOwner<'_> {
         enter();
-        let started = hold_probe_on().then(Instant::now);
-        Self { guard, site, started, entries: Cell::new(None) }
+        if self.write {
+            super::shard_write_guard::entered();
+        } else {
+            super::shard_write_guard::entered_read();
+        }
+        if self.enabled {
+            self.acquired.set(Some(Instant::now()));
+        }
+        ActiveOwner(self)
     }
 
     fn note_entries(&self, entries: u64) {
@@ -317,69 +239,173 @@ impl<'a> ShardsReadGuard<'a> {
     }
 }
 
-impl std::ops::Deref for ShardsReadGuard<'_> {
-    type Target = HashMap<ShardId, ShardState>;
+struct ActiveOwner<'a>(&'a OwnerObservation);
 
-    fn deref(&self) -> &Self::Target {
-        &self.guard
-    }
-}
-
-impl Drop for ShardsReadGuard<'_> {
+impl Drop for ActiveOwner<'_> {
     fn drop(&mut self) {
-        if let Some(started) = self.started {
-            record(self.site, false, started, self.entries.get());
+        if self.0.enabled {
+            self.0.released.set(Some(Instant::now()));
+        }
+        if self.0.write {
+            super::shard_write_guard::left();
+        } else {
+            super::shard_write_guard::left_read();
         }
         leave();
     }
 }
 
-pub(super) struct ShardsWriteGuard<'a> {
-    guard: RwLockWriteGuard<'a, HashMap<ShardId, ShardState>>,
-    site: &'static Location<'static>,
-    started: Option<Instant>,
-}
-
-impl<'a> ShardsWriteGuard<'a> {
-    fn new(guard: RwLockWriteGuard<'a, HashMap<ShardId, ShardState>>, site: &'static Location<'static>) -> Self {
-        enter();
-        let started = hold_probe_on().then(Instant::now);
-        Self { guard, site, started }
-    }
-}
-
-impl std::ops::Deref for ShardsWriteGuard<'_> {
-    type Target = HashMap<ShardId, ShardState>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.guard
-    }
-}
-
-impl std::ops::DerefMut for ShardsWriteGuard<'_> {
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.guard
-    }
-}
-
-impl Drop for ShardsWriteGuard<'_> {
+impl Drop for OwnerObservation {
     fn drop(&mut self) {
-        if let Some(started) = self.started {
-            record(self.site, true, started, None);
+        if let (Some(begin), Some(end)) = (self.acquired.get(), self.released.get()) {
+            let ns = end.duration_since(begin).as_nanos().min(u64::MAX as u128) as u64;
+            // This observer outlives the registry call, including its local guard.
+            record_ns(self.site, self.write, ns, self.entries.get());
         }
-        leave();
     }
 }
 
-impl std::fmt::Debug for ShardsLock {
-    // The table itself is never printed: only whether a panic poisoned it.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ShardsLock").field("poisoned", &self.inner.is_poisoned()).finish_non_exhaustive()
+impl ShardsLock {
+    pub(crate) fn new(map: HashMap<ShardId, ShardState>) -> Self {
+        let owners = ShardStateRegistry::default();
+        for (id, state) in map {
+            owners.replace(id, state);
+        }
+        Self { owners }
+    }
+
+    pub(crate) fn handle(&self, shard_id: ShardId) -> Option<ShardHandle> {
+        self.owners.handle(shard_id)
+    }
+
+    pub(crate) fn shard_ids(&self) -> Vec<ShardId> {
+        self.owners.shard_ids()
+    }
+
+    pub(crate) fn install(&self, shard_id: ShardId, state: ShardState) -> Option<ShardState> {
+        self.owners.replace(shard_id, state)
+    }
+
+    pub(crate) fn retire_if_current(&self, handle: &ShardHandle) -> Option<ShardState> {
+        self.owners.retire_if_current(handle)
+    }
+
+    #[track_caller]
+    pub(crate) fn with_handle_state<R>(
+        &self,
+        handle: &ShardHandle,
+        read: impl FnOnce(Option<&ShardState>) -> R,
+    ) -> R {
+        let observation = OwnerObservation::new(Location::caller(), false);
+        handle.with_read(|state| {
+            let _held = state.is_some().then(|| observation.enter());
+            read(state)
+        })
+    }
+
+    #[track_caller]
+    pub(crate) fn with_handle_state_mut<R>(
+        &self,
+        handle: &ShardHandle,
+        write: impl FnOnce(Option<&mut ShardState>) -> R,
+    ) -> R {
+        let observation = OwnerObservation::new(Location::caller(), true);
+        handle.with_write(|state| {
+            let _held = state.is_some().then(|| observation.enter());
+            write(state)
+        })
+    }
+
+    #[track_caller]
+    pub(crate) fn with_state<R>(
+        &self,
+        shard_id: ShardId,
+        read: impl FnOnce(Option<&ShardState>) -> R,
+    ) -> R {
+        let observation = OwnerObservation::new(Location::caller(), false);
+        self.owners.with_shard(shard_id, |state| {
+            let _held = state.is_some().then(|| observation.enter());
+            read(state)
+        })
+    }
+
+    #[track_caller]
+    pub(crate) fn with_state_mut<R>(
+        &self,
+        shard_id: ShardId,
+        write: impl FnOnce(Option<&mut ShardState>) -> R,
+    ) -> R {
+        let observation = OwnerObservation::new(Location::caller(), true);
+        self.owners.with_shard_mut(shard_id, |state| {
+            let _held = state.is_some().then(|| observation.enter());
+            write(state)
+        })
+    }
+
+    #[track_caller]
+    pub(crate) fn with_all_states<R>(
+        &self,
+        read: impl FnOnce(&BTreeMap<ShardId, &ShardState>) -> R,
+    ) -> R {
+        let observation = OwnerObservation::new(Location::caller(), false);
+        self.owners.with_all_shards_read(|states| {
+            let _held = observation.enter();
+            read(states)
+        })
+    }
+
+    #[track_caller]
+    pub(crate) fn with_all_states_mut<R>(
+        &self,
+        write: impl FnOnce(&mut BTreeMap<ShardId, &mut ShardState>) -> R,
+    ) -> R {
+        let observation = OwnerObservation::new(Location::caller(), true);
+        self.owners.with_all_shards_mut(|states| {
+            let _held = observation.enter();
+            write(states)
+        })
+    }
+
+    #[track_caller]
+    pub(crate) fn with_shard<R>(
+        &self,
+        shard_id: ShardId,
+        read: impl FnOnce(Option<&ShardState>, &EntriesVisited) -> R,
+    ) -> R {
+        let observation = OwnerObservation::new(Location::caller(), false);
+        self.owners.with_shard(shard_id, |state| {
+            let _held = state.is_some().then(|| observation.enter());
+            let visited = EntriesVisited::default();
+            let result = read(state, &visited);
+            observation.note_entries(visited.get());
+            result
+        })
+    }
+
+    #[track_caller]
+    pub(crate) fn with_all_shards_read<R>(
+        &self,
+        read: impl FnOnce(&BTreeMap<ShardId, &ShardState>, &EntriesVisited) -> R,
+    ) -> R {
+        let observation = OwnerObservation::new(Location::caller(), false);
+        self.owners.with_all_shards_read(|states| {
+            let _held = observation.enter();
+            let visited = EntriesVisited::default();
+            let result = read(states, &visited);
+            observation.note_entries(visited.get());
+            result
+        })
     }
 }
 
 impl Default for ShardsLock {
     fn default() -> Self {
         Self::new(HashMap::new())
+    }
+}
+
+impl std::fmt::Debug for ShardsLock {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("ShardsLock").field("ownership", &"per-shard").finish_non_exhaustive()
     }
 }

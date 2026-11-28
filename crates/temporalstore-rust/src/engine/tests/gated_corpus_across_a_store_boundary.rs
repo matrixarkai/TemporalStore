@@ -266,34 +266,36 @@ fn served(engine: &TemporalEngine) -> PerKind {
 /// store came back empty and a listing that serves nothing because the index cannot name the
 /// elements are the same number and opposite findings.
 fn durable(engine: &TemporalEngine) -> PerKind {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    PerKind {
-        hash: shard.bucket_index.hashes.get(HASH_KEY).map(|e| e.len()).unwrap_or(0),
-        set: shard.bucket_index.sets.get(SET_KEY).map(|e| e.len()).unwrap_or(0),
-        zset: shard.bucket_index.zsets.get(ZSET_KEY).map(|e| e.len()).unwrap_or(0),
-        list: shard.bucket_index.lists.get(LIST_KEY).map(|e| e.len()).unwrap_or(0),
-    }
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 loaded");
+        PerKind {
+            hash: shard.bucket_index.hashes.get(HASH_KEY).map(|e| e.len()).unwrap_or(0),
+            set: shard.bucket_index.sets.get(SET_KEY).map(|e| e.len()).unwrap_or(0),
+            zset: shard.bucket_index.zsets.get(ZSET_KEY).map(|e| e.len()).unwrap_or(0),
+            list: shard.bucket_index.lists.get(LIST_KEY).map(|e| e.len()).unwrap_or(0),
+        }
+    })
 }
 
 /// Live index entries for one kind and object: how many there are, and how many NAME an element.
 fn live_entries(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut live = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.deleted()
-                || block.model_id().as_str() != model_id
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-            {
-                continue;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut live = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.deleted()
+                    || block.model_id().as_str() != model_id
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                {
+                    continue;
+                }
+                live += 1;
             }
-            live += 1;
         }
-    }
-    live
+        live
+    })
 }
 
 /// What one pass across the store boundary observed.
@@ -627,26 +629,27 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
 /// The independent half of the entry-count comparison: the index's own block set is derived from the
 /// entries under test, so it cannot see an entry over a block nothing is on.
 fn occupied_blocks(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let blocks: std::collections::BTreeSet<(u64, u64, u64)> = match model_id {
-        "hash" => shard
-            .bucket_index.hashes
-            .get(object_key)
-            .map(|fields| {
-                fields
-                    .iter()
-                    .map(|(_, address)| {
-                        (
-                            address.block_slab_id(),
-                            address.offset(),
-                            address.length(),
-                        )
-                    })
-                    .collect()
-            })
-            .unwrap_or_default(),
-        other => panic!("occupied_blocks has no arm for {other}"),
-    };
-    blocks.len()
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 loaded");
+        let blocks: std::collections::BTreeSet<(u64, u64, u64)> = match model_id {
+            "hash" => shard
+                .bucket_index.hashes
+                .get(object_key)
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .map(|(_, address)| {
+                            (
+                                address.block_slab_id(),
+                                address.offset(),
+                                address.length(),
+                            )
+                        })
+                        .collect()
+                })
+                .unwrap_or_default(),
+            other => panic!("occupied_blocks has no arm for {other}"),
+        };
+        blocks.len()
+    })
 }

@@ -60,7 +60,8 @@ pub(crate) struct ProtobufBatchExecuteReply {
 }
 
 struct ProtobufShardBatch {
-    route: GrpcPrimaryRoute,
+    shard_id: u64,
+    route: Option<GrpcPrimaryRoute>,
     positions: Vec<usize>,
     read_only: bool,
 }
@@ -225,7 +226,7 @@ impl TemporalStoreTable {
             })
             .collect::<Result<Vec<_>, _>>()?;
         let reply = self
-            .execute_routed_protobuf_batch(&commands, &routing, 0, usize::MAX)
+            .execute_routed_protobuf_batch(&commands, &routing, 0, usize::MAX, false)
             .await?;
         let responses = reply
             .responses
@@ -286,6 +287,7 @@ impl TemporalStoreTable {
         routing: &[(&str, bool)],
         trace_id: u64,
         response_limit: usize,
+        preserve_unrouted_reads: bool,
     ) -> Result<ProtobufBatchExecuteReply, ClientError> {
         if commands.is_empty() {
             return Ok(ProtobufBatchExecuteReply {
@@ -293,7 +295,9 @@ impl TemporalStoreTable {
                 ..Default::default()
             });
         }
-        let groups = self.route_protobuf_batch(routing).await?;
+        let groups = self
+            .route_protobuf_batch(routing, preserve_unrouted_reads)
+            .await?;
         let mut reply = ProtobufBatchExecuteReply {
             status: Some(protobuf_status("ok", "")),
             responses: vec![Bytes::new(); commands.len()],
@@ -301,9 +305,18 @@ impl TemporalStoreTable {
         };
         let mut response_bytes = 0usize;
         for group in groups {
-            let result = self
-                .execute_protobuf_shard_batch(&group, commands, trace_id)
-                .await;
+            let result = if let Some(route) = &group.route {
+                self.execute_protobuf_shard_batch(route, &group, commands, trace_id)
+                    .await
+            } else {
+                Ok(ProtobufBatchExecuteReply {
+                    status: Some(protobuf_status(
+                        "no_grpc_primary",
+                        &format!("shard {} has no gRPC primary", group.shard_id),
+                    )),
+                    ..Default::default()
+                })
+            };
             let (status, responses) = match result {
                 Ok(result) => {
                     reply.topology_version = reply.topology_version.max(result.topology_version);
@@ -326,7 +339,10 @@ impl TemporalStoreTable {
             };
             if !status.ok
                 && (status.code == "write_outcome_unknown"
-                    || reply.status.as_ref().is_some_and(|status| status.ok))
+                    || reply
+                        .status
+                        .as_ref()
+                        .is_some_and(|status| status.ok || status.code == "no_grpc_primary"))
             {
                 reply.status = Some(status.clone());
             }
@@ -359,11 +375,16 @@ impl TemporalStoreTable {
     async fn route_protobuf_batch(
         &self,
         keys: &[(&str, bool)],
+        preserve_unrouted_reads: bool,
     ) -> Result<Vec<ProtobufShardBatch>, ClientError> {
         let read_only = keys.iter().all(|(_, read)| *read);
-        let groups = match self.cached_protobuf_batches(keys, true) {
+        let preserve_unrouted_reads = preserve_unrouted_reads && read_only;
+        let groups = match self.cached_protobuf_batches(keys, true, preserve_unrouted_reads) {
             Some(cached) => cached,
-            None => self.refresh_protobuf_batches(keys).await,
+            None => {
+                self.refresh_protobuf_batches(keys, preserve_unrouted_reads)
+                    .await
+            }
         };
         groups.map_err(|error| before_protobuf_dispatch(error, read_only))
     }
@@ -371,6 +392,7 @@ impl TemporalStoreTable {
     async fn refresh_protobuf_batches(
         &self,
         keys: &[(&str, bool)],
+        preserve_unrouted_reads: bool,
     ) -> Result<Vec<ProtobufShardBatch>, ClientError> {
         let table = self.clone();
         tokio::task::spawn_blocking(move || {
@@ -380,7 +402,7 @@ impl TemporalStoreTable {
         })
         .await
         .map_err(|error| ClientError::Status(error.to_string()))??;
-        self.cached_protobuf_batches(keys, false)
+        self.cached_protobuf_batches(keys, false, preserve_unrouted_reads)
             .unwrap_or_else(|| {
                 Err(ClientError::Status(
                     "table has no gRPC topology".to_string(),
@@ -392,6 +414,7 @@ impl TemporalStoreTable {
         &self,
         keys: &[(&str, bool)],
         require_fresh: bool,
+        preserve_unrouted_reads: bool,
     ) -> Option<Result<Vec<ProtobufShardBatch>, ClientError>> {
         let tables = self
             .client
@@ -409,20 +432,24 @@ impl TemporalStoreTable {
         for (position, (key, read)) in keys.iter().enumerate() {
             let shard_id =
                 shard_id_for_key(key, table.first_shard_id, table.shard_count, self.shard_id);
-            let Some(route) = table.shards.get(&shard_id) else {
+            let route = table.shards.get(&shard_id);
+            if route.is_none() {
                 if require_fresh
                     && age.is_none_or(|age| age > Duration::from_millis(route_ttl.min(250)))
                 {
                     return None;
                 }
-                return Some(Err(ClientError::Status(format!(
-                    "shard {shard_id} has no gRPC primary"
-                ))));
-            };
+                if !preserve_unrouted_reads {
+                    return Some(Err(ClientError::Status(format!(
+                        "shard {shard_id} has no gRPC primary"
+                    ))));
+                }
+            }
             let batch = groups
                 .entry(shard_id)
                 .or_insert_with(|| ProtobufShardBatch {
-                    route: route.clone(),
+                    shard_id,
+                    route: route.cloned(),
                     positions: Vec::new(),
                     read_only: true,
                 });
@@ -434,11 +461,11 @@ impl TemporalStoreTable {
 
     async fn execute_protobuf_shard_batch(
         &self,
+        route: &GrpcPrimaryRoute,
         group: &ProtobufShardBatch,
         commands: &[Bytes],
         trace_id: u64,
     ) -> Result<ProtobufBatchExecuteReply, ClientError> {
-        let route = &group.route;
         let checked = route.load_version != 0;
         let path = if checked {
             "/temporalstore.v1.TemporalStoreService/BatchExecuteChecked"
@@ -541,13 +568,17 @@ mod tests {
         ) -> ExecuteResponse {
             assert_eq!(request.shard_id, 75);
             assert_eq!(load_version, 17);
-            let Command::StringSet { key, value } = request.command else {
-                panic!("expected binary StringSet");
+            let response = match request.command {
+                Command::StringSet { key, value } => {
+                    assert_eq!(key, "chunk");
+                    CommandResponse::Bytes { value: Some(value) }
+                }
+                Command::StringLen { .. } => CommandResponse::Integer { value: 42 },
+                _ => panic!("expected StringSet or StringLen"),
             };
-            assert_eq!(key, "chunk");
             ExecuteResponse {
                 status: Status::ok(),
-                response: CommandResponse::Bytes { value: Some(value) },
+                response,
             }
         }
         fn batch_execute_checked_sdk(
@@ -658,6 +689,63 @@ mod tests {
             .iter()
             .all(|response| response.value == payload));
         assert_eq!(client.inner.grpc_channels.read().unwrap().len(), 1);
+        {
+            let mut routes = client.inner.grpc_routes.write().unwrap();
+            routes.get_mut("kvcache/model").unwrap().shard_count = 2;
+        }
+        let keys: Vec<_> = (0..2)
+            .map(|offset| {
+                (0..128)
+                    .map(|i| format!("test-key-{i}"))
+                    .find(|key| shard_id_for_key(key, 75, 2, table.shard_id) == 75 + offset)
+                    .unwrap()
+            })
+            .collect();
+        let commands: Vec<_> = keys
+            .iter()
+            .rev()
+            .map(|key| {
+                Bytes::from(
+                    v1::Command {
+                        kind: Some(v1::command::Kind::StringLen(v1::StringLen {
+                            key: key.clone(),
+                        })),
+                    }
+                    .encode_to_vec(),
+                )
+            })
+            .collect();
+        let routing = [(keys[1].as_str(), true), (keys[0].as_str(), true)];
+        let partial = table
+            .execute_routed_protobuf_batch(&commands, &routing, 0, usize::MAX, true)
+            .await
+            .unwrap();
+        assert_eq!(partial.status.unwrap().code, "no_grpc_primary");
+        let replies: Vec<_> = partial
+            .responses
+            .into_iter()
+            .map(|response| v1::CommandResponse::decode(response).unwrap())
+            .collect();
+        assert_eq!(replies[0].status.as_ref().unwrap().code, "no_grpc_primary");
+        assert!(replies[1].status.as_ref().unwrap().ok);
+        assert_eq!(replies[1].count, 42);
+        assert!(table
+            .execute_routed_protobuf_batch(&commands, &routing, 0, usize::MAX, false)
+            .await
+            .is_err());
+        let mixed = [(keys[1].as_str(), true), (keys[0].as_str(), false)];
+        assert!(table
+            .execute_routed_protobuf_batch(&commands, &mixed, 0, usize::MAX, true)
+            .await
+            .is_err());
+        client
+            .inner
+            .grpc_routes
+            .write()
+            .unwrap()
+            .get_mut("kvcache/model")
+            .unwrap()
+            .shard_count = 1;
         tokio::task::spawn_blocking(move || {
             let command = Command::StringSet {
                 key: "chunk".to_string(),
