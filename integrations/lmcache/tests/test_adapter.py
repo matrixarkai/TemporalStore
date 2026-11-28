@@ -474,12 +474,16 @@ class AdapterTest(unittest.TestCase):
         )
         self.addCleanup(backend.close)
         client = Mock()
-        client.batch_execute.side_effect = [
-            [
+
+        def partial_results():
+            return [
                 pb.CommandResponse(status=pb.Status(code="no_grpc_primary")),
                 pb.CommandResponse(status=pb.Status(ok=True), count=7),
                 pb.CommandResponse(status=pb.Status(code="raft_not_leader")),
-            ],
+            ]
+
+        client.batch_execute.side_effect = [
+            partial_results(),
             [pb.CommandResponse(status=pb.Status(ok=True), count=4)],
             [pb.CommandResponse(status=pb.Status(code="permission_denied"))],
         ]
@@ -493,6 +497,20 @@ class AdapterTest(unittest.TestCase):
             with self.assertRaisesRegex(MetadataError, "permission_denied"):
                 backend.lengths(keys[:1])
         first, second, _ = client.batch_execute.call_args_list
+        self.assertEqual(first.kwargs, {"timeout_seconds": 1})
+        self.assertEqual(second.kwargs, {"timeout_seconds": 0.75})
+        self.assertEqual(second.args[0], first.args[0][2:])
+
+        client.reset_mock()
+        client.batch_execute.side_effect = [
+            partial_results(),
+            MetadataError("deadline_exceeded", "stale shard did not reply"),
+        ]
+        with patch.object(backend, "_table", return_value=client), patch(
+            "lmcache_temporalstore.grpc_kv.monotonic", side_effect=[20.0, 20.25],
+        ):
+            self.assertEqual(backend.lengths(keys), [0, 7, 0])
+        first, second = client.batch_execute.call_args_list
         self.assertEqual(first.kwargs, {"timeout_seconds": 1})
         self.assertEqual(second.kwargs, {"timeout_seconds": 0.75})
         self.assertEqual(second.args[0], first.args[0][2:])
