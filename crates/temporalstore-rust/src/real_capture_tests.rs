@@ -713,10 +713,10 @@ fn record_frame_alloc_probe_is_flat_in_the_payload_size() {
     use crate::record_framing::frame_payload;
     for size in [10_usize, 1_000, 100_000] {
         let payload = vec![7u8; size];
-        let probe = crate::alloc_probe::Probe::start();
+        let probe = crate::alloc_probe::ThreadAllocationProbe::start();
         let framed = frame_payload(&payload);
-        let counts = probe.stop();
+        let allocations = probe.stop();
         std::hint::black_box(&framed);
-        assert_eq!(counts.allocs, 1, "framing {size} bytes allocated {} times", counts.allocs);
+        assert_eq!(allocations, 1, "framing {size} bytes allocated {allocations} times");
     }
 }

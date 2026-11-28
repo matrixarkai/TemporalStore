@@ -448,6 +448,10 @@ fn main() {
     );
 }
 
+#[cfg(test)]
+#[path = "distributed_raft_harness/typed_read_tests.rs"]
+mod typed_read_route_tests;
+
 #[allow(clippy::too_many_arguments)]
 fn build_matrixraft_runtime_semantics_report(
     nodes: &[NodeSummary],
@@ -810,15 +814,24 @@ fn handle(runtime: &ProductionRaftRuntime, request: HttpRequest) -> (u16, Vec<u8
         }
         ("POST", "/raft/propose") => {
             match parse_json::<DistributedRaftProposeRequest>(&request.body) {
-                Ok(req) => json_response(200, &command_response(runtime.propose(req.command))),
+                Ok(req) => {
+                    let response = match ProductionRaftRuntime::validate_proposal_command(&req.command) {
+                        Ok(()) => command_response(runtime.propose(req.command)),
+                        Err(status) => DistributedRaftCommandResponse { status, response: CommandResponse::Empty },
+                    };
+                    json_response(200, &response)
+                }
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
         }
         ("POST", "/raft/read") => match parse_json::<DistributedRaftReadRequest>(&request.body) {
-            Ok(req) => json_response(
-                200,
-                &command_response(runtime.read_local(req.node_id, req.command)),
-            ),
+            Ok(req) => {
+                let response = match runtime.read_local_with_status(req.node_id, req.command) {
+                    Ok(response) => DistributedRaftCommandResponse { status: response.status, response: response.response },
+                    Err(error) => command_response(Err(error)),
+                };
+                json_response(200, &response)
+            }
             Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
         },
         ("POST", "/raft/admin/publish_external_snapshot") => {

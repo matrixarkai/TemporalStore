@@ -54,11 +54,13 @@ class TablePlacementTest(unittest.TestCase):
 
 def test_metadata_grpc_uses_versioned_topology_and_bearer_credentials():
     from concurrent.futures import ThreadPoolExecutor
+    from contextlib import ExitStack
 
     import grpc
-    from temporalstore_sdk import commands as pb
+    from temporalstore_sdk import TableClient, commands as pb
 
     seen = []
+    calls = []
 
     def topology(request, context):
         seen.append((request.namespace_name, request.table_name, request.old_topology_version))
@@ -70,33 +72,56 @@ def test_metadata_grpc_uses_versioned_topology_and_bearer_credentials():
         if not response.unchanged:
             response.shards.add(
                 shard_id=73, uses_raft_route=True, primary_addr="leader:17002",
-                primary_grpc="leader:17202", load_version=8,
+                primary_grpc=data_addr, load_version=8,
             )
         return response
 
+    def execute(request, _context):
+        calls.append((request.shard_id, request.load_version, request.commands[0].string_get.key))
+        return pb.BatchExecuteResponse(
+            status=pb.Status(ok=True),
+            responses=[pb.CommandResponse(status=pb.Status(ok=True), value=b"\x00\xff")],
+        )
+
+    command_handler = grpc.unary_unary_rpc_method_handler(
+        execute, request_deserializer=pb.BatchExecuteRequest.FromString,
+        response_serializer=pb.BatchExecuteResponse.SerializeToString,
+    )
     handler = grpc.unary_unary_rpc_method_handler(
         topology, request_deserializer=pb.MetadataTableTopologyRequest.FromString,
         response_serializer=pb.MetadataTableTopologyResponse.SerializeToString,
     )
-    with ThreadPoolExecutor(max_workers=1) as worker:
+    with ExitStack() as stack:
+        worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
+        data = grpc.server(worker)
+        data.add_generic_rpc_handlers((
+            grpc.method_handlers_generic_handler(
+                "temporalstore.v1.TemporalStoreService", {"BatchExecuteChecked": command_handler},
+            ),
+        ))
+        data_addr = f"127.0.0.1:{data.add_insecure_port('127.0.0.1:0')}"
+        data.start()
+        stack.callback(lambda: data.stop(0).wait(timeout=3))
         server = grpc.server(worker)
         server.add_generic_rpc_handlers((
             grpc.method_handlers_generic_handler("temporalstore.v1.MetadataService", {"GetTableTopology": handler}),
         ))
         port = server.add_insecure_port("127.0.0.1:0")
         server.start()
+        stack.callback(lambda: server.stop(0).wait(timeout=3))
         client = MetadataClient(f"127.0.0.1:{port}", credential_provider=lambda: "test-token")
-        try:
-            first = client.table_topology("kvcache", "model")
-            assert (first.table_id, first.version) == (7, 42)
-            shard = first.shard_for_key("chunk")
-            assert (shard.shard_id, shard.primary_grpc, shard.load_version) == (73, "leader:17202", 8)
-            assert shard.uses_raft_route
-            assert client.table_topology("kvcache", "model", previous=first) is first
-            assert seen == [("kvcache", "model", 0), ("kvcache", "model", 42)]
-        finally:
-            client.close()
-            server.stop(0).wait()
+        stack.callback(client.close)
+        first = client.table_topology("kvcache", "model")
+        assert (first.table_id, first.version) == (7, 42)
+        shard = first.shard_for_key("chunk")
+        assert (shard.shard_id, shard.primary_grpc, shard.load_version) == (73, data_addr, 8)
+        assert shard.uses_raft_route
+        assert client.table_topology("kvcache", "model", previous=first) is first
+        assert seen == [("kvcache", "model", 0), ("kvcache", "model", 42)]
+        with TableClient(client, "kvcache", "model") as table:
+            [reply] = table.batch_execute([pb.Command(string_get=pb.StringGet(key="chunk"))])
+            assert reply.value == b"\x00\xff"
+        assert calls == [(73, 8, "chunk")]
 
 def test_topology_uses_the_smaller_explicit_or_default_timeout():
     from unittest.mock import Mock

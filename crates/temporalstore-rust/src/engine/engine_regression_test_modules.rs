@@ -680,3 +680,5 @@ mod a_removal_retires_its_vacated_block_by_naming_it;
 mod a_block_key_spells_its_numbers_without_the_formatter;
 #[path = "tests/a_list_write_records_its_block_once.rs"]
 mod a_list_write_records_its_block_once;
+#[path = "tests/a_feature_aggregate_takes_a_typed_reducer.rs"]
+mod a_feature_aggregate_takes_a_typed_reducer;

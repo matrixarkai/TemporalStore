@@ -80,7 +80,7 @@ pub(crate) fn protobuf_command_key(mut input: &[u8]) -> Result<(&str, bool), pro
     let (kind, wire) = decode_key(&mut input)?;
     // Keyed string, hash, common, list, set, sorted-set and feature
     // commands carry the key at field 1 of the selected message.
-    let allowed = matches!(kind, 1..=13 | 20..=30 | 38..=42 | 44 | 63..=68 | 70..=74 | 76..=87);
+    let allowed = matches!(kind, 1..=13 | 20..=30 | 38..=42 | 44 | 63..=68 | 70..=74 | 76..=88);
     if !allowed || wire != WireType::LengthDelimited {
         return Err(prost::DecodeError::new(
             "expected a key-routed protobuf command",
@@ -105,7 +105,7 @@ pub(crate) fn protobuf_command_key(mut input: &[u8]) -> Result<(&str, bool), pro
             skip_field(wire, tag, &mut body, DecodeContext::default())?;
         }
     }
-    let read = matches!(kind, 2 | 5 | 7 | 9 | 11 | 13 | 21 | 64 | 68 | 82..=87);
+    let read = matches!(kind, 2 | 5 | 7 | 9 | 11 | 13 | 21 | 64 | 68 | 82..=88);
     Ok((key, read))
 }
 
@@ -554,7 +554,9 @@ mod tests {
     use prost::Message;
     use tonic::transport::{server::TcpIncoming, Server};
 
-    struct CheckedEcho;
+    struct CheckedEcho {
+        batches: std::sync::Arc<std::sync::Mutex<Vec<(u64, u64, usize)>>>,
+    }
 
     impl TemporalStoreSdkExecutor for CheckedEcho {
         fn execute_sdk(&self, _request: ExecuteRequest) -> ExecuteResponse {
@@ -566,14 +568,17 @@ mod tests {
             request: ExecuteRequest,
             load_version: u64,
         ) -> ExecuteResponse {
-            assert_eq!(request.shard_id, 75);
-            assert_eq!(load_version, 17);
+            let count = match (request.shard_id, load_version) {
+                (75, 17) => 42,
+                (76, 23) => 73,
+                pair => panic!("unexpected shard generation {pair:?}"),
+            };
             let response = match request.command {
                 Command::StringSet { key, value } => {
                     assert_eq!(key, "chunk");
                     CommandResponse::Bytes { value: Some(value) }
                 }
-                Command::StringLen { .. } => CommandResponse::Integer { value: 42 },
+                Command::StringLen { .. } => CommandResponse::Integer { value: count },
                 _ => panic!("expected StringSet or StringLen"),
             };
             ExecuteResponse {
@@ -586,6 +591,11 @@ mod tests {
             request: BatchExecuteRequest,
             load_version: u64,
         ) -> BatchExecuteResponse {
+            self.batches.lock().unwrap().push((
+                request.shard_id,
+                load_version,
+                request.commands.len(),
+            ));
             let responses = request
                 .commands
                 .into_iter()
@@ -610,11 +620,12 @@ mod tests {
     async fn serialized_command_uses_checked_grpc_and_preserves_response_bytes() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap().to_string();
+        let batches = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let worker = tokio::spawn(
             Server::builder()
                 .add_service(
                     v1::temporal_store_service_server::TemporalStoreServiceServer::new(
-                        TemporalStoreTonicAdapter::new(CheckedEcho),
+                        TemporalStoreTonicAdapter::new(CheckedEcho { batches: batches.clone() }),
                     ),
                 )
                 .serve_with_incoming(TcpIncoming::from_listener(listener, true, None).unwrap()),
@@ -738,14 +749,41 @@ mod tests {
             .execute_routed_protobuf_batch(&commands, &mixed, 0, usize::MAX, true)
             .await
             .is_err());
-        client
-            .inner
-            .grpc_routes
-            .write()
-            .unwrap()
-            .get_mut("kvcache/model")
-            .unwrap()
-            .shard_count = 1;
+        {
+            let mut routes = client.inner.grpc_routes.write().unwrap();
+            let routes = routes.get_mut("kvcache/model").unwrap();
+            let mut second = routes.shards[&75].clone();
+            second.shard_id = 76;
+            second.load_version = 23;
+            assert!(routes.shards.insert(76, second).is_none());
+            routes.refreshed_at = Some(std::time::Instant::now());
+        }
+
+        batches.lock().unwrap().clear();
+        let both = [
+            commands[0].clone(), commands[1].clone(),
+            commands[0].clone(), commands[1].clone(),
+        ];
+        let routing = [routing[0], routing[1], routing[0], routing[1]];
+        let reply = table
+            .execute_routed_protobuf_batch(&both, &routing, 0, usize::MAX, false)
+            .await
+            .unwrap();
+        assert!(reply.status.unwrap().ok);
+        let count_by_position: Vec<_> = reply.responses.into_iter().map(|response| {
+            let response = v1::CommandResponse::decode(response).unwrap();
+            assert!(response.status.unwrap().ok);
+            response.count
+        }).collect();
+        assert_eq!(count_by_position, [73, 42, 73, 42]);
+        assert_eq!(batches.lock().unwrap().as_slice(), &[(75, 17, 2), (76, 23, 2)]);
+
+        {
+            let mut routes = client.inner.grpc_routes.write().unwrap();
+            let routes = routes.get_mut("kvcache/model").unwrap();
+            assert!(routes.shards.remove(&76).is_some());
+            routes.shard_count = 1;
+        }
         tokio::task::spawn_blocking(move || {
             let command = Command::StringSet {
                 key: "chunk".to_string(),
