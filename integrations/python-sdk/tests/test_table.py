@@ -92,6 +92,52 @@ class TableClientTest(unittest.TestCase):
                                 table.batch_execute([command])
                     channel.return_value.batch_execute.assert_called_once()
 
+    def test_lost_insert_reply_preserves_the_other_shards_acknowledgment(self):
+        calls = []
+
+        class Datashard(TemporalStoreServiceServicer):
+            def BatchExecuteChecked(self, request, context):
+                payload = request.commands[0].string_set_conditional.value
+                calls.append((request.shard_id, request.load_version, payload))
+                if request.shard_id == 74:
+                    context.abort(grpc.StatusCode.UNAVAILABLE, "insert reply lost")
+                return commands.BatchExecuteResponse(
+                    status=commands.Status(ok=True),
+                    responses=[commands.CommandResponse(status=commands.Status(ok=True), count=1)],
+                )
+
+        first, second = [
+            commands.Command(string_set_conditional=commands.StringSetConditional(
+                key=key, value=value, condition=commands.STRING_SET_CONDITION_IF_NOT_EXISTS,
+            ))
+            for key, value in (("alpha", b"added"), ("123456789", b"uncertain"))
+        ]
+
+        with ExitStack() as stack:
+            worker = stack.enter_context(ThreadPoolExecutor(max_workers=1))
+            server = grpc.server(worker)
+            add_TemporalStoreServiceServicer_to_server(Datashard(), server)
+            addr = f"127.0.0.1:{server.add_insecure_port('127.0.0.1:0')}"
+            server.start()
+            stack.callback(lambda: server.stop(0).wait(timeout=3))
+            metadata = Mock()
+            for uses_raft, outcome in (
+                (True, "write_outcome_unknown"), (False, "write_durability_unconfirmed"),
+            ):
+                with self.subTest(uses_raft=uses_raft), TableClient(
+                    metadata, "kvcache", "model", preserve_insert_outcomes=True,
+                ) as table:
+                    metadata.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 2, (
+                        Shard(73, None, (), 7, addr),
+                        Shard(74, None, (), 8, addr, uses_raft_route=uses_raft),
+                    ))
+                    calls.clear()
+                    inserted, uncertain = table.batch_execute([first, second], timeout_seconds=2)
+                    self.assertTrue(inserted.status.ok)
+                    self.assertEqual(inserted.count, 1)
+                    self.assertEqual(uncertain.status.code, outcome)
+                    self.assertEqual(calls, [(73, 7, b"added"), (74, 8, b"uncertain")])
+
     def test_batches_by_advertised_primary_and_restores_request_order(self):
         metadata = Mock()
         metadata.table_topology.return_value = TableTopology(

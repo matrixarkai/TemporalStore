@@ -339,7 +339,7 @@ thread_local! {
 #[inline]
 fn charge_class_alloc(size: usize) {
     #[cfg(all(test, feature = "alloc-probe"))]
-    charge_current_thread_allocation();
+    charge_current_thread_allocation(size);
     let _ = CURRENT_CLASS.try_with(|cell| {
         let slot = cell.get() as usize;
         if slot < CLASS_COUNT {
@@ -697,20 +697,23 @@ pub struct Probe {
 
 #[cfg(all(test, feature = "alloc-probe"))]
 thread_local! {
-    static THREAD_ALLOC_CALLS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    static THREAD_ALLOCATIONS: std::cell::Cell<(u64, u64)> = const { std::cell::Cell::new((0, 0)) };
 }
 
 #[cfg(all(test, feature = "alloc-probe"))]
 #[inline]
-fn charge_current_thread_allocation() {
-    let _ = THREAD_ALLOC_CALLS.try_with(|calls| calls.set(calls.get().wrapping_add(1)));
+fn charge_current_thread_allocation(size: usize) {
+    let _ = THREAD_ALLOCATIONS.try_with(|counts| {
+        let (calls, bytes) = counts.get();
+        counts.set((calls.wrapping_add(1), bytes.wrapping_add(size as u64)));
+    });
 }
 
-/// Allocation calls on this thread only, for synchronous test operations.
+/// Allocation calls and requested bytes on this thread, for synchronous test operations.
 /// Global counters remain unchanged and still include other threads' work.
 #[cfg(all(test, feature = "alloc-probe"))]
 pub(crate) struct ThreadAllocationProbe {
-    before: u64,
+    before: (u64, u64),
     _thread_affine: std::marker::PhantomData<std::rc::Rc<()>>,
 }
 
@@ -718,13 +721,18 @@ pub(crate) struct ThreadAllocationProbe {
 impl ThreadAllocationProbe {
     pub(crate) fn start() -> Self {
         Self {
-            before: THREAD_ALLOC_CALLS.with(std::cell::Cell::get),
+            before: THREAD_ALLOCATIONS.with(std::cell::Cell::get),
             _thread_affine: std::marker::PhantomData,
         }
     }
 
     pub(crate) fn stop(&self) -> u64 {
-        THREAD_ALLOC_CALLS.with(|calls| calls.get().wrapping_sub(self.before))
+        self.stop_with_bytes().0
+    }
+
+    pub(crate) fn stop_with_bytes(&self) -> (u64, u64) {
+        let (calls, bytes) = THREAD_ALLOCATIONS.with(std::cell::Cell::get);
+        (calls.wrapping_sub(self.before.0), bytes.wrapping_sub(self.before.1))
     }
 }
 
@@ -740,9 +748,10 @@ mod thread_allocation_tests {
         for _ in 0..PLANTED {
             drop(std::hint::black_box(vec![0x5au8; 128]));
         }
-        let inner_calls = inner.stop();
+        let (inner_calls, inner_bytes) = inner.stop_with_bytes();
         let outer_calls = outer.stop();
         assert_eq!(inner_calls, PLANTED);
+        assert_eq!(inner_bytes, PLANTED * 128);
         assert_eq!(outer_calls, PLANTED);
         let empty = ThreadAllocationProbe::start();
         assert_eq!(empty.stop(), 0);

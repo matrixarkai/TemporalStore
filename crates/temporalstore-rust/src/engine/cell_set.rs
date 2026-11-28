@@ -2636,8 +2636,13 @@ mod tests {
                 dimensions: vec![DimSpec { name: "t".into(), ty: DimType::Text, required: true }],
             };
             let (small_key, large_key) = (text_key(&spec, 8), text_key(&spec, MAX_TEXT_DIMENSION_BYTES));
-            let (small_allocs, small_bytes) = counted(|| encode_key(&spec, &small_key).unwrap());
-            let (large_allocs, large_bytes) = counted(|| encode_key(&spec, &large_key).unwrap());
+            let count_encoding = |key| {
+                let probe = crate::alloc_probe::ThreadAllocationProbe::start();
+                std::hint::black_box(encode_key(&spec, key).unwrap());
+                probe.stop_with_bytes()
+            };
+            let (small_allocs, small_bytes) = count_encoding(&small_key);
+            let (large_allocs, large_bytes) = count_encoding(&large_key);
             println!("key: {small_allocs} allocs {small_bytes} B at 8; {large_allocs} allocs {large_bytes} B at 256");
             // The control: the probe sees SIZE, so equal counts are not a blind instrument.
             assert!(large_bytes > small_bytes + 400, "the probe cannot see bytes: {small_bytes} vs {large_bytes}");

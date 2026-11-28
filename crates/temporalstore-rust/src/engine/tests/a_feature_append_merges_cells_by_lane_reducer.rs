@@ -573,7 +573,7 @@ fn the_policy_has_a_wire_number_a_text_spelling_and_survives_the_proto_round_tri
 #[cfg(feature = "alloc-probe")]
 mod probe {
     use super::*;
-    use crate::alloc_probe::Probe;
+    use crate::alloc_probe::ThreadAllocationProbe;
 
     fn text_spec(entity_bytes: usize) -> (KeySpec, String) {
         let spec = KeySpec {
@@ -589,7 +589,8 @@ mod probe {
         (spec, key)
     }
 
-    /// (allocations, bytes) of one merge of `cells` cells into a sample of the same members.
+    /// Calling-thread allocations and requested bytes to merge into a sample of the same members.
+    /// This measures direct execution, excluding work on background storage threads.
     fn per_write(entity_bytes: usize, cells: usize) -> (f64, f64) {
         const OPS: usize = 20;
         let (spec, key) = text_spec(entity_bytes);
@@ -606,12 +607,12 @@ mod probe {
         let engine = engine_on(dir.path(), None);
         landed(&merge(&engine, &key, vec![point(&h, 100, &members)]));
         let requests: Vec<FeaturePoint> = (0..OPS).map(|_| point(&h, 100, &members)).collect();
-        let probe = Probe::start();
+        let probe = ThreadAllocationProbe::start();
         for request in requests {
             landed(&merge(&engine, &key, vec![request]));
         }
-        let counts = probe.stop();
-        (counts.allocs as f64 / OPS as f64, counts.alloc_bytes as f64 / OPS as f64)
+        let (allocations, bytes) = probe.stop_with_bytes();
+        (allocations as f64 / OPS as f64, bytes as f64 / OPS as f64)
     }
 
     /// Allocations a write spends do not depend on how long the key is: the key is parsed and
@@ -629,8 +630,7 @@ mod probe {
             long_bytes - short_bytes >= 192.0,
             "CONTROL: bytes did not grow with the key ({short_bytes} -> {long_bytes}), so key length is not a dimension this probe sees"
         );
-        // Within one allocation per write: background threads add a tenth of one, a per-cell copy
-        // of the key adds one per cell (50 here).
+        // Keep the one-allocation-per-write tolerance while detecting copies per cell.
         assert!(
             (short_allocs - long_allocs).abs() < 1.0,
             "the allocation count moved with the key length ({short_allocs} -> {long_allocs}): a per-write or per-cell copy of the key"
