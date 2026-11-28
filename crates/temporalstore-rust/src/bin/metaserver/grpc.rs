@@ -7,10 +7,13 @@ use std::io;
 use std::net::TcpListener;
 use temporalstore_rust::meta::{
     GetTableTopologyRequest, ListShardsRequest, ProxyHeartbeatRequest, RegisterProxyRequest,
-    ServerEndpoint, TableTopologyResponse, TopologyVersionRequest,
+    RegisterServerRequest, RegisterShardRequest, ServerEndpoint, ServerHeartbeatRequest,
+    TableTopologyResponse, TopologyVersionRequest,
 };
 use temporalstore_rust::metaserver_files_proto::{
-    table_meta_info_to_proto, topology_change_event_to_proto,
+    numa_node_from_proto, server_runtime_load_from_proto, server_shard_serving_state_from_proto,
+    shard_load_from_proto, shard_stat_load_from_proto, table_meta_info_to_proto,
+    topology_change_event_to_proto,
 };
 use temporalstore_rust::sdk::v1;
 use tonic::transport::{server::TcpIncoming, Server};
@@ -219,6 +222,121 @@ impl v1::proxy_metadata_service_server::ProxyMetadataService for MetadataRpc {
     }
 }
 
+#[tonic::async_trait]
+impl v1::datanode_metadata_service_server::DatanodeMetadataService for MetadataRpc {
+    async fn register_server(
+        &self,
+        request: Request<v1::MetadataRegisterServerRequest>,
+    ) -> Result<Response<v1::Status>, Status> {
+        self.authorize(&request)?;
+        let request = request.into_inner();
+        let query = RegisterServerRequest {
+            server_addr: request.server_addr,
+            grpc_addr: request.grpc_addr,
+            node_id: request.node_id,
+            location: request.location,
+            binary_version: request.binary_version,
+            numa_nodes: request
+                .numa_nodes
+                .into_iter()
+                .map(numa_node_from_proto)
+                .collect::<Result<_, _>>()
+                .map_err(Status::invalid_argument)?,
+            registered_at_ms: 0,
+        };
+        let backend = self.backend.clone();
+        let reply = tokio::task::spawn_blocking(move || match &backend {
+            MetaBackend::Single(meta) => meta.register_server(query),
+            MetaBackend::Raft(runtime) => runtime.cluster().register_server(query),
+        })
+        .await
+        .map_err(|_| Status::internal("datanode registration failed"))?;
+        Ok(Response::new(wire_status(reply.status)))
+    }
+
+    async fn register_shard(
+        &self,
+        request: Request<v1::MetadataRegisterShardRequest>,
+    ) -> Result<Response<v1::Status>, Status> {
+        self.authorize(&request)?;
+        let request = request.into_inner();
+        let query = RegisterShardRequest {
+            shard_id: request.shard_id,
+            server_addr: request.server_addr,
+            registered_at_ms: 0,
+        };
+        let backend = self.backend.clone();
+        let reply = tokio::task::spawn_blocking(move || match &backend {
+            MetaBackend::Single(meta) => meta.register(query),
+            MetaBackend::Raft(runtime) => runtime.cluster().register(query),
+        })
+        .await
+        .map_err(|_| Status::internal("shard registration failed"))?;
+        Ok(Response::new(wire_status(reply.status)))
+    }
+
+    async fn heartbeat(
+        &self,
+        request: Request<v1::MetadataServerHeartbeatRequest>,
+    ) -> Result<Response<v1::MetadataServerHeartbeatResponse>, Status> {
+        self.authorize(&request)?;
+        let request = request.into_inner();
+        let query = ServerHeartbeatRequest {
+            server_addr: request.server_addr,
+            boot_time_ms: request.boot_time_ms,
+            binary_version: request.binary_version,
+            shard_loads: request
+                .shard_loads
+                .into_iter()
+                .map(shard_load_from_proto)
+                .collect::<Result<_, _>>()
+                .map_err(Status::invalid_argument)?,
+            shard_stat_loads: request
+                .shard_stat_loads
+                .into_iter()
+                .map(shard_stat_load_from_proto)
+                .collect::<Result<_, _>>()
+                .map_err(Status::invalid_argument)?,
+            runtime_load: request
+                .runtime_load
+                .map(server_runtime_load_from_proto)
+                .transpose()
+                .map_err(Status::invalid_argument)?
+                .unwrap_or_default(),
+            shard_states: request
+                .shard_states
+                .into_iter()
+                .map(server_shard_serving_state_from_proto)
+                .collect::<Result<_, _>>()
+                .map_err(Status::invalid_argument)?,
+        };
+        let backend = self.backend.clone();
+        let reply = tokio::task::spawn_blocking(move || match &backend {
+            MetaBackend::Single(meta) => meta.server_heartbeat(query),
+            MetaBackend::Raft(runtime) => runtime.cluster().server_heartbeat(query),
+        })
+        .await
+        .map_err(|_| Status::internal("datanode heartbeat failed"))?;
+        Ok(Response::new(v1::MetadataServerHeartbeatResponse {
+            status: Some(wire_status(reply.status)),
+            forbid_auto_register: reply.forbid_auto_register,
+            topology_version: reply.topology_version,
+            server_state: reply.server_state,
+            cache_budgets: reply
+                .cache_budgets
+                .into_iter()
+                .map(|budget| v1::MetadataShardCacheBudget {
+                    shard_id: budget.shard_id,
+                    table_id: budget.table_id,
+                    load_version: budget.load_version,
+                    raft_term: budget.raft_term,
+                    bytes: budget.bytes,
+                })
+                .collect(),
+        }))
+    }
+}
+
 fn wire_status(status: temporalstore_rust::types::Status) -> v1::Status {
     v1::Status {
         ok: status.ok,
@@ -320,12 +438,17 @@ pub(super) fn start(addr: &str, backend: MetaBackend, token: Option<String>) -> 
                 let topology = v1::metadata_service_server::MetadataServiceServer::new(rpc.clone())
                     .max_encoding_message_size(40 * 1024 * 1024);
                 let proxy_control =
-                    v1::proxy_metadata_service_server::ProxyMetadataServiceServer::new(rpc)
+                    v1::proxy_metadata_service_server::ProxyMetadataServiceServer::new(rpc.clone())
                         .max_encoding_message_size(40 * 1024 * 1024);
                 tracing::info!(%address, "temporalstore metaserver gRPC listening");
+                let datanode_control =
+                    v1::datanode_metadata_service_server::DatanodeMetadataServiceServer::new(rpc)
+                        .max_decoding_message_size(40 * 1024 * 1024)
+                        .max_encoding_message_size(40 * 1024 * 1024);
                 Server::builder()
                     .add_service(topology)
                     .add_service(proxy_control)
+                    .add_service(datanode_control)
                     .serve_with_incoming(incoming)
                     .await?;
                 Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())

@@ -469,6 +469,11 @@ cargo run -p temporalstore-rust --bin raft_node
 
 Then send writes to the leader node:
 
+`/raft/propose` accepts write commands only and refuses queries before proposal
+admission. Use `/raft/read` for replica queries, or the normal client execution
+routes, which select their existing read policy. A typed query is not a write
+and does not need the proposal endpoint.
+
 ```bash
 curl -s http://127.0.0.1:19001/raft/propose \
   -H 'content-type: application/json' \

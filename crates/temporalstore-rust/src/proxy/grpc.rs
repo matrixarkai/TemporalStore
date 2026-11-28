@@ -523,6 +523,10 @@ impl proxy_service_server::ProxyService for GrpcRelay {
 }
 
 #[cfg(test)]
+#[path = "feature_reduce_grpc_tests.rs"]
+mod feature_reduce_grpc_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::meta::{

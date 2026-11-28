@@ -343,15 +343,16 @@ fn block_keys_equal_the_constructors_keys() {
         assert!(outcome.status.ok);
     }
     let addresses: Vec<crate::ElementEntry> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard
-            .bucket_index.hashes
-            .get("h")
-            .expect("the hash exists")
-            .iter()
-            .map(|(_, address)| address.clone())
-            .collect()
+        engine.shards.with_state(1, |owner| {
+            let shard = owner.expect("shard is loaded");
+            shard
+                .bucket_index.hashes
+                .get("h")
+                .expect("the hash exists")
+                .iter()
+                .map(|(_, address)| address.clone())
+                .collect()
+        })
     };
     assert_eq!(120, addresses.len());
 

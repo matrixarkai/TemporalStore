@@ -311,7 +311,7 @@ fn the_entry_reaches_thirty_two_under_every_route_which_is_why_it_cannot_choose_
     assert_eq!(
         LOOKUP_ENTRY_TODAY - LOOKUP_ENTRY_ID_ADDRESSED,
         KEY_AS_SHARED_POINTER - KEY_AS_A_WORD,
-        "the whole of the entry's narrowing is the key term and none of it is the value, which is          why holding `BlockRefs` constant across the three routes is sound rather than convenient"
+        "the whole of the entry's narrowing is the key term and none of it is the value, which is why holding `BlockRefs` constant across the three routes is sound rather than convenient"
     );
 }
 

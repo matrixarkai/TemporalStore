@@ -166,11 +166,11 @@ fn live_block_slab_ids_for_collection(
 ) -> Vec<u64> {
     if let Some(from_tally) = inner.engine.live_block_slab_ids_from_tally() {
         if let Ok(on_disk) = inner.engine.block_store().slab_ids() {
-            let current = inner.engine.block_store().current_block_slab_id();
+            let active = inner.engine.block_store().active_block_slab_ids();
             let tally_live: std::collections::BTreeSet<u64> = from_tally.into_iter().collect();
             let anything_collectable = on_disk.iter().any(|block_slab_id| {
                 *block_slab_id < retain_from_block_slab_id
-                    && *block_slab_id != current
+                    && !active.contains(block_slab_id)
                     && !tally_live.contains(block_slab_id)
                     && !manifest_block_slab_ids.contains(block_slab_id)
             });

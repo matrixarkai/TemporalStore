@@ -29,6 +29,53 @@ service ProxyMetadataService {
   rpc ListShardIds(MetadataListShardIdsRequest) returns (MetadataListShardIdsResponse);
 }
 
+// Registration and topology heartbeat for distributed datanodes.
+service DatanodeMetadataService {
+  rpc RegisterServer(MetadataRegisterServerRequest) returns (Status);
+  rpc RegisterShard(MetadataRegisterShardRequest) returns (Status);
+  rpc Heartbeat(MetadataServerHeartbeatRequest) returns (MetadataServerHeartbeatResponse);
+}
+
+message MetadataRegisterServerRequest {
+  string server_addr = 1;
+  optional string grpc_addr = 2;
+  uint64 node_id = 3;
+  string location = 4;
+  string binary_version = 5;
+  repeated MfNumaNode numa_nodes = 6;
+}
+
+message MetadataRegisterShardRequest {
+  uint64 shard_id = 1;
+  string server_addr = 2;
+}
+
+message MetadataServerHeartbeatRequest {
+  string server_addr = 1;
+  uint64 boot_time_ms = 2;
+  string binary_version = 3;
+  repeated MfShardLoad shard_loads = 4;
+  repeated MfShardStatLoad shard_stat_loads = 5;
+  MfServerRuntimeLoad runtime_load = 6;
+  repeated MfServerShardServingState shard_states = 7;
+}
+
+message MetadataServerHeartbeatResponse {
+  Status status = 1;
+  bool forbid_auto_register = 2;
+  uint64 topology_version = 3;
+  string server_state = 4;
+  repeated MetadataShardCacheBudget cache_budgets = 5;
+}
+
+message MetadataShardCacheBudget {
+  uint64 shard_id = 1;
+  uint64 table_id = 2;
+  uint64 load_version = 3;
+  uint64 raft_term = 4;
+  uint64 bytes = 5;
+}
+
 message MetadataRegisterProxyRequest {
   string proxy_addr = 1;
   string namespace_name = 2;
@@ -438,6 +485,7 @@ message Command {
     StringGetRange string_get_range = 85;
     FeatureAggregateQuery feature_agg_query = 86;
     FeatureAggregateQuery feature_proto_agg_query = 87;
+    FeatureReduceQuery feature_reduce_query = 88;
   }
 }
 
@@ -587,6 +635,50 @@ message ZSetScan {
   string key = 1;
   bytes after = 2;
   uint64 limit = 3;
+}
+
+// A typed numeric query on Feature values, not FeatureProto or Sequence rows.
+// Absent scale keeps the Rust command's default (1); zero is an invalid scale.
+message FeatureReduceQuery {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  optional uint64 count = 4;
+  optional uint64 scale = 5;
+  FeatureReduceRounding rounding = 6;
+  oneof reducer {
+    FeatureReduceUnit mean = 7;
+    FeatureReduceSample variance = 8;
+    FeatureReduceSample std_dev = 9;
+    FeatureReduceDecay decayed_sum = 10;
+    double ewma = 11;
+    FeatureReduceUnit rate = 12;
+    int64 ratio = 13;
+    FeatureReduceWilson wilson = 14;
+    FeatureReduceWeighted weighted = 15;
+  }
+}
+
+enum FeatureReduceRounding {
+  FEATURE_REDUCE_ROUNDING_NEAREST = 0;
+  FEATURE_REDUCE_ROUNDING_FLOOR = 1;
+  FEATURE_REDUCE_ROUNDING_CEIL = 2;
+}
+
+message FeatureReduceUnit {}
+message FeatureReduceSample {
+  bool sample = 1;
+}
+message FeatureReduceDecay {
+  uint64 half_life_ms = 1;
+  uint64 as_of_ms = 2;
+}
+message FeatureReduceWilson {
+  int64 at_least = 1;
+  double z = 2;
+}
+message FeatureReduceWeighted {
+  repeated double weights = 1;
 }
 
 message FeatureAggregateQuery {
@@ -769,6 +861,7 @@ message WalEntryDelta {
 message WalStateImageSlab {
   uint64 block_slab_id = 1;
   bytes slab = 2;
+  optional uint64 owner_shard_id = 3;
 }
 
 // An engine state image: what a snapshot carries instead of the entry history, so installing it

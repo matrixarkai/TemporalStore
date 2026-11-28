@@ -138,35 +138,36 @@ impl NameSpread {
 /// `element_name` is counted over the OPTION, so a bucket where some blocks have an element name and some
 /// do not counts two -- which is the honest answer for "could one stored value serve them all".
 fn name_spread(engine: &TemporalEngine) -> NameSpread {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut spread = NameSpread::default();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        let mut keys: BTreeSet<&str> = BTreeSet::new();
-        let mut models: BTreeSet<&str> = BTreeSet::new();
-        let mut element_names: BTreeSet<Option<&str>> = BTreeSet::new();
-        let mut held = 0usize;
-        for (handle, block) in bucket.block_index.iter() {
-            held += 1;
-            keys.insert(named.at(bucket.routing_bucket, *handle));
-            models.insert(block.model_id().as_str());
-            // Every entry's name is the same absence, so this set holds one member for any
-            // non-empty bucket. The histogram it feeds is restated where it is read.
-            element_names.insert(None::<&str>);
-        }
-        *spread.blocks_held.entry(held).or_default() += 1;
-        *spread.object_key.entry(keys.len()).or_default() += 1;
-        *spread.model_id.entry(models.len()).or_default() += 1;
-        *spread.element_name.entry(element_names.len()).or_default() += 1;
-        if held > 1 {
-            spread.multi_block_buckets += 1;
-            if element_names.len() == 1 {
-                spread.multi_block_buckets_with_one_element_name += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut spread = NameSpread::default();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            let mut keys: BTreeSet<&str> = BTreeSet::new();
+            let mut models: BTreeSet<&str> = BTreeSet::new();
+            let mut element_names: BTreeSet<Option<&str>> = BTreeSet::new();
+            let mut held = 0usize;
+            for (handle, block) in bucket.block_index.iter() {
+                held += 1;
+                keys.insert(named.at(bucket.routing_bucket, *handle));
+                models.insert(block.model_id().as_str());
+                // Every entry's name is the same absence, so this set holds one member for any
+                // non-empty bucket. The histogram it feeds is restated where it is read.
+                element_names.insert(None::<&str>);
+            }
+            *spread.blocks_held.entry(held).or_default() += 1;
+            *spread.object_key.entry(keys.len()).or_default() += 1;
+            *spread.model_id.entry(models.len()).or_default() += 1;
+            *spread.element_name.entry(element_names.len()).or_default() += 1;
+            if held > 1 {
+                spread.multi_block_buckets += 1;
+                if element_names.len() == 1 {
+                    spread.multi_block_buckets_with_one_element_name += 1;
+                }
             }
         }
-    }
-    spread
+        spread
+    })
 }
 
 pub(super) fn probe_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
@@ -509,50 +510,51 @@ impl KeyAllocationCensus {
 const ARC_HEADER_BYTES: usize = 16;
 
 fn key_allocation_census(engine: &TemporalEngine) -> KeyAllocationCensus {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    // (model_id, object_key) -> the distinct allocation addresses its blocks hold.
-    let mut by_object: BTreeMap<(String, String), (BTreeSet<usize>, BTreeSet<usize>, usize)> =
-        BTreeMap::new();
-    // READ THROUGH THE POSITION MAP, AND THE OBJECT-KEY COLUMN IS NOW A STRUCTURAL CONTROL.
-    //
-    // This counted the distinct ALLOCATIONS of one object key that its own blocks held, and
-    // `surplus_object_key_allocations` was the copies beyond the first. A block entry holds no
-    // key, so there is nothing per block to be a copy OF: the blocks of an object are all handed
-    // the one `Arc` their bucket's lookup holds, and the column reads 1 BY CONSTRUCTION.
-    //
-    // KEPT, FOR THE REASON THE `model_id` COLUMN BESIDE IT IS KEPT -- and the comment there says
-    // it first. It is no longer evidence that a sharing pool was consulted; it still
-    // DISCRIMINATES, because a read path that copied the text per block instead of cloning the
-    // `Arc` would report two here. That is not hypothetical: forty walks in this module tree take
-    // a key per block through this same inversion, and a copy per block would reinstate the exact
-    // duplication this change removed.
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in bucket.block_index.iter() {
-            let object_key = named.at(bucket.routing_bucket, *handle);
-            let slot = by_object
-                .entry((block.model_id().to_string(), object_key.to_string()))
-                .or_default();
-            slot.0.insert(object_key.as_ptr() as usize);
-            // The spelling is a `&'static str` off the registry now, not an allocation: one
-            // address per kind for the whole process, so this census reads 1 BY CONSTRUCTION
-            // rather than because a pool happened to be consulted. Kept as the control it was.
-            slot.1.insert(block.model_id().as_str().as_ptr() as usize);
-            slot.2 += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        // (model_id, object_key) -> the distinct allocation addresses its blocks hold.
+        let mut by_object: BTreeMap<(String, String), (BTreeSet<usize>, BTreeSet<usize>, usize)> =
+            BTreeMap::new();
+        // READ THROUGH THE POSITION MAP, AND THE OBJECT-KEY COLUMN IS NOW A STRUCTURAL CONTROL.
+        //
+        // This counted the distinct ALLOCATIONS of one object key that its own blocks held, and
+        // `surplus_object_key_allocations` was the copies beyond the first. A block entry holds no
+        // key, so there is nothing per block to be a copy OF: the blocks of an object are all handed
+        // the one `Arc` their bucket's lookup holds, and the column reads 1 BY CONSTRUCTION.
+        //
+        // KEPT, FOR THE REASON THE `model_id` COLUMN BESIDE IT IS KEPT -- and the comment there says
+        // it first. It is no longer evidence that a sharing pool was consulted; it still
+        // DISCRIMINATES, because a read path that copied the text per block instead of cloning the
+        // `Arc` would report two here. That is not hypothetical: forty walks in this module tree take
+        // a key per block through this same inversion, and a copy per block would reinstate the exact
+        // duplication this change removed.
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in bucket.block_index.iter() {
+                let object_key = named.at(bucket.routing_bucket, *handle);
+                let slot = by_object
+                    .entry((block.model_id().to_string(), object_key.to_string()))
+                    .or_default();
+                slot.0.insert(object_key.as_ptr() as usize);
+                // The spelling is a `&'static str` off the registry now, not an allocation: one
+                // address per kind for the whole process, so this census reads 1 BY CONSTRUCTION
+                // rather than because a pool happened to be consulted. Kept as the control it was.
+                slot.1.insert(block.model_id().as_str().as_ptr() as usize);
+                slot.2 += 1;
+            }
         }
-    }
-    let mut census = KeyAllocationCensus::default();
-    for ((_, object_key), (key_ptrs, model_ptrs, blocks)) in by_object.iter() {
-        census.objects += 1;
-        census.blocks += blocks;
-        *census.object_key.entry(key_ptrs.len()).or_default() += 1;
-        *census.model_id.entry(model_ptrs.len()).or_default() += 1;
-        let surplus = key_ptrs.len().saturating_sub(1);
-        census.surplus_object_key_allocations += surplus;
-        census.surplus_object_key_bytes += surplus * (object_key.len() + ARC_HEADER_BYTES);
-    }
-    census
+        let mut census = KeyAllocationCensus::default();
+        for ((_, object_key), (key_ptrs, model_ptrs, blocks)) in by_object.iter() {
+            census.objects += 1;
+            census.blocks += blocks;
+            *census.object_key.entry(key_ptrs.len()).or_default() += 1;
+            *census.model_id.entry(model_ptrs.len()).or_default() += 1;
+            let surplus = key_ptrs.len().saturating_sub(1);
+            census.surplus_object_key_allocations += surplus;
+            census.surplus_object_key_bytes += surplus * (object_key.len() + ARC_HEADER_BYTES);
+        }
+        census
+    })
 }
 
 /// THE BLOCKS OF ONE OBJECT HOLD ONE ALLOCATION OF ITS KEY.
@@ -1086,62 +1088,63 @@ fn a_container_cannot_fill_the_pool_the_kinds_are_interned_in() {
     // names against a pool cap of 64.
     seed_container_keys(&engine, 4, 100);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let pooled = shard.bucket_index.kind_pool.len();
-    println!("kind_pool={pooled} entries");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let pooled = shard.bucket_index.kind_pool.len();
+        println!("kind_pool={pooled} entries");
 
-    // The pool must be PAST the element name ceiling, or the crowding-out this test is about cannot
-    // happen and every assertion below is free.
-    assert!(
-        pooled > 64,
-        "the pool holds {pooled} entries; this fixture is supposed to produce four hundred \
-         distinct element names and so drive it past the element name ceiling of 64. Below that, \
-         an element name could not have crowded a kind out even before this change"
-    );
-    // And still bounded: element names stop at 64, kinds may use 16 more, nothing else may.
-    assert!(
-        pooled <= 64 + 16,
-        "the pool holds {pooled} entries against a ceiling of 80; it is supposed to stay bounded \
-         by the sum of the two ceilings"
-    );
+        // The pool must be PAST the element name ceiling, or the crowding-out this test is about cannot
+        // happen and every assertion below is free.
+        assert!(
+            pooled > 64,
+            "the pool holds {pooled} entries; this fixture is supposed to produce four hundred \
+             distinct element names and so drive it past the element name ceiling of 64. Below that, \
+             an element name could not have crowded a kind out even before this change"
+        );
+        // And still bounded: element names stop at 64, kinds may use 16 more, nothing else may.
+        assert!(
+            pooled <= 64 + 16,
+            "the pool holds {pooled} entries against a ceiling of 80; it is supposed to stay bounded \
+             by the sum of the two ceilings"
+        );
 
-    // AND WHO STILL HOLDS THE POOLED NAME, which is the half of this test the entry no longer
-    // decides. A page entry carries the one-byte spelling and no string, so it cannot hold a
-    // pooled copy and cannot fail to. The remaining holder is the OBJECT LOOKUP, whose `by_model`
-    // head is keyed by the shared name -- that is why the pool is still consulted at all, and it
-    // is what the ceilings above are protecting.
-    let mut lookup_heads = 0usize;
-    let mut pooled_heads = 0usize;
-    for (model_id, _object_key, _refs) in shard.bucket_index.object_block_lookup.iter() {
-        lookup_heads += 1;
-        if let Some(pooled) = shard.bucket_index.kind_pool.get(model_id) {
-            if Arc::ptr_eq(pooled, model_id) {
-                pooled_heads += 1;
+        // AND WHO STILL HOLDS THE POOLED NAME, which is the half of this test the entry no longer
+        // decides. A page entry carries the one-byte spelling and no string, so it cannot hold a
+        // pooled copy and cannot fail to. The remaining holder is the OBJECT LOOKUP, whose `by_model`
+        // head is keyed by the shared name -- that is why the pool is still consulted at all, and it
+        // is what the ceilings above are protecting.
+        let mut lookup_heads = 0usize;
+        let mut pooled_heads = 0usize;
+        for (model_id, _object_key, _refs) in shard.bucket_index.object_block_lookup.iter() {
+            lookup_heads += 1;
+            if let Some(pooled) = shard.bucket_index.kind_pool.get(model_id) {
+                if Arc::ptr_eq(pooled, model_id) {
+                    pooled_heads += 1;
+                }
             }
         }
-    }
-    assert!(
-        lookup_heads > 0,
-        "the lookup holds no (model, object) head, so there is nothing whose key could be pooled"
-    );
-    assert_eq!(
-        lookup_heads, pooled_heads,
-        "{pooled_heads} of {lookup_heads} lookup heads are keyed by the POOLED allocation of \
-         their kind; the rest hold a copy, which is the cost the pool exists to remove"
-    );
+        assert!(
+            lookup_heads > 0,
+            "the lookup holds no (model, object) head, so there is nothing whose key could be pooled"
+        );
+        assert_eq!(
+            lookup_heads, pooled_heads,
+            "{pooled_heads} of {lookup_heads} lookup heads are keyed by the POOLED allocation of \
+             their kind; the rest hold a copy, which is the cost the pool exists to remove"
+        );
 
-    // And the block's own side of it: one byte, no string, nothing to pool.
-    let mut blocks = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        blocks += bucket.block_index.iter().count();
-    }
-    assert!(blocks > 0, "no blocks were recorded; nothing was measured");
-    assert_eq!(
-        1,
-        std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
-        "the page entry is supposed to spend one byte on the spelling the pool holds for the lookup",
-    );
+        // And the block's own side of it: one byte, no string, nothing to pool.
+        let mut blocks = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            blocks += bucket.block_index.iter().count();
+        }
+        assert!(blocks > 0, "no blocks were recorded; nothing was measured");
+        assert_eq!(
+            1,
+            std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
+            "the page entry is supposed to spend one byte on the spelling the pool holds for the lookup",
+        );
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -1182,10 +1185,9 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     seed_container_keys(&engine, 2, 8);
     seed_routed_keys(&engine, 8);
 
-    let mut shard = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        shards.get(&1).expect("shard is loaded").clone()
-    };
+    let mut shard = engine.shards.with_state(1, |state| {
+        state.expect("shard is loaded").clone()
+    });
     let bytes = serialize_index_stamped(&mut shard);
     assert!(
         bytes.len() > 200,
