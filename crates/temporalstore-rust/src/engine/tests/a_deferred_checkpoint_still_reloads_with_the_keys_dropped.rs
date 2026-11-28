@@ -80,16 +80,9 @@ fn seed(engine: &TemporalEngine, keys: usize) {
 /// INDEX says after a replay, and a read answered from a cache tier or a block-store fallback
 /// would answer a different one.
 fn live_keys(engine: &TemporalEngine) -> std::collections::BTreeSet<String> {
-    engine
-        .shards
-        .read()
-        .expect("engine lock poisoned")
-        .get(&SHARD)
-        .expect("shard is loaded")
-        .strings()
-        .keys()
-        .map(|key| key.to_string())
-        .collect()
+    engine.shards.with_state(SHARD, |state| {
+        state.expect("shard is loaded").strings().keys().map(|key| key.to_string()).collect()
+    })
 }
 
 #[test]

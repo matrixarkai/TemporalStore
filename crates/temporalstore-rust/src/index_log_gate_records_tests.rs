@@ -118,7 +118,7 @@ fn collection_rewrites_and_sequence_holes_invalidate_the_gate() {
             store.gc_before_sequence_limited(SHARD, 7, 2).unwrap();
         }
         assert!(!store
-            .inner
+            .stream(SHARD)
             .lock()
             .unwrap()
             .active_gate_records_by_shard
@@ -166,7 +166,8 @@ fn active_gate_memory_is_capped_and_a_roll_starts_a_new_cache() {
         append(&store, item);
     }
     {
-        let inner = store.inner.lock().unwrap();
+        let stream = store.stream(SHARD);
+        let inner = stream.lock().unwrap();
         let cached = inner.active_gate_records_by_shard.get(&SHARD).unwrap();
         assert_eq!(cached.records.len(), MAX_ACTIVE_GATE_RECORDS);
         assert!(cached.records.capacity() * std::mem::size_of::<(u64, u64)>() <= 64 * 1024);
@@ -177,7 +178,7 @@ fn active_gate_memory_is_capped_and_a_roll_starts_a_new_cache() {
         assert_eq!(summary.records, MAX_ACTIVE_GATE_RECORDS + 1);
         assert!(reads.0 > 0);
         assert!(!store
-            .inner
+            .stream(SHARD)
             .lock()
             .unwrap()
             .active_gate_records_by_shard
@@ -189,7 +190,7 @@ fn active_gate_memory_is_capped_and_a_roll_starts_a_new_cache() {
     assert_eq!(summary.records, MAX_ACTIVE_GATE_RECORDS + 2);
     assert_eq!(reads, (0, 0));
     assert_eq!(
-        store.inner.lock().unwrap().active_gate_records_by_shard[&SHARD]
+        store.stream(SHARD).lock().unwrap().active_gate_records_by_shard[&SHARD]
             .records
             .len(),
         1
@@ -253,7 +254,7 @@ fn undecodable_and_nonmonotonic_records_never_create_a_gate_cache() {
             assert_eq!(summary.removable_records, if nonmonotonic { 4 } else { 3 });
             assert!(reads.0 > 0);
             assert!(!store
-                .inner
+                .stream(SHARD)
                 .lock()
                 .unwrap()
                 .active_gate_records_by_shard
@@ -282,7 +283,7 @@ fn a_torn_active_tail_is_never_cached_as_a_complete_piece() {
         assert_eq!(summary.removable_records, 7);
         assert!(reads.0 > 0);
         assert!(!store
-            .inner
+            .stream(SHARD)
             .lock()
             .unwrap()
             .active_gate_records_by_shard
@@ -339,7 +340,7 @@ fn a_validated_cold_gate_also_proves_the_collection_tail() {
     let gate = store.gate_summary(SHARD, 17);
     assert_eq!(gate.records, 32);
     assert!(!store
-        .inner
+        .stream(SHARD)
         .lock()
         .unwrap()
         .last_sequence_by_shard

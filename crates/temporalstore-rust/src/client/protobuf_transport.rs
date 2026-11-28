@@ -80,7 +80,7 @@ pub(crate) fn protobuf_command_key(mut input: &[u8]) -> Result<(&str, bool), pro
     let (kind, wire) = decode_key(&mut input)?;
     // Keyed string, hash, common, list, set, sorted-set and feature
     // commands carry the key at field 1 of the selected message.
-    let allowed = matches!(kind, 1..=13 | 20..=30 | 38..=42 | 44 | 63..=68 | 70..=74 | 76..=87);
+    let allowed = matches!(kind, 1..=13 | 20..=30 | 38..=42 | 44 | 63..=68 | 70..=74 | 76..=88);
     if !allowed || wire != WireType::LengthDelimited {
         return Err(prost::DecodeError::new(
             "expected a key-routed protobuf command",
@@ -105,7 +105,7 @@ pub(crate) fn protobuf_command_key(mut input: &[u8]) -> Result<(&str, bool), pro
             skip_field(wire, tag, &mut body, DecodeContext::default())?;
         }
     }
-    let read = matches!(kind, 2 | 5 | 7 | 9 | 11 | 13 | 21 | 64 | 68 | 82..=87);
+    let read = matches!(kind, 2 | 5 | 7 | 9 | 11 | 13 | 21 | 64 | 68 | 82..=88);
     Ok((key, read))
 }
 

@@ -125,7 +125,7 @@ fn the_control_state_mutators_keep_the_consolidated_map_right_through_removals()
     assert_eq!(
         probe.address().block_id(),
         Some(0),
-        "the inline arm now round-trips a nonzero block ordinal. If that is deliberate, this          assertion and the note above are stale; if it is not, a block ordinal is being silently          zeroed on the compactor write-back path"
+        "the inline arm now round-trips a nonzero block ordinal. If that is deliberate, this assertion and the note above are stale; if it is not, a block ordinal is being silently zeroed on the compactor write-back path"
     );
 
     // Mutating a key that is not there must change nothing and say so.
@@ -533,7 +533,7 @@ fn installing_a_control_state_block_keeps_the_rows_block_refs() {
             .get("k1")
             .and_then(|slot| slot.refs())
             .is_some(),
-        "denominator: the row holds no refs before the install, so this guard would pass however          the door is written"
+        "denominator: the row holds no refs before the install, so this guard would pass however the door is written"
     );
 
     shard.insert_control_state_block("k1".into(), installed_over_it.clone());
@@ -543,7 +543,7 @@ fn installing_a_control_state_block_keeps_the_rows_block_refs() {
         .get("k1")
         .and_then(|slot| slot.refs())
         .expect(
-            "the install replaced the row and took its block refs with it, leaving the object's              live block named by neither home",
+            "the install replaced the row and took its block refs with it, leaving the object's live block named by neither home",
         );
     assert!(
         refs.iter().any(|block_ref| *block_ref == filed),

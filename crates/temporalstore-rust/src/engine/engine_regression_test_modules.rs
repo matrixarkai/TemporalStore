@@ -104,6 +104,8 @@ mod log_resident_is_derived;
 mod fold_hash_map_completeness;
 #[path = "tests/recorded_map_invariant.rs"]
 mod recorded_map_invariant;
+#[path = "tests/a_rewrite_asks_once_whether_two_elements_share_a_block.rs"]
+mod a_rewrite_asks_once_whether_two_elements_share_a_block;
 #[path = "tests/set_install_census.rs"]
 mod set_install_census;
 #[path = "tests/model_number_agreement.rs"]
@@ -286,6 +288,8 @@ mod two_level_resident_shape;
 mod adopting_the_ported_index_log_record;
 #[path = "tests/reconcile_allocation.rs"]
 mod reconcile_allocation;
+#[path = "tests/an_encode_allocates_once.rs"]
+mod an_encode_allocates_once;
 #[path = "tests/hash_read_union_divergence.rs"]
 mod hash_read_union_divergence;
 // `packed_element_scan_cost` WAS DECLARED HERE AND THE FILE IS DELETED.
@@ -369,6 +373,8 @@ mod the_write_path_leaves_the_bucket_ttl_alone;
 mod marking_an_object_dirty_reaches_its_blocks;
 #[path = "tests/one_key_one_allocation.rs"]
 mod one_key_one_allocation;
+#[path = "tests/a_block_reading_read_takes_the_shared_lock.rs"]
+mod a_block_reading_read_takes_the_shared_lock;
 #[path = "tests/string_keyed_holders.rs"]
 mod string_keyed_holders;
 #[path = "tests/one_record_per_object.rs"]
@@ -625,6 +631,8 @@ mod an_outcome_kind_holds_a_known_kind_without_allocating;
 mod a_delta_manifest_is_never_read_as_a_whole_image;
 #[path = "tests/a_feature_series_at_its_cap_files_only_what_changed.rs"]
 mod a_feature_series_at_its_cap_files_only_what_changed;
+#[path = "tests/the_index_log_fold_matches_the_engine_after_every_write.rs"]
+mod the_index_log_fold_matches_the_engine_after_every_write;
 #[path = "tests/a_dump_manifest_lists_the_shard_once.rs"]
 mod a_dump_manifest_lists_the_shard_once;
 #[path = "tests/a_string_length_and_range_do_not_copy_the_value.rs"]
@@ -665,3 +673,12 @@ mod every_maintenance_step_queues_behind_a_command;
 mod a_scalar_reporter_visits_at_most_its_cap_at_every_scale;
 #[path = "tests/shard_lock_holds_are_attributed_by_call_site.rs"]
 mod shard_lock_holds_are_attributed_by_call_site;
+#[path = "tests/a_removal_retires_its_vacated_block_by_naming_it.rs"]
+mod a_removal_retires_its_vacated_block_by_naming_it;
+
+#[path = "tests/a_block_key_spells_its_numbers_without_the_formatter.rs"]
+mod a_block_key_spells_its_numbers_without_the_formatter;
+#[path = "tests/a_list_write_records_its_block_once.rs"]
+mod a_list_write_records_its_block_once;
+#[path = "tests/a_feature_aggregate_takes_a_typed_reducer.rs"]
+mod a_feature_aggregate_takes_a_typed_reducer;

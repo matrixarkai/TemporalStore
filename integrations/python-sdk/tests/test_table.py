@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from contextlib import ExitStack
 from threading import Event
 import unittest
@@ -54,6 +54,43 @@ class TableClientTest(unittest.TestCase):
                 default.batch_execute([command])
             self.assertEqual(error.exception.code, "raft_error")
             self.assertEqual(received, [(73, 7, [command]), (73, 7, [command])])
+
+    def test_server_deadline_keeps_the_insert_outcome_without_retrying(self):
+        class Cancelled(grpc.RpcError):
+            def __init__(self, detail):
+                self.detail = detail
+
+            def code(self):
+                return grpc.StatusCode.CANCELLED
+
+            def details(self):
+                return self.detail
+
+        metadata = Mock()
+        command = commands.Command(string_set_conditional=commands.StringSetConditional(
+            key="chunk", value=b"payload", condition=commands.STRING_SET_CONDITION_IF_NOT_EXISTS,
+        ))
+        for uses_raft, expected in (
+            (True, "write_outcome_unknown"), (False, "write_durability_unconfirmed"),
+        ):
+            metadata.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 1, (
+                Shard(73, None, (), 7, "primary-a", uses_raft_route=uses_raft),
+            ))
+            for detail, recoverable in (
+                ("Timeout expired", True), ("Timeout%20expired", True), ("caller cancelled", False),
+            ):
+                with self.subTest(detail=detail, uses_raft=uses_raft), patch(
+                    "temporalstore_sdk.table.CommandClient",
+                ) as channel:
+                    channel.return_value.batch_execute.side_effect = Cancelled(detail)
+                    with TableClient(metadata, "kvcache", "model", preserve_insert_outcomes=True) as table:
+                        if recoverable:
+                            [reply] = table.batch_execute([command])
+                            self.assertEqual(reply.status.code, expected)
+                        else:
+                            with self.assertRaises(Cancelled):
+                                table.batch_execute([command])
+                    channel.return_value.batch_execute.assert_called_once()
 
     def test_batches_by_advertised_primary_and_restores_request_order(self):
         metadata = Mock()
@@ -166,6 +203,104 @@ class TableClientTest(unittest.TestCase):
             [0.75, 0.5],
         )
 
+    def test_timed_cache_insert_window_includes_discovery_and_all_shards(self):
+        metadata = Mock()
+        topology = TableTopology("kvcache", "model", 1, 73, 2, (
+            Shard(73, None, (), 7, "first"), Shard(74, None, (), 8, "second"),
+        ))
+        first, second = Mock(), Mock()
+        inserts = [commands.Command(string_set_conditional=commands.StringSetConditional(
+            key=key, value=b"payload", condition=commands.STRING_SET_CONDITION_IF_NOT_EXISTS,
+        )) for key in ("alpha", "123456789")]
+        elapsed = 0.0
+
+        def discover(*_, **kwargs):
+            nonlocal elapsed
+            elapsed += 0.25
+            return topology
+
+        def insert(*_, **kwargs):
+            nonlocal elapsed
+            elapsed = 1.0
+            return commands.BatchExecuteResponse(
+                responses=[commands.CommandResponse(status=commands.Status(ok=True), count=1)],
+            )
+
+        metadata.table_topology.side_effect = discover
+        first.batch_execute.side_effect = insert
+        second.batch_execute.side_effect = insert
+        with patch("temporalstore_sdk.table.monotonic", side_effect=lambda: elapsed), patch(
+            "temporalstore_sdk.table.CommandClient", side_effect=[first, second],
+        ), TableClient(metadata, "kvcache", "model", preserve_insert_outcomes=True) as table:
+            accepted, expired = table.batch_execute(inserts, timeout_seconds=1)
+
+        metadata.table_topology.assert_called_once_with("kvcache", "model", timeout_seconds=1)
+        self.assertEqual(first.batch_execute.call_args.kwargs["timeout_seconds"], 0.75)
+        self.assertEqual(accepted.count, 1)
+        self.assertEqual(expired.status.code, "deadline_exceeded")
+        second.batch_execute.assert_not_called()
+
+    def test_uncertain_insert_can_finish_while_metadata_refresh_is_in_flight(self):
+        metadata = Mock()
+        topology = TableTopology("kvcache", "model", 1, 73, 1, (
+            Shard(73, None, (), 7, "first", uses_raft_route=True),
+        ))
+        successor = TableTopology("kvcache", "model", 2, 73, 1, (
+            Shard(73, None, (), 8, "second", uses_raft_route=True),
+        ))
+        started, reply = Event(), Event()
+        refreshing, finish_refresh = Event(), Event()
+
+        class Deadline(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.DEADLINE_EXCEEDED
+
+            def details(self):
+                return "insert deadline expired"
+
+        def discover(*_, **kwargs):
+            if metadata.table_topology.call_count == 1:
+                return topology
+            refreshing.set()
+            if not finish_refresh.wait(4):
+                raise AssertionError("test did not release topology refresh")
+            return successor
+
+        def write(*_, **kwargs):
+            started.set()
+            if not reply.wait(4):
+                raise AssertionError("test did not release insert response")
+            raise Deadline()
+
+        command = commands.Command(string_set_conditional=commands.StringSetConditional(
+            key="alpha", value=b"value", condition=commands.STRING_SET_CONDITION_IF_NOT_EXISTS,
+        ))
+        metadata.table_topology.side_effect = discover
+        with ThreadPoolExecutor(max_workers=2) as workers, patch(
+            "temporalstore_sdk.table.CommandClient",
+        ) as client, TableClient(metadata, "kvcache", "model",
+                                preserve_insert_outcomes=True) as table:
+            self.assertIs(table._current_topology(), topology)
+            client.return_value.batch_execute.side_effect = write
+            pending = workers.submit(table.batch_execute, [command], timeout_seconds=2)
+            try:
+                self.assertTrue(started.wait(2))
+                table._invalidate_route(topology)
+                refresh = workers.submit(table._current_topology)
+                self.assertTrue(refreshing.wait(2))
+                reply.set()
+                try:
+                    [result] = pending.result(timeout=0.5)
+                except TimeoutError as error:
+                    self.fail(f"insert completion waited for the metadata refresh: {error}")
+                self.assertEqual(result.status.code, "write_outcome_unknown")
+            finally:
+                reply.set()
+                finish_refresh.set()
+            self.assertIs(refresh.result(timeout=2), successor)
+            self.assertIs(table._current_topology(), successor)
+            self.assertEqual(metadata.table_topology.call_count, 2)
+
     def test_timed_partial_read_preserves_a_reply_when_another_shard_cannot_start(self):
         metadata = Mock()
         metadata.table_topology.return_value = TableTopology("kvcache", "model", 1, 73, 2, (
@@ -268,6 +403,47 @@ class TableClientTest(unittest.TestCase):
                         self.assertEqual(metadata.table_topology.call_count, 2)
                         self.assertEqual(getattr(second, rpc).call_args.kwargs["load_version"], 8)
 
+    def test_uncertain_conditional_insert_refreshes_route_for_the_next_insert(self):
+        class Unavailable(grpc.RpcError):
+            def code(self):
+                return grpc.StatusCode.UNAVAILABLE
+
+            def details(self):
+                return "previous leader is unreachable"
+
+        metadata = Mock()
+        metadata.table_topology.side_effect = [
+            TableTopology("kvcache", "model", version, 73, 1, (
+                Shard(73, None, (), version, address, uses_raft_route=True),
+            ))
+            for version, address in ((7, "primary-a"), (8, "primary-b"))
+        ]
+        stale, current = Mock(), Mock()
+        stale.batch_execute.side_effect = Unavailable
+        current.batch_execute.return_value = commands.BatchExecuteResponse(
+            responses=[commands.CommandResponse(status=commands.Status(ok=True), count=1)],
+        )
+        first, second = (
+            commands.Command(string_set_conditional=commands.StringSetConditional(
+                key=key, value=key.encode(), condition=commands.STRING_SET_CONDITION_IF_NOT_EXISTS,
+            ))
+            for key in ("first", "second")
+        )
+        with patch("temporalstore_sdk.table.CommandClient", side_effect=[stale, current]):
+            with TableClient(metadata, "kvcache", "model", preserve_insert_outcomes=True) as table:
+                [reply] = table.batch_execute([first])
+                self.assertEqual(reply.status.code, "write_outcome_unknown")
+                stale.batch_execute.assert_called_once()
+                current.batch_execute.assert_not_called()
+                self.assertEqual(metadata.table_topology.call_count, 1)
+                [reply] = table.batch_execute([second])
+                self.assertEqual(reply.count, 1)
+                self.assertEqual(metadata.table_topology.call_count, 2)
+                current.batch_execute.assert_called_once()
+                call = current.batch_execute.call_args
+                self.assertEqual(list(call.args[1]), [second])
+                self.assertEqual(call.kwargs["load_version"], 8)
+
     def test_unary_read_refreshes_a_stale_route_within_the_original_deadline(self):
         class Unavailable(grpc.RpcError):
             def code(self):
@@ -307,6 +483,45 @@ class TableClientTest(unittest.TestCase):
                 self.assertEqual(second.execute.call_args.kwargs["load_version"], 8)
                 self.assertAlmostEqual(first.execute.call_args.kwargs["timeout_seconds"], 1.0)
                 self.assertAlmostEqual(second.execute.call_args.kwargs["timeout_seconds"], 0.4)
+
+    def test_unary_read_recovers_exact_bytes_from_the_refreshed_grpc_endpoint(self):
+        payload = bytes(range(256)) * 256
+        calls = []
+
+        class Datashard(TemporalStoreServiceServicer):
+            def __init__(self, role):
+                self.role = role
+
+            def ExecuteChecked(self, request, context):
+                calls.append((self.role, request.shard_id, request.load_version, request.command.string_get.key))
+                if self.role == "old":
+                    context.abort(grpc.StatusCode.UNAVAILABLE, "primary changed")
+                return commands.ExecuteResponse(
+                    status=commands.Status(ok=True), response=commands.CommandResponse(value=payload),
+                )
+
+        with ExitStack() as stack:
+            pool = stack.enter_context(ThreadPoolExecutor(max_workers=2))
+            topologies = []
+            for role, version in (("old", 7), ("new", 8)):
+                server = grpc.server(pool)
+                add_TemporalStoreServiceServicer_to_server(Datashard(role), server)
+                port = server.add_insecure_port("127.0.0.1:0")
+                server.start()
+                stack.callback(lambda server=server: server.stop(0).wait(timeout=3))
+                topologies.append(TableTopology("kvcache", "model", version, 73, 1, (
+                    Shard(73, None, (), version, f"127.0.0.1:{port}"),
+                )))
+
+            metadata = Mock()
+            metadata.table_topology.side_effect = topologies
+            with TableClient(metadata, "kvcache", "model", timeout_seconds=2) as table:
+                reply = table.execute(get("chunk"))
+
+        self.assertTrue(reply.status.ok)
+        self.assertEqual(reply.response.value, payload)
+        self.assertEqual(calls, [("old", 73, 7, "chunk"), ("new", 73, 8, "chunk")])
+        self.assertEqual(metadata.table_topology.call_count, 2)
 
     def test_missing_elected_leader_refreshes_before_normal_topology_ttl(self):
         metadata = Mock()

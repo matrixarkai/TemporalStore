@@ -82,24 +82,19 @@ fn apply(
 }
 
 fn assert_cached(engine: &TemporalEngine, expected: bool) {
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    let address = shard
-        .bucket_index
-        .hashes
-        .get("row")
-        .unwrap()
-        .get("value")
-        .unwrap();
-    assert!(crate::wal_record::is_wal_resident(address.block_slab_id()));
-    let (start, end) = shard.routing_range();
-    let key = CacheKey::page_with_slot(
-        1,
-        address.block_slab_id(),
-        address.offset(),
-        address.length(),
-        Some(block_routing_bucket("row", start, end)),
-    );
+    let key = engine.shards.with_state(1, |state| {
+        let shard = state.unwrap();
+        let address = shard.bucket_index.hashes.get("row").unwrap().get("value").unwrap();
+        assert!(crate::wal_record::is_wal_resident(address.block_slab_id()));
+        let (start, end) = shard.routing_range();
+        CacheKey::page_with_slot(
+            1,
+            address.block_slab_id(),
+            address.offset(),
+            address.length(),
+            Some(block_routing_bucket("row", start, end)),
+        )
+    });
     assert_eq!(engine.cache.peek(&key), expected);
 }
 
@@ -120,7 +115,8 @@ fn read_filled_cache_registers_cold_frames_before_releasing_the_guard() {
         let engine = open(dir.path(), false);
         BEFORE_SHARED_ROW_COMMIT.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(|engine, shard, _| {
-                assert!(engine.shards.try_write().is_ok());
+                assert!(!crate::engine::shard_write_guard::any_shard_guard_held());
+                engine.shards.with_state_mut(shard, |state| assert!(state.is_some()));
                 let stats = engine.wal_store.stats_without_rescan(shard);
                 assert_eq!((stats.writes, stats.syncs), (1, 0));
                 assert_cached(engine, false);

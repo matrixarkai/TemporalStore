@@ -50,12 +50,13 @@ fn engine_with_keys(dir: &std::path::Path, count: usize) -> TemporalEngine {
 }
 
 fn separate_digests(engine: &TemporalEngine) -> std::collections::BTreeMap<u32, String> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    bucket_generation_digests_by_bucket(1, shard)
-        .into_iter()
-        .map(|(bucket, digest)| (bucket, format!("{digest:?}")))
-        .collect()
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.expect("shard 1");
+        bucket_generation_digests_by_bucket(1, shard)
+            .into_iter()
+            .map(|(bucket, digest)| (bucket, format!("{digest:?}")))
+            .collect()
+    })
 }
 
 fn merged_digests(

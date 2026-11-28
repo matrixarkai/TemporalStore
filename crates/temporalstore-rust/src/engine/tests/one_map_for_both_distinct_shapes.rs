@@ -93,13 +93,14 @@ fn build_fixture(dir: &std::path::Path) {
 
 /// How many distinct members the shard holds for `KEY`, and in which representation.
 fn held(engine: &TemporalEngine) -> Option<(u64, bool)> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD)?;
-    let bucket = shard.control_state_changes.get(KEY)?.get(&BUCKET_MS)?;
-    Some((
-        bucket.distinct_hint(),
-        matches!(bucket, DistinctBucket::Sketch(_)),
-    ))
+    engine.shards.with_state(SHARD, |state| {
+        let shard = state?;
+        let bucket = shard.control_state_changes.get(KEY)?.get(&BUCKET_MS)?;
+        Some((
+            bucket.distinct_hint(),
+            matches!(bucket, DistinctBucket::Sketch(_)),
+        ))
+    })
 }
 
 /// A PRE-BUMP INDEX IS REFUSED BY THE STAMP, NOT READ.
@@ -271,15 +272,16 @@ fn the_conversion_swaps_the_variant_in_place() {
     );
 
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&SHARD).expect("the shard is loaded");
-        assert!(
-            shard.control_distinct_sketch,
-            "denominator: the gate must be on the shard, or no conversion will happen"
-        );
-        for index in 0..=DISTINCT_SKETCH_THRESHOLD {
-            record_change(shard, KEY, BUCKET_MS, format!("member-{index}").into_bytes());
-        }
+        engine.shards.with_state_mut(SHARD, |state| {
+            let shard = state.expect("the shard is loaded");
+            assert!(
+                shard.control_distinct_sketch,
+                "denominator: the gate must be on the shard, or no conversion will happen"
+            );
+            for index in 0..=DISTINCT_SKETCH_THRESHOLD {
+                record_change(shard, KEY, BUCKET_MS, format!("member-{index}").into_bytes());
+            }
+        })
     }
 
     let (hint, sketched) = held(&engine).expect("the bucket exists");
@@ -290,24 +292,25 @@ fn the_conversion_swaps_the_variant_in_place() {
     );
     // ONE bucket, in ONE map. The old shape could hold the same (key, bucket) in two maps at
     // once; this one cannot represent that, which is the whole of what the merge buys.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("the shard is loaded");
-    assert_eq!(
-        1,
-        shard
-            .control_state_changes
-            .get(KEY)
-            .map_or(0, |series| series.len()),
-        "the key must hold exactly the one bucket that was written to"
-    );
-    let counted = count_changes(shard, KEY, 0, BUCKET_MS + 1);
-    println!("  count_changes over the sketched window -> {counted}");
-    assert!(
-        counted > 3_500 && counted < 4_700,
-        "the estimate over a converted bucket of {} distinct members came back {counted}, which \
-         is outside what a P=12 sketch should produce",
-        DISTINCT_SKETCH_THRESHOLD + 2
-    );
+    engine.shards.with_state(SHARD, |state| {
+        let shard = state.expect("the shard is loaded");
+        assert_eq!(
+            1,
+            shard
+                .control_state_changes
+                .get(KEY)
+                .map_or(0, |series| series.len()),
+            "the key must hold exactly the one bucket that was written to"
+        );
+        let counted = count_changes(shard, KEY, 0, BUCKET_MS + 1);
+        println!("  count_changes over the sketched window -> {counted}");
+        assert!(
+            counted > 3_500 && counted < 4_700,
+            "the estimate over a converted bucket of {} distinct members came back {counted}, which \
+             is outside what a P=12 sketch should produce",
+            DISTINCT_SKETCH_THRESHOLD + 2
+        );
+    })
 }
 
 /// THE EXACT PATH IS UNCHANGED WHEN NOTHING IN THE WINDOW IS SKETCHED.
@@ -317,22 +320,23 @@ fn an_unsketched_window_still_counts_exactly() {
     let engine = engine_at(dir.path());
     engine.load_shard(SHARD);
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&SHARD).expect("the shard is loaded");
-        assert!(
-            !shard.control_distinct_sketch,
-            "denominator: the gate is off by default, which is the arm this measures"
-        );
-        for index in 0..10 {
-            record_change(shard, KEY, BUCKET_MS, format!("member-{index}").into_bytes());
-        }
-        // A duplicate, to show the count is DISTINCT and not a total.
-        record_change(shard, KEY, BUCKET_MS, b"member-0".to_vec());
-        assert_eq!(
-            10,
-            count_changes(shard, KEY, 0, BUCKET_MS + 1),
-            "an unsketched window must count exactly, duplicates absorbed"
-        );
+        engine.shards.with_state_mut(SHARD, |state| {
+            let shard = state.expect("the shard is loaded");
+            assert!(
+                !shard.control_distinct_sketch,
+                "denominator: the gate is off by default, which is the arm this measures"
+            );
+            for index in 0..10 {
+                record_change(shard, KEY, BUCKET_MS, format!("member-{index}").into_bytes());
+            }
+            // A duplicate, to show the count is DISTINCT and not a total.
+            record_change(shard, KEY, BUCKET_MS, b"member-0".to_vec());
+            assert_eq!(
+                10,
+                count_changes(shard, KEY, 0, BUCKET_MS + 1),
+                "an unsketched window must count exactly, duplicates absorbed"
+            );
+        })
     }
 }
 
@@ -444,39 +448,40 @@ fn the_conversion_no_longer_shrinks_the_membership_sum() {
             .ok
     );
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&SHARD).expect("the shard is loaded");
-    assert!(shard.control_distinct_sketch, "denominator: the gate must be on");
+    engine.shards.with_state_mut(SHARD, |state| {
+        let shard = state.expect("the shard is loaded");
+        assert!(shard.control_distinct_sketch, "denominator: the gate must be on");
 
-    // Fill to exactly the threshold -- still exact -- and read the sum. ONE SHORT OF THE
-    // THRESHOLD, because the seed write above already put a member in: the denominator below
-    // caught this as an already-converted bucket on the first run, which is what it is for.
-    for index in 0..DISTINCT_SKETCH_THRESHOLD - 1 {
-        record_change(shard, KEY, BUCKET_MS, format!("member-{index}").into_bytes());
-    }
-    let before = super::super::key_membership_size(shard, KEY);
-    let exact_before = matches!(
-        shard.control_state_changes.get(KEY).and_then(|s| s.get(&BUCKET_MS)),
-        Some(DistinctBucket::Exact(_))
-    );
-    assert!(exact_before, "denominator: the bucket must still be exact before the conversion");
+        // Fill to exactly the threshold -- still exact -- and read the sum. ONE SHORT OF THE
+        // THRESHOLD, because the seed write above already put a member in: the denominator below
+        // caught this as an already-converted bucket on the first run, which is what it is for.
+        for index in 0..DISTINCT_SKETCH_THRESHOLD - 1 {
+            record_change(shard, KEY, BUCKET_MS, format!("member-{index}").into_bytes());
+        }
+        let before = super::super::key_membership_size(shard, KEY);
+        let exact_before = matches!(
+            shard.control_state_changes.get(KEY).and_then(|s| s.get(&BUCKET_MS)),
+            Some(DistinctBucket::Exact(_))
+        );
+        assert!(exact_before, "denominator: the bucket must still be exact before the conversion");
 
-    // One more value tips it over, converting the bucket in place.
-    record_change(shard, KEY, BUCKET_MS, b"the-one-that-converts".to_vec());
-    let after = super::super::key_membership_size(shard, KEY);
-    let sketched_after = matches!(
-        shard.control_state_changes.get(KEY).and_then(|s| s.get(&BUCKET_MS)),
-        Some(DistinctBucket::Sketch(_))
-    );
-    println!("  membership sum {before} -> {after}, converted {sketched_after}");
-    assert!(
-        sketched_after,
-        "denominator: the conversion must have happened, or there is nothing to say about the sum"
-    );
-    assert_eq!(
-        before, after,
-        "the conversion changed the membership sum. If it SHRANK, the capture fires again and the          consequence this test documents has gone away -- which would be fine, but the doc above          is then wrong and should be deleted rather than left to mislead."
-    );
+        // One more value tips it over, converting the bucket in place.
+        record_change(shard, KEY, BUCKET_MS, b"the-one-that-converts".to_vec());
+        let after = super::super::key_membership_size(shard, KEY);
+        let sketched_after = matches!(
+            shard.control_state_changes.get(KEY).and_then(|s| s.get(&BUCKET_MS)),
+            Some(DistinctBucket::Sketch(_))
+        );
+        println!("  membership sum {before} -> {after}, converted {sketched_after}");
+        assert!(
+            sketched_after,
+            "denominator: the conversion must have happened, or there is nothing to say about the sum"
+        );
+        assert_eq!(
+            before, after,
+            "the conversion changed the membership sum. If it SHRANK, the capture fires again and the consequence this test documents has gone away -- which would be fine, but the doc above is then wrong and should be deleted rather than left to mislead."
+        );
+    })
 }
 
 /// THE COMPATIBILITY KEY IS GONE FROM THE STORED IMAGE, AND THE ROWS ARE IN THE CONSOLIDATED MAP.
@@ -518,12 +523,13 @@ fn the_stored_image_no_longer_carries_the_control_state_blocks_key() {
 
     // DENOMINATOR: the fixture really produced a control-state block.
     {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&SHARD).expect("the shard is loaded");
-        assert!(
-            !shard.control_state_blocks().is_empty(),
-            "denominator: the fixture wrote no control-state block, so the absence of the stored              key below would be satisfied by an empty store and would mean nothing"
-        );
+        engine.shards.with_state(SHARD, |state| {
+            let shard = state.expect("the shard is loaded");
+            assert!(
+                !shard.control_state_blocks().is_empty(),
+                "denominator: the fixture wrote no control-state block, so the absence of the stored key below would be satisfied by an empty store and would mean nothing"
+            );
+        })
     }
 
     let bytes = std::fs::read(base_index_path(dir.path())).expect("a flushed base index exists");
@@ -539,22 +545,23 @@ fn the_stored_image_no_longer_carries_the_control_state_blocks_key() {
         top_level.iter().filter(|k| k.contains("control")).collect::<Vec<_>>());
     assert!(
         value.get("control_state_blocks").is_none(),
-        "the stored image still spells the top-level `control_state_blocks` key. That is the          compatibility shim, and the stamp bump in this change is what paid for taking it out;          leaving it means the stamp was spent and the cost it was spent on is still being paid."
+        "the stored image still spells the top-level `control_state_blocks` key. That is the compatibility shim, and the stamp bump in this change is what paid for taking it out; leaving it means the stamp was spent and the cost it was spent on is still being paid."
     );
     assert!(
         value.get("objects").is_some(),
-        "denominator: the consolidated map is absent from the stored image, so the rows have no          home at all rather than having moved"
+        "denominator: the consolidated map is absent from the stored image, so the rows have no home at all rather than having moved"
     );
 
     // AND THE ROWS COME BACK. Reload and read them through the consolidated map.
     drop(engine);
     let reloaded = engine_at(dir.path());
     reloaded.load_shard(SHARD);
-    let shards = reloaded.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("the shard is loaded");
-    println!("  control-state blocks after reload: {}", shard.control_state_blocks().len());
-    assert!(
-        !shard.control_state_blocks().is_empty(),
-        "the control-state blocks did not survive a reload through the consolidated map alone.          That is the loss the compatibility shim existed to prevent, arriving because the shim was          removed without the consolidated map carrying the rows."
-    );
+    reloaded.shards.with_state(SHARD, |state| {
+        let shard = state.expect("the shard is loaded");
+        println!("  control-state blocks after reload: {}", shard.control_state_blocks().len());
+        assert!(
+            !shard.control_state_blocks().is_empty(),
+            "the control-state blocks did not survive a reload through the consolidated map alone. That is the loss the compatibility shim existed to prevent, arriving because the shim was removed without the consolidated map carrying the rows."
+        );
+    })
 }
