@@ -530,12 +530,11 @@ fn an_absent_key_and_an_expired_key_remove_nothing() {
     assert!(series(&engine, &key).is_empty(), "removing from an absent key created a series");
 
     seed(&engine, &key);
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
         let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
         crate::engine::set_expiry(shard, key.clone(), past);
-    }
+    });
     assert_eq!(receipt(&remove(&engine, &key, any())), [0; 4]);
 }
 

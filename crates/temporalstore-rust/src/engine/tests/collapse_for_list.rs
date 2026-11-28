@@ -159,22 +159,23 @@ fn list_len(engine: &TemporalEngine) -> i64 {
 /// THE SECOND TERM IS GONE. It counted entries that NAME an element, and `BlockIndex` has no field
 /// for a name -- so the count could only read zero and the assertions on it could only pass.
 fn live_entries(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut live = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.deleted()
-                || block.model_id().as_str() != model_id
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-            {
-                continue;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut live = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.deleted()
+                    || block.model_id().as_str() != model_id
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                {
+                    continue;
+                }
+                live += 1;
             }
-            live += 1;
         }
-    }
-    live
+        live
+    })
 }
 
 /// (live entries, tombstoned entries) for one kind and object.
@@ -183,26 +184,27 @@ fn live_and_tombstoned(
     model_id: &str,
     object_key: &str,
 ) -> (usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut live = 0usize;
-    let mut tombstoned = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != model_id
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-            {
-                continue;
-            }
-            if block.deleted() {
-                tombstoned += 1;
-            } else {
-                live += 1;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut live = 0usize;
+        let mut tombstoned = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != model_id
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                {
+                    continue;
+                }
+                if block.deleted() {
+                    tombstoned += 1;
+                } else {
+                    live += 1;
+                }
             }
         }
-    }
-    (live, tombstoned)
+        (live, tombstoned)
+    })
 }
 
 fn write_list(engine: &TemporalEngine) {

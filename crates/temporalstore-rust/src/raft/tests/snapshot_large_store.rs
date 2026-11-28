@@ -755,7 +755,7 @@ fn what_a_store_pays_in_total_to_reach_a_size_grows_with_the_square_of_it() {
                         .node_engine_for_test(1)
                         .expect("the leader serves an engine")
                         .block_store()
-                        .prepare_next_slab_with_target(1)
+                        .prepare_next_slab_for_shard(1, 1)
                         .expect("rolling onto a fresh slab must succeed")
                         .is_some(),
                     "the slab did not roll before round {round}, so the corpus would collapse \

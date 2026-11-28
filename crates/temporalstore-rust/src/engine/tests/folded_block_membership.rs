@@ -151,169 +151,170 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
         "the removal could not append its tombstone block"
     );
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
 
-    // SIDE 1: what the engine SERVES as this object's membership -- the resident map.
-    //
-    // RE-ATTRIBUTED, AND THAT IS THE ONE EDIT THE WIDTH STEP FORCED IN THIS ARM. This side read
-    // `bucket_index_element_name_block_addresses` and recovered each member from the block entry's own
-    // element name. `BlockIndex` has no element-name field now, so that walk answers for NO
-    // members, and this arm's floor is what said so: "the live index names 0 of 12 members after
-    // one removal, so the removal did not do what this fixture assumes". The removal was fine; the
-    // SOURCE moved.
-    //
-    // `shard.bucket_index.sets` is where it moved to. It is durable (`#[serde(default)]`) and it is what
-    // `SetMembers` and `SetLen` answer from, so it is the served membership in the same sense the
-    // index walk used to be. THE PAIR IS STRONGER THAN IT WAS, not weaker: the entry's element name
-    // and the block's payload were both written by the same append, so agreeing told you little
-    // about either, whereas the resident map is maintained by the command path and the blocks by the
-    // append path. Two artefacts that can disagree.
-    let served: BTreeSet<Vec<u8>> = shard
-        .bucket_index.sets
-        .get("folded")
-        .map(|members| members.keys().cloned().collect())
-        .unwrap_or_default();
+        // SIDE 1: what the engine SERVES as this object's membership -- the resident map.
+        //
+        // RE-ATTRIBUTED, AND THAT IS THE ONE EDIT THE WIDTH STEP FORCED IN THIS ARM. This side read
+        // `bucket_index_element_name_block_addresses` and recovered each member from the block entry's own
+        // element name. `BlockIndex` has no element-name field now, so that walk answers for NO
+        // members, and this arm's floor is what said so: "the live index names 0 of 12 members after
+        // one removal, so the removal did not do what this fixture assumes". The removal was fine; the
+        // SOURCE moved.
+        //
+        // `shard.bucket_index.sets` is where it moved to. It is durable (`#[serde(default)]`) and it is what
+        // `SetMembers` and `SetLen` answer from, so it is the served membership in the same sense the
+        // index walk used to be. THE PAIR IS STRONGER THAN IT WAS, not weaker: the entry's element name
+        // and the block's payload were both written by the same append, so agreeing told you little
+        // about either, whereas the resident map is maintained by the command path and the blocks by the
+        // append path. Two artefacts that can disagree.
+        let served: BTreeSet<Vec<u8>> = shard
+            .bucket_index.sets
+            .get("folded")
+            .map(|members| members.keys().cloned().collect())
+            .unwrap_or_default();
 
-    // SIDE 2: every block this object resolves to, TOMBSTONE ENTRIES INCLUDED.
-    //
-    // NO `block.deleted` SKIP, and that is the one line that differs from the refutation's walk. A
-    // tombstone entry is precisely a deleted entry, so a walk that filtered them would read the block
-    // set as it was before this change and would resurrect the member -- which is what makes the
-    // absence of that filter the subject here rather than an incidental difference.
-    let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
-    let mut live_entries = 0usize;
-    let mut tombstone_entries = 0usize;
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || &**named.at(bucket.routing_bucket, *handle) != "folded"
-            {
-                continue;
+        // SIDE 2: every block this object resolves to, TOMBSTONE ENTRIES INCLUDED.
+        //
+        // NO `block.deleted` SKIP, and that is the one line that differs from the refutation's walk. A
+        // tombstone entry is precisely a deleted entry, so a walk that filtered them would read the block
+        // set as it was before this change and would resurrect the member -- which is what makes the
+        // absence of that filter the subject here rather than an incidental difference.
+        let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
+        let mut live_entries = 0usize;
+        let mut tombstone_entries = 0usize;
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || &**named.at(bucket.routing_bucket, *handle) != "folded"
+                {
+                    continue;
+                }
+                if block.deleted() {
+                    tombstone_entries += 1;
+                } else {
+                    live_entries += 1;
+                }
+                addresses.push(block.address.clone());
             }
-            if block.deleted() {
-                tombstone_entries += 1;
-            } else {
-                live_entries += 1;
-            }
-            addresses.push(block.address.clone());
         }
-    }
 
-    assert!(
-        tombstone_entries > 0,
-        "DENOMINATOR: the removal left no tombstone entry, so there is no block for the derivation to \
+        assert!(
+            tombstone_entries > 0,
+            "DENOMINATOR: the removal left no tombstone entry, so there is no block for the derivation to \
          read the removal out of and any agreement below would be an agreement about nothing"
-    );
-    assert!(live_entries > 0, "DENOMINATOR: no live entries for this object");
+        );
+        assert!(live_entries > 0, "DENOMINATOR: no live entries for this object");
 
-    let derived = crate::engine::container_membership::derive_membership(
-        "set",
-        addresses,
-        |address| engine.block_store.read(address).ok(),
-    );
+        let derived = crate::engine::container_membership::derive_membership(
+            "set",
+            addresses,
+            |address| engine.block_store.read(address).ok(),
+        );
 
-    println!("=== after a fold and one removal ===");
-    println!(
-        "  entries: {live_entries} live, {tombstone_entries} tombstone; \
+        println!("=== after a fold and one removal ===");
+        println!(
+            "  entries: {live_entries} live, {tombstone_entries} tombstone; \
          {} distinct block(s) read, {} of the first shape",
-        derived.blocks_read, derived.live_only_blocks
-    );
-    println!(
-        "  the resident map holds {} member(s); the blocks derive {} live and {} removed",
-        served.len(),
-        derived.live.len(),
-        derived.removed.len()
-    );
-    println!(
-        "  the removed member: held by the resident map = {}, derived live from the blocks = {}, \
+            derived.blocks_read, derived.live_only_blocks
+        );
+        println!(
+            "  the resident map holds {} member(s); the blocks derive {} live and {} removed",
+            served.len(),
+            derived.live.len(),
+            derived.removed.len()
+        );
+        println!(
+            "  the removed member: held by the resident map = {}, derived live from the blocks = {}, \
          NAMED REMOVED by the blocks = {}",
-        served.contains(&victim),
-        derived.live.contains_key(&victim_element_name),
-        derived.removed.contains(&victim_element_name)
-    );
-    println!(
-        "  derivation failures: {} read, {} undecodable, {} unframed, {} unrenderable",
-        derived.read_failures, derived.undecodable, derived.unframed, derived.unrenderable_items
-    );
+            served.contains(&victim),
+            derived.live.contains_key(&victim_element_name),
+            derived.removed.contains(&victim_element_name)
+        );
+        println!(
+            "  derivation failures: {} read, {} undecodable, {} unframed, {} unrenderable",
+            derived.read_failures, derived.undecodable, derived.unframed, derived.unrenderable_items
+        );
 
-    // DENOMINATORS FIRST. A zero on either side makes every comparison below empty.
-    assert!(
-        derived.blocks_read > 0,
-        "DENOMINATOR: no blocks read for this object"
-    );
-    assert_eq!(
-        MEMBERS - 1,
-        served.len(),
-        "the resident map holds {} of {MEMBERS} members after one removal, so the removal did not \
+        // DENOMINATORS FIRST. A zero on either side makes every comparison below empty.
+        assert!(
+            derived.blocks_read > 0,
+            "DENOMINATOR: no blocks read for this object"
+        );
+        assert_eq!(
+            MEMBERS - 1,
+            served.len(),
+            "the resident map holds {} of {MEMBERS} members after one removal, so the removal did not \
          do what this fixture assumes",
-        served.len()
-    );
-    // NOT VACUOUS, AND IT WAS ON ITS WAY TO BEING SO. Against the index walk this read
-    // `!named.contains(&victim)` over a set that had become EMPTY for every kind, so it could only
-    // ever pass. Against the resident map the set holds eleven real members and this asks a
-    // question that can be answered either way.
-    assert!(
-        !served.contains(&victim),
-        "the resident map still holds the removed member"
-    );
+            served.len()
+        );
+        // NOT VACUOUS, AND IT WAS ON ITS WAY TO BEING SO. Against the index walk this read
+        // `!named.contains(&victim)` over a set that had become EMPTY for every kind, so it could only
+        // ever pass. Against the resident map the set holds eleven real members and this asks a
+        // question that can be answered either way.
+        assert!(
+            !served.contains(&victim),
+            "the resident map still holds the removed member"
+        );
 
-    // COMPLETE, AND THEREFORE WORTH COMPARING. Asserted before the agreement rather than after: an
-    // incomplete derivation that agreed would be agreeing by luck, and the failure counts say which
-    // of four ways it fell short rather than only that it did.
-    assert!(
-        derived.is_complete(),
-        "the derivation is incomplete ({} failure(s)), so its agreement with the map below would \
+        // COMPLETE, AND THEREFORE WORTH COMPARING. Asserted before the agreement rather than after: an
+        // incomplete derivation that agreed would be agreeing by luck, and the failure counts say which
+        // of four ways it fell short rather than only that it did.
+        assert!(
+            derived.is_complete(),
+            "the derivation is incomplete ({} failure(s)), so its agreement with the map below would \
          be luck: {} read, {} undecodable, {} unframed, {} unrenderable",
-        derived.failures(),
-        derived.read_failures,
-        derived.undecodable,
-        derived.unframed,
-        derived.unrenderable_items
-    );
+            derived.failures(),
+            derived.read_failures,
+            derived.undecodable,
+            derived.unframed,
+            derived.unrenderable_items
+        );
 
-    // THE INVERTED CONSTRAINT. This is the assertion whose flip is the result.
-    assert!(
-        derived.removed.contains(&victim_element_name),
-        "THE BLOCKS DO NOT STATE THE REMOVAL. This is the refutation #2028 recorded, back: a folded \
+        // THE INVERTED CONSTRAINT. This is the assertion whose flip is the result.
+        assert!(
+            derived.removed.contains(&victim_element_name),
+            "THE BLOCKS DO NOT STATE THE REMOVAL. This is the refutation #2028 recorded, back: a folded \
          block stays live for its other elements and nothing rewrote it, so the removed member is \
          still in it and a block-derived membership resurrects it. Either the removal did not append \
          a tombstone block, or the entry that kept that block reachable was dropped, or the derivation \
          did not reach it."
-    );
-    assert!(
-        !derived.live.contains_key(&victim_element_name),
-        "the blocks derive the removed member as LIVE as well as removed, so the tombstone did not \
+        );
+        assert!(
+            !derived.live.contains_key(&victim_element_name),
+            "the blocks derive the removed member as LIVE as well as removed, so the tombstone did not \
          outrank the block it supersedes -- which is an ORDERING failure, not a missing tombstone"
-    );
+        );
 
-    // AND THE TWO SIDES AGREE, ELEMENT FOR ELEMENT. Not by count: #2014 is the recorded case of a
-    // length answer and its listing agreeing by coincidence, and a count comparison here would pass
-    // if the derivation held a different eleven members.
-    let derived_members: BTreeSet<Vec<u8>> = derived
-        .live
-        .keys()
-        .filter_map(|element_name| hex::decode(element_name).ok())
-        .collect();
-    assert_eq!(
-        served, derived_members,
-        "the membership derived from the blocks is not the membership the resident map holds"
-    );
+        // AND THE TWO SIDES AGREE, ELEMENT FOR ELEMENT. Not by count: #2014 is the recorded case of a
+        // length answer and its listing agreeing by coincidence, and a count comparison here would pass
+        // if the derivation held a different eleven members.
+        let derived_members: BTreeSet<Vec<u8>> = derived
+            .live
+            .keys()
+            .filter_map(|element_name| hex::decode(element_name).ok())
+            .collect();
+        assert_eq!(
+            served, derived_members,
+            "the membership derived from the blocks is not the membership the resident map holds"
+        );
 
-    // AND THE DERIVED VALUES ARE THE MEMBERS THEMSELVES, which for a set is what #2017 measured the
-    // page already spells. A derivation that recovered the right KEYS and the wrong values would
-    // satisfy every assertion above.
-    let mismatched: BTreeMap<String, usize> = derived
-        .live
-        .iter()
-        .filter(|(element_name, value)| hex::decode(element_name).as_deref() != Ok(value.as_slice()))
-        .map(|(element_name, value)| (element_name.clone(), value.len()))
-        .collect();
-    assert!(
-        mismatched.is_empty(),
-        "{} derived element(s) carry a value that is not the member their element name spells: {:?}",
-        mismatched.len(),
-        mismatched
-    );
+        // AND THE DERIVED VALUES ARE THE MEMBERS THEMSELVES, which for a set is what #2017 measured the
+        // page already spells. A derivation that recovered the right KEYS and the wrong values would
+        // satisfy every assertion above.
+        let mismatched: BTreeMap<String, usize> = derived
+            .live
+            .iter()
+            .filter(|(element_name, value)| hex::decode(element_name).as_deref() != Ok(value.as_slice()))
+            .map(|(element_name, value)| (element_name.clone(), value.len()))
+            .collect();
+        assert!(
+            mismatched.is_empty(),
+            "{} derived element(s) carry a value that is not the member their element name spells: {:?}",
+            mismatched.len(),
+            mismatched
+        );
+    });
 }

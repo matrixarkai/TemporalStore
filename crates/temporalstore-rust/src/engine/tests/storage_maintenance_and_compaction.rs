@@ -1601,9 +1601,8 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
     assert_eq!(report.after.stale_block_estimate, 0);
     assert_eq!(report.after.live_ref_density_basis_points, 10_000);
     assert_eq!(engine.live_block_slab_ids(1), vec![1]);
-    {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
         let string_address = shard.string_address("k").expect("string address");
         let hash_address = shard
             .bucket_index.hashes
@@ -1629,7 +1628,7 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
         assert_eq!(buckets_holding("k"), vec![block_routing_bucket("k", 0, u32::MAX)]);
         // As above: the id is derived from the entry's terms, not read off the address.
         assert_eq!(buckets_holding("h"), vec![block_routing_bucket("h", 0, u32::MAX)]);
-    }
+    });
 
     let gc = block_store
         .gc_slabs_before_with_live_refs(1, engine.live_block_slab_ids(1))
@@ -2488,9 +2487,8 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
             .ok
     );
 
-    let block_key = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
+    let block_key = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
         let address = shard.string_address("cold-key").expect("indexed block address");
         assert_ne!(address.block_slab_id(), HOT_BLOCK_SLAB_ID);
         // THE SAME DERIVATION THE READ PATH USES: the block cache key's slot is the KEY's bucket
@@ -2503,7 +2501,7 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
             address.length(),
             Some(block_routing_bucket("cold-key", start, end)),
         )
-    };
+    });
 
     let first = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -2726,43 +2724,44 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
             .ok
     );
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("loaded shard");
-    let string_address = shard.string_address("k").expect("string address");
-    let hash_address = shard
-        .bucket_index.hashes
-        .get("h")
-        .and_then(|fields| fields.get("f"))
-        .expect("hash address");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
+        let string_address = shard.string_address("k").expect("string address");
+        let hash_address = shard
+            .bucket_index.hashes
+            .get("h")
+            .and_then(|fields| fields.get("f"))
+            .expect("hash address");
 
-    // See the note in `block_compaction_rewrites_live_addresses_and_allows_old_slab_gc`: a durable
-    // write no longer stamps an id onto the address, so what this asserted is now a property of the
-    // entry. The FILING assertions below are the part of this test that still reads the address.
-    // The FILING, on a shard loaded 10..20 -- see the note at the string arm above.
-    let placed = super::blocks_with_identity(&shard.bucket_index);
-    let buckets_holding = |object: &str| -> Vec<u32> {
-        let mut found: Vec<u32> = placed
-            .iter()
-            .filter(|(_, _, named, _)| named.as_ref() == object)
-            .map(|(routing_bucket, ..)| *routing_bucket)
-            .collect();
-        found.dedup();
-        found
-    };
-    assert_eq!(buckets_holding("k"), vec![block_routing_bucket("k", 10, 20)]);
-    assert_eq!(
-        string_address.slab_id(),
-        Some(string_address.block_slab_id())
-    );
-    // As above.
-    assert_eq!(buckets_holding("h"), vec![block_routing_bucket("h", 10, 20)]);
-    assert_eq!(hash_address.slab_id(), Some(hash_address.block_slab_id()));
-    // TWO KEYS STILL GET TWO IDS, which is the claim this line was making; it is now stated over
-    // the derivation rather than over two fields that no longer exist.
-    assert_ne!(
-        stable_block_object_id(1, "string", "k"),
-        stable_block_object_id(1, "hash", "h")
-    );
+        // See the note in `block_compaction_rewrites_live_addresses_and_allows_old_slab_gc`: a durable
+        // write no longer stamps an id onto the address, so what this asserted is now a property of the
+        // entry. The FILING assertions below are the part of this test that still reads the address.
+        // The FILING, on a shard loaded 10..20 -- see the note at the string arm above.
+        let placed = super::blocks_with_identity(&shard.bucket_index);
+        let buckets_holding = |object: &str| -> Vec<u32> {
+            let mut found: Vec<u32> = placed
+                .iter()
+                .filter(|(_, _, named, _)| named.as_ref() == object)
+                .map(|(routing_bucket, ..)| *routing_bucket)
+                .collect();
+            found.dedup();
+            found
+        };
+        assert_eq!(buckets_holding("k"), vec![block_routing_bucket("k", 10, 20)]);
+        assert_eq!(
+            string_address.slab_id(),
+            Some(string_address.block_slab_id())
+        );
+        // As above.
+        assert_eq!(buckets_holding("h"), vec![block_routing_bucket("h", 10, 20)]);
+        assert_eq!(hash_address.slab_id(), Some(hash_address.block_slab_id()));
+        // TWO KEYS STILL GET TWO IDS, which is the claim this line was making; it is now stated over
+        // the derivation rather than over two fields that no longer exist.
+        assert_ne!(
+            stable_block_object_id(1, "string", "k"),
+            stable_block_object_id(1, "hash", "h")
+        );
+    });
 }
 
 #[test]
@@ -3797,9 +3796,8 @@ fn what_reading_one_summary_actually_costs() {
             assert!(response.status.ok, "{:?}", response.status);
         }
 
-        let (address, object_key, routing_bucket) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("loaded shard");
+        let (address, object_key, routing_bucket) = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("loaded shard");
             let key = super::context::context_summary_key(7201, 60, 2);
             let series = shard
                 .context_summaries()
@@ -3816,7 +3814,7 @@ fn what_reading_one_summary_actually_costs() {
                 key.clone(),
                 Some(super::hashing::block_routing_bucket(&key, start, end)),
             )
-        };
+        });
 
         // Warm, so neither half is charged for filling a cache that a steady-state read finds warm.
         let _ = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, crate::engine::hashing::BlockIdentity::of(1, "context_summary", &object_key, None), routing_bucket);
@@ -3862,9 +3860,8 @@ fn what_reading_one_summary_actually_costs() {
         // reason given at the first probe in this test: the derivation allocates nothing, so it
         // cannot move an allocation count, and hoisting it keeps the numbers comparable with the
         // runs taken before the bucket became an argument.
-        let addresses_with_buckets: Vec<(u32, String, crate::block_store::ElementEntry)> = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("loaded shard");
+        let addresses_with_buckets: Vec<(u32, String, crate::block_store::ElementEntry)> = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("loaded shard");
             let (start, end) = shard.routing_range();
             (1..=120u64)
                 .filter_map(|node_hash| {
@@ -3882,7 +3879,7 @@ fn what_reading_one_summary_actually_costs() {
                         })
                 })
                 .collect()
-        };
+        });
         let addresses: Vec<crate::block_store::ElementEntry> = addresses_with_buckets
             .iter()
             .map(|(_, _, address)| address.clone())
@@ -4012,9 +4009,8 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
         }
 
         // The addresses the scoring pass would read, straight from the shard's own map.
-        let (extents, slabs, bytes) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("loaded shard");
+        let (extents, slabs, bytes) = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("loaded shard");
             let mut extents: std::collections::BTreeSet<(u64, u64, u64)> =
                 std::collections::BTreeSet::new();
             let mut slabs: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
@@ -4034,7 +4030,7 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
                 }
             }
             (extents.len(), slabs.len(), bytes)
-        };
+        });
         assert!(extents > 0, "no node addresses resolved -- this measures nothing");
         println!(
             "  {count:>5}   {extents:>16}   {:>12.2}   {slabs:>14}   {bytes:>15}",
@@ -4044,9 +4040,8 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
         // Span versus payload: if these extents are adjacent, `read_range` can fetch many nodes in
         // one read and slice them apart, which needs no durable format change. If they are spread
         // through the slab, only a real re-layout helps.
-        let (span, largest_gap, ordered) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("loaded shard");
+        let (span, largest_gap, ordered) = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("loaded shard");
             let mut ranges: Vec<(u64, u64)> = Vec::new();
             for node_hash in 1..=count {
                 let key = super::context::context_node_key(tenant, node_hash);
@@ -4071,7 +4066,7 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
                 largest_gap = largest_gap.max(pair[1].0.saturating_sub(end_of_first));
             }
             (span, largest_gap, ordered)
-        };
+        });
         println!(
             "          span {span} bytes over {ordered} extents holding {bytes} bytes  \
 ({:.2}x the payload), largest gap {largest_gap}",
@@ -4155,52 +4150,53 @@ fn how_scattered_are_node_extents_after_a_real_ingest() {
         node_hashes.dedup();
         assert!(!node_hashes.is_empty(), "no nodes ingested -- nothing to measure");
 
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
-        let mut ranges: Vec<(u64, u64, u64)> = Vec::new(); // (slab, offset, length)
-        for node_hash in &node_hashes {
-            let key = super::context::context_node_key(tenant, *node_hash);
-            if let Some(address) = shard
-                .bucket_index.hashes
-                .get(&key)
-                .and_then(|fields| fields.values().next())
-                .or_else(|| shard.context_nodes().get(key.as_str()))
-            {
-                ranges.push((address.block_slab_id(), address.offset(), address.length()));
-            }
-        }
-        ranges.sort_unstable();
-        let node_bytes: u64 = ranges.iter().map(|r| r.2).sum();
-
-        // A run is a maximal group of extents that a single range read could cover: same slab, and
-        // each starting where the previous ended.
-        let mut runs = 0_usize;
-        let mut span = 0_u64;
-        let mut previous: Option<(u64, u64)> = None; // (slab, end offset)
-        let mut run_start: Option<(u64, u64)> = None;
-        for (slab, offset, length) in &ranges {
-            match previous {
-                Some((prev_slab, prev_end)) if prev_slab == *slab && prev_end == *offset => {}
-                _ => {
-                    if let (Some((_, start)), Some((_, end))) = (run_start, previous) {
-                        span += end.saturating_sub(start);
-                    }
-                    runs += 1;
-                    run_start = Some((*slab, *offset));
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("loaded shard");
+            let mut ranges: Vec<(u64, u64, u64)> = Vec::new(); // (slab, offset, length)
+            for node_hash in &node_hashes {
+                let key = super::context::context_node_key(tenant, *node_hash);
+                if let Some(address) = shard
+                    .bucket_index.hashes
+                    .get(&key)
+                    .and_then(|fields| fields.values().next())
+                    .or_else(|| shard.context_nodes().get(key.as_str()))
+                {
+                    ranges.push((address.block_slab_id(), address.offset(), address.length()));
                 }
             }
-            previous = Some((*slab, offset + length));
-        }
-        if let (Some((_, start)), Some((_, end))) = (run_start, previous) {
-            span += end.saturating_sub(start);
-        }
+            ranges.sort_unstable();
+            let node_bytes: u64 = ranges.iter().map(|r| r.2).sum();
 
-        println!(
-            "  {adds:>4}   {:>12}   {runs:>4}   {:>11.2}   {node_bytes:>10}   {span:>10}   {:>21}",
-            ranges.len(),
-            ranges.len() as f64 / runs.max(1) as f64,
-            span.saturating_sub(node_bytes),
-        );
+            // A run is a maximal group of extents that a single range read could cover: same slab, and
+            // each starting where the previous ended.
+            let mut runs = 0_usize;
+            let mut span = 0_u64;
+            let mut previous: Option<(u64, u64)> = None; // (slab, end offset)
+            let mut run_start: Option<(u64, u64)> = None;
+            for (slab, offset, length) in &ranges {
+                match previous {
+                    Some((prev_slab, prev_end)) if prev_slab == *slab && prev_end == *offset => {}
+                    _ => {
+                        if let (Some((_, start)), Some((_, end))) = (run_start, previous) {
+                            span += end.saturating_sub(start);
+                        }
+                        runs += 1;
+                        run_start = Some((*slab, *offset));
+                    }
+                }
+                previous = Some((*slab, offset + length));
+            }
+            if let (Some((_, start)), Some((_, end))) = (run_start, previous) {
+                span += end.saturating_sub(start);
+            }
+
+            println!(
+                "  {adds:>4}   {:>12}   {runs:>4}   {:>11.2}   {node_bytes:>10}   {span:>10}   {:>21}",
+                ranges.len(),
+                ranges.len() as f64 / runs.max(1) as f64,
+                span.saturating_sub(node_bytes),
+            );
+        });
     }
     println!(
         "
@@ -4235,26 +4231,27 @@ fn does_the_per_ingest_reconstruct_change_anything() {
     type Shape = (u32, usize, usize, usize, String, bool, bool);
 
     fn snapshot(engine: &TemporalEngine) -> Vec<Shape> {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
-        let mut out: Vec<Shape> = shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .map(|(routing_bucket, bucket)| {
-                (
-                    *routing_bucket,
-                    bucket.block_index.len(),
-                    bucket.object_index.object_count(),
-                    bucket.deleted_object_index.object_count(),
-                    format!("{:?}", bucket.layout),
-                    bucket.deleted(),
-                    bucket.in_memory(),
-                )
-            })
-            .collect();
-        out.sort_unstable();
-        out
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("loaded shard");
+            let mut out: Vec<Shape> = shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .map(|(routing_bucket, bucket)| {
+                    (
+                        *routing_bucket,
+                        bucket.block_index.len(),
+                        bucket.object_index.object_count(),
+                        bucket.deleted_object_index.object_count(),
+                        format!("{:?}", bucket.layout),
+                        bucket.deleted(),
+                        bucket.in_memory(),
+                    )
+                })
+                .collect();
+            out.sort_unstable();
+            out
+        })
     }
 
     for rung in [40_usize, 160] {
@@ -4384,48 +4381,49 @@ fn deep_compare_the_index_a_reconstruct_produces() {
 
     /// Every field of every block entry, ordered, so two indexes compare exactly.
     fn deep(engine: &TemporalEngine) -> Vec<String> {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
-        // THE IDENTITY, TAKEN ONCE AND KEYED BY POSITION. The walk itself has to stay per
-        // bucket because it also emits a row per object-index and per deleted-object-index
-        // member, which belong to the bucket and not to any block.
-        let named: std::collections::HashMap<(u32, u64), std::sync::Arc<str>> =
-            super::blocks_with_identity(&shard.bucket_index)
-                .into_iter()
-                .map(|(routing_bucket, handle, object_key, _block)| {
-                    ((routing_bucket, handle), object_key)
-                })
-                .collect();
-        let mut rows: Vec<String> = Vec::new();
-        for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
-            for (field_key, block) in bucket.block_index.iter() {
-                let object_key = named
-                    .get(&(*routing_bucket, *field_key))
-                    .expect("every block walked above was named beside it");
-                rows.push(format!(
-                    "{routing_bucket}|{field_key}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}",
-                    object_key,
-                    block.model_id(),
-                    None::<std::sync::Arc<str>>,
-                    block.object_id(1, object_key),
-                    block.address.block_slab_id(),
-                    block.address.offset(),
-                    block.address.length(),
-                    block.dirty(),
-                    block.deleted(),
-                    block.log_backed(),
-                    bucket.layout as u8 as u32,
-                ));
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("loaded shard");
+            // THE IDENTITY, TAKEN ONCE AND KEYED BY POSITION. The walk itself has to stay per
+            // bucket because it also emits a row per object-index and per deleted-object-index
+            // member, which belong to the bucket and not to any block.
+            let named: std::collections::HashMap<(u32, u64), std::sync::Arc<str>> =
+                super::blocks_with_identity(&shard.bucket_index)
+                    .into_iter()
+                    .map(|(routing_bucket, handle, object_key, _block)| {
+                        ((routing_bucket, handle), object_key)
+                    })
+                    .collect();
+            let mut rows: Vec<String> = Vec::new();
+            for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
+                for (field_key, block) in bucket.block_index.iter() {
+                    let object_key = named
+                        .get(&(*routing_bucket, *field_key))
+                        .expect("every block walked above was named beside it");
+                    rows.push(format!(
+                        "{routing_bucket}|{field_key}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}",
+                        object_key,
+                        block.model_id(),
+                        None::<std::sync::Arc<str>>,
+                        block.object_id(1, object_key),
+                        block.address.block_slab_id(),
+                        block.address.offset(),
+                        block.address.length(),
+                        block.dirty(),
+                        block.deleted(),
+                        block.log_backed(),
+                        bucket.layout as u8 as u32,
+                    ));
+                }
+                for object_id in bucket.object_index.iter() {
+                    rows.push(format!("{routing_bucket}|obj|{object_id}"));
+                }
+                for object_id in bucket.deleted_object_index.iter() {
+                    rows.push(format!("{routing_bucket}|tomb|{object_id}"));
+                }
             }
-            for object_id in bucket.object_index.iter() {
-                rows.push(format!("{routing_bucket}|obj|{object_id}"));
-            }
-            for object_id in bucket.deleted_object_index.iter() {
-                rows.push(format!("{routing_bucket}|tomb|{object_id}"));
-            }
-        }
-        rows.sort_unstable();
-        rows
+            rows.sort_unstable();
+            rows
+        })
     }
 
     for rung in [30_usize, 120] {
@@ -4583,9 +4581,9 @@ fn which_write_primitive_grows_with_the_store() {
         }
 
         let payload = vec![7_u8; 512];
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let _ = shards.get(&1).expect("loaded shard");
-        drop(shards);
+        engine.shards.with_state(1, |shard| {
+            let _ = shard.expect("loaded shard");
+        });
 
         // The series primitive, on a fresh key.
         let warm_key = format!("probe:series:warm:{rung}");
@@ -4788,20 +4786,21 @@ fn what_post_write_maintenance_costs_per_key_kind() {
         let node_key = super::context::context_node_key(TENANT, node_hash);
         let summary_key = super::context::context_summary_key(TENANT, node_hash, 2);
 
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("loaded shard");
-        for (label, key) in [("context node   ", &node_key), ("context summary", &summary_key)] {
-            // Warm once: the first maintenance of a key does one-off work.
-            let _ = super::storage_bucket_internals::sync_context_blocks_for_object(
-                shard, 1, key,
-            );
-            let probe = crate::alloc_probe::Probe::start();
-            let covered = super::storage_bucket_internals::sync_context_blocks_for_object(
-                shard, 1, key,
-            );
-            let allocs = probe.stop().allocs;
-            println!("  {rung:>6}   {label}      {allocs:>9}   {covered}");
-        }
+        engine.shards.with_state_mut(1, |shard| {
+            let shard = shard.expect("loaded shard");
+            for (label, key) in [("context node   ", &node_key), ("context summary", &summary_key)] {
+                // Warm once: the first maintenance of a key does one-off work.
+                let _ = super::storage_bucket_internals::sync_context_blocks_for_object(
+                    shard, 1, key,
+                );
+                let probe = crate::alloc_probe::Probe::start();
+                let covered = super::storage_bucket_internals::sync_context_blocks_for_object(
+                    shard, 1, key,
+                );
+                let allocs = probe.stop().allocs;
+                println!("  {rung:>6}   {label}      {allocs:>9}   {covered}");
+            }
+        });
     }
 
     println!(
@@ -4875,37 +4874,38 @@ fn where_a_record_is_kept() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("loaded shard");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
 
-    let rows: Vec<(&str, usize)> = vec![
-        ("strings", shard.strings().len()),
-        ("hashes", shard.bucket_index.hashes.len()),
-        ("sets", shard.bucket_index.sets.len()),
-        ("expires_at_ms", shard.expires_at_ms().len()),
-        ("seen", shard.seen.len()),
-        ("wal_resident_pages", shard.wal_resident_blocks.len()),
-        ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
-    ];
+        let rows: Vec<(&str, usize)> = vec![
+            ("strings", shard.strings().len()),
+            ("hashes", shard.bucket_index.hashes.len()),
+            ("sets", shard.bucket_index.sets.len()),
+            ("expires_at_ms", shard.expires_at_ms().len()),
+            ("seen", shard.seen.len()),
+            ("wal_resident_pages", shard.wal_resident_blocks.len()),
+            ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
+        ];
 
-    println!();
-    println!("  {RECORDS} plain string writes land in:");
-    println!("  structure                        entries   per record");
-    let mut per_record_total = 0.0;
-    for (name, count) in &rows {
-        let per = *count as f64 / RECORDS as f64;
-        per_record_total += per;
-        println!("  {name:32} {count:>7} {per:>12.2}");
-    }
-    println!("  ------------------------------------------------------");
-    println!("  {:32} {:>7} {per_record_total:>12.2}", "counted here", "");
-    println!();
-    println!("  A structure at 1.00 per record holds every record; one at 0.00 holds none of");
-    println!("  them and is not where the memory goes. Anything the six entries' worth is made");
-    println!("  of that does NOT appear above lives outside ShardState -- the bucket index and");
-    println!("  the block-address maps beneath it are the next place to look.");
+        println!();
+        println!("  {RECORDS} plain string writes land in:");
+        println!("  structure                        entries   per record");
+        let mut per_record_total = 0.0;
+        for (name, count) in &rows {
+            let per = *count as f64 / RECORDS as f64;
+            per_record_total += per;
+            println!("  {name:32} {count:>7} {per:>12.2}");
+        }
+        println!("  ------------------------------------------------------");
+        println!("  {:32} {:>7} {per_record_total:>12.2}", "counted here", "");
+        println!();
+        println!("  A structure at 1.00 per record holds every record; one at 0.00 holds none of");
+        println!("  them and is not where the memory goes. Anything the six entries' worth is made");
+        println!("  of that does NOT appear above lives outside ShardState -- the bucket index and");
+        println!("  the block-address maps beneath it are the next place to look.");
 
-    assert_eq!(shard.strings().len(), RECORDS, "every write should be in strings");
+        assert_eq!(shard.strings().len(), RECORDS, "every write should be in strings");
+    });
 }
 
 /// How many map entries' worth of memory does one record actually occupy?
@@ -4947,11 +4947,10 @@ fn how_many_map_entries_is_one_record() {
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
-    let address = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
+    let address = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
         shard.strings().values().next().map(|slot| slot.address()).expect("a written block")
-    };
+    });
 
     // The floor: the same key and the same address, in a map of their own.
     let probe = crate::alloc_probe::Probe::start();
@@ -5563,9 +5562,8 @@ fn where_a_block_read_miss_allocates() {
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
-    let addresses: Vec<(Option<u32>, String, crate::block_store::ElementEntry)> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
+    let addresses: Vec<(Option<u32>, String, crate::block_store::ElementEntry)> = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
         let (start, end) = shard.routing_range();
         shard
             .strings()
@@ -5581,7 +5579,7 @@ fn where_a_block_read_miss_allocates() {
                 )
             })
             .collect()
-    };
+    });
     assert!(addresses.len() >= 8, "need several blocks: {}", addresses.len());
     let block_store = &engine.block_store;
 
@@ -5676,9 +5674,8 @@ fn what_a_block_read_costs_hit_against_miss() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let (address, object_key, routing_bucket) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
+    let (address, object_key, routing_bucket) = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
         let (start, end) = shard.routing_range();
         shard
             .strings()
@@ -5692,7 +5689,7 @@ fn what_a_block_read_costs_hit_against_miss() {
                 )
             })
             .expect("the writes above put at least one block in the index")
-    };
+    });
 
     let cache = &engine.cache;
     let block_store = &engine.block_store;
@@ -5726,9 +5723,8 @@ fn what_a_block_read_costs_hit_against_miss() {
         dir.path().join("indexes"),
     );
     small.load_shard(1);
-    let addresses: Vec<(Option<u32>, String, crate::block_store::ElementEntry)> = {
-        let shards = small.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
+    let addresses: Vec<(Option<u32>, String, crate::block_store::ElementEntry)> = small.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
         let (start, end) = shard.routing_range();
         shard
             .strings()
@@ -5744,7 +5740,7 @@ fn what_a_block_read_costs_hit_against_miss() {
                 )
             })
             .collect()
-    };
+    });
     assert!(addresses.len() >= 8, "need several blocks to cycle through: {}", addresses.len());
     let small_cache = &small.cache;
     let small_blocks = &small.block_store;
@@ -5875,53 +5871,53 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
     }
 
     // A node that exists, found the way retrieval finds one.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("loaded shard");
-    let (object_key, address) = shard
-        .bucket_index.hashes
-        .iter()
-        .find_map(|(key, fields)| {
-            fields
-                .get(super::constants::CONTEXT_NODE_FIELD)
-                .map(|address| (key.clone(), address.clone()))
-        })
-        .expect("the ingest wrote at least one context node block");
-    let routing_bucket = {
-        let (start, end) = shard.routing_range();
-        Some(super::hashing::block_routing_bucket(&object_key, start, end))
-    };
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
+        let (object_key, address) = shard
+            .bucket_index.hashes
+            .iter()
+            .find_map(|(key, fields)| {
+                fields
+                    .get(super::constants::CONTEXT_NODE_FIELD)
+                    .map(|address| (key.clone(), address.clone()))
+            })
+            .expect("the ingest wrote at least one context node block");
+        let routing_bucket = {
+            let (start, end) = shard.routing_range();
+            Some(super::hashing::block_routing_bucket(&object_key, start, end))
+        };
 
-    let cache = &engine.cache;
-    let block_store = &engine.block_store;
+        let cache = &engine.cache;
+        let block_store = &engine.block_store;
 
-    // Warm: the first read of a block touches one-off structures.
-    let warm = super::read_block_bytes(cache, block_store, 1, &address, crate::engine::hashing::BlockIdentity::of(1, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)), routing_bucket)
-        .expect("the block reads back");
-    assert!(!warm.is_empty(), "an empty block would make every number below meaningless");
+        // Warm: the first read of a block touches one-off structures.
+        let warm = super::read_block_bytes(cache, block_store, 1, &address, crate::engine::hashing::BlockIdentity::of(1, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)), routing_bucket)
+            .expect("the block reads back");
+        assert!(!warm.is_empty(), "an empty block would make every number below meaningless");
 
-    let probe = crate::alloc_probe::Probe::start();
-    let bytes = super::read_block_bytes(cache, block_store, 1, &address, crate::engine::hashing::BlockIdentity::of(1, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)), routing_bucket)
-        .expect("the block reads back");
-    let read_allocs = probe.stop().allocs;
+        let probe = crate::alloc_probe::Probe::start();
+        let bytes = super::read_block_bytes(cache, block_store, 1, &address, crate::engine::hashing::BlockIdentity::of(1, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)), routing_bucket)
+            .expect("the block reads back");
+        let read_allocs = probe.stop().allocs;
 
-    let probe = crate::alloc_probe::Probe::start();
-    let node = super::context::context_from_bytes::<crate::types::ContextNode>(&bytes)
-        .expect("the block decodes to a node");
-    let decode_allocs = probe.stop().allocs;
+        let probe = crate::alloc_probe::Probe::start();
+        let node = super::context::context_from_bytes::<crate::types::ContextNode>(&bytes)
+            .expect("the block decodes to a node");
+        let decode_allocs = probe.stop().allocs;
 
-    println!(
-        "
+        println!(
+            "
   half                         allocs
   read_page_bytes           {read_allocs:>9}
   context_from_bytes        {decode_allocs:>9}
   ------------------------------------
   together                  {:>9}   (a whole fetch measures ~15 per candidate)
 ",
-        read_allocs + decode_allocs,
-    );
+            read_allocs + decode_allocs,
+        );
 
-    println!(
-        "  what the decode built, and what scoring actually reads:
+        println!(
+            "  what the decode built, and what scoring actually reads:
     canonical_name    {:>5} bytes
     l0                {:>5} bytes   <- the discarded text
     l1_ref            {:>5} bytes
@@ -5929,19 +5925,20 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
     vector            {:>5} floats
     summary_vector    {:>5} floats  <- the one scoring reads
 ",
-        node.canonical_name.len(),
-        node.l0.len(),
-        node.l1_ref.len(),
-        node.raw_metadata_ref.len(),
-        node.vector.len(),
-        node.summary_vector.len(),
-    );
-    println!(
-        "  read >> decode => reuse the read buffer.
+            node.canonical_name.len(),
+            node.l0.len(),
+            node.l1_ref.len(),
+            node.raw_metadata_ref.len(),
+            node.vector.len(),
+            node.summary_vector.len(),
+        );
+        println!(
+            "  read >> decode => reuse the read buffer.
   decode >> read => the record's shape is the cost, and a projection that skips fields scoring
                     never reads is worth its complexity.
 "
-    );
+        );
+    });
 }
 
 
@@ -6597,42 +6594,43 @@ fn what_capturing_a_writes_key_states_costs() {
     assert!(node_hash != 0, "the ingest reported no node, so there is no real key to capture");
 
     let key = super::context::context_node_key(TENANT, node_hash);
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("loaded shard");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
 
-    let keys = vec![key.clone()];
-    // Warm: the first call of a shape touches one-off structures.
-    let warm = super::capture_key_states(shard, &keys);
-    assert_eq!(warm.len(), 1, "one key in, one blob out");
-    assert!(
-        { let blob = warm[0].to_value(); blob.get("context_nodes").is_some() || blob.get("key").is_some() },
-        "the blob must actually describe the key, or this measures an empty object"
-    );
+        let keys = vec![key.clone()];
+        // Warm: the first call of a shape touches one-off structures.
+        let warm = super::capture_key_states(shard, &keys);
+        assert_eq!(warm.len(), 1, "one key in, one blob out");
+        assert!(
+            { let blob = warm[0].to_value(); blob.get("context_nodes").is_some() || blob.get("key").is_some() },
+            "the blob must actually describe the key, or this measures an empty object"
+        );
 
-    let probe = crate::alloc_probe::Probe::start();
-    let states = super::capture_key_states(shard, &keys);
-    let counts = probe.stop();
-    assert_eq!(states.len(), 1);
+        let probe = crate::alloc_probe::Probe::start();
+        let states = super::capture_key_states(shard, &keys);
+        let counts = probe.stop();
+        assert_eq!(states.len(), 1);
 
-    // What it costs to then serialise that blob, which is what the delta record does with it.
-    let probe = crate::alloc_probe::Probe::start();
-    let encoded = serde_json::to_vec(&states).expect("the blob serialises");
-    let encode_counts = probe.stop();
+        // What it costs to then serialise that blob, which is what the delta record does with it.
+        let probe = crate::alloc_probe::Probe::start();
+        let encoded = serde_json::to_vec(&states).expect("the blob serialises");
+        let encode_counts = probe.stop();
 
-    println!(
-        "
+        println!(
+            "
   capturing one key's state: {} allocations, {} bytes
   serialising it:            {} allocations, {} bytes produced
 
   a whole node write is 155 allocations, of which 144 are machinery rather than the record.
   this piece is {} of that machinery, and it runs once per touched key on every write.
 ",
-        counts.allocs,
-        counts.alloc_bytes,
-        encode_counts.allocs,
-        encoded.len(),
-        counts.allocs,
-    );
+            counts.allocs,
+            counts.alloc_bytes,
+            encode_counts.allocs,
+            encoded.len(),
+            counts.allocs,
+        );
+    });
 }
 
 
@@ -7284,11 +7282,10 @@ fn what_resizing_a_shard_map_costs() {
         command: Command::StringSet { key: "seed".into(), value: vec![b'v'; 512] },
     });
     assert!(response.status.ok, "seed write: {:?}", response.status);
-    let address = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
+    let address = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
         shard.strings().values().next().map(|slot| slot.address()).expect("a written block")
-    };
+    });
 
     // Just past a 7/8 boundary, so the incremental build pays for a resize the pre-sized one skips.
     const ENTRIES: usize = 300_000;
@@ -7454,10 +7451,9 @@ fn what_grows_outside_the_shard_index() {
         }
         let descriptors = engine.block_store.slab_descriptors().len();
         let slabs = engine.block_store.slab_ids().map(|v| v.len()).unwrap_or(0);
-        let strings = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            shards.get(&1).expect("loaded shard").strings().len()
-        };
+        let strings = engine.shards.with_state(1, |shard| {
+            shard.expect("loaded shard").strings().len()
+        });
         (descriptors, slabs, strings)
     };
 
@@ -7535,7 +7531,8 @@ fn what_dropping_the_shard_gives_back() {
     // Free ONLY the shard. The engine, its stores and its caches stay alive, so whatever comes
     // back was held by the shard and nothing else.
     let release = crate::alloc_probe::Probe::start();
-    let shard = engine.shards.write().expect("engine lock poisoned").remove(&1);
+    let shard = engine.shards.handle(1)
+        .and_then(|handle| engine.shards.retire_if_current(&handle));
     drop(shard);
     let released = release.stop();
     let freed_by_shard = released.free_bytes.saturating_sub(released.alloc_bytes);
@@ -7604,152 +7601,153 @@ fn where_a_record_is_kept_everywhere() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("loaded shard");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("loaded shard");
 
-    // The bucket index keeps its own per-object maps, one set per bucket, so they have to be
-    // summed across buckets rather than read off a single length.
-    let buckets = &shard.bucket_index.bucket_map;
-    let object_index: usize = buckets.values().map(|b| b.object_index.object_count()).sum();
-    let deleted_object_index: usize = buckets.values().map(|b| b.deleted_object_index.object_count()).sum();
-    let block_index: usize = buckets.values().map(|b| b.block_index.len()).sum();
+        // The bucket index keeps its own per-object maps, one set per bucket, so they have to be
+        // summed across buckets rather than read off a single length.
+        let buckets = &shard.bucket_index.bucket_map;
+        let object_index: usize = buckets.values().map(|b| b.object_index.object_count()).sum();
+        let deleted_object_index: usize = buckets.values().map(|b| b.deleted_object_index.object_count()).sum();
+        let block_index: usize = buckets.values().map(|b| b.block_index.len()).sum();
 
-    let rows: Vec<(&str, usize)> = vec![
-        ("strings", shard.strings().len()),
-        ("hashes", shard.bucket_index.hashes.len()),
-        ("sets", shard.bucket_index.sets.len()),
-        ("zsets", shard.bucket_index.zsets.len()),
-        ("lists", shard.bucket_index.lists.len()),
-        ("seen", shard.seen.len()),
-        ("buckets", shard.buckets.len()),
-        ("expires_at_ms", shard.expires_at_ms().len()),
-        ("features", shard.features().len()),
-        ("feature_values", shard.feature_values().len()),
-        ("feature_rollups", shard.feature_rollups().len()),
-        ("control_state", shard.control_state().len()),
-        ("control_state_pages", shard.control_state_blocks().len()),
-        ("control_state_changes", shard.control_state_changes.len()),
-        ("control_state_selection", shard.control_state_selection.len()),
-        ("control_state_uuid", shard.control_state_uuid().len()),
-        ("control_state_rollups", shard.control_state_rollups().len()),
-        ("context_nodes", shard.context_nodes().len()),
-        ("context_events", shard.context_events().len()),
-        ("context_event_timeline", shard.context_event_timeline.len()),
-        ("context_indexes", shard.context_indexes().len()),
-        ("context_audits", shard.context_audits().len()),
-        ("context_entities", shard.context_entities().len()),
-        ("context_children", shard.context_children().len()),
-        ("context_summaries", shard.context_summaries().len()),
-        ("context_compressions", shard.context_compressions().len()),
-        ("context_dirty_index", shard.context_dirty_index.len()),
-        ("context_compression_watermark", shard.context_compression_watermark().len()),
-        ("wal_resident_pages", shard.wal_resident_blocks.len()),
-        ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
-        ("dirty_objects", shard.dirty_objects.len()),
-        ("bucket_recency", shard.bucket_recency.len()),
-        ("object_block_layouts", shard.object_block_layouts.len()),
-        ("bucket_index.bucket_map", buckets.len()),
-        ("bucket_index.kind_pool", shard.bucket_index.kind_pool.len()),
-        ("bucket_index.object_block_lookup", shard.bucket_index.object_block_lookup.len()),
-        ("  .object_index", object_index),
-        ("  .deleted_object_index", deleted_object_index),
-        ("  .page_index", block_index),
-    ];
+        let rows: Vec<(&str, usize)> = vec![
+            ("strings", shard.strings().len()),
+            ("hashes", shard.bucket_index.hashes.len()),
+            ("sets", shard.bucket_index.sets.len()),
+            ("zsets", shard.bucket_index.zsets.len()),
+            ("lists", shard.bucket_index.lists.len()),
+            ("seen", shard.seen.len()),
+            ("buckets", shard.buckets.len()),
+            ("expires_at_ms", shard.expires_at_ms().len()),
+            ("features", shard.features().len()),
+            ("feature_values", shard.feature_values().len()),
+            ("feature_rollups", shard.feature_rollups().len()),
+            ("control_state", shard.control_state().len()),
+            ("control_state_pages", shard.control_state_blocks().len()),
+            ("control_state_changes", shard.control_state_changes.len()),
+            ("control_state_selection", shard.control_state_selection.len()),
+            ("control_state_uuid", shard.control_state_uuid().len()),
+            ("control_state_rollups", shard.control_state_rollups().len()),
+            ("context_nodes", shard.context_nodes().len()),
+            ("context_events", shard.context_events().len()),
+            ("context_event_timeline", shard.context_event_timeline.len()),
+            ("context_indexes", shard.context_indexes().len()),
+            ("context_audits", shard.context_audits().len()),
+            ("context_entities", shard.context_entities().len()),
+            ("context_children", shard.context_children().len()),
+            ("context_summaries", shard.context_summaries().len()),
+            ("context_compressions", shard.context_compressions().len()),
+            ("context_dirty_index", shard.context_dirty_index.len()),
+            ("context_compression_watermark", shard.context_compression_watermark().len()),
+            ("wal_resident_pages", shard.wal_resident_blocks.len()),
+            ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
+            ("dirty_objects", shard.dirty_objects.len()),
+            ("bucket_recency", shard.bucket_recency.len()),
+            ("object_block_layouts", shard.object_block_layouts.len()),
+            ("bucket_index.bucket_map", buckets.len()),
+            ("bucket_index.kind_pool", shard.bucket_index.kind_pool.len()),
+            ("bucket_index.object_block_lookup", shard.bucket_index.object_block_lookup.len()),
+            ("  .object_index", object_index),
+            ("  .deleted_object_index", deleted_object_index),
+            ("  .page_index", block_index),
+        ];
 
-    // Extent, so this cannot silently under-report the way its predecessor did. The fields this
-    // probe ACCOUNTS FOR, exactly once each:
-    //
-    //   34  top-level containers, every one listed above
-    //    6  scalars that cannot hold a per-record entry (index_format_version,
-    //       control_coalesce_persist, control_distinct_sketch, applied_wal_sequence,
-    //       promote_scan_done, evict_sampler)
-    //    1  bucket_index, expanded into the 6 rows above: its own bucket_map, kind_pool and
-    //       object_page_lookup, plus the three per-object maps summed across buckets
-    //
-    // 40 NAMED FIELDS, AND THAT IS NOT THE STRUCT'S FIELD COUNT. This block read "ShardState has
-    // 42 fields", and the assert under it compared 35 + 6 + 1 against the literal 42 -- an
-    // identity between three constants written in one place, true whatever the struct does.
-    // Measured: `ShardState` has 48 fields. `expiry_by_deadline` is a container this probe does
-    // not list, and five scalars (routing_range_start, routing_range_end, routing_range_known,
-    // shard_id, shard_id_known) are not among the six named above. So the claim is stated as what
-    // it is -- the extent of THIS LIST.
-    //
-    // WHAT THESE TWO ASSERTS CAN AND CANNOT SEE, because the sentence that stood here claimed
-    // more than either delivers. It said the count "stops matching the struct" when a field is
-    // added to `ShardState` and not listed. IT CANNOT. Both asserts compare constants and a row
-    // count written in THIS function; neither side is derived from `ShardState`, so a field added
-    // to the struct moves nothing here and both asserts keep passing.
-    //
-    // The first assert is a tautology over three literals, as the note above already says of its
-    // predecessor. The second is live, but reaches one direction only: it fails when a row LEAVES
-    // the list without the constant following. That is worth keeping -- it is what caught both
-    // numbers below being wrong -- but it is not coverage of the struct.
-    //
-    // WHAT DOES CATCH A FIELD ARRIVING: `state::repack_decoded_btrees` destructures `ShardState`
-    // with every field named and no `..`, so adding one is a COMPILE error there. That is the
-    // guard this claim belongs to, and the one to cite instead of this count.
-    //
-    // BOTH CONSTANTS BELOW WERE WRONG, AND `#[ignore]` IS WHY. No branch gate runs this test, so
-    // the assert sat UNREACHABLE rather than true or false. On the commit this correction was
-    // written against, the list held 39 rows while `TOP_LEVEL_CONTAINERS + BUCKET_INDEX_ROWS`
-    // read 40 -- already failing, invisibly -- and taking the row for the merged embedding index
-    // out of the list made it 38 against the same 40. Counted from the list as it now stands:
-    // 32 top-level rows, 6 expanded out of bucket_index.
-    const TOP_LEVEL_CONTAINERS: usize = 33;
-    const NON_CONTAINER_FIELDS: usize = 6;
-    const BUCKET_INDEX_ROWS: usize = 6;
-    const NAMED_FIELDS: usize = 40;
-    assert_eq!(
-        TOP_LEVEL_CONTAINERS + NON_CONTAINER_FIELDS + 1,
-        NAMED_FIELDS,
-        "the three constants above no longer sum to the number of fields this probe names"
-    );
-    assert_eq!(
-        rows.len(),
-        TOP_LEVEL_CONTAINERS + BUCKET_INDEX_ROWS,
-        "a listed field is missing from the rows above"
-    );
+        // Extent, so this cannot silently under-report the way its predecessor did. The fields this
+        // probe ACCOUNTS FOR, exactly once each:
+        //
+        //   34  top-level containers, every one listed above
+        //    6  scalars that cannot hold a per-record entry (index_format_version,
+        //       control_coalesce_persist, control_distinct_sketch, applied_wal_sequence,
+        //       promote_scan_done, evict_sampler)
+        //    1  bucket_index, expanded into the 6 rows above: its own bucket_map, kind_pool and
+        //       object_page_lookup, plus the three per-object maps summed across buckets
+        //
+        // 40 NAMED FIELDS, AND THAT IS NOT THE STRUCT'S FIELD COUNT. This block read "ShardState has
+        // 42 fields", and the assert under it compared 35 + 6 + 1 against the literal 42 -- an
+        // identity between three constants written in one place, true whatever the struct does.
+        // Measured: `ShardState` has 48 fields. `expiry_by_deadline` is a container this probe does
+        // not list, and five scalars (routing_range_start, routing_range_end, routing_range_known,
+        // shard_id, shard_id_known) are not among the six named above. So the claim is stated as what
+        // it is -- the extent of THIS LIST.
+        //
+        // WHAT THESE TWO ASSERTS CAN AND CANNOT SEE, because the sentence that stood here claimed
+        // more than either delivers. It said the count "stops matching the struct" when a field is
+        // added to `ShardState` and not listed. IT CANNOT. Both asserts compare constants and a row
+        // count written in THIS function; neither side is derived from `ShardState`, so a field added
+        // to the struct moves nothing here and both asserts keep passing.
+        //
+        // The first assert is a tautology over three literals, as the note above already says of its
+        // predecessor. The second is live, but reaches one direction only: it fails when a row LEAVES
+        // the list without the constant following. That is worth keeping -- it is what caught both
+        // numbers below being wrong -- but it is not coverage of the struct.
+        //
+        // WHAT DOES CATCH A FIELD ARRIVING: `state::repack_decoded_btrees` destructures `ShardState`
+        // with every field named and no `..`, so adding one is a COMPILE error there. That is the
+        // guard this claim belongs to, and the one to cite instead of this count.
+        //
+        // BOTH CONSTANTS BELOW WERE WRONG, AND `#[ignore]` IS WHY. No branch gate runs this test, so
+        // the assert sat UNREACHABLE rather than true or false. On the commit this correction was
+        // written against, the list held 39 rows while `TOP_LEVEL_CONTAINERS + BUCKET_INDEX_ROWS`
+        // read 40 -- already failing, invisibly -- and taking the row for the merged embedding index
+        // out of the list made it 38 against the same 40. Counted from the list as it now stands:
+        // 32 top-level rows, 6 expanded out of bucket_index.
+        const TOP_LEVEL_CONTAINERS: usize = 33;
+        const NON_CONTAINER_FIELDS: usize = 6;
+        const BUCKET_INDEX_ROWS: usize = 6;
+        const NAMED_FIELDS: usize = 40;
+        assert_eq!(
+            TOP_LEVEL_CONTAINERS + NON_CONTAINER_FIELDS + 1,
+            NAMED_FIELDS,
+            "the three constants above no longer sum to the number of fields this probe names"
+        );
+        assert_eq!(
+            rows.len(),
+            TOP_LEVEL_CONTAINERS + BUCKET_INDEX_ROWS,
+            "a listed field is missing from the rows above"
+        );
 
-    // A count alone cannot see a name listed TWICE: a copy-paste that duplicates one row and
-    // drops another keeps `rows.len()` correct while the probe reads one container twice and a
-    // second one never. The row count above cannot distinguish that from a correct list, so it
-    // is ruled out separately here rather than assumed.
-    let mut listed: Vec<&str> = rows.iter().map(|(name, _)| *name).collect();
-    let listed_len = listed.len();
-    listed.sort_unstable();
-    listed.dedup();
-    assert_eq!(
-        listed.len(),
-        listed_len,
-        "a container is listed twice in the rows above, so some other one is listed not at all"
-    );
+        // A count alone cannot see a name listed TWICE: a copy-paste that duplicates one row and
+        // drops another keeps `rows.len()` correct while the probe reads one container twice and a
+        // second one never. The row count above cannot distinguish that from a correct list, so it
+        // is ruled out separately here rather than assumed.
+        let mut listed: Vec<&str> = rows.iter().map(|(name, _)| *name).collect();
+        let listed_len = listed.len();
+        listed.sort_unstable();
+        listed.dedup();
+        assert_eq!(
+            listed.len(),
+            listed_len,
+            "a container is listed twice in the rows above, so some other one is listed not at all"
+        );
 
-    println!();
-    println!("  {RECORDS} plain string writes, every container the shard owns:");
-    println!("  structure                        entries   per record");
-    let mut homes = 0;
-    let mut total = 0.0;
-    for (name, count) in &rows {
-        let per = *count as f64 / RECORDS as f64;
-        total += per;
-        if per > 0.01 {
-            homes += 1;
-            println!("  {name:32} {count:>7} {per:>12.2}   <-- holds every record");
-        } else if *count > 0 {
-            println!("  {name:32} {count:>7} {per:>12.4}", );
+        println!();
+        println!("  {RECORDS} plain string writes, every container the shard owns:");
+        println!("  structure                        entries   per record");
+        let mut homes = 0;
+        let mut total = 0.0;
+        for (name, count) in &rows {
+            let per = *count as f64 / RECORDS as f64;
+            total += per;
+            if per > 0.01 {
+                homes += 1;
+                println!("  {name:32} {count:>7} {per:>12.2}   <-- holds every record");
+            } else if *count > 0 {
+                println!("  {name:32} {count:>7} {per:>12.4}", );
+            }
         }
-    }
-    println!("  {:32} {:>7} {total:>12.2}", "counted, per record", "");
-    println!();
-    println!("  {homes} structures hold roughly one entry per record.");
-    println!("  Dropping the shard returns 963 B/record and one map entry costs 184, so a record");
-    println!("  paying for {homes} homes is the shape of that {:.1}x -- and the fix is to keep it in", 963.0 / 184.0);
-    println!("  fewer places rather than to shrink any one of them.");
-    println!();
-    println!("  ({TOP_LEVEL_CONTAINERS} of the {NAMED_FIELDS} ShardState fields this probe names are containers and all");
-    println!("   are listed, plus {BUCKET_INDEX_ROWS} rows expanded out of bucket_index; the other {NON_CONTAINER_FIELDS} are scalars.)");
+        println!("  {:32} {:>7} {total:>12.2}", "counted, per record", "");
+        println!();
+        println!("  {homes} structures hold roughly one entry per record.");
+        println!("  Dropping the shard returns 963 B/record and one map entry costs 184, so a record");
+        println!("  paying for {homes} homes is the shape of that {:.1}x -- and the fix is to keep it in", 963.0 / 184.0);
+        println!("  fewer places rather than to shrink any one of them.");
+        println!();
+        println!("  ({TOP_LEVEL_CONTAINERS} of the {NAMED_FIELDS} ShardState fields this probe names are containers and all");
+        println!("   are listed, plus {BUCKET_INDEX_ROWS} rows expanded out of bucket_index; the other {NON_CONTAINER_FIELDS} are scalars.)");
 
-    assert_eq!(shard.strings().len(), RECORDS, "every write should be in strings");
+        assert_eq!(shard.strings().len(), RECORDS, "every write should be in strings");
+    });
 }
 
 /// What a bounded routing-slot range would save a one-box node.
@@ -7819,13 +7817,11 @@ fn what_a_bucket_costs() {
         }
         let counts = probe.stop();
         let live = counts.alloc_bytes.saturating_sub(counts.free_bytes);
-        let buckets = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            shards
-                .get(&1)
+        let buckets = engine.shards.with_state(1, |shard| {
+            shard
                 .map(|shard| shard.bucket_index.bucket_map.len())
                 .unwrap_or(0)
-        };
+        });
         eprintln!(
             "  {records:>6} records -> {buckets:>6} buckets: {live:>12} live bytes, \
              {:>8.0} B per record, {:>8.0} B per bucket",
@@ -8720,91 +8716,91 @@ fn what_the_compaction_preamble_walks() {
         .sum();
     assert!(live_blocks > 0, "fixture stored no live blocks");
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
 
-    let mut total = 0u64;
-    let mut report = |label: &str, walked: u64| {
-        eprintln!(
-            "  [preamble] {label:<38} {walked:>8} entries = {:>5.1}x the shard",
-            walked as f64 / live_blocks as f64,
+        let mut total = 0u64;
+        let mut report = |label: &str, walked: u64| {
+            eprintln!(
+                "  [preamble] {label:<38} {walked:>8} entries = {:>5.1}x the shard",
+                walked as f64 / live_blocks as f64,
+            );
+        };
+
+        crate::engine::reset_live_block_scan_entries();
+        let _ = engine.validate_shard_block_ownership(1, shard);
+        let walked = crate::engine::live_block_scan_entries();
+        total += walked;
+        report("validate_shard_block_ownership", walked);
+
+        crate::engine::reset_live_block_scan_entries();
+        let _ = crate::engine::collect_live_block_slab_ids(shard);
+        let walked = crate::engine::live_block_scan_entries();
+        total += walked;
+        report("collect_live_block_slab_ids", walked);
+
+        crate::engine::reset_live_block_scan_entries();
+        let _ = crate::engine::compaction::compaction_utility_report(&engine.block_store, shard);
+        let walked = crate::engine::live_block_scan_entries();
+        total += walked;
+        report("compaction_utility_report", walked);
+
+        crate::engine::reset_live_block_scan_entries();
+        let _ = crate::engine::storage_reporting::storage_object_lifecycle_report(1, shard);
+        let walked = crate::engine::live_block_scan_entries();
+        total += walked;
+        report("storage_object_lifecycle_report", walked);
+
+        crate::engine::reset_live_block_scan_entries();
+        let _ = crate::engine::compaction::compaction_model_layout_reports(&engine.block_store, shard);
+        let walked = crate::engine::live_block_scan_entries();
+        total += walked;
+        report("compaction_model_layout_reports", walked);
+
+        crate::engine::reset_live_block_scan_entries();
+        let _ = crate::engine::storage_reporting::object_manager_runtime_report(1, shard, 0, u32::MAX);
+        let walked = crate::engine::live_block_scan_entries();
+        total += walked;
+        report("object_manager_runtime_report", walked);
+
+        // Split that 2.0x between its two callees rather than inferring which one walks. It calls
+        // exactly these two, and `object_manager::runtime_report` iterates `bucket_index.bucket_map`
+        // directly rather than the live-block set -- so it SHOULD contribute nothing here, and if it
+        // does the assumption is wrong. These two rows are not added to the total above; they are a
+        // breakdown OF it.
+        crate::engine::reset_live_block_scan_entries();
+        let _ = crate::engine::storage_reporting::bucket_object_block_ownership_report(
+            1, shard, 0, u32::MAX,
         );
-    };
+        report(
+            "  of which: bucket_object_block_ownership",
+            crate::engine::live_block_scan_entries(),
+        );
 
-    crate::engine::reset_live_block_scan_entries();
-    let _ = engine.validate_shard_block_ownership(1, shard);
-    let walked = crate::engine::live_block_scan_entries();
-    total += walked;
-    report("validate_shard_block_ownership", walked);
+        crate::engine::reset_live_block_scan_entries();
+        let _ = crate::engine::object_manager::runtime_report(shard);
+        report(
+            "  of which: object_manager::runtime_report",
+            crate::engine::live_block_scan_entries(),
+        );
 
-    crate::engine::reset_live_block_scan_entries();
-    let _ = crate::engine::collect_live_block_slab_ids(shard);
-    let walked = crate::engine::live_block_scan_entries();
-    total += walked;
-    report("collect_live_block_slab_ids", walked);
+        eprintln!(
+            "  [preamble] {:<38} {total:>8} entries = {:>5.1}x the shard ({live_blocks} live blocks)",
+            "SUM OF STANDALONE CALLS",
+            total as f64 / live_blocks as f64,
+        );
+        assert!(total > 0, "the preamble walked nothing; this attributes nothing");
 
-    crate::engine::reset_live_block_scan_entries();
-    let _ = crate::engine::compaction::compaction_utility_report(&engine.block_store, shard);
-    let walked = crate::engine::live_block_scan_entries();
-    total += walked;
-    report("compaction_utility_report", walked);
-
-    crate::engine::reset_live_block_scan_entries();
-    let _ = crate::engine::storage_reporting::storage_object_lifecycle_report(1, shard);
-    let walked = crate::engine::live_block_scan_entries();
-    total += walked;
-    report("storage_object_lifecycle_report", walked);
-
-    crate::engine::reset_live_block_scan_entries();
-    let _ = crate::engine::compaction::compaction_model_layout_reports(&engine.block_store, shard);
-    let walked = crate::engine::live_block_scan_entries();
-    total += walked;
-    report("compaction_model_layout_reports", walked);
-
-    crate::engine::reset_live_block_scan_entries();
-    let _ = crate::engine::storage_reporting::object_manager_runtime_report(1, shard, 0, u32::MAX);
-    let walked = crate::engine::live_block_scan_entries();
-    total += walked;
-    report("object_manager_runtime_report", walked);
-
-    // Split that 2.0x between its two callees rather than inferring which one walks. It calls
-    // exactly these two, and `object_manager::runtime_report` iterates `bucket_index.bucket_map`
-    // directly rather than the live-block set -- so it SHOULD contribute nothing here, and if it
-    // does the assumption is wrong. These two rows are not added to the total above; they are a
-    // breakdown OF it.
-    crate::engine::reset_live_block_scan_entries();
-    let _ = crate::engine::storage_reporting::bucket_object_block_ownership_report(
-        1, shard, 0, u32::MAX,
-    );
-    report(
-        "  of which: bucket_object_block_ownership",
-        crate::engine::live_block_scan_entries(),
-    );
-
-    crate::engine::reset_live_block_scan_entries();
-    let _ = crate::engine::object_manager::runtime_report(shard);
-    report(
-        "  of which: object_manager::runtime_report",
-        crate::engine::live_block_scan_entries(),
-    );
-
-    eprintln!(
-        "  [preamble] {:<38} {total:>8} entries = {:>5.1}x the shard ({live_blocks} live blocks)",
-        "SUM OF STANDALONE CALLS",
-        total as f64 / live_blocks as f64,
-    );
-    assert!(total > 0, "the preamble walked nothing; this attributes nothing");
-
-    // THE NUMBER A HOIST ACTUALLY MOVES.
-    //
-    // The rows above call each report on its own, and each one walks for itself by design -- the
-    // `_from_entries` refactors keep a standalone wrapper precisely so callers with nothing to
-    // share are unaffected. So those rows do NOT change when the preamble starts sharing a walk,
-    // and reading them for that would show a fix doing nothing.
-    //
-    // What changes is the real call, where the sharing happens. Measured last because it takes the
-    // shard WRITE lock and mutates.
-    drop(shards);
+        // THE NUMBER A HOIST ACTUALLY MOVES.
+        //
+        // The rows above call each report on its own, and each one walks for itself by design -- the
+        // `_from_entries` refactors keep a standalone wrapper precisely so callers with nothing to
+        // share are unaffected. So those rows do NOT change when the preamble starts sharing a walk,
+        // and reading them for that would show a fix doing nothing.
+        //
+        // What changes is the real call, where the sharing happens. Measured last because it takes the
+        // shard WRITE lock and mutates.
+    });
     crate::engine::reset_live_block_scan_entries();
     let compaction = engine.compact_shard_blocks_with_budgets(1, u64::MAX, usize::MAX);
     let walked = crate::engine::live_block_scan_entries();
@@ -9429,12 +9425,13 @@ fn what_a_bounded_bucket_range_saves() {
         let counts = probe.stop();
         let live = counts.alloc_bytes.saturating_sub(counts.free_bytes);
 
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
-        let buckets = &shard.bucket_index.bucket_map;
-        let objects: usize = buckets.values().map(|b| b.object_index.object_count()).sum();
-        let blocks: usize = buckets.values().map(|b| b.block_index.len()).sum();
-        (buckets.len(), shard.bucket_recency.len(), objects, blocks, live)
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("loaded shard");
+            let buckets = &shard.bucket_index.bucket_map;
+            let objects: usize = buckets.values().map(|b| b.object_index.object_count()).sum();
+            let blocks: usize = buckets.values().map(|b| b.block_index.len()).sum();
+            (buckets.len(), shard.bucket_recency.len(), objects, blocks, live)
+        })
     };
 
     let (wide_buckets, wide_recency, wide_objects, wide_blocks, wide_live) = run(u32::MAX);
@@ -9602,62 +9599,63 @@ fn what_each_home_costs() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("loaded shard");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("loaded shard");
 
-    // Captures nothing, so it does not fight the closures below for the shard borrow.
-    let freed_by = |f: &mut dyn FnMut()| -> f64 {
-        let probe = crate::alloc_probe::Probe::start();
-        f();
-        let counts = probe.stop();
-        counts.free_bytes.saturating_sub(counts.alloc_bytes) as f64 / RECORDS as f64
-    };
+        // Captures nothing, so it does not fight the closures below for the shard borrow.
+        let freed_by = |f: &mut dyn FnMut()| -> f64 {
+            let probe = crate::alloc_probe::Probe::start();
+            f();
+            let counts = probe.stop();
+            counts.free_bytes.saturating_sub(counts.alloc_bytes) as f64 / RECORDS as f64
+        };
 
-    // Least entangled first: these own nothing the others need.
-    let mut freed_rows: Vec<(&str, f64)> = Vec::new();
-    let per = freed_by(&mut || shard.bucket_recency.clear());
-    freed_rows.push(("bucket_recency", per));
-    let per = freed_by(&mut || shard.dirty_objects.clear());
-    freed_rows.push(("dirty_objects", per));
-    let per = freed_by(&mut || shard.bucket_index.object_block_lookup.clear());
-    freed_rows.push(("bucket_index.object_block_lookup", per));
-    let per = freed_by(&mut || {
-        for bucket in shard.bucket_index.bucket_map.values_mut() {
-            bucket.object_index.clear();
+        // Least entangled first: these own nothing the others need.
+        let mut freed_rows: Vec<(&str, f64)> = Vec::new();
+        let per = freed_by(&mut || shard.bucket_recency.clear());
+        freed_rows.push(("bucket_recency", per));
+        let per = freed_by(&mut || shard.dirty_objects.clear());
+        freed_rows.push(("dirty_objects", per));
+        let per = freed_by(&mut || shard.bucket_index.object_block_lookup.clear());
+        freed_rows.push(("bucket_index.object_block_lookup", per));
+        let per = freed_by(&mut || {
+            for bucket in shard.bucket_index.bucket_map.values_mut() {
+                bucket.object_index.clear();
+            }
+        });
+        freed_rows.push(("bucket_map .object_index", per));
+        let per = freed_by(&mut || shard.bucket_index.bucket_map.clear());
+        freed_rows.push(("bucket_map (the rest)", per));
+        let per = freed_by(&mut || shard.strings_mut().clear());
+        freed_rows.push(("strings", per));
+
+        println!();
+        println!("  {RECORDS} records, each home freed in turn");
+        println!("  home                              freed B/record");
+        let mut total = 0.0;
+        for (label, per) in &freed_rows {
+            total += per;
+            println!("  {label:34} {per:>10.0}");
         }
+        println!("  ----------------------------------------------");
+        println!("  {:34} {total:>10.0}", "accounted for");
+        println!("  {:34} {:>10}", "the shard holds (measured separately)", 963);
+        println!();
+        println!("  Two things keep the rows below the total, and neither is an error:");
+        println!("   - `clear()` drops entries but KEEPS the table, by design, so a row is credited");
+        println!("     with its entries and not with its capacity. The shortfall above is mostly");
+        println!("     retained tables.");
+        println!("   - a row reading 0 can be correct rather than broken: a HashMap<u32, u64> has no");
+        println!("     per-entry heap at all, and ObjectIndex is inline while a slot holds one object.");
+        println!();
+        println!("  Order is fixed and matters: a structure that owns its keys frees them, so an");
+        println!("  earlier row is credited with anything a later row merely borrowed. The block index");
+        println!("  is not freed separately because it goes with the slot map it lives in -- which is");
+        println!("  why the slot map is the largest row and why bounding the slot range only recovers");
+        println!("  the per-slot part of it, not the per-object part.");
+
+        assert!(total > 0.0, "measured nothing");
     });
-    freed_rows.push(("bucket_map .object_index", per));
-    let per = freed_by(&mut || shard.bucket_index.bucket_map.clear());
-    freed_rows.push(("bucket_map (the rest)", per));
-    let per = freed_by(&mut || shard.strings_mut().clear());
-    freed_rows.push(("strings", per));
-
-    println!();
-    println!("  {RECORDS} records, each home freed in turn");
-    println!("  home                              freed B/record");
-    let mut total = 0.0;
-    for (label, per) in &freed_rows {
-        total += per;
-        println!("  {label:34} {per:>10.0}");
-    }
-    println!("  ----------------------------------------------");
-    println!("  {:34} {total:>10.0}", "accounted for");
-    println!("  {:34} {:>10}", "the shard holds (measured separately)", 963);
-    println!();
-    println!("  Two things keep the rows below the total, and neither is an error:");
-    println!("   - `clear()` drops entries but KEEPS the table, by design, so a row is credited");
-    println!("     with its entries and not with its capacity. The shortfall above is mostly");
-    println!("     retained tables.");
-    println!("   - a row reading 0 can be correct rather than broken: a HashMap<u32, u64> has no");
-    println!("     per-entry heap at all, and ObjectIndex is inline while a slot holds one object.");
-    println!();
-    println!("  Order is fixed and matters: a structure that owns its keys frees them, so an");
-    println!("  earlier row is credited with anything a later row merely borrowed. The block index");
-    println!("  is not freed separately because it goes with the slot map it lives in -- which is");
-    println!("  why the slot map is the largest row and why bounding the slot range only recovers");
-    println!("  the per-slot part of it, not the per-object part.");
-
-    assert!(total > 0.0, "measured nothing");
 }
 
 // `would_an_inline_element_name_pay` WAS HERE, AND THE QUESTION IT HELD OPEN IS ANSWERED.
@@ -10142,24 +10140,22 @@ fn emptied_buckets_are_dropped_without_walking_the_map() {
         });
         assert!(r.status.ok, "write: {:?}", r.status);
     }
-    let before = {
-        let shards = engine.shards.read().expect("lock");
-        shards.get(&1).expect("shard").bucket_index.bucket_map.len()
-    };
+    let before = engine.shards.with_state(1, |shard| {
+        shard.expect("shard").bucket_index.bucket_map.len()
+    });
     for index in 0..200u64 {
         let r = engine.execute(ExecuteRequest {
             shard_id: 1, command: Command::StringDelete { key: format!("drop-{index}") } });
         assert!(r.status.ok, "delete: {:?}", r.status);
     }
-    let (after, empties) = {
-        let shards = engine.shards.read().expect("lock");
-        let map = &shards.get(&1).expect("shard").bucket_index.bucket_map;
+    let (after, empties) = engine.shards.with_state(1, |shard| {
+        let map = &shard.expect("shard").bucket_index.bucket_map;
         let empties = map
             .values()
             .filter(|b| b.block_index.is_empty() && b.object_index.is_empty())
             .count();
         (map.len(), empties)
-    };
+    });
     println!();
     println!("  buckets after 200 writes: {before}, after deleting all: {after} ({empties} empty)");
     assert!(before > 0, "the writes should have created buckets");
@@ -10287,21 +10283,22 @@ fn the_two_expiry_indexes_agree() {
         });
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    // The denominator: an empty index agrees with an empty index, and proves nothing.
-    assert!(
-        !shard.expires_at_ms().is_empty(),
-        "no deadlines survived the workload, so agreement here is vacuous"
-    );
-    assert_eq!(
-        crate::engine::expiry_index_disagreements(shard),
-        0,
-        "the key-ordered and deadline-ordered expiry indexes disagree: {} deadlines vs {} ordered \
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
+        // The denominator: an empty index agrees with an empty index, and proves nothing.
+        assert!(
+            !shard.expires_at_ms().is_empty(),
+            "no deadlines survived the workload, so agreement here is vacuous"
+        );
+        assert_eq!(
+            crate::engine::expiry_index_disagreements(shard),
+            0,
+            "the key-ordered and deadline-ordered expiry indexes disagree: {} deadlines vs {} ordered \
          entries -- a write path is bypassing set_expiry/clear_expiry",
-        shard.expires_at_ms().len(),
-        shard.expiry_by_deadline.len(),
-    );
+            shard.expires_at_ms().len(),
+            shard.expiry_by_deadline.len(),
+        );
+    });
 }
 
 /// A cycle request with every stage OFF except prepare.
@@ -10343,7 +10340,8 @@ fn shard_with_a_full_data_slab(
     let mut written = 0usize;
     while !engine
         .block_store()
-        .needs_slab_preparation_with_target(target)
+        .owned_slab_position_for_test(1)
+        .is_some_and(|(_, offset)| offset >= target)
     {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -10388,7 +10386,8 @@ fn the_prepare_stage_rolls_the_next_data_slab() {
     assert!(
         engine
             .block_store()
-            .needs_slab_preparation_with_target(TARGET),
+            .owned_slab_position_for_test(1)
+            .is_some_and(|(_, offset)| offset >= TARGET),
         "the fixture did not fill a slab to the target, so prepare has nothing to do",
     );
 
@@ -10415,7 +10414,8 @@ fn the_prepare_stage_rolls_the_next_data_slab() {
     assert!(
         !engine
             .block_store()
-            .needs_slab_preparation_with_target(TARGET),
+            .owned_slab_position_for_test(1)
+            .is_some_and(|(_, offset)| offset >= TARGET),
         "the active slab is still at target after prepare ran",
     );
 
@@ -10506,7 +10506,8 @@ fn a_disabled_or_dry_run_prepare_stage_rolls_nothing() {
     assert!(
         engine
             .block_store()
-            .needs_slab_preparation_with_target(TARGET),
+            .owned_slab_position_for_test(1)
+            .is_some_and(|(_, offset)| offset >= TARGET),
         "the fixture did not fill a slab, so neither arm below is refusing anything",
     );
 

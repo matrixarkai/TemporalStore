@@ -286,18 +286,19 @@ impl Seeded {
     /// against the index WITHOUT that map and the map is priced on its own line, under its own
     /// ceiling, in the test. A ceiling that absorbed it would stop biting on a restated key.
     fn surfaces(&self) -> Surfaces {
-        let mut shards = self.engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&SHARD).expect("shard is loaded");
-        let placements = shard.wal_resident_blocks.len();
-        let container_with = crate::engine::encode_index_bytes(shard).len();
-        let stream_with = serde_json::to_vec(shard).expect("the index must serialize as JSON").len();
-        let held = std::mem::take(&mut shard.wal_resident_blocks);
-        let mut surfaces = self.measure(shard);
-        surfaces.placements = placements;
-        surfaces.placement_stream = stream_with - surfaces.stream;
-        surfaces.placement_container_extra = container_with - surfaces.container;
-        shard.wal_resident_blocks = held;
-        surfaces
+        self.engine.shards.with_state_mut(SHARD, |state| {
+            let shard = state.expect("shard is loaded");
+            let placements = shard.wal_resident_blocks.len();
+            let container_with = crate::engine::encode_index_bytes(shard).len();
+            let stream_with = serde_json::to_vec(shard).expect("the index must serialize as JSON").len();
+            let held = std::mem::take(&mut shard.wal_resident_blocks);
+            let mut surfaces = self.measure(shard);
+            surfaces.placements = placements;
+            surfaces.placement_stream = stream_with - surfaces.stream;
+            surfaces.placement_container_extra = container_with - surfaces.container;
+            shard.wal_resident_blocks = held;
+            surfaces
+        })
     }
 
     fn measure(&self, shard: &ShardState) -> Surfaces {
@@ -508,95 +509,96 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
     for shape in [KeyShape::Padded, KeyShape::Scattered] {
         let seeded = seed(HEADLINE_KEYS, PUBLISHED_WIDTH, shape, SHIPPED_END_BUCKET);
         seeded.surfaces().assert_amortised_regime();
-        let shards = seeded.engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&SHARD).expect("shard is loaded");
-        let blocks = super::blocks_with_identity(&shard.bucket_index);
-        assert_eq!(
-            HEADLINE_KEYS,
-            blocks.len(),
-            "[CLAUSE every-block-inverts] the walk reached {} block(s) of {HEADLINE_KEYS}; a \
-             reconstruction claim over a subset is not the claim this change needs",
-            blocks.len()
-        );
-        let mut checked = 0usize;
-        for (_, _, object_key, block) in &blocks {
-            let key = crate::engine::state::block_index_written_key(object_key, block);
-            let parts = crate::index_log::block_ref_key_parts(&key)
-                .unwrap_or_else(|error| panic!("[CLAUSE every-block-inverts] {error}"));
+        seeded.engine.shards.with_state(SHARD, |state| {
+            let shard = state.expect("shard is loaded");
+            let blocks = super::blocks_with_identity(&shard.bucket_index);
             assert_eq!(
-                &**object_key, parts.object_key,
-                "[CLAUSE every-block-inverts] the object key read back out of {key:?} is \
-                 {:?} and the encoder was handed {:?}",
-                parts.object_key, &**object_key
+                HEADLINE_KEYS,
+                blocks.len(),
+                "[CLAUSE every-block-inverts] the walk reached {} block(s) of {HEADLINE_KEYS}; a \
+                 reconstruction claim over a subset is not the claim this change needs",
+                blocks.len()
             );
+            let mut checked = 0usize;
+            for (_, _, object_key, block) in &blocks {
+                let key = crate::engine::state::block_index_written_key(object_key, block);
+                let parts = crate::index_log::block_ref_key_parts(&key)
+                    .unwrap_or_else(|error| panic!("[CLAUSE every-block-inverts] {error}"));
+                assert_eq!(
+                    &**object_key, parts.object_key,
+                    "[CLAUSE every-block-inverts] the object key read back out of {key:?} is \
+                     {:?} and the encoder was handed {:?}",
+                    parts.object_key, &**object_key
+                );
+                assert_eq!(
+                    Some(block.model_id()),
+                    crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
+                        parts.kind
+                    ),
+                    "[CLAUSE every-block-inverts] the kind read back out of {key:?} is {:?} and the \
+                     block holds {:?}",
+                    parts.kind,
+                    block.model_id().as_str()
+                );
+                assert_eq!(
+                    "", parts.element_name,
+                    "[CLAUSE every-block-inverts] the element name slot of {key:?} holds {:?}; the \
+                     renderer passes a literal `None`, so a non-empty slot means the key was composed \
+                     by something else",
+                    parts.element_name
+                );
+                assert_eq!(
+                    block.address.block_slab_id(),
+                    parts.block_slab_id,
+                    "[CLAUSE every-block-inverts] the slab id slot of {key:?} disagrees with the address"
+                );
+                assert_eq!(
+                    block.address.offset(),
+                    parts.offset,
+                    "[CLAUSE every-block-inverts] the offset slot of {key:?} disagrees with the address"
+                );
+                assert_eq!(
+                    block.address.length(),
+                    parts.length,
+                    "[CLAUSE every-block-inverts] the length slot of {key:?} disagrees with the address"
+                );
+                assert_eq!(
+                    block.address.block_id().unwrap_or_default(),
+                    parts.block_id,
+                    "[CLAUSE every-block-inverts] the block id slot of {key:?} disagrees with the address"
+                );
+                assert_eq!(
+                    block.address.generation().unwrap_or_default(),
+                    parts.generation,
+                    "[CLAUSE every-block-inverts] the generation slot of {key:?} disagrees with the \
+                     address"
+                );
+                checked += 1;
+            }
             assert_eq!(
-                Some(block.model_id()),
-                crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
-                    parts.kind
-                ),
-                "[CLAUSE every-block-inverts] the kind read back out of {key:?} is {:?} and the \
-                 block holds {:?}",
-                parts.kind,
-                block.model_id().as_str()
+                HEADLINE_KEYS, checked,
+                "[CLAUSE every-block-inverts] {checked} block(s) were compared rather than {HEADLINE_KEYS}"
             );
-            assert_eq!(
-                "", parts.element_name,
-                "[CLAUSE every-block-inverts] the element name slot of {key:?} holds {:?}; the \
-                 renderer passes a literal `None`, so a non-empty slot means the key was composed \
-                 by something else",
-                parts.element_name
+            println!(
+                "[every-block-inverts] {shape:?}: {checked} block(s), object key and kind read back out \
+                 of the key and equal to what the encoder was handed on every one"
             );
-            assert_eq!(
-                block.address.block_slab_id(),
-                parts.block_slab_id,
-                "[CLAUSE every-block-inverts] the slab id slot of {key:?} disagrees with the address"
-            );
-            assert_eq!(
-                block.address.offset(),
-                parts.offset,
-                "[CLAUSE every-block-inverts] the offset slot of {key:?} disagrees with the address"
-            );
-            assert_eq!(
-                block.address.length(),
-                parts.length,
-                "[CLAUSE every-block-inverts] the length slot of {key:?} disagrees with the address"
-            );
-            assert_eq!(
-                block.address.block_id().unwrap_or_default(),
-                parts.block_id,
-                "[CLAUSE every-block-inverts] the block id slot of {key:?} disagrees with the address"
-            );
-            assert_eq!(
-                block.address.generation().unwrap_or_default(),
-                parts.generation,
-                "[CLAUSE every-block-inverts] the generation slot of {key:?} disagrees with the \
-                 address"
-            );
-            checked += 1;
-        }
-        assert_eq!(
-            HEADLINE_KEYS, checked,
-            "[CLAUSE every-block-inverts] {checked} block(s) were compared rather than {HEADLINE_KEYS}"
-        );
-        println!(
-            "[every-block-inverts] {shape:?}: {checked} block(s), object key and kind read back out \
-             of the key and equal to what the encoder was handed on every one"
-        );
 
-        // --- THE CONTROL. The comparison must be able to FAIL. ---
-        let (_, _, object_key, block) = &blocks[0];
-        let key = crate::engine::state::block_index_written_key(object_key, block);
-        let mut doctored = key.clone();
-        let at = doctored.find('-').expect("a fixture key holds its ordinal tail");
-        doctored.replace_range(at..at + 1, "_");
-        let doctored_parts = crate::index_log::block_ref_key_parts(&doctored)
-            .expect("the doctored key is still an eight-slot composite");
-        assert_ne!(
-            &**object_key, doctored_parts.object_key,
-            "[CLAUSE every-block-inverts] a one-character change to an object key did not change \
-             what the parse reads back, so the 8,000 equalities above are equalities this \
-             instrument cannot distinguish from inequalities"
-        );
+            // --- THE CONTROL. The comparison must be able to FAIL. ---
+            let (_, _, object_key, block) = &blocks[0];
+            let key = crate::engine::state::block_index_written_key(object_key, block);
+            let mut doctored = key.clone();
+            let at = doctored.find('-').expect("a fixture key holds its ordinal tail");
+            doctored.replace_range(at..at + 1, "_");
+            let doctored_parts = crate::index_log::block_ref_key_parts(&doctored)
+                .expect("the doctored key is still an eight-slot composite");
+            assert_ne!(
+                &**object_key, doctored_parts.object_key,
+                "[CLAUSE every-block-inverts] a one-character change to an object key did not change \
+                 what the parse reads back, so the 8,000 equalities above are equalities this \
+                 instrument cannot distinguish from inequalities"
+            );
+        })
     }
 }
 
@@ -1072,7 +1074,7 @@ fn what_the_entry_restating_its_key_costs_the_shipped_container() {
         );
         assert!(
             placement_json <= PLACEMENT_JSON_CEILING && placement_container <= PLACEMENT_CONTAINER_CEILING,
-            "[CLAUSE wal-placement-has-its-own-ceiling] on {} keys a WAL placement costs              {placement_json:.3} B of JSON and {placement_container:.3} B of container against              {PLACEMENT_JSON_CEILING} and {PLACEMENT_CONTAINER_CEILING} measured at 5b265a12d",
+            "[CLAUSE wal-placement-has-its-own-ceiling] on {} keys a WAL placement costs {placement_json:.3} B of JSON and {placement_container:.3} B of container against {PLACEMENT_JSON_CEILING} and {PLACEMENT_CONTAINER_CEILING} measured at 5b265a12d",
             shape.label()
         );
         drop(seeded);
@@ -1217,14 +1219,15 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
             expected.insert(key, value);
         }
         {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&SHARD).expect("shard is loaded");
-            for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
-                identities_before.insert(
-                    handle,
-                    (object_key.to_string(), block.model_id().as_str().to_string()),
-                );
-            }
+            engine.shards.with_state(SHARD, |state| {
+                let shard = state.expect("shard is loaded");
+                for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
+                    identities_before.insert(
+                        handle,
+                        (object_key.to_string(), block.model_id().as_str().to_string()),
+                    );
+                }
+            })
         }
         assert_eq!(
             OBJECTS,
@@ -1341,39 +1344,40 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
     // row and not through the block index's kind, so the 600 reads below are silent about the
     // `model_id` the reconstruction produces. This is the arm that is not.
     {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&SHARD).expect("shard is loaded");
-        let mut after: BTreeMap<u64, (String, String)> = BTreeMap::new();
-        for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
-            after.insert(
-                handle,
-                (object_key.to_string(), block.model_id().as_str().to_string()),
+        engine.shards.with_state(SHARD, |state| {
+            let shard = state.expect("shard is loaded");
+            let mut after: BTreeMap<u64, (String, String)> = BTreeMap::new();
+            for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
+                after.insert(
+                    handle,
+                    (object_key.to_string(), block.model_id().as_str().to_string()),
+                );
+            }
+            assert_eq!(
+                identities_before.len(),
+                after.len(),
+                "[CLAUSE reload-rebuilds-every-identity] {} block identity(ies) were written and {} came \
+                 back",
+                identities_before.len(),
+                after.len()
             );
-        }
-        assert_eq!(
-            identities_before.len(),
-            after.len(),
-            "[CLAUSE reload-rebuilds-every-identity] {} block identity(ies) were written and {} came \
-             back",
-            identities_before.len(),
-            after.len()
-        );
-        assert_eq!(
-            identities_before, after,
-            "[CLAUSE reload-rebuilds-every-identity] a block came back under a different object key \
-             or a different kind than the writer held -- the identity is reconstructed from the \
-             stored key now, so a disagreement here is the reconstruction being wrong"
-        );
-        // THE CONTROL: the comparison must be able to fail.
-        let mut injected = after.clone();
-        if let Some((_, row)) = injected.iter_mut().next() {
-            row.1.push('Z');
-        }
-        assert_ne!(
-            injected, identities_before,
-            "[CLAUSE reload-rebuilds-every-identity] the comparison cannot report a difference when \
-             one is injected"
-        );
+            assert_eq!(
+                identities_before, after,
+                "[CLAUSE reload-rebuilds-every-identity] a block came back under a different object key \
+                 or a different kind than the writer held -- the identity is reconstructed from the \
+                 stored key now, so a disagreement here is the reconstruction being wrong"
+            );
+            // THE CONTROL: the comparison must be able to fail.
+            let mut injected = after.clone();
+            if let Some((_, row)) = injected.iter_mut().next() {
+                row.1.push('Z');
+            }
+            assert_ne!(
+                injected, identities_before,
+                "[CLAUSE reload-rebuilds-every-identity] the comparison cannot report a difference when \
+                 one is injected"
+            );
+        })
     }
 
     let mut found = 0usize;

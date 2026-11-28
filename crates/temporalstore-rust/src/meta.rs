@@ -332,6 +332,17 @@ pub struct ServerHeartbeatResponse {
     pub topology_version: u64,
     #[serde(default)]
     pub server_state: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub cache_budgets: Vec<ShardCacheBudget>,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ShardCacheBudget {
+    pub shard_id: ShardId,
+    pub table_id: u64,
+    pub load_version: u64,
+    pub raft_term: u64,
+    pub bytes: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -743,6 +754,12 @@ pub struct TableServingOptions {
     /// exactly as they were before -- see `table_decides`.
     #[serde(default)]
     pub set_fields: BTreeSet<String>,
+    /// Whether this table contains reclaimable cache entries.
+    #[serde(default)]
+    pub cache_class: bool,
+    /// Budget for live cache payload bytes across all shards in the table.
+    #[serde(default)]
+    pub cache_budget_bytes: u64,
 }
 
 /// A field of `TableServingOptions`, for naming one without spelling it.
@@ -763,6 +780,8 @@ pub enum TableServingField {
     ContinuousFailedTimeMs,
     IoTimeoutMs,
     ConnectTimeoutMs,
+    CacheClass,
+    CacheBudgetBytes,
 }
 
 impl TableServingField {
@@ -778,6 +797,8 @@ impl TableServingField {
             Self::ContinuousFailedTimeMs => "continuous_failed_time_ms",
             Self::IoTimeoutMs => "io_timeout_ms",
             Self::ConnectTimeoutMs => "connect_timeout_ms",
+            Self::CacheClass => "cache_class",
+            Self::CacheBudgetBytes => "cache_budget_bytes",
         }
     }
 }
@@ -821,6 +842,10 @@ impl TableServingOptions {
             TableServingField::ConnectTimeoutMs => {
                 self.connect_timeout_ms != defaults.connect_timeout_ms
             }
+            TableServingField::CacheClass => self.cache_class != defaults.cache_class,
+            TableServingField::CacheBudgetBytes => {
+                self.cache_budget_bytes != defaults.cache_budget_bytes
+            }
         }
     }
 }
@@ -838,6 +863,8 @@ impl Default for TableServingOptions {
             continuous_failed_time_ms: default_continuous_failed_time_ms(),
             io_timeout_ms: default_table_io_timeout_ms(),
             connect_timeout_ms: default_table_connect_timeout_ms(),
+            cache_class: false,
+            cache_budget_bytes: 0,
             set_fields: BTreeSet::new(),
         }
     }
@@ -865,6 +892,10 @@ pub struct TableServingOptionsPatch {
     pub io_timeout_ms: Option<u64>,
     #[serde(default)]
     pub connect_timeout_ms: Option<u64>,
+    #[serde(default)]
+    pub cache_class: Option<bool>,
+    #[serde(default)]
+    pub cache_budget_bytes: Option<u64>,
 }
 
 /// How many resources there are, and how many are in each state.
@@ -2680,6 +2711,9 @@ fn validate_serving_options(options: &TableServingOptions) -> Result<(), String>
     if options.io_timeout_ms == 0 || options.connect_timeout_ms == 0 {
         return Err("io/connect timeout must be > 0".to_string());
     }
+    if options.cache_class && options.cache_budget_bytes == 0 {
+        return Err("cache_class requires a positive cache_budget_bytes".to_string());
+    }
     Ok(())
 }
 
@@ -2743,6 +2777,14 @@ impl TableServingOptionsPatch {
     if let Some(connect_timeout_ms) = patch.connect_timeout_ms {
         options.connect_timeout_ms = connect_timeout_ms;
         set(TableServingField::ConnectTimeoutMs, &mut options);
+    }
+    if let Some(cache_class) = patch.cache_class {
+        options.cache_class = cache_class;
+        set(TableServingField::CacheClass, &mut options);
+    }
+    if let Some(cache_budget_bytes) = patch.cache_budget_bytes {
+        options.cache_budget_bytes = cache_budget_bytes;
+        set(TableServingField::CacheBudgetBytes, &mut options);
     }
     options
     }
@@ -10217,6 +10259,8 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
                     continuous_failed_time_ms: 22,
                     io_timeout_ms: 333,
                     connect_timeout_ms: 444,
+                    cache_class: false,
+                    cache_budget_bytes: 0,
                     set_fields: Default::default(),
                 },
             })
@@ -10248,6 +10292,8 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
                 replica_read_policy: Some("round_robin_replica".to_string()),
                 drop_percent: Some(19),
                 max_read_retries: Some(4),
+                cache_class: Some(true),
+                cache_budget_bytes: Some(64 << 20),
                 ..TableServingOptionsPatch::default()
             }),
         });
@@ -10260,6 +10306,33 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         assert_eq!(table.serving_options.drop_percent, 19);
         assert_eq!(table.serving_options.max_read_retries, 4);
         assert_eq!(table.serving_options.max_write_retries, 2);
+        assert!(table.serving_options.cache_class);
+        assert_eq!(table.serving_options.cache_budget_bytes, 64 << 20);
+
+        let overlapping = meta.add_table(AddTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "overlapping".to_string(),
+            first_shard_id: 10,
+            shard_count: 2,
+            replica_count: 1,
+            partition_version: 0,
+            serving_options: TableServingOptions::default(),
+        });
+        assert_eq!(overlapping.status.code, "cache_shard_overlap");
+
+        let invalid_budget = meta.update_table(UpdateTableRequest {
+            namespace: "ns".to_string(),
+            table_name: "opts".to_string(),
+            shard_count: None,
+            replica_count: None,
+            first_shard_id: None,
+            partition_version: None,
+            serving_options: Some(TableServingOptionsPatch {
+                cache_budget_bytes: Some(0),
+                ..TableServingOptionsPatch::default()
+            }),
+        });
+        assert_eq!(invalid_budget.status.code, "bad_request");
 
         let invalid = meta.update_table(UpdateTableRequest {
             namespace: "ns".to_string(),
@@ -10277,6 +10350,9 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
 
         let restored = SingleNodeMeta::default();
         assert!(restored.install_snapshot(meta.export_snapshot()).status.ok);
+        let options = &restored.list_tables().tables[0].serving_options;
+        assert!(options.cache_class);
+        assert_eq!(options.cache_budget_bytes, 64 << 20);
         assert_eq!(
             restored.list_tables().tables[0]
                 .serving_options
@@ -10795,7 +10871,7 @@ fn counting_resources_agrees_with_listing_them_and_counting_those() {
         assert_eq!(response.serving_mode, "serving");
         assert_eq!(
             response.drop_percent, None,
-            "the metaserver holds no per-proxy drop_percent, so a heartbeat must not appear              to set one -- it used to answer 0, which the proxy applied over an operator's drain"
+            "the metaserver holds no per-proxy drop_percent, so a heartbeat must not appear to set one -- it used to answer 0, which the proxy applied over an operator's drain"
         );
         assert_eq!(meta.list_proxies().proxies[0].binary_version, "v2");
 

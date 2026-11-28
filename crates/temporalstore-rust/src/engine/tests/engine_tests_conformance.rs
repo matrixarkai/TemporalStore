@@ -1019,11 +1019,12 @@ fn first_step_that_leaves_the_index_unwritable(seed: u64) -> Option<String> {
                 shard_id: 1,
                 command,
             });
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard 1");
-            serde_json::to_value(shard)
-                .map(|_| ())
-                .map_err(|err| err.to_string())
+            engine.shards.with_state(1, |shard| {
+                let shard = shard.expect("shard 1");
+                serde_json::to_value(shard)
+                    .map(|_| ())
+                    .map_err(|err| err.to_string())
+            })
         }));
         let last = shown_so_far.last().cloned().unwrap_or_default();
         let last: String = last.chars().take(300).collect();

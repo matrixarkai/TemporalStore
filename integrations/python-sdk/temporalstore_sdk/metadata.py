@@ -8,6 +8,12 @@ from typing import Callable, Optional
 from urllib.parse import urlsplit
 
 
+import grpc
+from temporalstore.v1 import temporalstore_pb2 as pb
+
+from .client import command_channel
+
+
 def _crc_entry(byte: int) -> int:
     crc = byte
     for _ in range(8):
@@ -61,6 +67,7 @@ class TableTopology:
     first_shard_id: int
     shard_count: int
     shards: tuple[Shard, ...]
+    table_id: Optional[int] = None
 
     def shard_for_key(self, key: str) -> Shard:
         if self.shard_count <= 0:
@@ -73,7 +80,7 @@ class TableTopology:
 
 
 class MetadataClient:
-    """Resolve a table using the metaserver's control-plane HTTP API."""
+    """Resolve tables over gRPC by default, or from an explicit HTTP URL."""
 
     def __init__(
         self,
@@ -81,9 +88,12 @@ class MetadataClient:
         *,
         credential_provider: Optional[Callable[[], Optional[str]]] = None,
         timeout_seconds: float = 5.0,
+        require_grpc: bool = False,
     ):
-        endpoint = urlsplit(url)
-        if (endpoint.scheme not in ("http", "https") or not endpoint.hostname
+        endpoint = urlsplit(url if "://" in url else f"grpc://{url}")
+        if require_grpc and endpoint.scheme not in ("grpc", "grpcs"):
+            raise ValueError("expected a grpc:// or grpcs:// metaserver URL")
+        if (endpoint.scheme not in ("grpc", "grpcs", "http", "https") or not endpoint.hostname
                 or endpoint.path not in ("", "/") or endpoint.username is not None
                 or endpoint.query or endpoint.fragment):
             raise ValueError("expected a metaserver base URL")
@@ -92,6 +102,17 @@ class MetadataClient:
         self._port = endpoint.port
         self._timeout = timeout_seconds
         self._credentials = credential_provider
+        self._channel = None
+        self._topology_rpc = None
+        if endpoint.scheme in ("grpc", "grpcs"):
+            credentials = grpc.ssl_channel_credentials() if endpoint.scheme == "grpcs" else None
+            self._channel = command_channel(endpoint.netloc, credentials)
+            self._topology_rpc = self._channel.unary_unary(
+                "/temporalstore.v1.MetadataService/GetTableTopology",
+                request_serializer=pb.MetadataTableTopologyRequest.SerializeToString,
+                response_deserializer=pb.MetadataTableTopologyResponse.FromString,
+            )
+
 
     def table_topology(
         self,
@@ -100,11 +121,15 @@ class MetadataClient:
         *,
         previous: Optional[TableTopology] = None,
         location: str = "",
+        timeout_seconds: float | None = None,
     ) -> TableTopology:
         if not namespace or not table:
             raise ValueError("namespace and table are required")
         if previous is not None and (namespace, table) != (previous.namespace, previous.name):
             raise ValueError("previous topology is for a different table")
+        timeout = self._timeout if timeout_seconds is None else min(self._timeout, timeout_seconds)
+        if self._topology_rpc is not None:
+            return self._table_topology_grpc(namespace, table, previous, location, timeout)
         request = {
             "namespace": namespace, "table_name": table, "client_location": location,
             "old_topology_version": previous.version if previous else 0,
@@ -113,7 +138,7 @@ class MetadataClient:
         token = self._credentials() if self._credentials is not None else None
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        connection = self._connect(self._host, self._port, timeout=self._timeout)
+        connection = self._connect(self._host, self._port, timeout=timeout)
         try:
             connection.request("POST", "/tables/topology", json.dumps(request), headers)
             response = connection.getresponse()
@@ -136,7 +161,46 @@ class MetadataClient:
                 self._decode_shard(row)
                 for row in sorted(body["shards"], key=lambda item: item["shard_id"])
             ),
+            table_id=info.get("table_id"),
         )
+
+    def _table_topology_grpc(self, namespace, table, previous, location, timeout) -> TableTopology:
+        token = self._credentials() if self._credentials is not None else None
+        metadata = (("authorization", f"Bearer {token}"),) if token else None
+        request = pb.MetadataTableTopologyRequest(
+            namespace_name=namespace, table_name=table, client_location=location,
+            old_topology_version=previous.version if previous else 0,
+        )
+        try:
+            response = self._topology_rpc(request, timeout=timeout, metadata=metadata)
+        except grpc.RpcError as error:
+            raise MetadataError(error.code().name.lower(), error.details()) from error
+        if not response.status.ok:
+            raise MetadataError(response.status.code or "invalid_topology", response.status.message)
+        if response.unchanged and previous is not None:
+            return previous
+        if response.shard_count == 0:
+            raise MetadataError("invalid_topology", "metaserver returned a table without shards")
+        return TableTopology(
+            namespace, table, response.topology_version, response.first_shard_id,
+            response.shard_count, tuple(
+                Shard(
+                    route.shard_id,
+                    route.primary_addr if route.HasField("primary_addr") else None,
+                    tuple(route.replica_addrs),
+                    route.load_version,
+                    route.primary_grpc if route.HasField("primary_grpc") else None,
+                    tuple(route.replica_grpc),
+                    route.uses_raft_route,
+                )
+                for route in sorted(response.shards, key=lambda item: item.shard_id)
+            ),
+            table_id=response.table_id or None,
+        )
+
+    def close(self) -> None:
+        if self._channel is not None:
+            self._channel.close()
 
     @staticmethod
     def _decode_shard(row) -> Shard:

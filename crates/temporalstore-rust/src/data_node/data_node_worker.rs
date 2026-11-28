@@ -286,8 +286,8 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
                     "data node storage manager canceled before prepare",
                 );
             }
-            // Eviction changes local residency without changing replicated keys. Leave
-            // cycles that include other maintenance stages on their existing engine.
+            // Evict-only jobs apply residency changes to the serving engine.
+            // Cache-budget deletions run through the shard's consensus runtime.
             let evict_only = request.enable_evict
                 && !request.enable_prepare
                 && !request.enable_wal_reclaim
@@ -300,7 +300,19 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
             } else {
                 inner.engine.clone()
             };
-            let report = engine.run_storage_manager_cycle(request.clone());
+            let mut report = engine.run_storage_manager_cycle(request.clone());
+            if request.enable_evict && !request.dry_run
+                && report.completed && report.errors.is_empty() && !cancellation.is_requested()
+            {
+                if let Some((_, _, reclaimed)) =
+                    inner.reclaim_cache_budget(request.shard_id, request.eviction_batch_limit)
+                {
+                    if let Some(eviction) = report.eviction_report.as_mut() {
+                        eviction.dropped_object_count =
+                            eviction.dropped_object_count.saturating_add(reclaimed);
+                    }
+                }
+            }
             let status = if report.completed && report.errors.is_empty() {
                 Status::ok()
             } else {

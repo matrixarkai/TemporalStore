@@ -164,5 +164,6 @@ field CommandResponse 19 0 single
 field CommandResponse 20 2 single
 field CommandResponse 21 2 repeated
 field CommandResponse 22 0 single
+field CommandResponse 23 0 single
 enum CellRollupAnchor 0 1
 enum CellPredicateOp 0 1 2 3 4 5

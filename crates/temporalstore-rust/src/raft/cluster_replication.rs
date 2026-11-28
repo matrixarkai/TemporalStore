@@ -107,6 +107,14 @@ impl RaftCluster {
         &self,
         target_id: RaftNodeId,
     ) -> Result<AppendEntriesRequest, RaftError> {
+        self.build_capped_append_entries_request(target_id, u64::MAX)
+    }
+
+    pub(super) fn build_capped_append_entries_request(
+        &self,
+        target_id: RaftNodeId,
+        max_entries: u64,
+    ) -> Result<AppendEntriesRequest, RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         let entry_limit = inner.config.max_inflights_replicate.max(1);
         let byte_limit = inner.config.max_memory_replicate_log_bytes.max(1);
@@ -140,7 +148,7 @@ impl RaftCluster {
             // do not apply to it. This is the heartbeat -- and the probe a newly promoted
             // leader sends to find out where a follower really is. Blocking it leaves the
             // new leader unable to contact anyone, which reads as a leaderless shard.
-            let carries_entries = target.pipeline_state.next_index <= leader_last_index;
+            let carries_entries = max_entries != 0 && target.pipeline_state.next_index <= leader_last_index;
             if carries_entries
                 && (target.pipeline_state.inflight_entries >= entry_limit
                     || target.pipeline_state.inflight_bytes >= byte_limit)
@@ -224,7 +232,7 @@ impl RaftCluster {
             (leader.log.len() - first_unsent) as u64,
         );
         for entry in leader.log[first_unsent..].iter() {
-            if entries.len() as u64 >= available_entries {
+            if entries.len() as u64 >= available_entries.min(max_entries) {
                 break;
             }
             let entry_bytes = command_size_bytes(&entry.command);
@@ -257,10 +265,6 @@ impl RaftCluster {
             inflight_bytes = inflight_bytes.saturating_add(entry_bytes);
             entries.push(entry.clone());
         }
-        let inflight_bytes = entries
-            .iter()
-            .map(|entry| command_size_bytes(&entry.command))
-            .sum();
         if let Some(target) = inner.nodes.get_mut(&target_id) {
             target.pipeline_state.append_accepted =
                 target.pipeline_state.append_accepted.saturating_add(1);
@@ -299,12 +303,31 @@ impl RaftCluster {
         target_id: RaftNodeId,
         response: &AppendEntriesResponse,
     ) -> Result<(), RaftError> {
+        self.record_append_response_with_commit(target_id, response, None)
+    }
+
+    pub(super) fn record_append_response_with_commit(
+        &self,
+        target_id: RaftNodeId,
+        response: &AppendEntriesResponse,
+        sent_commit: Option<(u64, u64)>,
+    ) -> Result<(), RaftError> {
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         // A reply from a newer term means this leader is stale -- step down rather than keep
         // sending requests that can only be refused. A peer that was isolated returns with a term
         // well ahead of ours, and without this it rejects every append forever while we stay
         // leader at the old term, so it can never rejoin.
         let local_leader_id = inner.leader_id;
+        let confirmed_commit = sent_commit.and_then(|(term, commit)| {
+            (response.success
+                && response.term == term
+                && inner.local_node_id == Some(local_leader_id)
+                && target_id != local_leader_id
+                && inner.nodes.get(&local_leader_id).is_some_and(|leader| {
+                    leader.role == RaftRole::Leader && leader.current_term == term
+                }))
+            .then(|| commit.min(response.match_index))
+        });
         let stepped_down = inner
             .nodes
             .get_mut(&local_leader_id)
@@ -332,6 +355,9 @@ impl RaftCluster {
             return Ok(());
         }
         if response.success {
+            if let Some(committed) = confirmed_commit {
+                target.commit_index = target.commit_index.max(committed);
+            }
             target.pipeline_state.match_index =
                 target.pipeline_state.match_index.max(response.match_index);
             target.pipeline_state.next_index = response.match_index.saturating_add(1);
@@ -405,11 +431,13 @@ impl RaftCluster {
                 reject_reason: Some("shard_mismatch".to_string()),
             });
         }
-        let entries = request.entries;
+        let mut entries = request.entries;
         let target_id = request.target_id;
         let leader_id = request.leader_id;
         let term = request.term;
         let leader_commit = request.leader_commit;
+        let keep_leader_log = leader_id != target_id
+            && inner.local_node_id.is_none_or(|local| local == leader_id);
         // Record what the LEADER says its commit index is, on every request -- including the ones
         // this node is about to reject. That is the whole point: a rejecting follower keeps
         // hearing from the leader, so this stays fresh while the node's own log does not move,
@@ -430,11 +458,21 @@ impl RaftCluster {
         // now only an ACCEPTED append marked it back up -- so a follower that is merely behind,
         // which rejects appends while it catches up, held a healthy leader as down and refused
         // every operation that needs one.
-        let heard_from_the_leader = inner
-            .nodes
-            .get(&target_id)
-            .map(|node| term >= node.current_term)
-            .unwrap_or(false);
+        let contact_term = match inner.nodes.get(&target_id) {
+            Some(node) => Some(node.current_term),
+            None if inner.local_node_id == Some(target_id) && inner.leader_id == leader_id => {
+                // A removed process still receives heartbeats once the leader adds
+                // it back on its side. Refresh contact without accepting entries
+                // until the local membership adds this node again.
+                inner
+                    .nodes
+                    .get(&leader_id)
+                    .filter(|leader| leader.role == RaftRole::Leader)
+                    .map(|leader| leader.current_term)
+            }
+            None => None,
+        };
+        let heard_from_the_leader = contact_term.is_some_and(|current_term| term >= current_term);
         if heard_from_the_leader && leader_id != target_id {
             if let Some(leader) = inner.nodes.get_mut(&leader_id) {
                 leader.alive = true;
@@ -451,19 +489,14 @@ impl RaftCluster {
         // up kept timing out and campaigning, which bumped the term, which made the
         // leader's in-flight appends stale, which got them rejected -- catch-up and
         // election fighting each other instead of converging.
-        let local_current_term = inner
-            .nodes
-            .get(&target_id)
-            .map(|node| node.current_term)
-            .unwrap_or_default();
-        if term >= local_current_term {
+        if heard_from_the_leader {
             inner.leader_contact_epoch = inner.leader_contact_epoch.saturating_add(1);
         }
         let enable_reorder_queue = inner.config.enable_reorder_queue;
         let reorder_window_size = inner.config.reorder_window_size;
         let max_apply_batch_bytes = inner.config.max_apply_batch_bytes;
         let max_inflights_apply_task = inner.config.max_inflights_apply_task.max(1);
-        let (term, last_index) = {
+        let (term, matched_index) = {
             let node = inner
                 .nodes
                 .get_mut(&target_id)
@@ -483,6 +516,13 @@ impl RaftCluster {
                     match_index: node_last_log_or_snapshot_index(node),
                     reject_reason: Some("stale_term".to_string()),
                 });
+            }
+            let adopted_new_term = term > node.current_term;
+            if adopted_new_term {
+                // Term and vote are hard state, even when this append cannot be applied yet.
+                node.current_term = term;
+                node.voted_for = None;
+                node.role = RaftRole::Follower;
             }
             if request.prev_log_index > 0 {
                 let prev_term = node_term_at_log_or_snapshot_index(node, request.prev_log_index);
@@ -522,12 +562,16 @@ impl RaftCluster {
                         inner.persist_configured_wal()?;
                         return Ok(response);
                     }
-                    return Ok(AppendEntriesResponse {
+                    let reply = AppendEntriesResponse {
                         term: node.current_term,
                         success: false,
                         match_index: node_last_log_or_snapshot_index(node),
                         reject_reason: Some("log_mismatch".to_string()),
-                    });
+                    };
+                    if adopted_new_term {
+                        inner.persist_configured_wal()?;
+                    }
+                    return Ok(reply);
                 }
             }
             if received_bytes > max_apply_batch_bytes {
@@ -595,19 +639,8 @@ impl RaftCluster {
                 inner.persist_configured_wal()?;
                 return Ok(response);
             }
-            // votedFor is scoped to a single term (Raft Fig-2): observing a higher term in
-            // any RPC -- including AppendEntries -- must clear it, else a stale vote from the
-            // old term wrongly suppresses this node's vote in the new term (split-vote
-            // liveness bug). The vote and snapshot-install paths already do this.
-            if term > node.current_term {
-                node.voted_for = None;
-            }
-            node.current_term = term;
             node.role = RaftRole::Follower;
             let before_reorder_depth = node.pipeline_state.reorder_queue_depth;
-            for entry in entries.iter().cloned() {
-                append_entry(node, entry);
-            }
             // Raft Figure 2: commitIndex = min(leaderCommit, index of the last NEW entry
             // in THIS AppendEntries) -- NOT the whole-log tail. A divergent UNCOMMITTED
             // suffix that sits beyond this batch (e.g. an entry from a failed prior-term
@@ -619,12 +652,19 @@ impl RaftCluster {
                 .map(|entry| entry.index)
                 .max()
                 .unwrap_or(request.prev_log_index);
+            if keep_leader_log {
+                for entry in entries.iter().cloned() {
+                    append_entry(node, entry);
+                }
+            } else {
+                for entry in entries.drain(..) {
+                    append_entry(node, entry);
+                }
+            }
             node.commit_index = node
                 .commit_index
                 .max(leader_commit.min(last_new_entry_index));
-            // Reported match_index reflects the follower's WHOLE log tail (how far its log
-            // now matches the leader after this append), independent of the commit clamp.
-            let last_index = node_last_log_or_snapshot_index(node);
+            // Only the prefix named by this request was checked against the leader.
             if node.replica_role.can_serve_data() {
                 node.pipeline_state.apply_inflight_tasks =
                     node.pipeline_state.apply_inflight_tasks.saturating_add(1);
@@ -665,7 +705,7 @@ impl RaftCluster {
                 .pipeline_state
                 .pre_vote_rejections
                 .saturating_add(u64::from(received_entries == 0 && received_bytes == 0));
-            (node.current_term, last_index)
+            (node.current_term, last_new_entry_index)
         };
         inner.leader_id = leader_id;
         // Proof of life from the leader. A follower's timer loop diffs this to decide
@@ -681,10 +721,16 @@ impl RaftCluster {
                 leader.alive = true;
                 leader.role = RaftRole::Leader;
                 leader.current_term = leader.current_term.max(term);
-                for entry in entries {
-                    append_entry(leader, entry);
-                }
-                let leader_last_index = node_last_log_or_snapshot_index(leader);
+                let leader_last_index = if keep_leader_log {
+                    for entry in entries {
+                        append_entry(leader, entry);
+                    }
+                    node_last_log_or_snapshot_index(leader)
+                } else {
+                    // In a deployed follower this row only records the verified
+                    // leader prefix. The payload belongs to the local log.
+                    matched_index
+                };
                 leader.commit_index = leader
                     .commit_index
                     .max(leader_commit.min(leader_last_index));
@@ -703,7 +749,7 @@ impl RaftCluster {
         Ok(AppendEntriesResponse {
             term,
             success: true,
-            match_index: last_index,
+            match_index: matched_index,
             reject_reason: None,
         })
     }

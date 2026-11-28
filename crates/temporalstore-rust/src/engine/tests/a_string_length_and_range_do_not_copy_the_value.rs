@@ -231,12 +231,7 @@ fn cold_string_lengths_use_only_address_or_header_bytes() {
         set(&engine, "chunk", &payload);
         let address = engine
             .shards
-            .read()
-            .unwrap()
-            .get(&1)
-            .unwrap()
-            .string_address("chunk")
-            .unwrap();
+            .with_state(1, |shard| shard.unwrap().string_address("chunk").unwrap());
         assert_eq!(address.block_slab_id() == HOT_BLOCK_SLAB_ID, async_storage);
         if compression_enabled {
             assert!(address.length() < VALUE_BYTES as u64);
@@ -255,6 +250,11 @@ fn cold_string_lengths_use_only_address_or_header_bytes() {
             (crate::block_store::BLOCK_RECORD_HEADER_LEN + 4) as u64
         };
         assert_eq!(slab_bytes, expected, "storage mode {async_storage}");
+
+        let before = engine.block_store().stats().bytes_read;
+        assert_eq!(engine.plan_cache_reclamation(1, 0).map(|(bytes, _)| bytes), Some(VALUE_BYTES as u64));
+        assert_eq!(wal.stats(1).bytes_read, wal_before);
+        assert_eq!(engine.block_store().stats().bytes_read - before, expected);
 
         assert_eq!(
             run(&engine, Command::StringGet { key: "chunk".to_string() }),
@@ -277,6 +277,10 @@ fn a_lapsed_string_has_no_length_and_no_range() {
         },
     );
     std::thread::sleep(std::time::Duration::from_millis(30));
+    assert_eq!(
+        engine.plan_cache_reclamation(1, 1),
+        Some((5, vec![("kept".to_string(), 5)])),
+    );
     assert_eq!(0, length(&engine, "lapsed"));
     assert_eq!(None, range(&engine, "lapsed", 0, -1));
     assert_eq!(5, length(&engine, "kept"));

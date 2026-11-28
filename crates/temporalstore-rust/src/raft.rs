@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 use std::sync::{
     Condvar,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
     mpsc, Arc, Mutex, RwLock,
 };
 use std::thread;
@@ -206,6 +206,8 @@ impl Clone for RaftSnapshotStateImage {
 pub struct RaftSnapshotStateImageSlab {
     pub block_slab_id: u64,
     pub bytes: Vec<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub owner_shard_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1437,11 +1439,12 @@ struct NodeWalCursor {
     /// until the segment is a multiple of it, so the one O(log) base write per segment
     /// stays a bounded fraction of the bytes that segment costs.
     base_bytes: u64,
-    /// Last log index already written into the active segment, and the term at that
-    /// index. An incremental record is only sound while the in-memory log still agrees
-    /// with both; a conflict overwrite or a snapshot compaction re-bases instead.
+    /// Bounds and length of the log written by the previous record. A delta must
+    /// still follow the same prefix, even when a delayed entry filled an earlier hole.
+    persisted_first_index: u64,
     persisted_last_index: u64,
     persisted_last_term: u64,
+    persisted_entry_count: usize,
     /// False until a full base record has been written into the active segment.
     has_base: bool,
 }
@@ -3758,6 +3761,11 @@ pub enum RaftError {
     SnapshotBackpressure { node_id: RaftNodeId },
     #[error("node {node_id} is not leader")]
     NotLeader { node_id: RaftNodeId },
+    #[error("proposal was rejected before appending: {cause}")]
+    ProposalNotStarted {
+        #[source]
+        cause: Box<RaftError>,
+    },
     #[error("election is prohibited by raft config")]
     ElectionProhibited,
     #[error("raft wal error: {0}")]
@@ -3784,6 +3792,22 @@ pub enum RaftError {
     #[error("invalid data raft command: {0}")]
     InvalidDataRaftCommand(String),
 }
+
+impl RaftError {
+    fn before_proposal_append(self) -> Self {
+        Self::ProposalNotStarted {
+            cause: Box::new(self),
+        }
+    }
+
+    fn legacy_proposal_error(self) -> Self {
+        match self {
+            Self::ProposalNotStarted { cause } => *cause,
+            error => error,
+        }
+    }
+}
+
 
 pub fn serialize_data_raft_log(entry: &DataRaftLogCodecEntry) -> Result<Vec<u8>, RaftError> {
     if entry.wal_sequence == 0 {
@@ -4142,12 +4166,29 @@ pub struct RaftCluster {
     /// Bumped whenever the quorum commit advances; proposers wait on it instead of counting
     /// acknowledgements themselves.
     commit_signal: Arc<(Mutex<u64>, Condvar)>,
+    commit_timers: Arc<AtomicUsize>,
+}
+
+struct DataCommitTimer(Arc<AtomicUsize>);
+
+impl Drop for DataCommitTimer {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::AcqRel);
+    }
 }
 
 impl std::fmt::Debug for RaftCluster {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.debug_struct("RaftCluster").finish_non_exhaustive()
     }
+}
+
+#[derive(Clone, Copy)]
+struct CacheReclaimFence<'a> {
+    node_id: RaftNodeId,
+    term: u64,
+    index: u64,
+    authorized: &'a dyn Fn() -> bool,
 }
 
 #[derive(Debug)]
@@ -4290,6 +4331,7 @@ impl RaftCluster {
         Ok(Self {
             follower_pipeline: Arc::new(Mutex::new(None)),
             commit_signal: Arc::new((Mutex::new(0), Condvar::new())),
+            commit_timers: Arc::new(AtomicUsize::new(0)),
             inner: Arc::new(RwLock::new(RaftClusterInner {
                 response_waiters: BTreeSet::new(),
                 pending_responses: BTreeMap::new(),
@@ -4321,6 +4363,11 @@ impl RaftCluster {
                 local_shadow_election: true,
             })),
         })
+    }
+
+    fn register_data_commit_timer(&self) -> DataCommitTimer {
+        self.commit_timers.fetch_add(1, Ordering::AcqRel);
+        DataCommitTimer(Arc::clone(&self.commit_timers))
     }
 
     /// WAL-backed local Raft fixture for durability tests and harnesses only.
@@ -4509,6 +4556,7 @@ impl RaftCluster {
         Ok(Self {
             follower_pipeline: Arc::new(Mutex::new(None)),
             commit_signal: Arc::new((Mutex::new(0), Condvar::new())),
+            commit_timers: Arc::new(AtomicUsize::new(0)),
             inner: Arc::new(RwLock::new(RaftClusterInner {
                 response_waiters: BTreeSet::new(),
                 pending_responses: BTreeMap::new(),
@@ -4769,6 +4817,18 @@ impl RaftCluster {
     where
         T: RaftTransport + Clone + Send + 'static,
     {
+        self.propose_distributed_with_admission(command, transport)
+            .map_err(RaftError::legacy_proposal_error)
+    }
+
+    fn propose_distributed_with_admission<T>(
+        &self,
+        command: Command,
+        transport: &T,
+    ) -> Result<CommandResponse, RaftError>
+    where
+        T: RaftTransport + Clone + Send + 'static,
+    {
         let limit = self
             .inner
             .read()
@@ -4784,8 +4844,15 @@ impl RaftCluster {
             Err(err) => return Err(err),
         };
         let mut last_response = CommandResponse::Empty;
-        for chunk in chunks {
-            last_response = self.propose_distributed_one(chunk, transport)?;
+        for (index, chunk) in chunks.into_iter().enumerate() {
+            let result = self.propose_distributed_one(chunk, transport, None);
+            // Earlier chunks may have committed. The entire command can be
+            // retried only when the first chunk was rejected before append.
+            last_response = if index == 0 {
+                result?
+            } else {
+                result.map_err(RaftError::legacy_proposal_error)?
+            };
         }
         Ok(last_response)
     }
@@ -4810,6 +4877,7 @@ impl RaftCluster {
         &self,
         command: Command,
         transport: &T,
+        reclaim_fence: Option<CacheReclaimFence<'_>>,
     ) -> Result<CommandResponse, RaftError>
     where
         T: RaftTransport + Clone + Send + 'static,
@@ -4825,7 +4893,7 @@ impl RaftCluster {
             (inner.follower_pipeline, inner.pipeline_concurrent_propose)
         };
         if pipeline && concurrent {
-            return self.propose_pipelined_concurrent(command, transport);
+            return self.propose_pipelined_concurrent(command, transport, reclaim_fence);
         }
         // P2: serialize proposes into the log in order. Concurrent proposers otherwise append
         // under the write lock (sequential indices) but release it before the async network phase,
@@ -4854,9 +4922,9 @@ impl RaftCluster {
         // and barrier-join below are what propose_pipelined leaves for its caller, exactly as
         // the fan-out body does.
         let outcome = if pipeline {
-            self.propose_pipelined(command, transport, &mut entry_barrier)
+            self.propose_pipelined(command, transport, reclaim_fence, &mut entry_barrier)
         } else {
-            self.propose_distributed_one_locked(command, transport, &mut entry_barrier)
+            self.propose_distributed_one_locked(command, transport, reclaim_fence, &mut entry_barrier)
         };
         // Write what the deferral owes while the propose lock still orders it. Records carry the
         // log, so an older record landing after a newer one would regress the log on recovery --
@@ -4927,6 +4995,7 @@ impl RaftCluster {
         &self,
         command: Command,
         transport: &T,
+        reclaim_fence: Option<CacheReclaimFence<'_>>,
     ) -> Result<CommandResponse, RaftError>
     where
         T: RaftTransport + Clone + Send + 'static,
@@ -4935,6 +5004,9 @@ impl RaftCluster {
         let (entry_index, staged) = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             inner.ensure_proposal_leader()?;
+            if reclaim_fence.is_some_and(|fence| !inner.cache_reclaim_fence_is_current(fence)) {
+                return Ok(CommandResponse::Integer { value: 0 });
+            }
             let entry_bytes = command_size_bytes(&command);
             if entry_bytes > inner.config.max_memory_replicate_log_bytes {
                 let leader_id = inner.leader_id;
@@ -4954,17 +5026,7 @@ impl RaftCluster {
                     limit: inner.config.max_memory_replicate_log_bytes,
                 });
             }
-            if let Some((live, required)) = inner.joint_majority_failure() {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            let required = inner.required_majority();
-            let live = inner.live_quorum_participants();
-            if live < required {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            if !inner.leader_lease_valid() {
-                return Err(RaftError::LeaderUnavailable);
-            }
+            inner.check_proposal_quorum()?;
             let leader_id = inner.leader_id;
             let shard_id = inner.shard_id;
             let leader = inner
@@ -5057,6 +5119,7 @@ impl RaftCluster {
         &self,
         command: Command,
         transport: &T,
+        reclaim_fence: Option<CacheReclaimFence<'_>>,
         entry_barrier: &mut Option<thread::JoinHandle<Result<(), RaftError>>>,
     ) -> Result<CommandResponse, RaftError>
     where
@@ -5066,6 +5129,9 @@ impl RaftCluster {
         let entry_index = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             inner.ensure_proposal_leader()?;
+            if reclaim_fence.is_some_and(|fence| !inner.cache_reclaim_fence_is_current(fence)) {
+                return Ok(CommandResponse::Integer { value: 0 });
+            }
             let entry_bytes = command_size_bytes(&command);
             if entry_bytes > inner.config.max_memory_replicate_log_bytes {
                 let leader_id = inner.leader_id;
@@ -5085,17 +5151,7 @@ impl RaftCluster {
                     limit: inner.config.max_memory_replicate_log_bytes,
                 });
             }
-            if let Some((live, required)) = inner.joint_majority_failure() {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            let required = inner.required_majority();
-            let live = inner.live_quorum_participants();
-            if live < required {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            if !inner.leader_lease_valid() {
-                return Err(RaftError::LeaderUnavailable);
-            }
+            inner.check_proposal_quorum()?;
             let leader_id = inner.leader_id;
             let shard_id = inner.shard_id;
             let leader = inner
@@ -5185,14 +5241,18 @@ impl RaftCluster {
         &self,
         command: Command,
         transport: &T,
+        reclaim_fence: Option<CacheReclaimFence<'_>>,
         entry_barrier: &mut Option<thread::JoinHandle<Result<(), RaftError>>>,
     ) -> Result<CommandResponse, RaftError>
     where
         T: RaftTransport + Clone + Send + 'static,
     {
-        let (entry, leader_id, target_ids, required) = {
+        let (entry, leader_id, target_ids, required, deployed) = {
             let mut inner = self.inner.write().expect("raft cluster lock poisoned");
             inner.ensure_proposal_leader()?;
+            if reclaim_fence.is_some_and(|fence| !inner.cache_reclaim_fence_is_current(fence)) {
+                return Ok(CommandResponse::Integer { value: 0 });
+            }
             let entry_bytes = command_size_bytes(&command);
             if entry_bytes > inner.config.max_memory_replicate_log_bytes {
                 let leader_id = inner.leader_id;
@@ -5212,17 +5272,7 @@ impl RaftCluster {
                     limit: inner.config.max_memory_replicate_log_bytes,
                 });
             }
-            if let Some((live, required)) = inner.joint_majority_failure() {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            let required = inner.required_majority();
-            let live = inner.live_quorum_participants();
-            if live < required {
-                return Err(RaftError::NoMajority { live, required });
-            }
-            if !inner.leader_lease_valid() {
-                return Err(RaftError::LeaderUnavailable);
-            }
+            let required = inner.check_proposal_quorum()?;
             let leader_id = inner.leader_id;
             let shard_id = inner.shard_id;
             let leader = inner
@@ -5250,7 +5300,7 @@ impl RaftCluster {
                 .partition(|(_, alive)| *alive);
             let mut target_ids = live_target_ids;
             target_ids.extend(fallback_target_ids);
-            (entry, leader_id, target_ids, required)
+            (entry, leader_id, target_ids, required, inner.local_node_id.is_some())
         };
 
         // The entry is in the log. Write it and start its barrier NOW, so the leader's disk wait
@@ -5292,6 +5342,7 @@ impl RaftCluster {
         };
         let mut successful_targets = Vec::new();
         let mut failed_targets = Vec::new();
+        let mut rejected_targets = Vec::new();
         let mut fallback_targets = Vec::new();
         let mut live_requests = Vec::new();
         let mut live_target_ids = Vec::new();
@@ -5300,7 +5351,14 @@ impl RaftCluster {
                 fallback_targets.push(target_id);
                 continue;
             }
-            let request = self.build_append_entries_request(target_id)?;
+            let request = match self.build_append_entries_request(target_id) {
+                Ok(request) => request,
+                // One peer's occupied byte window cannot veto a healthy quorum.
+                // Keep its reservation/limits intact; do not turn admission pressure
+                // into snapshot fallback or append the command a second time.
+                Err(RaftError::AppendBackpressure { .. }) => continue,
+                Err(err) => return Err(err),
+            };
             live_target_ids.push(target_id);
             live_requests.push((target_id, request));
         }
@@ -5355,6 +5413,7 @@ impl RaftCluster {
                 }
                 Ok(response) => {
                     let _ = self.record_append_entries_response(target_id, &response);
+                    rejected_targets.push(target_id);
                     failed_targets.push(target_id);
                 }
                 Err(_) => {
@@ -5374,6 +5433,7 @@ impl RaftCluster {
                 Ok(response) => {
                     let _ = self.record_append_entries_response(target_id, &response);
                     if !failed_targets.contains(&target_id) {
+                        rejected_targets.push(target_id);
                         failed_targets.push(target_id);
                     }
                 }
@@ -5386,7 +5446,23 @@ impl RaftCluster {
             }
         }
         failed_targets.extend(fallback_targets);
-        if replicated < required {
+        let timer_active = deployed && self.commit_timers.load(Ordering::Acquire) > 0;
+        if replicated < required
+            && timer_active
+            && self.proposal_log_is_uncompacted(leader_id, entry.term)?
+        {
+            // Every entry is still available. A reachable follower with a mismatched
+            // prefix gets an AppendEntries retry from its updated next index. The
+            // timer handles unreachable peers and any remaining replication lag.
+            for target_id in rejected_targets {
+                if replicated >= required || Instant::now() >= replication_deadline {
+                    break;
+                }
+                if self.retry_retained_proposal(target_id, leader_id, &entry, transport)? {
+                    replicated += 1;
+                }
+            }
+        } else if replicated < required {
             for target_id in failed_targets {
                 if transport
                     .install_snapshot(self.build_install_snapshot_request(target_id)?)
@@ -5415,9 +5491,12 @@ impl RaftCluster {
                             leader_commit: leader.commit_index,
                         }
                     };
+                    let sent_commit = (retry_request.term, retry_request.leader_commit);
                     if let Ok(response) = transport.append_entries(retry_request) {
                         let success = response.success && response.match_index >= entry.index;
-                        let _ = self.record_append_entries_response(target_id, &response);
+                        let _ = self.record_append_response_with_commit(
+                            target_id, &response, Some(sent_commit),
+                        );
                         if success {
                             let counts_for_quorum = self
                                 .inner
@@ -5430,7 +5509,9 @@ impl RaftCluster {
                             if counts_for_quorum {
                                 replicated += 1;
                             }
-                            let _ = self.catch_up(target_id);
+                            if !deployed {
+                                let _ = self.catch_up(target_id);
+                            }
                             successful_targets.push(target_id);
                         }
                     }
@@ -5439,6 +5520,11 @@ impl RaftCluster {
         }
 
         if replicated < required {
+            // A failed foreground recovery still observes the configured reply
+            // deadline. A recovered quorum proceeds without a delay.
+            if !timer_active {
+                thread::sleep(replication_deadline.saturating_duration_since(Instant::now()));
+            }
             return Err(RaftError::NoMajority {
                 live: replicated,
                 required,
@@ -5466,6 +5552,14 @@ impl RaftCluster {
             response
         };
 
+        // The quorum has persisted the entry and the local leader has applied it.
+        // The caller still flushes the leader's staged WAL before acknowledging.
+        // With the production timer active, its AppendEntries (or the next write)
+        // delivers the commit index without making the caller wait on every peer.
+        if deployed && self.commit_timers.load(Ordering::Acquire) > 0 {
+            return Ok(leader_response);
+        }
+
         for target_id in &live_target_ids {
             let request = AppendEntriesRequest {
                 rpc: None,
@@ -5481,12 +5575,14 @@ impl RaftCluster {
             let committed = match transport.append_entries(request) {
                 Ok(response) => {
                     let success = response.success;
-                    let _ = self.record_append_entries_response(*target_id, &response);
+                    let _ = self.record_append_response_with_commit(
+                        *target_id, &response, Some((entry.term, entry.index)),
+                    );
                     success
                 }
                 Err(_) => false,
             };
-            if committed {
+            if committed && !deployed {
                 let _ = self.catch_up(*target_id);
             }
         }
@@ -5494,6 +5590,62 @@ impl RaftCluster {
         Ok(leader_response)
     }
 
+
+    fn proposal_log_is_uncompacted(
+        &self,
+        leader_id: RaftNodeId,
+        term: u64,
+    ) -> Result<bool, RaftError> {
+        let inner = self.inner.read().expect("raft cluster lock poisoned");
+        let leader = inner
+            .nodes
+            .get(&leader_id)
+            .filter(|node| {
+                inner.leader_id == leader_id
+                    && node.role == RaftRole::Leader
+                    && node.current_term == term
+            })
+            .ok_or(RaftError::NotLeader { node_id: leader_id })?;
+        Ok(leader.installed_snapshot.is_none()
+            && leader.log.first().is_some_and(|entry| entry.index == 1))
+    }
+
+    fn retry_retained_proposal<T: RaftTransport>(
+        &self,
+        target_id: RaftNodeId,
+        leader_id: RaftNodeId,
+        entry: &RaftLogEntry,
+        transport: &T,
+    ) -> Result<bool, RaftError> {
+        let request = match self.build_append_entries_request(target_id) {
+            Ok(request) => request,
+            Err(RaftError::AppendBackpressure { .. }) => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        if request.leader_id != leader_id || request.term != entry.term {
+            return Err(RaftError::NotLeader { node_id: leader_id });
+        }
+        let commit = (request.term, request.leader_commit);
+        let response = match transport.append_entries(request) {
+            Ok(response) => response,
+            Err(_) => {
+                let _ = self.record_append_entries_send_failure(target_id);
+                return Ok(false);
+            }
+        };
+        let _ = self.record_append_response_with_commit(target_id, &response, Some(commit));
+        let counts_for_quorum = self
+            .inner
+            .read()
+            .expect("raft cluster lock poisoned")
+            .nodes
+            .get(&target_id)
+            .is_some_and(|node| node.replica_role.participates_in_quorum());
+        Ok(response.success
+            && response.term == entry.term
+            && response.match_index >= entry.index
+            && counts_for_quorum)
+    }
 
 
 
@@ -5574,6 +5726,21 @@ fn node_status(node: &RaftNode, leader_commit_index: u64) -> RaftNodeStatus {
         applied_index: node.applied_index,
         alive: node.alive,
         lag: leader_commit_index.saturating_sub(node.commit_index),
+    }
+}
+
+impl RaftClusterInner {
+    fn cache_reclaim_fence_is_current(&self, fence: CacheReclaimFence<'_>) -> bool {
+        (fence.authorized)()
+            && self.leader_id == fence.node_id
+            && self.nodes.get(&fence.node_id).is_some_and(|leader| {
+                leader.alive
+                    && leader.role == RaftRole::Leader
+                    && leader.current_term == fence.term
+                    && leader.applied_index == fence.index
+                    && leader.commit_index == fence.index
+                    && node_last_log_or_snapshot_index(leader) == fence.index
+            })
     }
 }
 
@@ -5837,7 +6004,8 @@ fn refresh_all_pipeline_states(
         return;
     };
     let leader_commit_index = leader.commit_index;
-    let leader_next_index = node_next_log_index(leader);
+    let leader_next_index = node_next_log_index(leader)
+        .max(leader_commit_index.saturating_add(1));
     let progress = nodes
         .iter()
         .map(|(node_id, node)| {
@@ -5966,43 +6134,42 @@ fn append_entry(node: &mut RaftNode, entry: RaftLogEntry) {
     {
         return;
     }
-    // Raft §5.3: truncate ONLY on a genuine term conflict (same index, different term).
-    // An entry already present with the SAME term is a no-op -- unconditionally
-    // truncating on index<=last (a stale/duplicate/reordered AppendEntries that is a
-    // prefix of the committed log) would delete committed suffix entries, rewind
-    // applied state, and double-execute non-idempotent commands on re-apply.
-    // A log is ordered by index, so an entry past the last one cannot already be in it: the
-    // common append, which a scan of the whole log used to confirm one entry at a time.
-    let existing = match node.log.last() {
-        Some(last) if last.index < entry.index => None,
-        _ => node.log.iter().find(|existing| existing.index == entry.index),
+    let position = match node.log.last() {
+        Some(last) if last.index >= entry.index => node
+            .log
+            .binary_search_by_key(&entry.index, |existing| existing.index),
+        _ => Err(node.log.len()),
     };
-    if let Some(existing) = existing {
-        if existing.term == entry.term {
+    if let Ok(index) = position {
+        if node.log[index].term == entry.term {
             return;
         }
-        // Raft §5.3 one step further: THE CONFLICT IS FLOORED AT THE COMMIT POINT. A
-        // conflicting entry at or below `commit_index` would overwrite an entry this group has
-        // already committed, which Raft forbids, so it is refused here instead of absorbed.
-        // Without the floor the truncation below rewinds `applied` while `max_applied_index`
-        // deliberately stays put, and the apply loops then SKIP the replacement entry -- the
-        // apply cursor advances over a command that never ran and the state machine keeps the
-        // superseded one. Refusing is what makes that state unreachable rather than papered over.
-        if entry.index <= node.commit_index {
-            node.pipeline_state.committed_overwrite_rejections = node
-                .pipeline_state
-                .committed_overwrite_rejections
-                .saturating_add(1);
-            return;
-        }
-        node.log.retain(|existing| existing.index < entry.index);
-        node.applied.retain(|applied| *applied < entry.index);
-        node.applied_index = node.applied.iter().next_back().copied().unwrap_or_default();
-        // max_applied_index is intentionally NOT lowered (monotonic exactly-once floor); with the
-        // floor above, nothing can rewind the log below it any more, so the floor can no longer
-        // be reached by an entry that has not actually been applied.
     }
-    node.log.push(entry);
+
+    // A committed prefix is immutable, even if a retired entry is no longer in memory.
+    if entry.index <= node.commit_index {
+        node.pipeline_state.committed_overwrite_rejections = node
+            .pipeline_state
+            .committed_overwrite_rejections
+            .saturating_add(1);
+        return;
+    }
+
+    match position {
+        Ok(index) => {
+            // Same index, different term: replace the conflicting suffix.
+            node.log.truncate(index);
+            node.applied.retain(|applied| *applied < entry.index);
+            node.applied_index = node.applied.iter().next_back().copied().unwrap_or_default();
+            node.log.push(entry);
+        }
+        Err(index) if index == node.log.len() => node.log.push(entry),
+        Err(index) => {
+            // A delayed entry can fill an uncommitted hole without replacing
+            // the higher entries that were already present.
+            node.log.insert(index, entry);
+        }
+    }
 }
 
 /// A writer that keeps only how many bytes were written to it.
@@ -6316,11 +6483,11 @@ fn apply_committed(node: &mut RaftNode) -> Option<CommandResponse> {
 /// while holding NOTHING. The publish that follows is the cheap half, and it is the only half
 /// that has to be atomic with the eligibility check -- see `node_accepts_snapshot`.
 #[cfg(test)]
-fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> TemporalEngine {
+fn rebuild_snapshot_engine(snapshot: &RaftSnapshot) -> Result<TemporalEngine, RaftError> {
     rebuild_snapshot_engine_in(snapshot, TemporalEngine::default())
 }
 
-fn rebuild_snapshot_engine_in(snapshot: &RaftSnapshot, engine: TemporalEngine) -> TemporalEngine {
+fn rebuild_snapshot_engine_in(snapshot: &RaftSnapshot, engine: TemporalEngine) -> Result<TemporalEngine, RaftError> {
     if let Some(image) = &snapshot.state_image {
         #[cfg(test)]
         crate::snapshot_probe::note_engine_rebuild();
@@ -6331,33 +6498,10 @@ fn rebuild_snapshot_engine_in(snapshot: &RaftSnapshot, engine: TemporalEngine) -
         // restored an image-carrying record before this installer learned about images.
         let block_store = engine.block_store();
         for slab in &image.slabs {
-            let _ = block_store.install_slab(slab.block_slab_id, &slab.bytes);
+            block_store.install_transferred_slab(slab.block_slab_id, &slab.bytes, slab.owner_shard_id)
+                .map_err(|error| RaftError::SnapshotEncoding(error.to_string()))?;
         }
-        // NOT `let _ =` FOR THE RANGE. This installer's own note above is about an image
-        // mishandled here leaving a quietly EMPTY engine; an image with no range is exactly that
-        // case, so it is reported and the shard is left unloaded rather than loaded off an index
-        // whose buckets nothing can account for.
-        match image.routing_range {
-            Some(routing_range) => {
-                match engine.install_index_bytes_in_empty_wal(
-                    snapshot.shard_id,
-                    &image.index_bytes,
-                    routing_range,
-                ) {
-                    Ok(()) => engine.load_shard(snapshot.shard_id),
-                    Err(err) => tracing::error!(shard_id = snapshot.shard_id,
-                        error = %err, "snapshot index could not be installed into the fresh engine"),
-                }
-            }
-            None => {
-                tracing::error!(
-                    shard_id = snapshot.shard_id,
-                    "snapshot state image carries no routing range, so the buckets its index \
-                     names cannot be accounted for; not installing it. Re-take the snapshot from \
-                     a leader running this build."
-                );
-            }
-        }
+        install_snapshot_index(&engine, snapshot.shard_id, image)?;
     } else {
         engine.load_shard(snapshot.shard_id);
         for entry in &snapshot.entries {
@@ -6373,7 +6517,34 @@ fn rebuild_snapshot_engine_in(snapshot: &RaftSnapshot, engine: TemporalEngine) -
             );
         }
     }
+    Ok(engine)
+}
+
+fn install_snapshot_index(
+    engine: &TemporalEngine,
+    shard_id: ShardId,
+    image: &RaftSnapshotStateImage,
+) -> Result<(), RaftError> {
+    let routing_range = image.routing_range.ok_or_else(|| {
+        RaftError::SnapshotEncoding(format!("snapshot state image for shard {shard_id} has no routing range"))
+    })?;
     engine
+        .install_index_bytes_in_empty_wal(shard_id, &image.index_bytes, routing_range)
+        .map_err(|error| RaftError::SnapshotEncoding(error.to_string()))?;
+    let response = engine.load_shard_with(crate::control::LoadShardRequest {
+        shard_id,
+        load_version: 0,
+        local_node_id: None,
+        shard_uri: String::new(),
+        start_routing_bucket: routing_range.start_routing_bucket,
+        end_routing_bucket: routing_range.end_routing_bucket,
+        readonly: false,
+        table_name: String::new(),
+    });
+    if !response.status.ok {
+        return Err(RaftError::SnapshotEncoding(response.status.message));
+    }
+    Ok(())
 }
 
 /// Move a node onto a snapshot, given an engine already rebuilt from that same snapshot.
@@ -6409,15 +6580,12 @@ fn publish_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot, engine: T
 /// Rebuild and publish in one step, for the callers that hold a guard across both anyway.
 fn install_snapshot_state(node: &mut RaftNode, snapshot: RaftSnapshot) -> Result<(), RaftError> {
     let engine = open_replica_engine(node.engine_factory.as_ref())?;
-    let engine = rebuild_snapshot_engine_in(&snapshot, engine);
+    let engine = rebuild_snapshot_engine_in(&snapshot, engine)?;
     publish_snapshot_state(node, snapshot, engine);
     Ok(())
 }
 
-fn install_snapshot_state_for_role(
-    node: &mut RaftNode,
-    snapshot: RaftSnapshot,
-) -> Result<(), RaftError> {
+fn install_snapshot_state_for_role(node: &mut RaftNode, snapshot: RaftSnapshot) -> Result<(), RaftError> {
     if node.replica_role.can_serve_data() {
         install_snapshot_state(node, snapshot)?;
     } else {
@@ -6441,7 +6609,10 @@ fn install_leader_snapshot_tail(
 ) -> Result<(), RaftError> {
     if let Some(snapshot) = leader_snapshot {
         if node_last_log_or_snapshot_index(node) < snapshot.last_included_index {
-            install_snapshot_state_for_role(node, snapshot)?;
+            if let Err(error) = install_snapshot_state_for_role(node, snapshot) {
+                tracing::error!(%error, "snapshot catch-up refused");
+                return Err(error);
+            }
         }
     }
     // A catch-up may not pull a node BACKWARDS.

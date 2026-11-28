@@ -100,16 +100,15 @@ fn a_real_dump_manifest() -> DumpFixture {
     }
     // The payload every arm tracks, written into the live shard so the manifest carries it the
     // way a real dump would rather than being edited in afterwards.
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&SHARD).expect("the shard is loaded");
+    engine.shards.with_state_mut(SHARD, |shard_state| {
+        let shard = shard_state.expect("the shard is loaded");
         let mut series = BTreeMap::new();
         series.insert(
             ROW_TIMESTAMP_MS,
             ElementEntry::from_parts(1, 4_096, 128, Some(3), Some(7)),
         );
         shard.features_mut().insert(SERIES_KEY.into(), series.into());
-    }
+    });
     let manifest = engine
         .create_bucket_dump_manifest(SHARD, Vec::new())
         .expect("a dump manifest over a seeded shard");
@@ -360,11 +359,7 @@ fn the_refused_install_writes_no_index_and_installs_no_shard() {
         "\n=== after the refused install ===\n  a base index was written: {}\n  the shard is \
          loaded: {}",
         wrote_an_index,
-        target
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .contains_key(&SHARD)
+        target.shards.with_state(SHARD, |state| state.is_some())
     );
     assert!(
         !wrote_an_index,
@@ -372,11 +367,7 @@ fn the_refused_install_writes_no_index_and_installs_no_shard() {
          write, or a store is left describing an image this binary has just said it cannot read"
     );
     assert!(
-        !target
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .contains_key(&SHARD),
+        !target.shards.with_state(SHARD, |state| state.is_some()),
         "the refused install still installed a shard state"
     );
 }
@@ -403,14 +394,12 @@ fn the_same_manifest_at_the_current_stamp_installs_and_round_trips_its_series() 
 
     let on_disk = persisted_index_has_series(&index_dir, SHARD);
     target.load_shard(SHARD);
-    let loaded = {
-        let shards = target.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&SHARD)
+    let loaded = target.shards.with_state(SHARD, |shard_state| {
+        shard_state
             .expect("the shard is loaded")
             .features()
             .contains_key(SERIES_KEY)
-    };
+    });
     println!(
         "\n=== the same manifest at stamp {SHARD_INDEX_FORMAT_VERSION} ===\n  \
          series in the persisted index: {on_disk}\n  series in `features` after the load: {loaded}"

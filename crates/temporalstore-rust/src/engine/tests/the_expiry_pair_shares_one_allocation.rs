@@ -311,7 +311,7 @@ fn what_the_expiry_pair_costs_per_deadline_on_both_paths() {
         after_total as f64 / DEADLINES as f64
     );
     println!(
-        "  copies of the characters per deadline: BEFORE 2, AFTER 1 (measured by pointer identity          above, on both the fresh and the restored path)"
+        "  copies of the characters per deadline: BEFORE 2, AFTER 1 (measured by pointer identity above, on both the fresh and the restored path)"
     );
 
     // --- THE AFTER ARM'S MISSING TERM, MEASURED RATHER THAN COMPUTED.
@@ -340,7 +340,7 @@ fn what_the_expiry_pair_costs_per_deadline_on_both_paths() {
     assert_eq!(
         DEADLINES,
         counted.len(),
-        "the text walk found {} allocations for {DEADLINES} deadlines, so it is not counting the          same shared set the pointer-identity test asserted",
+        "the text walk found {} allocations for {DEADLINES} deadlines, so it is not counting the same shared set the pointer-identity test asserted",
         counted.len()
     );
     let after_complete = after_total + shared_text_bytes as u64;
@@ -349,7 +349,7 @@ fn what_the_expiry_pair_costs_per_deadline_on_both_paths() {
         after_complete as f64 / DEADLINES as f64
     );
     println!(
-        "  SUBTRACTABLE NOW: before {:.1} -> after {:.1} B/deadline, a saving of {:.1} B/deadline          ({:.1}%), at {DEADLINES} deadlines with {}-character keys",
+        "  SUBTRACTABLE NOW: before {:.1} -> after {:.1} B/deadline, a saving of {:.1} B/deadline ({:.1}%), at {DEADLINES} deadlines with {}-character keys",
         before_total as f64 / DEADLINES as f64,
         after_complete as f64 / DEADLINES as f64,
         (before_total as f64 - after_complete as f64) / DEADLINES as f64,
@@ -361,7 +361,7 @@ fn what_the_expiry_pair_costs_per_deadline_on_both_paths() {
     assert!(before_total > 0, "non-vacuity: the before arm weighed zero");
     assert!(
         after_complete < before_total,
-        "the complete after figure ({after_complete} B) is not below the before ({before_total}          B), so this change does not reduce the footprint and the copy count must not be reported          as if it did"
+        "the complete after figure ({after_complete} B) is not below the before ({before_total} B), so this change does not reduce the footprint and the copy count must not be reported as if it did"
     );
     assert_eq!(
         fresh_shared, restored_shared,

@@ -127,7 +127,7 @@ fn a_scan_cut_short_by_its_budget_does_not_claim_the_stream_ended() {
     );
     assert!(
         !cut.end_of_stream,
-        "the budget stopped this scan with records still in the window, so it must not report          the stream as ended"
+        "the budget stopped this scan with records still in the window, so it must not report the stream as ended"
     );
 }
 
@@ -2006,6 +2006,60 @@ fn prometheus_metrics_include_records_cache_block_and_wal() {
     assert!(metrics.contains("temporalstore_partition_routing_buckets{shard_id=\"1\"} 4294967295"));
 }
 
+/// A scrape must not list the whole shard again while the last scrape's listing is fresh.
+///
+/// Listing the per-bucket summaries walks every live block of the shard under the engine read
+/// guard, and every writer waits that out. Measured on a 1M-key fill with `/metrics` polled every
+/// 2 s: listings took 53% of the run and 220 of the 239 seconds in which no write was
+/// acknowledged overlapped one. Both directions are pinned, so neither a cache that is never hit
+/// nor one that is never refreshed can pass: within the age the listing is the SAME one (and
+/// does not show a later write), past it the listing is rebuilt and does.
+#[test]
+fn a_scrape_reuses_a_fresh_bucket_listing_and_rebuilds_a_stale_one() {
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    let engine = TemporalEngine::default();
+    engine.load_shard(1);
+    let set = |key: &str| {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: key.to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+    };
+    let block_refs = |summaries: &Vec<BucketStorageSummary>| {
+        summaries.iter().map(|s| s.block_ref_count).sum::<u64>()
+    };
+    set("first");
+
+    let hour = Duration::from_secs(3600);
+    let first = engine.scrape_bucket_storage_summaries(1, hour);
+    set("second");
+    let reused = engine.scrape_bucket_storage_summaries(1, hour);
+    assert!(
+        Arc::ptr_eq(&first, &reused),
+        "a scrape inside the age listed the shard again"
+    );
+    assert_eq!(
+        block_refs(&reused),
+        block_refs(&first),
+        "the reused listing was meant to be the older one"
+    );
+
+    let rebuilt = engine.scrape_bucket_storage_summaries(1, Duration::ZERO);
+    assert!(
+        !Arc::ptr_eq(&first, &rebuilt),
+        "a scrape past the age kept serving the old listing"
+    );
+    assert!(
+        block_refs(&rebuilt) > block_refs(&first),
+        "the rebuilt listing does not show the write made after the first one"
+    );
+}
+
 /// The exported label beside a `..._bucket_...` metric must be spelled `bucket`.
 ///
 /// It was spelled `slot` while all four metric names already said bucket, so a query written from
@@ -2328,20 +2382,21 @@ fn bucket_index_is_authoritative_when_secondary_views_are_missing() {
     );
 
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.bucket_index.bucket_map.is_empty());
-        // THE THIRD FIXTURE OF THE SAME SHAPE, and the only one of the three that was red before
-        // the fold's ref loss was found rather than because of it. `hashes` and `sets` keep their
-        // refs in the LOOKUP -- they have no `ObjectSlot` rows -- so clearing those two drops
-        // nothing, and it is the strings clear alone that un-names this object's blocks.
-        let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
-        assert!(
-            surrendered > 0,
-            "denominator: no string row carried refs, so clearing the rows is not the missing              secondary view this test means to simulate"
-        );
-        shard.bucket_index.hashes.clear_for_test();
-        shard.bucket_index.sets.clear_for_test();
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard loaded");
+            assert!(!shard.bucket_index.bucket_map.is_empty());
+            // THE THIRD FIXTURE OF THE SAME SHAPE, and the only one of the three that was red before
+            // the fold's ref loss was found rather than because of it. `hashes` and `sets` keep their
+            // refs in the LOOKUP -- they have no `ObjectSlot` rows -- so clearing those two drops
+            // nothing, and it is the strings clear alone that un-names this object's blocks.
+            let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
+            assert!(
+                surrendered > 0,
+                "denominator: no string row carried refs, so clearing the rows is not the missing secondary view this test means to simulate"
+            );
+            shard.bucket_index.hashes.clear_for_test();
+            shard.bucket_index.sets.clear_for_test();
+        })
     }
 
     let exists = engine.execute(ExecuteRequest {
@@ -2393,33 +2448,34 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
     );
 
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.bucket_index.bucket_map.is_empty());
-        let stale = shard
-            .strings_mut()
-            .get_mut("slot-authority")
-            .expect("secondary string view");
-        // The object id used to be planted here too. An address holds none, so what makes this
-        // address STALE is the slab coordinates below -- which is the whole of what a reader reads
-        // off it.
-        // The routing bucket used to be planted here too. An address does not hold one, so what
-        // made this address STALE is now the object id and the slab coordinates below -- which is
-        // the whole of what a reader reads off it.
-        // The slab id is half of one packed word now, so it is planted by rebuilding the address
-        // through the checked constructor rather than by assigning a field. Every other part is
-        // carried across unchanged, which is what makes this a STALE address and not a new one.
-        // THROUGH THE SETTER, because the row is a slot: `set_address` rewrites the block words
-        // and leaves the deadline, the model id and the dirty bit alone, which is what makes this
-        // a stale ADDRESS rather than a replaced row.
-        let planted = ElementEntry::from_parts(
-            stale.block_slab_id().wrapping_add(999),
-            stale.offset(),
-            stale.length(),
-            stale.block_id(),
-            None,
-        );
-        stale.set_address(&planted);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard loaded");
+            assert!(!shard.bucket_index.bucket_map.is_empty());
+            let stale = shard
+                .strings_mut()
+                .get_mut("slot-authority")
+                .expect("secondary string view");
+            // The object id used to be planted here too. An address holds none, so what makes this
+            // address STALE is the slab coordinates below -- which is the whole of what a reader reads
+            // off it.
+            // The routing bucket used to be planted here too. An address does not hold one, so what
+            // made this address STALE is now the object id and the slab coordinates below -- which is
+            // the whole of what a reader reads off it.
+            // The slab id is half of one packed word now, so it is planted by rebuilding the address
+            // through the checked constructor rather than by assigning a field. Every other part is
+            // carried across unchanged, which is what makes this a STALE address and not a new one.
+            // THROUGH THE SETTER, because the row is a slot: `set_address` rewrites the block words
+            // and leaves the deadline, the model id and the dirty bit alone, which is what makes this
+            // a stale ADDRESS rather than a replaced row.
+            let planted = ElementEntry::from_parts(
+                stale.block_slab_id().wrapping_add(999),
+                stale.offset(),
+                stale.length(),
+                stale.block_id(),
+                None,
+            );
+            stale.set_address(&planted);
+        })
     }
 
     let recovery = engine.storage_recovery_report(1);
@@ -2458,11 +2514,12 @@ fn legacy_model_maps_are_promoted_to_bucket_index_authority() {
     );
 
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.strings().is_empty());
-        shard.bucket_index.bucket_map.clear();
-        shard.promote_scan_done = true;
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard loaded");
+            assert!(!shard.strings().is_empty());
+            shard.bucket_index.bucket_map.clear();
+            shard.promote_scan_done = true;
+        })
     }
 
     let get = engine.execute(ExecuteRequest {
@@ -2510,14 +2567,15 @@ fn cold_read_uses_bucket_block_address_after_cache_and_model_maps_are_cleared() 
     );
 
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard loaded");
-        assert!(!shard.bucket_index.bucket_map.is_empty());
-        let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
-        assert!(
-            surrendered > 0,
-            "denominator: no string row carried refs, so clearing the rows is not the eviction              this test means to simulate"
-        );
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard loaded");
+            assert!(!shard.bucket_index.bucket_map.is_empty());
+            let surrendered = clear_string_rows_keeping_their_blocks_named(shard);
+            assert!(
+                surrendered > 0,
+                "denominator: no string row carried refs, so clearing the rows is not the eviction this test means to simulate"
+            );
+        })
     }
     let _ = engine
         .cache()
@@ -2586,16 +2644,17 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
     let surrendered = clear_string_rows_keeping_their_blocks_named(&mut damaged);
     assert!(
         surrendered > 0,
-        "denominator: no string row carried refs, so this fixture is not injecting the damage it          describes and would pass however the clear is written"
+        "denominator: no string row carried refs, so this fixture is not injecting the damage it describes and would pass however the clear is written"
     );
     std::fs::write(&index_path, crate::engine::encode_index_bytes(&damaged)).unwrap();
 
     let recovered = TemporalEngine::with_local_dirs(1024, &cache_dir, &block_dir, &index_dir);
     recovered.load_shard(1);
     {
-        let shards = recovered.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("recovered shard");
-        assert!(shard.strings().contains_key("recover-slot-view"));
+        recovered.shards.with_state(1, |state| {
+            let shard = state.expect("recovered shard");
+            assert!(shard.strings().contains_key("recover-slot-view"));
+        })
     }
     let get = recovered.execute(ExecuteRequest {
         shard_id: 1,

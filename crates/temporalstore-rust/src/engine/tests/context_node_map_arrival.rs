@@ -138,10 +138,10 @@ fn assert_refused_on_the_header(dir: &std::path::Path, stamp: u32) {
 
 /// Is `PLANTED` in shard 7's `context_nodes` map, as the engine now holds it?
 fn planted_arrived(engine: &TemporalEngine) -> bool {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards
-        .get(&7)
-        .map_or(false, |shard| shard.context_nodes().contains_key(PLANTED))
+    engine.shards.with_state(7, |shard| {
+        shard
+            .map_or(false, |shard| shard.context_nodes().contains_key(PLANTED))
+    })
 }
 
 /// THE BASE-INDEX DOOR IS STAMPED, AND A STALE STAMP KEEPS THE ENTRY OUT.
@@ -222,16 +222,15 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
     write_and_flush(&engine);
 
     // Put the entry into the live shard and flush, so the manifest's exported image carries it.
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&7).expect("shard 7 is loaded");
+    engine.shards.with_state_mut(7, |shard| {
+        let shard = shard.expect("shard 7 is loaded");
         let live = shard
             .strings()
             .get(WRITTEN)
             .expect("the written string is resident")
             .clone();
         shard.context_nodes_mut().insert(PLANTED.into(), live.address());
-    }
+    });
     engine.flush_shard_index(7);
 
     let mut manifest = engine
@@ -266,11 +265,10 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
 
     // Take the entry back out of the live shard, so what the install delivers is what the
     // manifest carried and not what was already there.
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&7).expect("shard 7 is loaded");
+    engine.shards.with_state_mut(7, |shard| {
+        let shard = shard.expect("shard 7 is loaded");
         shard.context_nodes_mut().remove(PLANTED);
-    }
+    });
     assert!(
         !planted_arrived(&engine),
         "denominator: the live shard must NOT hold the entry before the install"

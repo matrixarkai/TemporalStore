@@ -1538,7 +1538,7 @@ fn text_with_nothing_to_redact_still_went_through_the_filter() {
     );
     assert!(
         report.pii_filtering_applied,
-        "the text went through the filter -- it simply had nothing to remove, which is not          the same as the filter not running"
+        "the text went through the filter -- it simply had nothing to remove, which is not the same as the filter not running"
     );
 
     // And the other direction, so "applied" cannot quietly come to mean something else: with
@@ -5151,7 +5151,7 @@ fn a_vector_from_another_encoder_at_the_same_width_is_declined_and_counted() {
     );
     assert_eq!(
         0, retrieve.fanout_plan.embedding_width_conflict_nodes,
-        "these vectors are the same width -- charging this to the width counter would tell an          operator to look for a provider outage that did not happen"
+        "these vectors are the same width -- charging this to the width counter would tell an operator to look for a provider outage that did not happen"
     );
 }
 

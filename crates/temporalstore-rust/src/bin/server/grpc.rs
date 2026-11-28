@@ -12,9 +12,8 @@ use temporalstore_rust::types::BatchExecuteResponse;
 use tonic::transport::{server::TcpIncoming, Server};
 
 use super::{
-    execute_via_server_raft, is_raft_read_command, read_target_for_server_raft, BatchExecuteRequest,
-    Command, CommandResponse, DataNodeRuntime, ExecuteRequest, ExecuteResponse, ServerRaftState,
-    ShardId, Status,
+    is_raft_read_command, BatchExecuteRequest, Command, CommandResponse, DataNodeRuntime,
+    DataRaftReadMode, ExecuteRequest, ExecuteResponse, ServerRaftState, ShardId, Status,
 };
 
 const MAX_MESSAGE_BYTES: usize = 40 * 1024 * 1024;
@@ -39,6 +38,79 @@ impl DataNodeExecutor {
         }
         self.runtime
             .validate_foreground_write_allowed(shard_id, commands)
+    }
+}
+
+fn sdk_read_target(
+    state: &ServerRaftState,
+) -> Result<temporalstore_rust::RaftCluster, temporalstore_rust::RaftError> {
+    let cluster = state.runtime.cluster();
+    let node_id = state.local_node_id;
+    let primary_only = matches!(
+        state.read_policy.mode,
+        DataRaftReadMode::Leader | DataRaftReadMode::Linearizable
+    );
+    if primary_only && !cluster.is_local_leader(node_id) {
+        return Err(temporalstore_rust::RaftError::NotLeader { node_id });
+    }
+    let read = cluster.check_data_raft_read_policy(node_id, state.read_policy)?;
+    cluster.wait_for_applied_index(
+        node_id,
+        read.read_index,
+        state.read_policy.read_index_timeout_ms,
+    )?;
+    if primary_only && !cluster.is_local_leader(node_id) {
+        return Err(temporalstore_rust::RaftError::NotLeader { node_id });
+    }
+    Ok(cluster)
+}
+
+fn sdk_read_error(error: temporalstore_rust::RaftError) -> Status {
+    let code = if matches!(&error, temporalstore_rust::RaftError::NotLeader { .. }) {
+        "raft_not_leader"
+    } else {
+        "raft_error"
+    };
+    Status::error(code, error.to_string())
+}
+
+pub(super) fn execute_raft_sdk_command(
+    raft: &ServerRaftState,
+    request: ExecuteRequest,
+) -> ExecuteResponse {
+    if is_raft_read_command(&request.command) {
+        return match sdk_read_target(raft)
+            .and_then(|cluster| cluster.read_from_replica(raft.local_node_id, request.command))
+        {
+            Ok(response) => ExecuteResponse {
+                status: Status::ok(),
+                response,
+            },
+            Err(error) => ExecuteResponse {
+                status: sdk_read_error(error),
+                response: CommandResponse::Empty,
+            },
+        };
+    }
+    match raft.runtime.propose_with_admission(request.command) {
+        Ok(response) => ExecuteResponse {
+            status: Status::ok(),
+            response,
+        },
+        Err(error) => {
+            let code = if matches!(
+                &error,
+                temporalstore_rust::RaftError::ProposalNotStarted { .. }
+            ) {
+                "raft_write_not_started"
+            } else {
+                "raft_error"
+            };
+            ExecuteResponse {
+                status: Status::error(code, error.to_string()),
+                response: CommandResponse::Empty,
+            }
+        }
     }
 }
 
@@ -76,7 +148,7 @@ impl TemporalStoreSdkExecutor for DataNodeExecutor {
             request.shard_id,
             std::slice::from_ref(&request.command),
         ) {
-            Ok(()) => execute_via_server_raft(raft, request),
+            Ok(()) => execute_raft_sdk_command(raft, request),
             Err(status) => ExecuteResponse {
                 status,
                 response: CommandResponse::Empty,
@@ -96,23 +168,30 @@ impl TemporalStoreSdkExecutor for DataNodeExecutor {
         }
         if request.commands.len() > 1 && request.commands.iter().all(is_raft_read_command) {
             let count = request.commands.len();
-            let result = read_target_for_server_raft(raft)
-                .and_then(|(cluster, node_id)| cluster.read_batch_from_replica(node_id, request.commands));
+            let result = sdk_read_target(raft).and_then(|cluster| {
+                cluster.read_batch_from_replica(raft.local_node_id, request.commands)
+            });
             return match result {
                 Ok(responses) => BatchExecuteResponse {
                     status: Status::ok(),
                     responses: responses
                         .into_iter()
-                        .map(|response| ExecuteResponse { status: Status::ok(), response })
+                        .map(|response| ExecuteResponse {
+                            status: Status::ok(),
+                            response,
+                        })
                         .collect(),
                 },
                 Err(error) => {
-                    let status = Status::error("raft_error", error.to_string());
+                    let status = sdk_read_error(error);
                     BatchExecuteResponse {
-                        responses: vec![ExecuteResponse {
-                            status: status.clone(),
-                            response: CommandResponse::Empty,
-                        }; count],
+                        responses: vec![
+                            ExecuteResponse {
+                                status: status.clone(),
+                                response: CommandResponse::Empty,
+                            };
+                            count
+                        ],
                         status,
                     }
                 }
@@ -123,7 +202,7 @@ impl TemporalStoreSdkExecutor for DataNodeExecutor {
             .commands
             .into_iter()
             .map(|command| {
-                execute_via_server_raft(
+                execute_raft_sdk_command(
                     raft,
                     ExecuteRequest {
                         shard_id: request.shard_id,

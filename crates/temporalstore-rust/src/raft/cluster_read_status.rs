@@ -42,15 +42,11 @@ impl RaftCluster {
         node_id: RaftNodeId,
         command: Command,
     ) -> Result<CommandResponse, RaftError> {
-        let inner = self.inner.read().expect("raft cluster lock poisoned");
-        let node = readable_replica(&inner, node_id)?;
-        Ok(node
-            .engine
-            .execute(ExecuteRequest {
-                shard_id: inner.shard_id,
-                command,
-            })
-            .response)
+        let (shard_id, engine) = {
+            let inner = self.inner.read().expect("raft cluster lock poisoned");
+            (inner.shard_id, readable_replica(&inner, node_id)?.engine.clone())
+        };
+        Ok(engine.execute(ExecuteRequest { shard_id, command }).response)
     }
 
     /// Read an ordered batch from a replica that has applied the leader's commit frontier.

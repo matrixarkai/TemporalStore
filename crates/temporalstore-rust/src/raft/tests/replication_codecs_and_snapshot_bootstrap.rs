@@ -952,6 +952,53 @@ fn raft_transport_append_entries_catches_up_lagging_replica() {
 }
 
 #[test]
+fn removed_local_replica_hears_the_leader_without_accepting_entries() {
+    let replica = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    replica.set_local_node_id(3);
+    replica.apply_membership_change_safely([1, 2]).unwrap();
+    replica.set_alive(1, false).unwrap();
+
+    let term = replica.hard_state(1).unwrap().current_term;
+    let heartbeat = AppendEntriesRequest {
+        rpc: None,
+        shard_id: 1,
+        term,
+        leader_id: 1,
+        target_id: 3,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: Vec::new(),
+        leader_commit: 0,
+    };
+    let before = replica.leader_contact_epoch();
+
+    for invalid in [
+        AppendEntriesRequest { target_id: 4, ..heartbeat.clone() },
+        AppendEntriesRequest { leader_id: 2, ..heartbeat.clone() },
+        AppendEntriesRequest { term: term - 1, ..heartbeat.clone() },
+    ] {
+        assert!(matches!(
+            replica.receive_append_entries(invalid),
+            Err(RaftError::NodeNotFound(_))
+        ));
+        assert_eq!(replica.leader_contact_epoch(), before);
+        assert!(matches!(
+            replica.plan_membership_change([1, 2, 3]),
+            Err(RaftError::LeaderUnavailable)
+        ));
+    }
+
+    assert!(matches!(
+        replica.receive_append_entries(heartbeat),
+        Err(RaftError::NodeNotFound(3))
+    ));
+    assert_eq!(replica.leader_contact_epoch(), before + 1);
+    assert_eq!(replica.membership().voters, vec![1, 2]);
+    replica.apply_membership_change_safely([1, 2, 3]).unwrap();
+    assert_eq!(replica.membership().voters, vec![1, 2, 3]);
+}
+
+#[test]
 fn raft_transport_rejects_stale_append_entries_and_behind_vote() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     cluster
@@ -1256,6 +1303,29 @@ fn install_snapshot_clears_stale_vote_on_term_raise() {
 }
 
 #[test]
+fn rejected_higher_term_append_still_steps_down_the_old_leader() {
+    let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    cluster.set_local_node_id(1);
+    assert!(cluster.is_local_leader(1));
+    let reply = cluster.receive_append_entries(AppendEntriesRequest {
+        rpc: None,
+        shard_id: 1,
+        term: 5,
+        leader_id: 2,
+        target_id: 1,
+        prev_log_index: 1,
+        prev_log_term: 4,
+        entries: Vec::new(),
+        leader_commit: 0,
+    }).unwrap();
+    assert!(!reply.success);
+    assert_eq!(reply.term, 5);
+    assert_eq!(reply.reject_reason.as_deref(), Some("out_of_order_append_queued"));
+    assert_eq!(cluster.local_status(1).unwrap().role, RaftRole::Follower);
+    assert!(!cluster.is_local_leader(1));
+}
+
+#[test]
 fn append_entries_commit_clamps_to_last_new_entry_not_whole_log_tail() {
     // Raft Figure 2: a follower advances commitIndex only to min(leaderCommit, index of
     // the last NEW entry in THIS AppendEntries) -- never to its whole-log tail. A divergent
@@ -1313,7 +1383,14 @@ fn append_entries_commit_clamps_to_last_new_entry_not_whole_log_tail() {
     // The real leader now re-sends a matching-term entry 4 with a HIGH leader_commit (6).
     // Entry 4 matches by term so append is a no-op; the divergent entry 5 survives in the
     // log. commitIndex must clamp to 4 (this batch's last new entry), NOT 5 (whole-log tail).
-    seed(5, 3, 1, vec![entry(3, 4, "k4-stale")], 6);
+    let reply = seed(5, 3, 1, vec![entry(3, 4, "k4-stale")], 6);
+    assert!(reply.success);
+    assert_eq!(reply.match_index, 4);
+
+    let heartbeat = seed(5, 4, 3, Vec::new(), 6);
+    assert!(heartbeat.success);
+    assert_eq!(heartbeat.match_index, 4);
+    assert_eq!(cluster.local_status(3).unwrap().last_log_index, 5);
 
     assert_eq!(
         cluster.commit_index(3).unwrap(),

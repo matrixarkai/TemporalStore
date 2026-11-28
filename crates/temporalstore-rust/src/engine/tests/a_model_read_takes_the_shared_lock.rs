@@ -138,16 +138,18 @@ fn each_model_read_answers_while_the_shared_lock_is_held() {
     seed(&engine);
     let mut answered = 0usize;
     for (label, command, expected) in reads() {
-        let held = engine.shards.read().expect("engine lock poisoned");
-        let (sender, receiver) = mpsc::channel();
-        let worker = {
-            let engine = Arc::clone(&engine);
-            std::thread::spawn(move || {
-                let _ = sender.send(run(&engine, command));
-            })
-        };
-        let got = receiver.recv_timeout(Duration::from_secs(5));
-        drop(held);
+        let (got, worker) = engine.shards.with_state(1, |owner| {
+            assert!(owner.is_some());
+            let (sender, receiver) = mpsc::channel();
+            let worker = {
+                let engine = Arc::clone(&engine);
+                std::thread::spawn(move || {
+                    let _ = sender.send(run(&engine, command));
+                })
+            };
+            let got = receiver.recv_timeout(Duration::from_secs(5));
+            (got, worker)
+        });
         worker.join().expect("the read thread");
         assert_eq!(
             Ok(expected),
@@ -210,11 +212,12 @@ fn a_lapsed_key_declines_to_the_ordinary_path_which_drops_it() {
     let engine = engine_on(dir.path());
     seed(&engine);
     let deadlines = |engine: &TemporalEngine| -> Vec<String> {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard");
-        let mut keys: Vec<String> = shard.expires_at_ms().keys().map(|key| key.to_string()).collect();
-        keys.sort();
-        keys
+        engine.shards.with_state(1, |owner| {
+            let shard = owner.expect("shard");
+            let mut keys: Vec<String> = shard.expires_at_ms().keys().map(|key| key.to_string()).collect();
+            keys.sort();
+            keys
+        })
     };
     run(&engine, Command::CommonExpire { key: "c".into(), ttl_ms: 1 });
     run(&engine, Command::CommonExpire { key: "l".into(), ttl_ms: 1 });

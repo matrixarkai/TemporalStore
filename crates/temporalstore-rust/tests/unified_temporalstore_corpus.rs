@@ -2742,7 +2742,7 @@ fn verify_client_deployment_placement_routing() {
                                 continuous_failed_time_ms: 100,
                                 io_timeout_ms: 1_000,
                                 connect_timeout_ms: 1_000,
-                                set_fields: Default::default(),
+                                ..Default::default()
                             },
                         }),
                         shards: vec![TableShard {
