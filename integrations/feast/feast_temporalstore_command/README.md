@@ -605,9 +605,9 @@ repeat drift stayed below 2.9% and every value matched.
 ## Routing Feast through a TemporalStore table
 
 Install temporalstore-sdk from the same checkout as the Feast integration.
-In the Feast online store configuration, set meta_url to the metaserver,
-namespace to the TemporalStore namespace, and table_name to an existing
-online-store table. Provision the table and its shard ranges before
+In the Feast online store configuration, set `meta_url` to the metaserver's
+`grpc://host:port` endpoint, `namespace` to the TemporalStore namespace, and
+`table_name` to an existing online-store table. Use `grpcs://host:port` for TLS. Provision the table and its shard ranges before
 materializing features. Provide TS_META_ADMIN_TOKEN in the Feast process
 environment if the metaserver requires authentication.
 

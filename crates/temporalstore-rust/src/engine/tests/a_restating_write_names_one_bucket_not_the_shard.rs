@@ -120,33 +120,34 @@ fn a_bucket_projection_names_what_the_whole_shard_inversion_names() {
         );
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard");
-    let whole = BlockKeysByPosition::from_parts(
-        &shard.bucket_index.objects,
-        &shard.bucket_index.object_block_lookup,
-    );
-    let mut buckets_with_names = 0usize;
-    let mut names_compared = 0usize;
-    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        let restricted = BlockKeysByPosition::from_parts_for_bucket(
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.expect("shard");
+        let whole = BlockKeysByPosition::from_parts(
             &shard.bucket_index.objects,
             &shard.bucket_index.object_block_lookup,
-            *routing_bucket,
         );
-        let through_whole = block_identities_in(bucket, &whole);
-        let through_bucket = block_identities_in(bucket, &restricted);
-        assert_eq!(
-            through_whole, through_bucket,
-            "bucket {routing_bucket} is named differently by the bucket inversion"
-        );
-        buckets_with_names += usize::from(!through_whole.is_empty());
-        names_compared += through_whole.len();
-    }
-    // THE CONTROL: the shard really held named blocks in many buckets, so equal maps are not
-    // equal emptiness.
-    assert!(buckets_with_names >= 20, "only {buckets_with_names} buckets named a block");
-    assert!(names_compared >= 300, "only {names_compared} names were compared");
+        let mut buckets_with_names = 0usize;
+        let mut names_compared = 0usize;
+        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+            let restricted = BlockKeysByPosition::from_parts_for_bucket(
+                &shard.bucket_index.objects,
+                &shard.bucket_index.object_block_lookup,
+                *routing_bucket,
+            );
+            let through_whole = block_identities_in(bucket, &whole);
+            let through_bucket = block_identities_in(bucket, &restricted);
+            assert_eq!(
+                through_whole, through_bucket,
+                "bucket {routing_bucket} is named differently by the bucket inversion"
+            );
+            buckets_with_names += usize::from(!through_whole.is_empty());
+            names_compared += through_whole.len();
+        }
+        // THE CONTROL: the shard really held named blocks in many buckets, so equal maps are not
+        // equal emptiness.
+        assert!(buckets_with_names >= 20, "only {buckets_with_names} buckets named a block");
+        assert!(names_compared >= 300, "only {names_compared} names were compared");
+    });
 }
 
 #[cfg(feature = "alloc-probe")]
@@ -187,16 +188,17 @@ mod probe {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = open(dir.path());
         populate(&engine, nodes);
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard");
-        let probe = Probe::start();
-        let inversion = BlockKeysByPosition::from_parts(
-            &shard.bucket_index.objects,
-            &shard.bucket_index.object_block_lookup,
-        );
-        let bytes = probe.stop().alloc_bytes as f64;
-        drop(inversion);
-        bytes
+        engine.shards.with_state(1, |owner| {
+            let shard = owner.expect("shard");
+            let probe = Probe::start();
+            let inversion = BlockKeysByPosition::from_parts(
+                &shard.bucket_index.objects,
+                &shard.bucket_index.object_block_lookup,
+            );
+            let bytes = probe.stop().alloc_bytes as f64;
+            drop(inversion);
+            bytes
+        })
     }
 
     #[test]

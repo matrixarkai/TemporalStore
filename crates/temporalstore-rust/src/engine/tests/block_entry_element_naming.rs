@@ -960,9 +960,8 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         },
     );
 
-    let (genuine_empty_address, nameless_key_address) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let (genuine_empty_address, nameless_key_address) = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
         let empty_fields = shard
             .bucket_index.hashes
             .get(empty_key)
@@ -997,7 +996,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
             .expect("the named field is present")
             .clone();
         (genuine, anchor)
-    };
+    });
     println!(
         "[denominator] an empty hash field name is reachable and durable: `{empty_key}` holds 2 \
          fields including the empty-named one at slab {} offset {}; `{nameless_key}` holds 1",
@@ -1045,9 +1044,8 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         deleted: false,
     };
 
-    let nameless_entries_in_index = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
+    let nameless_entries_in_index = engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard is loaded");
         // `upsert: false` with no covered keys, so the fold ADDS this block and removes nothing --
         // the genuine blocks stay and the nameless one joins them, which is the state under test.
         crate::engine::fold_delta_block_items(
@@ -1081,7 +1079,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
                     && entry.address.length() == nameless_address.length()
             })
             .count()
-    };
+    });
     assert_eq!(
         nameless_entries_in_index, 1,
         "the fold filed {nameless_entries_in_index} hash block(s) at the planted address for this \
@@ -1106,101 +1104,102 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // LEG C. THE DERIVE. Both arms, over the same index, with the control beside them.
     // ---------------------------------------------------------------------------------------------
     for arm in ["reconcile_secondary_views", "rebuild_unserialized_model_maps"] {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard is loaded");
 
-        // THE CONTROL'S DENOMINATOR, read before the derive runs: how many string blocks this derive
-        // will actually walk. A control over an empty set reports success.
-        let string_blocks_exercised = collect_bucket_index_live_block_entries(shard)
-            .into_iter()
-            .filter(|entry| entry.kind.as_str() == "string" && !entry.deleted)
-            .count();
-        assert!(
-            string_blocks_exercised >= 1,
-            "[{arm}] the control walked {string_blocks_exercised} string block(s), so it is a control \
-             over nothing"
-        );
-
-        // `shard.bucket_index.hashes` is the map both arms rebuild, so clear it first: left populated, a stale
-        // entry could supply the very field the derive is supposed to produce and the assertions
-        // below would pass on the fixture's own leftovers.
-        shard.bucket_index.hashes.clear_for_test();
-        match arm {
-            "reconcile_secondary_views" => {
-                crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
-                    &engine.block_store,
-                    shard,
-                    None,
-                );
-            }
-            _ => {
-                crate::engine::storage_bucket_internals::rebuild_unserialized_model_maps_from_bucket_index(
-                    shard,
-                );
-            }
-        }
-
-        // --- THE FINDING IS NOW STRUCTURAL: THE DERIVE CONTRIBUTES NO FIELD NAME AT ALL. ---
-        //
-        // This arm asserted that a block naming no field contributed NO field -- that an absent name
-        // was SKIPPED rather than defaulted into a real, addressable field called `""`. It read the
-        // derived map and expected one field from the named block and none from the nameless one.
-        //
-        // BOTH DERIVES NOW CONTRIBUTE NOTHING, which is a stronger statement than the skip was.
-        // They decoded a field name out of `entry.element_name`; an entry has no element name, so there
-        // is no input and the derived view is EMPTY for every key. An absent name cannot become the
-        // empty name because no name is produced at all -- the defect is unreachable rather than
-        // handled, and the durable `hashes` map (`#[serde(default)]`) is the sole source.
-        //
-        // ASSERTED AS THE EMPTINESS, which is what keeps this a live guard. The fixture clears
-        // `shard.bucket_index.hashes` immediately before the derive, so anything in the map afterwards was
-        // MINTED by the derive. A change that re-introduced a derivation -- defaulting or not --
-        // populates this map and reddens here, which is the one thing that could put the phantom
-        // `""` field back.
-        let nameless_after = shard.bucket_index.hashes.get(nameless_key);
-        let empty_after = shard.bucket_index.hashes.get(empty_key);
-        assert!(
-            nameless_after.is_none_or(|fields| fields.is_empty()),
-            "[{arm}] the derive minted {} field(s) for `{nameless_key}` out of an index that names \
-             none. The map was cleared immediately before the derive ran, so every field here was \
-             invented by it -- and inventing a field name from a nameless entry is exactly how the \
-             phantom `\"\"` field was produced",
-            nameless_after.map_or(0, |fields| fields.len())
-        );
-        assert!(
-            empty_after.is_none_or(|fields| fields.is_empty()),
-            "[{arm}] the derive minted {} field(s) for `{empty_key}`, including possibly the \
-             genuine empty-named one. The durable map is the only source for those names now; a \
-             derive that reproduces them is reading an entry's element name again",
-            empty_after.map_or(0, |fields| fields.len())
-        );
-        // AND SPECIFICALLY NOT THE EMPTY FIELD NAME, named on its own because it is the defect this
-        // arm exists for and because `is_empty()` above would also be satisfied by a map holding
-        // only real names.
-        for (label, derived) in [(nameless_key, nameless_after), (empty_key, empty_after)] {
+            // THE CONTROL'S DENOMINATOR, read before the derive runs: how many string blocks this derive
+            // will actually walk. A control over an empty set reports success.
+            let string_blocks_exercised = collect_bucket_index_live_block_entries(shard)
+                .into_iter()
+                .filter(|entry| entry.kind.as_str() == "string" && !entry.deleted)
+                .count();
             assert!(
-                derived.is_none_or(|fields| !fields.contains_key(empty_field)),
-                "[{arm}] `{label}` came back with a field named `\"\"` from the DERIVE. Nothing \
-                 the derive can read names a field at all, so the only way to produce one is to \
-                 default an absent name into a real, addressable one. That is the defect: an \
-                 absent name is not the empty name"
+                string_blocks_exercised >= 1,
+                "[{arm}] the control walked {string_blocks_exercised} string block(s), so it is a control \
+                 over nothing"
             );
-        }
-        // The fixture's own addresses stay referenced so this arm still fails to compile if the
-        // block it wrote for the genuine empty-named field stops being built.
-        let _ = (named_field, genuine_empty_address.address_word());
 
-        // --- THE CONTROL, at 0.00% on a kind whose element name is LEGITIMATELY absent. ---
-        assert!(
-            shard.strings().contains_key(string_key),
-            "[{arm}] the control's string is gone: a block whose element name is absent BY DESIGN was \
-             caught by a change that is only about the hash arm"
-        );
-        println!(
-            "[leg C/{arm}] the derive minted nothing for `{nameless_key}` or `{empty_key}` -- no \
-             phantom, and no real name either, because an entry names no element; control: \
-             {string_blocks_exercised} string block(s) exercised, 0 lost, 0.00%"
-        );
+            // `shard.bucket_index.hashes` is the map both arms rebuild, so clear it first: left populated, a stale
+            // entry could supply the very field the derive is supposed to produce and the assertions
+            // below would pass on the fixture's own leftovers.
+            shard.bucket_index.hashes.clear_for_test();
+            match arm {
+                "reconcile_secondary_views" => {
+                    crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
+                        &engine.block_store,
+                        shard,
+                        None,
+                    );
+                }
+                _ => {
+                    crate::engine::storage_bucket_internals::rebuild_unserialized_model_maps_from_bucket_index(
+                        shard,
+                    );
+                }
+            }
+
+            // --- THE FINDING IS NOW STRUCTURAL: THE DERIVE CONTRIBUTES NO FIELD NAME AT ALL. ---
+            //
+            // This arm asserted that a block naming no field contributed NO field -- that an absent name
+            // was SKIPPED rather than defaulted into a real, addressable field called `""`. It read the
+            // derived map and expected one field from the named block and none from the nameless one.
+            //
+            // BOTH DERIVES NOW CONTRIBUTE NOTHING, which is a stronger statement than the skip was.
+            // They decoded a field name out of `entry.element_name`; an entry has no element name, so there
+            // is no input and the derived view is EMPTY for every key. An absent name cannot become the
+            // empty name because no name is produced at all -- the defect is unreachable rather than
+            // handled, and the durable `hashes` map (`#[serde(default)]`) is the sole source.
+            //
+            // ASSERTED AS THE EMPTINESS, which is what keeps this a live guard. The fixture clears
+            // `shard.bucket_index.hashes` immediately before the derive, so anything in the map afterwards was
+            // MINTED by the derive. A change that re-introduced a derivation -- defaulting or not --
+            // populates this map and reddens here, which is the one thing that could put the phantom
+            // `""` field back.
+            let nameless_after = shard.bucket_index.hashes.get(nameless_key);
+            let empty_after = shard.bucket_index.hashes.get(empty_key);
+            assert!(
+                nameless_after.is_none_or(|fields| fields.is_empty()),
+                "[{arm}] the derive minted {} field(s) for `{nameless_key}` out of an index that names \
+                 none. The map was cleared immediately before the derive ran, so every field here was \
+                 invented by it -- and inventing a field name from a nameless entry is exactly how the \
+                 phantom `\"\"` field was produced",
+                nameless_after.map_or(0, |fields| fields.len())
+            );
+            assert!(
+                empty_after.is_none_or(|fields| fields.is_empty()),
+                "[{arm}] the derive minted {} field(s) for `{empty_key}`, including possibly the \
+                 genuine empty-named one. The durable map is the only source for those names now; a \
+                 derive that reproduces them is reading an entry's element name again",
+                empty_after.map_or(0, |fields| fields.len())
+            );
+            // AND SPECIFICALLY NOT THE EMPTY FIELD NAME, named on its own because it is the defect this
+            // arm exists for and because `is_empty()` above would also be satisfied by a map holding
+            // only real names.
+            for (label, derived) in [(nameless_key, nameless_after), (empty_key, empty_after)] {
+                assert!(
+                    derived.is_none_or(|fields| !fields.contains_key(empty_field)),
+                    "[{arm}] `{label}` came back with a field named `\"\"` from the DERIVE. Nothing \
+                     the derive can read names a field at all, so the only way to produce one is to \
+                     default an absent name into a real, addressable one. That is the defect: an \
+                     absent name is not the empty name"
+                );
+            }
+            // The fixture's own addresses stay referenced so this arm still fails to compile if the
+            // block it wrote for the genuine empty-named field stops being built.
+            let _ = (named_field, genuine_empty_address.address_word());
+
+            // --- THE CONTROL, at 0.00% on a kind whose element name is LEGITIMATELY absent. ---
+            assert!(
+                shard.strings().contains_key(string_key),
+                "[{arm}] the control's string is gone: a block whose element name is absent BY DESIGN was \
+                 caught by a change that is only about the hash arm"
+            );
+            println!(
+                "[leg C/{arm}] the derive minted nothing for `{nameless_key}` or `{empty_key}` -- no \
+                 phantom, and no real name either, because an entry names no element; control: \
+                 {string_blocks_exercised} string block(s) exercised, 0 lost, 0.00%"
+            );
+        })
     }
 
     // ---------------------------------------------------------------------------------------------
@@ -1256,9 +1255,8 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // proof it reads the MAP and not the index -- which is exactly what this section was built to
     // pin, and what the old floor could only approach. Revert the collapse so `HashLen` counts
     // entries again and it answers 2 against a cleared map, which reddens both halves below.
-    let indexed_blocks_after = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let indexed_blocks_after = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
         collect_bucket_index_live_block_entries(shard)
             .into_iter()
             .filter(|entry| {
@@ -1267,7 +1265,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
                     && !entry.deleted
             })
             .count() as i64
-    };
+    });
     // THE DENOMINATOR: the two structures must hold DIFFERENT numbers, or the gap proves nothing.
     assert_eq!(
         2, indexed_blocks_after,

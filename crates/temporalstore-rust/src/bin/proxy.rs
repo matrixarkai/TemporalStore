@@ -8,10 +8,18 @@ use tracing::info;
 
 fn main() {
     temporalstore_rust::telemetry::init();
-    let addr = temporalstore_rust::env_flag::env_value("TS_PROXY_BIND_ADDR")
-        .or_else(|| temporalstore_rust::env_flag::env_value("TS_PROXY_ADDR"))
-        .unwrap_or_else(|| "127.0.0.1:17000".to_string());
-    let meta_addr = std::env::var("TS_META_ADDR").unwrap_or_else(|_| "127.0.0.1:17001".to_string());
+    let explicit_bind = temporalstore_rust::env_flag::env_value("TS_PROXY_BIND_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_PROXY_ADDR"));
+    let explicit_meta = std::env::var("TS_META_ADDR").ok();
+    let explicit_grpc_bind = temporalstore_rust::env_flag::env_value("TS_PROXY_GRPC_BIND_ADDR");
+    let default_local_grpc =
+        explicit_bind.is_none() && explicit_meta.is_none() && explicit_grpc_bind.is_none();
+    let grpc_bind_addr =
+        explicit_grpc_bind.or_else(|| default_local_grpc.then(|| "127.0.0.1:17200".to_owned()));
+    let meta_grpc_target = temporalstore_rust::env_flag::env_value("TS_META_GRPC_TARGET")
+        .or_else(|| default_local_grpc.then(|| "127.0.0.1:17201".to_owned()));
+    let addr = explicit_bind.unwrap_or_else(|| "127.0.0.1:17000".to_owned());
+    let meta_addr = explicit_meta.unwrap_or_else(|| "127.0.0.1:17001".to_owned());
     // Every environment fallback below reads its default from here rather than repeating a
     // literal. Repeating them meant the binary could disagree with the option's declared
     // default and nothing would say so: context_shard_count was declared 0, meaning "follow
@@ -21,7 +29,7 @@ fn main() {
     let defaults = ProxyOptions::default();
     let options = ProxyOptions {
         meta_addr,
-        meta_grpc_target: temporalstore_rust::env_flag::env_value("TS_META_GRPC_TARGET"),
+        meta_grpc_target,
         proxy_addr: std::env::var("TS_PROXY_ADVERTISED_ADDR").unwrap_or_else(|_| addr.clone()),
         listen_addr: addr.clone(),
         config_version: env_u64("TS_PROXY_CONFIG_VERSION", defaults.config_version),
@@ -72,8 +80,12 @@ fn main() {
         context_shard_count: env_u64("TS_PROXY_CONTEXT_SHARD_COUNT", defaults.context_shard_count),
         context_io_timeout_ms: env_u64("TS_PROXY_CONTEXT_IO_TIMEOUT_MS", defaults.context_io_timeout_ms),
     };
+    if grpc_bind_addr.is_some() && options.meta_grpc_target.is_none() {
+        eprintln!("TS_META_GRPC_TARGET is required with TS_PROXY_GRPC_BIND_ADDR");
+        std::process::exit(2);
+    }
     let proxy = ProxyService::new(options);
-    if let Some(grpc_addr) = temporalstore_rust::env_flag::env_value("TS_PROXY_GRPC_BIND_ADDR") {
+    if let Some(grpc_addr) = grpc_bind_addr {
         let grpc_addr = proxy.start_grpc(&grpc_addr).expect("proxy gRPC bind failed");
         info!(%grpc_addr, "temporalstore proxy gRPC listening");
     }

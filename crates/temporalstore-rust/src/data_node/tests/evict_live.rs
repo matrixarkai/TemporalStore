@@ -372,6 +372,7 @@ fn inline_string_pages_recover_with_or_without_dump_fallback() {
         index_before: u64,
         index_after: u64,
         released: usize,
+        released_buckets: Vec<u32>,
         refused: usize,
         manifests: usize,
         stage_before: u64,
@@ -384,6 +385,11 @@ fn inline_string_pages_recover_with_or_without_dump_fallback() {
         let runtime = seeded_runtime(dir.path(), KEYS);
         let engine = runtime.engine();
         let _ = engine.cache().invalidate_shard(1);
+
+        // Independent seed runs can assign different millisecond recency ties.
+        // Keep victim selection active and give both arms the same recency input.
+        engine.match_eviction_test_recency(1);
+        assert!(engine.released_bucket_index_buckets(1).is_empty());
 
         let index_before = engine.bucket_index_resident_bytes(1);
         assert!(index_before > 0, "{label}: no resident index to act on");
@@ -420,6 +426,7 @@ fn inline_string_pages_recover_with_or_without_dump_fallback() {
             index_before,
             index_after,
             released,
+            released_buckets: engine.released_bucket_index_buckets(1),
             refused,
             manifests,
             stage_before,
@@ -477,6 +484,11 @@ release-without-dump recovers {} B ({} of {} candidates refused)",
     assert_eq!((arm_b.refused, arm_b.manifests), (0, 0));
     assert_eq!((arm_c.refused, arm_c.manifests), (0, 0));
     assert_eq!(arm_b.released, arm_c.released);
+    assert_eq!(arm_b.released_buckets.len(), arm_b.released);
+    assert_eq!(arm_c.released_buckets.len(), arm_c.released);
+    assert_eq!(arm_b.released_buckets, arm_c.released_buckets);
+    assert_eq!(recovered(&arm_b), arm_b.stage_before - arm_b.stage_after);
+    assert_eq!(recovered(&arm_c), arm_c.stage_before - arm_c.stage_after);
     assert!(
         arm_c.released > 0,
         "arm C released nothing, so the proposed configuration does not recover index memory: \
@@ -625,7 +637,8 @@ fn a_write_landing_during_the_cycle_is_never_lost() {
         total_writes,
         WRITERS * per_writer * VERSIONS,
         "not every write was acknowledged, so a missing value below could be a write that never \
-         happened rather than one that was lost"
+         happened rather than one that was lost. Recorded write and read problems: {:?}",
+        problems.lock().expect("problem lock")
     );
     assert!(reads_done.load(Ordering::Relaxed) > 0, "no concurrent read ran");
 

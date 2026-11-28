@@ -107,282 +107,283 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
         }
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
 
-    // (holder name, text, address of the characters). A `String` key and an `Arc<str>` key both
-    // expose `as_ptr()`, so this needs no list of which map is keyed by what -- and an allowlist of
-    // names is exactly what went stale the first time a guard like this was written.
-    let mut held: std::collections::BTreeMap<String, Vec<(&str, usize)>> =
-        std::collections::BTreeMap::new();
-    let mut record = |name: &'static str, keys: Vec<(&str, usize)>| {
-        for (text, ptr) in keys {
-            held.entry(text.to_string()).or_default().push((name, ptr));
-        }
-    };
-    record(
-        "strings",
-        shard.strings().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
-    );
-    record("features", shard.features().keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    record(
-        "control_state_selection",
-        shard.control_state_selection.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
-    );
-    record(
-        "control_state",
-        shard.control_state().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
-    );
-    record(
-        "control_state_uuid",
-        shard.control_state_uuid().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
-    );
-    record(
-        "control_state_rollups",
-        shard.control_state_rollups().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
-    );
-    record(
-        "feature_values",
-        shard.feature_values().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
-    );
-    record(
-        "feature_rollups",
-        shard.feature_rollups().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
-    );
-    // `RecordedMap` keeps its map private and exposes only `keys()`, so this is the one way to
-    // ask the question from outside that module.
-    record("hashes", shard.bucket_index.hashes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    record("sets", shard.bucket_index.sets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    record("zsets", shard.bucket_index.zsets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    record("lists", shard.bucket_index.lists.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-
-    // FIVE MORE OBJECT-KEYED TABLES. This walk's COVERAGE decides whether the key-character
-    // lever is worth taking, and it had been compared against the wrong denominator: the
-    // refusal that left the arena/span shape open said this covered "five structures out of 67
-    // `ModelKey`-keyed declarations". 67 is DECLARATIONS IN ONE FILE (98 tree-wide); the number
-    // that decides the lever is OBJECT-KEYED TABLES -- where one key can actually live -- of
-    // which there are about fifteen, and this walk already recorded seven. That same list named
-    // `control_state_selection`, `control_state` and `feature_values` as untouched when all
-    // three are recorded above under their domain SPELLINGS rather than their variant names.
-    // So the gap was eight, not sixty-two. These are five of that eight; the other three
-    // (`context_compression_watermark`, `expiry`, `counters`) sit behind a private
-    // `addresses_of(SideTable)` and need a `pub(super)` door first.
-    record("seen", shard.seen.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    record("buckets", shard.buckets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    record(
-        "control_state_changes",
-        shard.control_state_changes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
-    );
-    record(
-        "context_event_timeline",
-        shard.context_event_timeline.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
-    );
-    record(
-        "context_nodes",
-        shard.context_nodes().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
-    );
-
-    // EACH NEWLY WALKED TABLE IS ASSERTED REACHED, WHICH IS THE WHOLE POINT. An empty table
-    // contributes no holders, so it LOWERS the measured duplication -- the direction that
-    // flatters the lever, because the refusal turned on the header being paid for at the
-    // holders the index really has. A table this fixture never populates is reported as NOT
-    // EXERCISED rather than counted as a zero.
-    let newly_walked: [(&str, usize); 5] = [
-        ("seen", shard.seen.len()),
-        ("buckets", shard.buckets.len()),
-        ("control_state_changes", shard.control_state_changes.len()),
-        ("context_event_timeline", shard.context_event_timeline.len()),
-        ("context_nodes", shard.context_nodes().len()),
-    ];
-    println!("{}", "
-=== coverage of the newly walked tables ===");
-    for (name, len) in &newly_walked {
-        println!("  {name:<24} {len:>4} keys");
-    }
-    let unexercised: Vec<&str> = newly_walked
-        .iter()
-        .filter(|(_, len)| *len == 0)
-        .map(|(name, _)| *name)
-        .collect();
-    if !unexercised.is_empty() {
-        println!("  NOT EXERCISED by this fixture: {unexercised:?}");
-        println!("  Their holder contribution is UNMEASURED, not zero.");
-    }
-
-    println!();
-    println!("  {KEYS} raw keys, written through six families");
-    println!();
-    let mut duplicated_texts = 0usize;
-    let mut duplicate_holders: std::collections::BTreeMap<&str, usize> =
-        std::collections::BTreeMap::new();
-    for (text, holders) in &held {
-        let addresses: std::collections::BTreeSet<usize> =
-            holders.iter().map(|(_, p)| *p).collect();
-        let shared = addresses.len() == 1;
-        if !shared {
-            duplicated_texts += 1;
-        }
-        println!(
-            "  {text:<12} {} holder(s), {} allocation(s){}",
-            holders.len(),
-            addresses.len(),
-            if shared { "" } else { "   <-- DUPLICATED" }
+        // (holder name, text, address of the characters). A `String` key and an `Arc<str>` key both
+        // expose `as_ptr()`, so this needs no list of which map is keyed by what -- and an allowlist of
+        // names is exactly what went stale the first time a guard like this was written.
+        let mut held: std::collections::BTreeMap<String, Vec<(&str, usize)>> =
+            std::collections::BTreeMap::new();
+        let mut record = |name: &'static str, keys: Vec<(&str, usize)>| {
+            for (text, ptr) in keys {
+                held.entry(text.to_string()).or_default().push((name, ptr));
+            }
+        };
+        record(
+            "strings",
+            shard.strings().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
         );
-        // the minority address is the one that minted: whichever holders do not agree with the
-        // most common address are the ones to convert.
-        let mut tally: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
-        for (_, p) in holders {
-            *tally.entry(*p).or_default() += 1;
+        record("features", shard.features().keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+        record(
+            "control_state_selection",
+            shard.control_state_selection.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        );
+        record(
+            "control_state",
+            shard.control_state().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        );
+        record(
+            "control_state_uuid",
+            shard.control_state_uuid().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        );
+        record(
+            "control_state_rollups",
+            shard.control_state_rollups().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        );
+        record(
+            "feature_values",
+            shard.feature_values().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        );
+        record(
+            "feature_rollups",
+            shard.feature_rollups().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        );
+        // `RecordedMap` keeps its map private and exposes only `keys()`, so this is the one way to
+        // ask the question from outside that module.
+        record("hashes", shard.bucket_index.hashes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+        record("sets", shard.bucket_index.sets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+        record("zsets", shard.bucket_index.zsets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+        record("lists", shard.bucket_index.lists.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+
+        // FIVE MORE OBJECT-KEYED TABLES. This walk's COVERAGE decides whether the key-character
+        // lever is worth taking, and it had been compared against the wrong denominator: the
+        // refusal that left the arena/span shape open said this covered "five structures out of 67
+        // `ModelKey`-keyed declarations". 67 is DECLARATIONS IN ONE FILE (98 tree-wide); the number
+        // that decides the lever is OBJECT-KEYED TABLES -- where one key can actually live -- of
+        // which there are about fifteen, and this walk already recorded seven. That same list named
+        // `control_state_selection`, `control_state` and `feature_values` as untouched when all
+        // three are recorded above under their domain SPELLINGS rather than their variant names.
+        // So the gap was eight, not sixty-two. These are five of that eight; the other three
+        // (`context_compression_watermark`, `expiry`, `counters`) sit behind a private
+        // `addresses_of(SideTable)` and need a `pub(super)` door first.
+        record("seen", shard.seen.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+        record("buckets", shard.buckets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+        record(
+            "control_state_changes",
+            shard.control_state_changes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        );
+        record(
+            "context_event_timeline",
+            shard.context_event_timeline.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        );
+        record(
+            "context_nodes",
+            shard.context_nodes().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        );
+
+        // EACH NEWLY WALKED TABLE IS ASSERTED REACHED, WHICH IS THE WHOLE POINT. An empty table
+        // contributes no holders, so it LOWERS the measured duplication -- the direction that
+        // flatters the lever, because the refusal turned on the header being paid for at the
+        // holders the index really has. A table this fixture never populates is reported as NOT
+        // EXERCISED rather than counted as a zero.
+        let newly_walked: [(&str, usize); 5] = [
+            ("seen", shard.seen.len()),
+            ("buckets", shard.buckets.len()),
+            ("control_state_changes", shard.control_state_changes.len()),
+            ("context_event_timeline", shard.context_event_timeline.len()),
+            ("context_nodes", shard.context_nodes().len()),
+        ];
+        println!("{}", "
+    === coverage of the newly walked tables ===");
+        for (name, len) in &newly_walked {
+            println!("  {name:<24} {len:>4} keys");
         }
-        let canonical = tally.iter().max_by_key(|(_, n)| **n).map(|(p, _)| *p).unwrap_or(0);
-        for (name, ptr) in holders {
-            let mark = if *ptr == canonical { "shared" } else { "MINTS " };
-            println!("      {mark}  {name:<24} {ptr:#x}");
-            if *ptr != canonical {
-                *duplicate_holders.entry(name).or_default() += 1;
+        let unexercised: Vec<&str> = newly_walked
+            .iter()
+            .filter(|(_, len)| *len == 0)
+            .map(|(name, _)| *name)
+            .collect();
+        if !unexercised.is_empty() {
+            println!("  NOT EXERCISED by this fixture: {unexercised:?}");
+            println!("  Their holder contribution is UNMEASURED, not zero.");
+        }
+
+        println!();
+        println!("  {KEYS} raw keys, written through six families");
+        println!();
+        let mut duplicated_texts = 0usize;
+        let mut duplicate_holders: std::collections::BTreeMap<&str, usize> =
+            std::collections::BTreeMap::new();
+        for (text, holders) in &held {
+            let addresses: std::collections::BTreeSet<usize> =
+                holders.iter().map(|(_, p)| *p).collect();
+            let shared = addresses.len() == 1;
+            if !shared {
+                duplicated_texts += 1;
+            }
+            println!(
+                "  {text:<12} {} holder(s), {} allocation(s){}",
+                holders.len(),
+                addresses.len(),
+                if shared { "" } else { "   <-- DUPLICATED" }
+            );
+            // the minority address is the one that minted: whichever holders do not agree with the
+            // most common address are the ones to convert.
+            let mut tally: std::collections::BTreeMap<usize, usize> = std::collections::BTreeMap::new();
+            for (_, p) in holders {
+                *tally.entry(*p).or_default() += 1;
+            }
+            let canonical = tally.iter().max_by_key(|(_, n)| **n).map(|(p, _)| *p).unwrap_or(0);
+            for (name, ptr) in holders {
+                let mark = if *ptr == canonical { "shared" } else { "MINTS " };
+                println!("      {mark}  {name:<24} {ptr:#x}");
+                if *ptr != canonical {
+                    *duplicate_holders.entry(name).or_default() += 1;
+                }
             }
         }
-    }
 
-    println!();
-    println!("  texts duplicated: {duplicated_texts} of {}", held.len());
-    println!("  holders that mint their own copy:");
-    if duplicate_holders.is_empty() {
-        println!("      (none)");
-    }
-    for (name, n) in &duplicate_holders {
-        println!("      {name:<24} {n} of {KEYS}");
-    }
+        println!();
+        println!("  texts duplicated: {duplicated_texts} of {}", held.len());
+        println!("  holders that mint their own copy:");
+        if duplicate_holders.is_empty() {
+            println!("      (none)");
+        }
+        for (name, n) in &duplicate_holders {
+            println!("      {name:<24} {n} of {KEYS}");
+        }
 
-    // ---- DENOMINATORS, because every count above divides by them. -------------------
-    //
-    // `control_state` holds TWO kinds of key and only one of them can ever share. The counter
-    // commands file the RAW key; the family operators file a DECORATED one
-    // (`control_state:<family>:<key>`), which no other map holds -- so a saving quoted per
-    // `control_state` ENTRY would be quoting the wrong denominator. The split is asserted so a
-    // later change cannot quietly move entries from one side to the other.
-    let raw: Vec<&String> = held.keys().filter(|text| !text.contains(':')).collect();
-    let decorated: Vec<&String> = held.keys().filter(|text| text.contains(':')).collect();
-    assert_eq!(
-        KEYS,
-        raw.len(),
-        "the fixture wrote {KEYS} raw keys but {} undecorated texts are resident, so the families          are not keying by the text this measures",
-        raw.len()
-    );
-    assert_eq!(
-        KEYS,
-        decorated.len(),
-        "expected one decorated control-state key per raw key; found {}. If that moved, a saving          quoted per entry and one quoted per raw key are no longer the same ratio",
-        decorated.len()
-    );
-    assert!(
-        decorated.iter().all(|text| held[*text].len() == 1),
-        "a decorated control-state key gained a second holder, so it CAN now share and this          measurement's conclusion that only the raw half matters is stale"
-    );
-    // EXACTLY FOUR OF THE EIGHT HOLDERS ARE REACHABLE ON THE SHIPPED DEFAULT, and that is the
-    // finding rather than a shortcoming of the fixture. This assert pins the four by name,
-    // because the first version of it guessed six and had to be corrected by this run.
-    //
-    // The four that stay empty, and why -- none of them is a map with nothing to share, which is
-    // the conclusion a zero would otherwise invite:
-    //
-    //   control_state_rollups  |  gated by Config::control_rollup_enabled, which is OFF by
-    //   feature_values         |  default. Their own field comments say "empty and inert when
-    //   feature_rollups        |  the gate is off", and this run confirms it by writing the
-    //                          |  commands that would fill them and finding nothing.
-    //   control_state_uuid     |  written only by the WITH-OPTIONS counter operator, and keyed
-    //                          |  by a dedup token rather than the object key -- so even when
-    //                          |  populated it holds text no other map holds.
-    //
-    // If this set changes, something material changed: a flag default flipped, or a command
-    // stopped writing its map. Either way the conclusions above need re-measuring, not a wider
-    // threshold.
-    let reached: std::collections::BTreeSet<&str> =
-        held.values().flatten().map(|(name, _)| *name).collect();
-    let expected: std::collections::BTreeSet<&str> = [
-        "control_state",
-        "control_state_selection",
-        "features",
-        "hashes",
-        "lists",
-        "sets",
-        "strings",
-        "zsets",
-    ]
-    .into_iter()
-    .collect();
-    assert_eq!(
-        expected, reached,
-        "the set of holders this fixture reaches changed. Gained: {:?}. Lost: {:?}. A gain means \
-         a gate opened and that map now has keys to share; a loss means a command stopped \
-         writing its map and this measurement stopped covering it.",
-        reached.difference(&expected).collect::<Vec<_>>(),
-        expected.difference(&reached).collect::<Vec<_>>()
-    );
-
-    // And the point of the whole file: with `control_state` adopting the block index handle, no
-    // text is stored twice. Before the conversion this was 8 of 16, every raw key.
-    let duplicated: Vec<_> = held
-        .iter()
-        .filter(|(_, holders)| {
-            holders.iter().map(|(_, p)| *p).collect::<std::collections::HashSet<_>>().len() > 1
-        })
-        .map(|(text, _)| text)
+        // ---- DENOMINATORS, because every count above divides by them. -------------------
+        //
+        // `control_state` holds TWO kinds of key and only one of them can ever share. The counter
+        // commands file the RAW key; the family operators file a DECORATED one
+        // (`control_state:<family>:<key>`), which no other map holds -- so a saving quoted per
+        // `control_state` ENTRY would be quoting the wrong denominator. The split is asserted so a
+        // later change cannot quietly move entries from one side to the other.
+        let raw: Vec<&String> = held.keys().filter(|text| !text.contains(':')).collect();
+        let decorated: Vec<&String> = held.keys().filter(|text| text.contains(':')).collect();
+        assert_eq!(
+            KEYS,
+            raw.len(),
+            "the fixture wrote {KEYS} raw keys but {} undecorated texts are resident, so the families are not keying by the text this measures",
+            raw.len()
+        );
+        assert_eq!(
+            KEYS,
+            decorated.len(),
+            "expected one decorated control-state key per raw key; found {}. If that moved, a saving quoted per entry and one quoted per raw key are no longer the same ratio",
+            decorated.len()
+        );
+        assert!(
+            decorated.iter().all(|text| held[*text].len() == 1),
+            "a decorated control-state key gained a second holder, so it CAN now share and this measurement's conclusion that only the raw half matters is stale"
+        );
+        // EXACTLY FOUR OF THE EIGHT HOLDERS ARE REACHABLE ON THE SHIPPED DEFAULT, and that is the
+        // finding rather than a shortcoming of the fixture. This assert pins the four by name,
+        // because the first version of it guessed six and had to be corrected by this run.
+        //
+        // The four that stay empty, and why -- none of them is a map with nothing to share, which is
+        // the conclusion a zero would otherwise invite:
+        //
+        //   control_state_rollups  |  gated by Config::control_rollup_enabled, which is OFF by
+        //   feature_values         |  default. Their own field comments say "empty and inert when
+        //   feature_rollups        |  the gate is off", and this run confirms it by writing the
+        //                          |  commands that would fill them and finding nothing.
+        //   control_state_uuid     |  written only by the WITH-OPTIONS counter operator, and keyed
+        //                          |  by a dedup token rather than the object key -- so even when
+        //                          |  populated it holds text no other map holds.
+        //
+        // If this set changes, something material changed: a flag default flipped, or a command
+        // stopped writing its map. Either way the conclusions above need re-measuring, not a wider
+        // threshold.
+        let reached: std::collections::BTreeSet<&str> =
+            held.values().flatten().map(|(name, _)| *name).collect();
+        let expected: std::collections::BTreeSet<&str> = [
+            "control_state",
+            "control_state_selection",
+            "features",
+            "hashes",
+            "lists",
+            "sets",
+            "strings",
+            "zsets",
+        ]
+        .into_iter()
         .collect();
-    println!();
-    println!("  duplicated texts: {} of {}", duplicated.len(), held.len());
-
-    // ---- NO HOLDER MINTS ITS OWN COPY ANY MORE -------------------------------------------
-    //
-    // This block used to pin four known minters -- `hashes`, `sets`, `zsets` and `lists` -- each
-    // owning a second copy of a key text the other four holders had already agreed on. Eight
-    // holders of one text reported FIVE allocations. They are converted now, so the pinning is
-    // retired and the plain invariant takes over: one text, one allocation, whoever holds it.
-    //
-    // The pinning was deliberately two-directional, and this is the step it existed to force. A
-    // baseline that only forbids NEW minters would have let the conversion land with this test
-    // still green and the list of four quietly stale, which is how a guard stops describing the
-    // code without anybody noticing.
-    assert!(
-        duplicate_holders.is_empty(),
-        "{} holder(s) mint their own copy of a key text another holder already has: {:?}. A map \
-         that CAN share and does not keeps an equal copy and nothing else fails, because cloning \
-         an `Arc` is a refcount bump. A `String`-keyed holder needs a `ModelKey` and a place in \
-         `ShardState::adopt_object_key_allocations`; a `RecordedMap` kind needs its `adopt_key` \
-         called there, because its map is private and nothing outside that module can re-key it.",
-        duplicate_holders.len(),
-        duplicate_holders
-    );
-    assert!(
-        duplicated.is_empty(),
-        "{} key texts are stored more than once: {:?}",
-        duplicated.len(),
-        &duplicated[..duplicated.len().min(4)]
-    );
-
-    // The raw keys must be ONE allocation across all eight holders. Asserted as a count rather
-    // than as "no duplicates" so the figure in the doc comment above cannot drift from the code:
-    // eight holders, one allocation.
-    for (text, holders) in held.iter().filter(|(text, _)| !text.contains(':')) {
-        let addresses: std::collections::BTreeSet<usize> =
-            holders.iter().map(|(_, p)| *p).collect();
         assert_eq!(
-            1,
-            addresses.len(),
-            "`{text}` is held by {} holders at {} addresses: {:?}",
-            holders.len(),
-            addresses.len(),
-            holders
+            expected, reached,
+            "the set of holders this fixture reaches changed. Gained: {:?}. Lost: {:?}. A gain means \
+             a gate opened and that map now has keys to share; a loss means a command stopped \
+             writing its map and this measurement stopped covering it.",
+            reached.difference(&expected).collect::<Vec<_>>(),
+            expected.difference(&reached).collect::<Vec<_>>()
         );
-        assert_eq!(
-            8,
-            holders.len(),
-            "`{text}` reached {} holders, not the eight this fixture writes -- a command stopped \
-             writing its map and this measurement stopped covering it: {:?}",
-            holders.len(),
-            holders
+
+        // And the point of the whole file: with `control_state` adopting the block index handle, no
+        // text is stored twice. Before the conversion this was 8 of 16, every raw key.
+        let duplicated: Vec<_> = held
+            .iter()
+            .filter(|(_, holders)| {
+                holders.iter().map(|(_, p)| *p).collect::<std::collections::HashSet<_>>().len() > 1
+            })
+            .map(|(text, _)| text)
+            .collect();
+        println!();
+        println!("  duplicated texts: {} of {}", duplicated.len(), held.len());
+
+        // ---- NO HOLDER MINTS ITS OWN COPY ANY MORE -------------------------------------------
+        //
+        // This block used to pin four known minters -- `hashes`, `sets`, `zsets` and `lists` -- each
+        // owning a second copy of a key text the other four holders had already agreed on. Eight
+        // holders of one text reported FIVE allocations. They are converted now, so the pinning is
+        // retired and the plain invariant takes over: one text, one allocation, whoever holds it.
+        //
+        // The pinning was deliberately two-directional, and this is the step it existed to force. A
+        // baseline that only forbids NEW minters would have let the conversion land with this test
+        // still green and the list of four quietly stale, which is how a guard stops describing the
+        // code without anybody noticing.
+        assert!(
+            duplicate_holders.is_empty(),
+            "{} holder(s) mint their own copy of a key text another holder already has: {:?}. A map \
+             that CAN share and does not keeps an equal copy and nothing else fails, because cloning \
+             an `Arc` is a refcount bump. A `String`-keyed holder needs a `ModelKey` and a place in \
+             `ShardState::adopt_object_key_allocations`; a `RecordedMap` kind needs its `adopt_key` \
+             called there, because its map is private and nothing outside that module can re-key it.",
+            duplicate_holders.len(),
+            duplicate_holders
         );
-    }
+        assert!(
+            duplicated.is_empty(),
+            "{} key texts are stored more than once: {:?}",
+            duplicated.len(),
+            &duplicated[..duplicated.len().min(4)]
+        );
+
+        // The raw keys must be ONE allocation across all eight holders. Asserted as a count rather
+        // than as "no duplicates" so the figure in the doc comment above cannot drift from the code:
+        // eight holders, one allocation.
+        for (text, holders) in held.iter().filter(|(text, _)| !text.contains(':')) {
+            let addresses: std::collections::BTreeSet<usize> =
+                holders.iter().map(|(_, p)| *p).collect();
+            assert_eq!(
+                1,
+                addresses.len(),
+                "`{text}` is held by {} holders at {} addresses: {:?}",
+                holders.len(),
+                addresses.len(),
+                holders
+            );
+            assert_eq!(
+                8,
+                holders.len(),
+                "`{text}` reached {} holders, not the eight this fixture writes -- a command stopped \
+                 writing its map and this measurement stopped covering it: {:?}",
+                holders.len(),
+                holders
+            );
+        }
+    })
 }
 
 /// WHETHER THE SHARING SURVIVES A REOPEN WITH NO DUMP -- WHICH IS **NOT** A DECODE.
@@ -461,16 +462,17 @@ fn whether_the_shared_key_survives_a_decode() {
             }
         }
 
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let before = distinct_addresses_per_raw_key(shard);
-        println!();
-        println!("  fresh:  {:?}", before);
-        assert!(
-            before.values().all(|n| *n == 1),
-            "the sharing is not present BEFORE the reload, so this test cannot measure whether a \
-             decode loses it: {before:?}"
-        );
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let before = distinct_addresses_per_raw_key(shard);
+            println!();
+            println!("  fresh:  {:?}", before);
+            assert!(
+                before.values().all(|n| *n == 1),
+                "the sharing is not present BEFORE the reload, so this test cannot measure whether a \
+                 decode loses it: {before:?}"
+            );
+        })
     }
 
     // ---- reload from the same directory ------------------------------------------------
@@ -482,25 +484,26 @@ fn whether_the_shared_key_survives_a_decode() {
     println!();
     println!("  decode pass ran {} time(s) during the reload", calls_after - calls_before);
     println!("  hashed keys it adopted: {adopted}");
-    let shards = reloaded.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let after = distinct_addresses_per_raw_key(shard);
-    println!("  after:  {:?}", after);
+    reloaded.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let after = distinct_addresses_per_raw_key(shard);
+        println!("  after:  {:?}", after);
 
-    let kept: Vec<_> = after.iter().filter(|(_, n)| **n == 1).collect();
-    let lost: Vec<_> = after.iter().filter(|(_, n)| **n > 1).collect();
-    println!();
-    println!("  keys still sharing after the decode: {} of {}", kept.len(), after.len());
-    println!("  keys holding several allocations:    {} of {}", lost.len(), after.len());
+        let kept: Vec<_> = after.iter().filter(|(_, n)| **n == 1).collect();
+        let lost: Vec<_> = after.iter().filter(|(_, n)| **n > 1).collect();
+        println!();
+        println!("  keys still sharing after the decode: {} of {}", kept.len(), after.len());
+        println!("  keys holding several allocations:    {} of {}", lost.len(), after.len());
 
-    // The fixture has to have survived at all, or the counts above are about an empty shard.
-    assert_eq!(
-        KEYS,
-        after.len(),
-        "{} raw keys came back from the reload, not {KEYS} -- the dump did not carry them and \
-         nothing below is about sharing",
-        after.len()
-    );
+        // The fixture has to have survived at all, or the counts above are about an empty shard.
+        assert_eq!(
+            KEYS,
+            after.len(),
+            "{} raw keys came back from the reload, not {KEYS} -- the dump did not carry them and \
+             nothing below is about sharing",
+            after.len()
+        );
+    })
 }
 
 /// How many distinct allocations hold each raw key's characters, across every holder that has one.
@@ -581,57 +584,58 @@ fn how_many_allocations_the_block_index_itself_holds() {
         assert!(response.status.ok, "write failed: {:?}", response.status);
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let lookup = &shard.bucket_index.object_block_lookup;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let lookup = &shard.bucket_index.object_block_lookup;
 
-    println!();
-    // BOTH HOMES, AND THE CLAIM IS UNCHANGED BY THAT. An object's refs live in its slot row
-    // wherever it has one, so a kind that was in the lookup before the fold is in the consolidated
-    // map now -- and the question here is about the INDEX's allocations of one key text, not about
-    // which structure inside it holds them. Reading one home only made this arm see four kinds
-    // where it expects five and refuse its own premise.
-    let mut filed: Vec<(&str, usize)> = Vec::new();
-    for kind in KINDS {
-        let from_lookup = lookup.key_ptr(kind, &raw);
-        let from_slot = crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
-            kind,
-        )
-        .and_then(|k| shard.bucket_index.slot_key_ptr(k, &raw));
-        match from_lookup.or(from_slot) {
-            Some(ptr) => {
-                let home = if from_lookup.is_some() { "lookup" } else { "slot" };
-                println!("  {kind:<16} {:#x}  ({home})", ptr as usize);
-                filed.push((kind, ptr as usize));
+        println!();
+        // BOTH HOMES, AND THE CLAIM IS UNCHANGED BY THAT. An object's refs live in its slot row
+        // wherever it has one, so a kind that was in the lookup before the fold is in the consolidated
+        // map now -- and the question here is about the INDEX's allocations of one key text, not about
+        // which structure inside it holds them. Reading one home only made this arm see four kinds
+        // where it expects five and refuse its own premise.
+        let mut filed: Vec<(&str, usize)> = Vec::new();
+        for kind in KINDS {
+            let from_lookup = lookup.key_ptr(kind, &raw);
+            let from_slot = crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
+                kind,
+            )
+            .and_then(|k| shard.bucket_index.slot_key_ptr(k, &raw));
+            match from_lookup.or(from_slot) {
+                Some(ptr) => {
+                    let home = if from_lookup.is_some() { "lookup" } else { "slot" };
+                    println!("  {kind:<16} {:#x}  ({home})", ptr as usize);
+                    filed.push((kind, ptr as usize));
+                }
+                None => println!("  {kind:<16} (not filed under this kind)"),
             }
-            None => println!("  {kind:<16} (not filed under this kind)"),
         }
-    }
 
-    let distinct: std::collections::BTreeSet<usize> = filed.iter().map(|(_, p)| *p).collect();
-    println!();
-    println!(
-        "  one key text, filed under {} kind(s), held in {} allocation(s)",
-        filed.len(),
-        distinct.len()
-    );
-    // What every model map borrows, for comparison: it is one of the above, not a further copy.
-    let adopted = lookup.any_shared_object_key(&raw).expect("the key is filed");
-    let adopted_ptr = adopted.as_ptr() as usize;
-    println!("  what the model maps adopt:   {adopted_ptr:#x}");
-    assert!(
-        filed.iter().any(|(_, p)| *p == adopted_ptr),
-        "the handle the model maps adopt is not one of the index's own allocations, which would \
-         mean a further copy nobody accounted for: {adopted_ptr:#x} vs {filed:?}"
-    );
+        let distinct: std::collections::BTreeSet<usize> = filed.iter().map(|(_, p)| *p).collect();
+        println!();
+        println!(
+            "  one key text, filed under {} kind(s), held in {} allocation(s)",
+            filed.len(),
+            distinct.len()
+        );
+        // What every model map borrows, for comparison: it is one of the above, not a further copy.
+        let adopted = lookup.any_shared_object_key(&raw).expect("the key is filed");
+        let adopted_ptr = adopted.as_ptr() as usize;
+        println!("  what the model maps adopt:   {adopted_ptr:#x}");
+        assert!(
+            filed.iter().any(|(_, p)| *p == adopted_ptr),
+            "the handle the model maps adopt is not one of the index's own allocations, which would \
+             mean a further copy nobody accounted for: {adopted_ptr:#x} vs {filed:?}"
+        );
 
-    // The fixture must have reached several kinds, or there is nothing to compare.
-    assert!(
-        filed.len() >= 5,
-        "the key was filed under only {} kind(s) ({filed:?}), so this run cannot say whether the \
-         index holds one allocation per kind",
-        filed.len()
-    );
+        // The fixture must have reached several kinds, or there is nothing to compare.
+        assert!(
+            filed.len() >= 5,
+            "the key was filed under only {} kind(s) ({filed:?}), so this run cannot say whether the \
+             index holds one allocation per kind",
+            filed.len()
+        );
+    })
 }
 
 /// WHAT THE TOMBSTONE PATH FILES INTO THE OBJECT LOOKUP, AND WHAT IT ALLOCATES TO DO IT.
@@ -680,9 +684,10 @@ fn what_the_tombstone_path_files_and_what_it_allocates() {
     }
 
     let filed_before = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard.bucket_index.object_block_refs("hash", &raw).map(|refs| refs.len()).unwrap_or(0)
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            shard.bucket_index.object_block_refs("hash", &raw).map(|refs| refs.len()).unwrap_or(0)
+        })
     };
 
     let response = engine.execute(ExecuteRequest {
@@ -692,9 +697,10 @@ fn what_the_tombstone_path_files_and_what_it_allocates() {
     assert!(response.status.ok, "the hash delete failed: {:?}", response.status);
 
     let filed_after = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard.bucket_index.object_block_refs("hash", &raw).map(|refs| refs.len()).unwrap_or(0)
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            shard.bucket_index.object_block_refs("hash", &raw).map(|refs| refs.len()).unwrap_or(0)
+        })
     };
 
     println!();
@@ -727,42 +733,43 @@ fn what_the_tombstone_path_files_and_what_it_allocates() {
     // This is measured and printed either way rather than assumed, because the answer depends on
     // ordering: the row is written while the delete is in flight, and whether the lookup still
     // holds the key at that moment is not something to reason about from the source.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let indexed = shard
-        .bucket_index
-        .object_block_lookup
-        .any_shared_object_key(&raw)
-        .map(|handle| handle.as_ptr() as usize);
-    let rows: Vec<usize> = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| bucket.tombstone_elements.iter())
-        .filter(|row| &*row.object_key == raw.as_str())
-        .map(|row| row.object_key.as_ptr() as usize)
-        .collect();
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let indexed = shard
+            .bucket_index
+            .object_block_lookup
+            .any_shared_object_key(&raw)
+            .map(|handle| handle.as_ptr() as usize);
+        let rows: Vec<usize> = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .flat_map(|bucket| bucket.tombstone_elements.iter())
+            .filter(|row| &*row.object_key == raw.as_str())
+            .map(|row| row.object_key.as_ptr() as usize)
+            .collect();
 
-    println!();
-    match indexed {
-        Some(ptr) => println!("  the index still holds the key at {ptr:#x}"),
-        None => println!("  the index no longer holds the key"),
-    }
-    println!("  tombstone rows naming this key: {}", rows.len());
-    for ptr in &rows {
-        let verdict = match indexed {
-            Some(indexed_ptr) if *ptr == indexed_ptr => "shared",
-            Some(_) => "MINTS ",
-            None => "sole  ",
-        };
-        println!("      {verdict}  {ptr:#x}");
-    }
+        println!();
+        match indexed {
+            Some(ptr) => println!("  the index still holds the key at {ptr:#x}"),
+            None => println!("  the index no longer holds the key"),
+        }
+        println!("  tombstone rows naming this key: {}", rows.len());
+        for ptr in &rows {
+            let verdict = match indexed {
+                Some(indexed_ptr) if *ptr == indexed_ptr => "shared",
+                Some(_) => "MINTS ",
+                None => "sole  ",
+            };
+            println!("      {verdict}  {ptr:#x}");
+        }
 
-    assert!(
-        !rows.is_empty(),
-        "the delete wrote no tombstone row naming `{raw}`, so there is nothing here to ask about \
-         sharing -- the fixture stopped reaching the tombstone path"
-    );
+        assert!(
+            !rows.is_empty(),
+            "the delete wrote no tombstone row naming `{raw}`, so there is nothing here to ask about \
+             sharing -- the fixture stopped reaching the tombstone path"
+        );
+    })
 }
 
 /// WHETHER RE-KEYING A HASHED MAP IN PLACE MOVES ITS STORED BYTES.
@@ -922,9 +929,10 @@ fn whether_the_shared_key_survives_a_dump_and_install() {
     }
 
     let before = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        distinct_addresses_per_raw_key(shard)
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            distinct_addresses_per_raw_key(shard)
+        })
     };
     println!();
     println!("  fresh:  {before:?}");
@@ -946,9 +954,10 @@ fn whether_the_shared_key_survives_a_dump_and_install() {
         crate::engine::state::REPACK_ADOPTED_HASHED.load(std::sync::atomic::Ordering::Relaxed);
 
     let after = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        distinct_addresses_per_raw_key(shard)
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            distinct_addresses_per_raw_key(shard)
+        })
     };
 
     println!("  after:  {after:?}");

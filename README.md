@@ -60,9 +60,10 @@ replication. Workers using the same model and layout reuse a shared table.
    shared `namespace`. The SDK discovers the owning shard and sends native
    gRPC requests to its datanode.
 3. Start vLLM with `LMCacheMPConnector`. For a cross-worker smoke test, disable
-   vLLM prefix caching, send a prompt, and wait for the L2 store counter to
-   increase. Clear LMCache L1 with `POST /cache/clear`, repeat the prompt on
-   the second worker, and check that the L2 load counter increased.
+   vLLM prefix caching, send a fresh prompt, and wait for the sum of the
+   writer's `stores` and `stores_confirmed_by_read` counters to increase.
+   Clear LMCache L1 on both workers with `POST /cache/clear`. Repeat the
+   prompt on the second worker and check that its L2 `loads` counter increased.
 
 See the [LMCache integration guide](integrations/lmcache/README.md) for
 model-layout naming, adapter configuration, and benchmarking commands.
@@ -443,7 +444,9 @@ docker compose -f docker-compose.single-node.yml up --build -d
 curl -fsS http://127.0.0.1:17102/health
 ```
 
-The Compose setup runs a metaserver on `17101` and a data node on `17102`.
+The Compose setup exposes gRPC on `127.0.0.1:17201` for metadata and
+`127.0.0.1:17202` for commands. HTTP health and compatibility endpoints are
+available on ports `17101` and `17102`.
 A named volume preserves data across container restarts. `/health` checks process
 liveness, not whether every shard can serve requests.
 

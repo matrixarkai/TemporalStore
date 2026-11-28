@@ -118,7 +118,7 @@ impl Scope {
 /// Counts registered slots, not temporary Arc clones or in-flight readers.
 #[derive(Debug, Default)]
 pub(super) struct RegistrationRecords {
-    scopes: HashMap<(usize, ShardId), Scope>,
+    scopes: BTreeMap<(usize, ShardId), Scope>,
 }
 
 impl RegistrationRecords {
@@ -152,7 +152,8 @@ impl LocalWriteAheadLogStore {
     ) {
         let same = previous.is_some_and(|(store, _, _)| self.same_log(store));
         {
-            let mut retention = self
+            let coordinator = self.group_commit_coordinator(shard);
+            let mut retention = coordinator
                 .read_retention
                 .lock()
                 .expect("registration records lock poisoned");
@@ -175,7 +176,7 @@ impl LocalWriteAheadLogStore {
         sequence: u64,
         expected: usize,
     ) {
-        self.read_retention
+        self.group_commit_coordinator(shard).read_retention
             .lock()
             .expect("registration records lock poisoned")
             .registrations
@@ -183,7 +184,7 @@ impl LocalWriteAheadLogStore {
     }
 
     pub(crate) fn registered_block_floor(&self, owner: usize, shard: ShardId) -> Option<u64> {
-        self.read_retention
+        self.existing_group_commit_coordinator(shard)?.read_retention
             .lock()
             .expect("registration records lock poisoned")
             .registrations
@@ -195,13 +196,17 @@ impl LocalWriteAheadLogStore {
     }
 
     pub(crate) fn registered_block_span_has_holes(&self, owner: usize, shard: ShardId) -> bool {
-        self.read_retention
+        let Some(coordinator) = self.existing_group_commit_coordinator(shard) else {
+            return false;
+        };
+        let has_holes = coordinator.read_retention
             .lock()
             .expect("registration records lock poisoned")
             .registrations
             .scopes
             .get(&(owner, shard))
-            .is_some_and(Scope::has_holes)
+            .is_some_and(Scope::has_holes);
+        has_holes
     }
 }
 
