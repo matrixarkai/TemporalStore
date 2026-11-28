@@ -342,6 +342,36 @@ class TableClientTest(unittest.TestCase):
             self.assertEqual(timed_out.exception.code, "deadline_exceeded")
             channel.assert_not_called()
 
+    def test_timed_read_expires_waiting_for_another_route_refresh(self):
+        metadata = Mock()
+        refresh_started = Event()
+        finish_refresh = Event()
+        topology = TableTopology(
+            "kvcache", "model", 1, 73, 1, (Shard(73, None, (), 7, "primary"),),
+        )
+
+        def discover(*_, **__):
+            refresh_started.set()
+            self.assertTrue(finish_refresh.wait(3), "route refresh was not released")
+            return topology
+
+        metadata.table_topology.side_effect = discover
+        with TableClient(metadata, "kvcache", "model") as table, ThreadPoolExecutor(max_workers=1) as pool, patch(
+            "temporalstore_sdk.table.CommandClient",
+        ) as channel:
+            refresh = pool.submit(table.table_identity)
+            try:
+                self.assertTrue(refresh_started.wait(2), "route refresh did not start")
+                with self.assertRaises(MetadataError) as timed_out:
+                    table.batch_execute([get("key")], timeout_seconds=0.025)
+                self.assertEqual(timed_out.exception.code, "deadline_exceeded")
+                self.assertIn("routing wait", str(timed_out.exception))
+                metadata.table_topology.assert_called_once()
+                channel.assert_not_called()
+            finally:
+                finish_refresh.set()
+            self.assertEqual(refresh.result(timeout=2), table.table_identity())
+
     def test_stale_fence_expires_route_without_retrying_the_failed_write(self):
         metadata = Mock()
         metadata.table_topology.side_effect = [
