@@ -62,8 +62,8 @@ pub(crate) fn move_slab_to_delayed_destroy_unsynced(
 /// `DelayedDestroy` while its file is still at its old name, which is the one ordering this code
 /// must not lose.
 pub(crate) fn sync_delayed_destroy_dirs(root: &Path) -> Result<(), BlockStoreError> {
-    sync_dir(root)?;
-    sync_dir(&delayed_destroy_dir(root))?;
+    paths::sync_required_dir(root)?;
+    paths::sync_required_dir(&delayed_destroy_dir(root))?;
     Ok(())
 }
 

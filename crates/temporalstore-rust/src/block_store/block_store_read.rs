@@ -213,6 +213,7 @@ impl BlockStore {
     ) -> Result<(), BlockStoreError> {
         #[cfg(test)]
         crate::snapshot_probe::note_slab_install(bytes.len() as u64);
+        let mut retired = Vec::new();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         inner.check_owned_recovery()?;
         let registered = owned_writer::stored_slab_owner(&inner.root, block_slab_id)?;
@@ -257,7 +258,7 @@ impl BlockStore {
                 "a reader holds the installed slab",
             ).into());
         }
-        if inner.owned_active.contains(&block_slab_id)
+        if inner.slabs.protected(block_slab_id)
             || (slab_summary.owner_shard_id.is_some() && block_slab_id == inner.block_slab_id)
         {
             return Err(std::io::Error::new(
@@ -298,6 +299,9 @@ impl BlockStore {
         if advances_legacy_cursor {
             inner.active_append_file = None;
         }
+        inner.note_quarantine_scan_change();
+        inner.delayed_destroy_earliest_unix_ms = None;
+        inner.quarantine_known_empty = false;
         std::fs::rename(&temp_path, &path)?;
         sync_parent_dir(&path)?;
         if advances_legacy_cursor {
@@ -335,10 +339,10 @@ impl BlockStore {
                 has_corruption: false,
                 first_error_offset: None,
                 first_error: None,
-            },
+            }, &mut retired,
         );
         if is_current_slab {
-            for slab in inner.slabs.values_mut() {
+            for mut slab in inner.slabs.values_mut() {
                 if slab.block_slab_id != block_slab_id
                     && slab.state == BlockStoreSlabState::Active
                     && slab.owner_shard_id.is_none()

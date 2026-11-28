@@ -1,0 +1,514 @@
+{
+  "schema_version": 1,
+  "new_group_counts": {
+    "prepare": 8,
+    "record": 9,
+    "active": 7,
+    "api_open_io": 2,
+    "retirement": 1
+  },
+  "new_control_count": 27,
+  "affected_existing_count": 73,
+  "controls": [
+    {
+      "selector": "block_store::owned_writer::tests::warm_prepare_completes_before_the_catalog_is_explicitly_released",
+      "group": "prepare",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::productive_prepare_rolls_while_an_unrelated_writer_is_parked",
+      "group": "prepare",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::concurrent_cold_lookup_has_one_authoritative_writer_and_options",
+      "group": "prepare",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::concurrent_cold_prepare_publishes_one_initial_slab",
+      "group": "prepare",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::waiting_for_a_writer_does_not_retain_the_directory_guard",
+      "group": "prepare",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::full_sync_snapshots_release_directory_before_waiting_for_a_writer",
+      "group": "prepare",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::a_recovery_error_between_cold_read_and_insert_refuses_admission",
+      "group": "prepare",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::warm_lookup_does_not_cache_past_an_admission_error_or_a_new_open",
+      "group": "prepare",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::canonical_owned_append_finishes_with_catalog_parked_and_publishes_exact_stats",
+      "group": "record",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::active_physical_lease_refuses_same_id_import_and_gc_during_append",
+      "group": "record",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::failed_roll_retry_retires_exact_outgoing_lease_without_catalog",
+      "group": "record",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::failed_create_keeps_its_provisional_lease_until_catalog_finalization",
+      "group": "record",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::read_pin_and_current_lease_join_gc_and_same_id_install",
+      "group": "record",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::owned_and_legacy_accounting_share_exact_totals_and_window",
+      "group": "record",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_record::tests::an_old_incarnation_release_cannot_unprotect_the_replacement",
+      "group": "record",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_record::tests::record_manifest_is_byte_identical_to_the_existing_physical_format",
+      "group": "record",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_record::tests::descriptor_read_and_write_guards_do_not_acquire_the_owner_mutex",
+      "group": "record",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_record::tests::stale_same_id_cleanup_racing_current_forks_preserves_the_current_record",
+      "group": "active",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_record::tests::leases_keep_the_index_alive_without_a_record_index_cycle",
+      "group": "active",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_record::tests::active_enumeration_visits_only_leased_records_not_sealed_history",
+      "group": "active",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::maintenance_active_api_does_not_walk_sealed_catalog_history",
+      "group": "active",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_record::tests::last_drop_racing_reacquire_cannot_remove_the_new_membership",
+      "group": "active",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_record::tests::concurrent_fork_drops_preserve_the_anchor_and_exact_index_identity",
+      "group": "active",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::parked_accounting_blocks_both_owners_but_not_catalog_or_record_access",
+      "group": "active",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_manifest::rebuild_record_tests::missing_and_corrupt_manifests_rebuild_delayed_only_and_existing_rows",
+      "group": "api_open_io",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_record::tests::legacy_file_selection_releases_descriptor_before_real_metadata_probe",
+      "group": "api_open_io",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_record::tests::final_record_drop_after_real_import_releases_catalog_and_index_on_success_and_error",
+      "group": "retirement",
+      "kind": "new"
+    },
+    {
+      "selector": "block_store::slab_manifest::quarantine_restart_tests::restart_preserves_the_quarantine_arrival_not_the_last_append_time",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_manifest::quarantine_restart_tests::restart_gives_an_interrupted_quarantine_a_full_grace_window",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_manifest_wire::tests::every_descriptor_field_survives_the_wire_round_trip",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_manifest_wire::tests::a_wire_manifest_loads_with_values_only_those_bytes_can_carry",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_manifest_wire::tests::a_damaged_wire_manifest_is_an_error_and_never_an_empty_store",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_manifest_wire::tests::an_unspecified_or_unknown_state_is_refused_by_name",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_manifest_wire::tests::the_stored_field_numbers_do_not_move",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::relocation_sync_leaves_unrelated_dirty_writer_locked_and_unchanged",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::relocation_sync_rejects_foreign_and_legacy_destinations_before_syncing",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::relocation_sync_cursor_failure_is_retryable",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::empty_relocation_sync_does_not_create_a_writer",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::selected_relocation_barrier_does_not_commit_unrelated_legacy_data",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::empty_relocation_barrier_leaves_pending_legacy_data_untouched",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::independent_owner_cursor_commits_survive_reopen",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::concurrent_writers_sync_roll_reopen_and_keep_each_active_slab",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::damaged_owned_header_cannot_reopen_as_a_legacy_writer",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::owned_reopen_preserves_a_damaged_record_and_every_later_record",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::first_owned_append_retries_directory_creation",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::damaged_imported_header_is_detected_after_manifest_loss",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::lazy_checkpoint_reservation_refuses_unaddressable_ids",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::same_owner_and_id_cannot_replace_a_different_slab",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::rebind_of_a_sealed_legacy_slab_does_not_write_a_reservation",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::quarantined_slab_keeps_its_owner_until_physical_purge",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::owner_reopen_repairs_only_the_incomplete_tail_beyond_committed_data",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::recovery_repairs_short_payloads_but_keeps_complete_corrupt_records",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::prepare_allocates_initial_owner_cursor_and_idle_syncs_do_no_manifest_work",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::interrupted_reservation_names_are_never_reused_after_reopen",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::failed_owner_roll_releases_only_resolved_reservations",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::failed_slab_publication_preserves_reservation_and_writer_cursors",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::owned_writer::tests::colliding_file_prevents_roll_without_reclassifying_legacy_bytes",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_restore_bindings::tests::damaged_restore_watermark_refuses_writes_without_modifying_slab_bytes",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_restore_bindings::tests::reserved_destination_ids_survive_a_restart_before_any_import",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_restore_bindings::tests::independent_lineages_with_equal_ids_survive_reopen",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_restore_bindings::tests::retries_preserve_bindings_and_conflicts_change_nothing",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_restore_bindings::tests::decode_refuses_partial_duplicate_or_out_of_range_records",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_restore_bindings::tests::physical_translation_preserves_non_slab_bits",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_restore_bindings::tests::physical_limit_applies_even_with_an_overlarge_bound",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_restore_bindings::tests::only_declared_owned_slab_headers_are_translated",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::slab_restore_bindings::tests::encoded_lineage_cost_is_paid_once",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::append::append_operation_tests::singleton_batches_reuse_the_active_append_handle",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::append::append_operation_tests::mixed_append_shapes_preserve_bytes_ordinals_rolls_and_reopen",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::append::append_operation_tests::failed_directory_creation_can_be_retried_without_phantom_writes",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::read_retention::tests::dropping_an_empty_read_snapshot_does_not_wait_for_the_catalog",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::read_retention::tests::replacing_the_default_source_releases_the_registry_before_dropping_it",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::read_retention::tests::attaching_a_second_checkpoint_source_preserves_the_first",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::read_retention::tests::a_remapped_raw_slab_does_not_become_the_legacy_writer_after_reopen",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::read_retention::tests::staged_checkpoint_slab_is_retained_and_conflicts_leave_its_bytes_intact",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::read_retention::tests::nested_readers_protect_only_named_slabs_until_last_release",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::read_retention::tests::read_pins_survive_quarantine_plans_and_restore_before_purge",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::read_retention::tests::import_cannot_replace_an_open_slab_under_a_read_pin",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::record::owned_slab_tests::slab_inspection_recovers_owner_and_preserves_physical_offsets",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::record::owned_slab_tests::invalid_slab_owner_is_never_recovered",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::record::owned_slab_tests::manifest_rebuild_recovers_owners_from_multiple_slab_files",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::record::owned_slab_tests::imported_owned_slab_never_becomes_the_legacy_cursor",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::record::owned_slab_tests::malformed_owner_import_preserves_bytes_cursor_and_directory",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::record::owned_slab_tests::legacy_raw_prefix_survives_reopen_and_manifest_rebuild_verbatim",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::active_slab_torn_tail_is_fenced_on_reopen",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::gc_slabs_removes_old_non_current_slabs",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::prepare_next_slab_takes_the_roll_off_the_append_path",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::prepare_next_slab_does_not_roll_an_empty_slab",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::roll_slab_moves_future_appends_to_fresh_slab",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::reopened_store_appends_to_latest_existing_slab",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::reopen_reconciles_manifest_missing_existing_stream_slab",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::reopen_marks_manifest_slab_without_stream_file_as_purged",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::a_written_manifest_is_the_binary_shape_and_reopens",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::slab_manifest_tracks_roll_reopen_gc_and_purge",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::missing_slab_manifest_rebuilds_from_existing_slabs",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::partial_slab_manifest_rebuild_preserves_readable_prefix_and_reports_corruption",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::stream_backed_slab_runtime_report_covers_roll_read_manifest_and_delayed_destroy",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::gc_slabs_retains_live_index_references_below_floor",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::delayed_destroy_gc_quarantines_stale_slabs_before_purge",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::installing_slabs_does_not_write_a_manifest_each_time",
+      "group": "affected_existing",
+      "kind": "existing"
+    },
+    {
+      "selector": "block_store::tests::a_roll_never_mints_an_id_a_slab_file_already_holds",
+      "group": "affected_existing",
+      "kind": "existing"
+    }
+  ]
+}

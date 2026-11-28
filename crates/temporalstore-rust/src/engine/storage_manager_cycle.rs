@@ -15,6 +15,41 @@
 use super::*;
 use crate::engine::reports::{configured_eviction_memory_limit, StageWalkCharges};
 
+#[cfg(test)]
+thread_local! {
+    static OWNER_STAGE_OBSERVER: std::cell::RefCell<
+        Option<Box<dyn FnMut(&TemporalEngine, ShardId, &'static str)>>
+    > = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn with_owner_stage_observer<R>(
+    observer: impl FnMut(&TemporalEngine, ShardId, &'static str) + 'static,
+    run: impl FnOnce() -> R,
+) -> R {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            OWNER_STAGE_OBSERVER.with(|slot| { slot.borrow_mut().take(); });
+        }
+    }
+    OWNER_STAGE_OBSERVER.with(|slot| {
+        assert!(slot.borrow().is_none(), "owner stage observers must not nest");
+        *slot.borrow_mut() = Some(Box::new(observer));
+    });
+    let _reset = Reset;
+    run()
+}
+
+#[cfg(test)]
+fn observe_owner_stage(engine: &TemporalEngine, shard: ShardId, boundary: &'static str) {
+    OWNER_STAGE_OBSERVER.with(|slot| {
+        if let Some(observer) = slot.borrow_mut().as_mut() {
+            observer(engine, shard, boundary);
+        }
+    });
+}
+
 /// One stage's measured span: how long its WORK took, and how much of the store that work walked.
 ///
 /// WHY THE SPANS ARE CLOSED AT THE WORK AND NOT AT THE ROW. The stage rows are not built in the
@@ -162,7 +197,11 @@ impl TemporalEngine {
             invalidate_cache: false,
             warm_cache: request.warm_cache,
         };
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "before_initial_plan");
         let plan = self.storage_lifecycle_plan(plan_request.clone());
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_initial_plan");
         let block_gc_dependency_plan = self.storage_block_gc_dependency_plan(
             request.shard_id,
             plan.reclaim_candidates
@@ -408,6 +447,8 @@ impl TemporalEngine {
         }
         let prepare_span = StageSpan::close(&mut stage_clock);
         stage_boundary_order.push("prepare".to_string());
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_prepare");
         stages.push(StorageManagerStageReport {
             duration_ms: prepare_span.duration_ms,
             duration_us: prepare_span.duration_us,
@@ -461,6 +502,8 @@ impl TemporalEngine {
         } else {
             0
         };
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_materialize_before_lifecycle");
         let mut lifecycle_report = if request.dry_run {
             None
         } else {
@@ -473,6 +516,8 @@ impl TemporalEngine {
         // Dump and warmup are charged to WAL reclaim; later cleanup stays in its own stage.
         let reclaim_wal_span = StageSpan::close(&mut stage_clock);
         stage_boundary_order.push("reclaim_wal".to_string());
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_reclaim_wal");
         let mut expiry_report = None;
         if request.enable_expire && !request.dry_run {
             match self.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
@@ -488,6 +533,8 @@ impl TemporalEngine {
 
         let expire_span = StageSpan::close(&mut stage_clock);
         stage_boundary_order.push("expire".to_string());
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_expire");
 
         // apply_storage_lifecycle's warm phase brings freshly-dumped blocks into DRAM.
         // The pressure snapshot above was captured during prepare (pre-warm), so
@@ -580,6 +627,8 @@ impl TemporalEngine {
         // rather than to the dump that warmed the cache.
         let evict_span = StageSpan::close(&mut stage_clock);
         stage_boundary_order.push("evict".to_string());
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_evict");
         let page_log_plan_built = request.enable_block_reclaim
             && self.storage_dump_wal_sequence(request.shard_id).unwrap_or(0) > 0;
         let mut wal_reclaim_plan = if page_log_plan_built {
@@ -731,6 +780,8 @@ impl TemporalEngine {
         self.publish_block_slab_live_bytes();
         let reclaim_block_span = StageSpan::close(&mut stage_clock);
         stage_boundary_order.push("reclaim_page".to_string());
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_reclaim_page");
         if request.enable_index_gc && !page_log_plan_built {
             wal_reclaim_plan = self.storage_wal_reclaim_plan(
                 request.shard_id,
@@ -760,9 +811,13 @@ impl TemporalEngine {
                 report.refresh_public_lifecycle_metrics();
             }
         }
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_install_prune_before_catalog");
         if request.enable_index_gc && !request.dry_run {
             self.maybe_dump_index_catalog(request.shard_id);
         }
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_catalog_before_index_gc_report");
         let index_gc_report = Some(self.storage_index_gc_report(
             &plan,
             &wal_reclaim_plan,
@@ -772,6 +827,8 @@ impl TemporalEngine {
 
         let index_gc_span = StageSpan::close(&mut stage_clock);
         stage_boundary_order.push("index_gc".to_string());
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_index_gc");
         stages.push(StorageManagerStageReport {
             duration_ms: reclaim_wal_span.duration_ms,
             duration_us: reclaim_wal_span.duration_us,
@@ -1219,6 +1276,8 @@ impl TemporalEngine {
         // `skipped=true` and moving zero blocks, because it was being charged for work it does
         // not do. A stage report that names the wrong stage is worse than no stage report: it
         // sends whoever reads it to optimise the wrong function, which is exactly what it did.
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_merged_policy");
         let merged_dump_load_policy_span = StageSpan::close(&mut stage_clock);
         stages.push(StorageManagerStageReport {
             duration_ms: merged_dump_load_policy_span.duration_ms,
@@ -1251,6 +1310,8 @@ impl TemporalEngine {
         };
         let compact_span = StageSpan::close(&mut stage_clock);
         stage_boundary_order.push("compact".to_string());
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_compact");
         stages.push(StorageManagerStageReport {
             duration_ms: compact_span.duration_ms,
             duration_us: compact_span.duration_us,
@@ -1316,6 +1377,8 @@ impl TemporalEngine {
 
         let reap_metrics_span = StageSpan::close(&mut stage_clock);
         stage_boundary_order.push("reap_metrics".to_string());
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "after_reap_metrics");
         stages.push(StorageManagerStageReport {
             duration_ms: reap_metrics_span.duration_ms,
             duration_us: reap_metrics_span.duration_us,
@@ -1363,6 +1426,8 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
                 .all(|stage| stages.iter().any(|report| &report.stage == stage))
             && stages.iter().all(|stage| stage.enabled)
             && merged_dump_load_policy.policy_ready;
+        #[cfg(test)]
+        observe_owner_stage(self, request.shard_id, "before_return");
         StorageManagerCycleReport {
             shard_id: request.shard_id,
             duration_ms: round_duration_ms,

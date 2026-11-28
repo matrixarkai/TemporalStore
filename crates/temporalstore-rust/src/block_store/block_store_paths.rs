@@ -69,6 +69,19 @@ pub(super) fn sync_dir(path: &Path) -> std::io::Result<()> {
     Ok(())
 }
 
+pub(super) fn sync_required_dir(path: &Path) -> std::io::Result<()> {
+    let dir = File::open(path)?;
+    if !dir.metadata()?.is_dir() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidInput,
+            "required directory barrier does not name a directory",
+        ));
+    }
+    dir.sync_all()?;
+    DIRECTORY_FSYNCS.fetch_add(1, Ordering::Relaxed);
+    Ok(())
+}
+
 pub(super) fn now_unix_ms() -> u64 {
     system_time_unix_ms(std::time::SystemTime::now()).unwrap_or_default()
 }

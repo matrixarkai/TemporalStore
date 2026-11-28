@@ -18,6 +18,8 @@ mod slab_manifest;
 mod slab_manifest_wire;
 mod slab_reports;
 mod owned_writer;
+mod slab_record;
+use slab_record::{SlabCatalog, SlabView, SlabWriterLease, AppendAccounting};
 pub(crate) mod slab_restore_bindings;
 #[path = "block_store/block_store_append.rs"]
 mod append;
@@ -26,6 +28,9 @@ mod read;
 #[path = "block_store/block_store_gc.rs"]
 mod gc;
 mod read_retention;
+mod quarantine_scan;
+#[cfg(test)]
+mod quarantine_scan_tests;
 #[cfg(test)]
 mod quarantine_probe_tests;
 pub(crate) use read_retention::BlockStoreReadSnapshot;
@@ -1907,10 +1912,42 @@ pub struct BlockStoreRollReport {
 
 #[derive(Debug, Clone)]
 pub struct BlockStore {
-    inner: Arc<Mutex<BlockStoreInner>>,
+    inner: Arc<BlockStoreCatalog>,
+    owned_directory: Arc<owned_writer::OwnedWriterDirectory>,
+    write_accounting: Arc<AppendAccounting>,
     /// What a read needs, held OUTSIDE `inner` so a read never takes its mutex.
     read_view: Arc<ReadView>,
     identity: usize,
+}
+
+#[cfg(not(test))]
+type BlockStoreCatalog = Mutex<BlockStoreInner>;
+
+#[cfg(test)]
+#[derive(Debug)]
+struct BlockStoreCatalog {
+    inner: Mutex<BlockStoreInner>,
+    lock_attempts: std::sync::atomic::AtomicUsize,
+    next_lock_attempt: Mutex<Option<std::sync::mpsc::Sender<()>>>,
+}
+
+#[cfg(test)]
+impl BlockStoreCatalog {
+    fn new(inner: BlockStoreInner) -> Self {
+        Self {
+            inner: Mutex::new(inner),
+            lock_attempts: Default::default(),
+            next_lock_attempt: Mutex::new(None),
+        }
+    }
+
+    fn lock(&self) -> std::sync::LockResult<std::sync::MutexGuard<'_, BlockStoreInner>> {
+        self.lock_attempts.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        if let Some(entered) = self.next_lock_attempt.lock().unwrap().take() {
+            let _ = entered.send(());
+        }
+        self.inner.lock()
+    }
 }
 
 /// The parts of the store a read reaches, none of which the mutex has to protect.
@@ -1980,14 +2017,12 @@ struct BlockStoreInner {
     // cleared by sync_durable(). See bulk_relaxed_durability().
     relaxed_dirty: bool,
     block_slab_id: u64,
-    owned_writers: BTreeMap<u64, Arc<Mutex<owned_writer::OwnedWriter>>>,
-    owned_active: BTreeSet<u64>,
+    owned_directory: Arc<owned_writer::OwnedWriterDirectory>,
+    write_accounting: Arc<AppendAccounting>,
     owned_highest_id: u64,
-    owned_recovery_error: Option<String>,
     write_offset: u64,
     next_block_id: u64,
-    options: BlockStoreOptions,
-    slabs: BTreeMap<u64, BlockStoreSlabDescriptor>,
+    slabs: SlabCatalog,
     /// Slab installs since the manifest was last written out. Writing it costs the whole manifest,
     /// so it is written every so often rather than every install; the load rebuilds from the slabs
     /// when what it reads does not match them.
@@ -2047,6 +2082,8 @@ struct BlockStoreInner {
     /// fresh process starts here at `None` -- so the first round after any restart walks, and it
     /// is that round which decides whether a `Some` is justified.
     delayed_destroy_earliest_unix_ms: Option<u64>,
+    // Invalidates off-catalog discovery before any namespace or arrival-stamp change.
+    quarantine_scan_revision: u64,
     /// Slabs that have entered quarantine since this store opened. Only ever incremented, at the one
     /// place a slab is set aside.
     quarantine_arrivals: u64,
@@ -2219,7 +2256,7 @@ mod quarantine_wait_guards {
 /// without a manifest stamp stops the round publishing an earliest at all: with nothing published
 /// there is no decline, and with no decline there is nothing for this to have missed.
 fn live_set_names_a_quarantined_slab(
-    slabs: &BTreeMap<u64, BlockStoreSlabDescriptor>,
+    slabs: &SlabCatalog,
     live_block_slab_ids: &BTreeSet<u64>,
 ) -> bool {
     live_block_slab_ids.iter().any(|id| {
@@ -2228,6 +2265,18 @@ fn live_set_names_a_quarantined_slab(
             .map(|slab| slab.state == BlockStoreSlabState::DelayedDestroy)
             .unwrap_or(false)
     })
+}
+
+fn latest_sealed_legacy_slab_with(
+    slabs: &SlabCatalog,
+    mut is_file: impl FnMut(u64) -> bool,
+) -> Option<u64> {
+    slabs.values().rev()
+        .map(|slab| (slab.block_slab_id, slab.owner_shard_id, slab.state))
+        .find_map(|(id, owner, state)| {
+            // The preceding map returned scalars and released its record guard.
+            (owner.is_none() && state == BlockStoreSlabState::Sealed && is_file(id)).then_some(id)
+        })
 }
 
 impl BlockStore {
@@ -2269,10 +2318,10 @@ impl BlockStore {
         // integer -- on a live-store copy, the bulk of a steady-state open.
         let next_block_id = 0;
         let reconciled = reconcile_slab_manifest_with_disk(&root, &mut slabs).unwrap_or_default();
-        let (owned_writers, owned_active, mut owned_highest_id, mut owned_recovery_error) =
+        let (owned_writers, mut owned_highest_id, mut owned_recovery_error) =
             match owned_writer::recover_owned_writers(&root, &mut slabs) {
-                Ok((writers, active, highest)) => (writers, active, highest, None),
-                Err(error) => (BTreeMap::new(), BTreeSet::new(), 0, Some(error.to_string())),
+                Ok((writers, highest)) => (writers, highest, None),
+                Err(error) => (BTreeMap::new(), 0, Some(error.to_string())),
             };
         let restore_watermark = match slab_restore_bindings::read_restore_watermark(&root) {
             Ok(highest) => highest,
@@ -2285,15 +2334,8 @@ impl BlockStore {
             owned_highest_id = owned_highest_id.max(high);
         }
         let block_slab_id = if owned_writer::has_owned_format(&root, latest_slab_id).unwrap_or(true) {
-            slabs
-                .values()
-                .rev()
-                .find(|slab| {
-                    slab.owner_shard_id.is_none()
-                        && slab.state == BlockStoreSlabState::Sealed
-                        && slab_path(&root, slab.block_slab_id).is_file()
-                })
-                .map_or_else(|| latest_slab_id.saturating_add(1), |slab| slab.block_slab_id)
+            latest_sealed_legacy_slab_with(&slabs, |id| slab_path(&root, id).is_file())
+                .unwrap_or_else(|| latest_slab_id.saturating_add(1))
         } else {
             latest_slab_id
         };
@@ -2318,7 +2360,7 @@ impl BlockStore {
             block_slab_id
         };
         if let Some((high, _)) = restore_watermark {
-            for slab in slabs.range_mut(..=high).map(|(_, descriptor)| descriptor) {
+            for mut slab in slabs.range_mut(..=high).map(|(_, descriptor)| descriptor) {
                 if slab.owner_shard_id.is_none()
                     && slab.block_slab_id != block_slab_id
                     && slab.state == BlockStoreSlabState::Active
@@ -2339,7 +2381,7 @@ impl BlockStore {
         let open_file_bytes_read = loaded_bytes.saturating_add(reconciled.file_bytes_read);
         let open_file_reads = loaded_reads.saturating_add(reconciled.file_reads);
         manifest_rebuilt |= slab_manifest_reconciled_on_open;
-        manifest_rebuilt |= !owned_active.is_empty();
+        manifest_rebuilt |= !owned_writers.is_empty();
         ensure_slab_descriptor(
             &mut slabs,
             &root,
@@ -2370,7 +2412,7 @@ impl BlockStore {
                             let _ = dir.sync_all();
                         }
                         write_offset = readable_prefix;
-                        if let Some(slab) = slabs.get_mut(&block_slab_id) {
+                        if let Some(mut slab) = slabs.get_mut(&block_slab_id) {
                             slab.physical_bytes = readable_prefix;
                             slab.has_corruption = false;
                             slab.first_error_offset = None;
@@ -2393,10 +2435,16 @@ impl BlockStore {
             sources: std::sync::RwLock::new(SharedSlabSources::default()),
             counters: slab_backend::ReadCounters::default(),
         });
+        let owned_directory = Arc::new(owned_writer::OwnedWriterDirectory::new(
+            owned_writers, options, owned_recovery_error,
+        ));
+        let write_accounting = Arc::new(AppendAccounting::default());
         Self {
             identity: identity.0,
             read_view,
-            inner: Arc::new(Mutex::new(BlockStoreInner {
+            owned_directory: owned_directory.clone(),
+            write_accounting: write_accounting.clone(),
+            inner: Arc::new(BlockStoreCatalog::new(BlockStoreInner {
                 _identity: identity,
                 read_pins: BTreeMap::new(),
                 root,
@@ -2404,13 +2452,11 @@ impl BlockStore {
                 active_append_file: None,
                 relaxed_dirty: false,
                 block_slab_id,
-                owned_writers,
-                owned_active,
+                owned_directory,
+                write_accounting,
                 owned_highest_id,
-                owned_recovery_error,
                 write_offset,
                 next_block_id,
-                options,
                 slabs,
                 slabs_unwritten: 0,
                 slab_manifest_reconciled_on_open,
@@ -2423,6 +2469,7 @@ impl BlockStore {
                 // the state this has to open in: the directory on disk may hold slabs this
                 // manifest never learned about, so the first purge round must walk.
                 delayed_destroy_earliest_unix_ms: None,
+                quarantine_scan_revision: 0,
                 quarantine_arrivals: 0,
                 quarantine_checked_arrivals: 0,
                 quarantine_known_empty: false,
@@ -2527,6 +2574,7 @@ impl BlockStore {
         through_slab_id: u64,
         next_block_id_floor: u64,
     ) -> Result<(), BlockStoreError> {
+        let mut retired = Vec::new();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         inner.check_owned_recovery()?;
         std::fs::create_dir_all(&inner.root)?;
@@ -2555,7 +2603,7 @@ impl BlockStore {
         inner.next_block_id = inner.next_block_id.max(next_block_id_floor);
         let now = now_unix_ms();
         // Any previously-active local slab is now sealed; the reserved slab is active.
-        for slab in inner.slabs.values_mut() {
+        for mut slab in inner.slabs.values_mut() {
             if slab.state == BlockStoreSlabState::Active && slab.owner_shard_id.is_none() {
                 slab.state = BlockStoreSlabState::Sealed;
                 slab.updated_unix_ms = Some(now);
@@ -2579,7 +2627,7 @@ impl BlockStore {
                 has_corruption: false,
                 first_error_offset: None,
                 first_error: None,
-            },
+            }, &mut retired,
         );
         inner.persist_slab_manifest_counted()?;
         Ok(())
@@ -2598,6 +2646,7 @@ impl BlockStore {
         &self,
         slabs: &[LazyCheckpointSlab],
     ) -> Result<(), BlockStoreError> {
+        let mut retired = Vec::new();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         let root = inner.root.clone();
         let active = inner.block_slab_id;
@@ -2634,8 +2683,12 @@ impl BlockStore {
                 first_error_offset: None,
                 first_error: None,
             };
-            if inner.slabs.get(&slab.block_slab_id) != Some(&descriptor) {
-                inner.slabs.insert(slab.block_slab_id, descriptor);
+            if inner.slabs.protected(slab.block_slab_id) { continue; }
+            if inner.slabs.get(&slab.block_slab_id).as_deref() != Some(&descriptor) {
+                inner.note_quarantine_scan_change();
+                inner.delayed_destroy_earliest_unix_ms = None;
+                inner.quarantine_known_empty = false;
+                inner.slabs.insert(slab.block_slab_id, descriptor, &mut retired);
                 changed = true;
             }
         }
@@ -2692,8 +2745,9 @@ impl BlockStore {
     }
 
     pub fn roll_slab(&self) -> Result<BlockStoreRollReport, BlockStoreError> {
+        let mut retired = Vec::new();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
-        roll_slab_inner(&mut inner)
+        roll_slab_inner(&mut inner, &mut retired)
     }
 
     /// Roll the active slab ahead of the write that would otherwise have to, off the client
@@ -2730,11 +2784,12 @@ impl BlockStore {
         &self,
         slab_target_bytes: u64,
     ) -> Result<Option<BlockStoreRollReport>, BlockStoreError> {
+        let mut retired = Vec::new();
         let mut inner = self.inner.lock().expect("block store lock poisoned");
         if !slab_is_at_target(inner.write_offset, slab_target_bytes) {
             return Ok(None);
         }
-        roll_slab_inner(&mut inner).map(Some)
+        roll_slab_inner(&mut inner, &mut retired).map(Some)
     }
 
     /// Whether [`prepare_next_slab`] would roll right now, without doing it. Lets a caller
@@ -2929,12 +2984,10 @@ impl BlockStore {
 
     /// The purge, bounded to `max_slabs_per_round` slabs of work. 0 means unbounded.
     ///
-    /// THE BOUND IS ON THE LOCK HOLD. Everything above funnels into this function, and this
-    /// function takes the store-wide lock and keeps it until it returns, so the round's length is
-    /// the length of time nothing else can touch the store. Unbounded, that was 58.7 seconds at
-    /// eighty thousand quarantined slabs, measured, and linear -- the quarantine has no ceiling of
-    /// its own, so neither did the hold. The cap is the shipped default rather than an opt-in
-    /// because a caller that forgets it does not get a slower purge, it gets a minute-long stall.
+    /// A bounded directory/metadata look-ahead runs outside the catalog. The original successful-
+    /// work loop consumes that prefix and continues the same iterator under the guard if needed.
+    /// A namespace revision rejects stale discovery before mutation. Irreversible work, its fresh
+    /// identity/liveness/age checks and durability barriers still retain the catalog guard.
     ///
     /// THE BUDGET IS SPENT ON WORK DONE -- a destroy or a restore -- AND NOT ON ENTRIES EXAMINED.
     /// That is the whole reason this advances rather than stalling, and getting it the other way
@@ -3009,21 +3062,23 @@ impl BlockStore {
         allow_destroy: bool,
     ) -> Result<BlockStorePurgeDelayedDestroyReport, BlockStoreError> {
         let mut live_block_slab_ids = live_block_slab_ids.into_iter().collect::<BTreeSet<_>>();
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        inner.check_owned_recovery()?;
-        live_block_slab_ids.extend(inner.owned_active.iter().copied());
-        live_block_slab_ids.extend(inner.read_pins.keys().copied());
-        let trash_dir = delayed_destroy_dir(&inner.root);
+        let (root, scan_revision, no_deletion_work, live_quarantined, arrivals_seen) = {
+            let inner = self.inner.lock().expect("block store lock poisoned");
+            inner.check_owned_recovery()?;
+            live_block_slab_ids.extend(inner.slabs.protected_ids());
+            live_block_slab_ids.extend(inner.read_pins.keys().copied());
+            (inner.root.clone(), inner.quarantine_scan_revision,
+                !allow_destroy || inner.delayed_destroy_earliest_unix_ms
+                    .is_some_and(|earliest| now_unix_ms().saturating_sub(earliest) < min_age_ms),
+                live_set_names_a_quarantined_slab(&inner.slabs, &live_block_slab_ids),
+                inner.quarantine_arrivals)
+        };
+        let trash_dir = delayed_destroy_dir(&root);
         let mut purged = Vec::new();
         let mut purged_physical_bytes = 0;
-        let mut retained_too_young = Vec::new();
-        let mut retained_too_young_physical_bytes = 0;
         let mut restored = Vec::new();
         let mut restored_physical_bytes = 0;
-        let mut restore_blocked = Vec::new();
         let mut processed = 0usize;
-        let mut examined = 0usize;
-        let mut budget_exhausted = false;
         if !trash_dir.exists() {
             return Ok(BlockStorePurgeDelayedDestroyReport {
                 max_slabs_per_round,
@@ -3033,16 +3088,11 @@ impl BlockStore {
         // THE ROUND THAT DOES NOT HAPPEN. See the note above the signature for why this is an
         // equivalence rather than an approximation; both halves of the condition are required and
         // neither costs a system call.
-        let no_deletion_work = !allow_destroy
-            || inner.delayed_destroy_earliest_unix_ms
-                .is_some_and(|earliest| now_unix_ms().saturating_sub(earliest) < min_age_ms);
-        if no_deletion_work
-            && !live_set_names_a_quarantined_slab(&inner.slabs, &live_block_slab_ids)
-        {
+        if no_deletion_work && !live_quarantined {
             return Ok(BlockStorePurgeDelayedDestroyReport {
                 max_slabs_per_round,
                 declined_without_examining: true,
-                quarantine_arrivals_seen: inner.quarantine_arrivals,
+                quarantine_arrivals_seen: arrivals_seen,
                 ..Default::default()
             });
         }
@@ -3050,26 +3100,20 @@ impl BlockStore {
         // up having seen every entry that is still in the directory when it finishes. `None` here
         // is not "no entries"; it is "this round is not entitled to an opinion", and it is the
         // value every uncertainty resolves to.
-        let mut earliest_seen: Option<u64> = None;
+        let scan = self.scan_delayed_destroy(&root, scan_revision)?;
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.check_owned_recovery()?;
+        scan.validate(&inner)?;
+        let mut earliest_seen = None;
         let mut may_publish_earliest = true;
-        let root = inner.root.clone();
-        // The purge's OWN walk of the same directory, counted under the same name as the two the
-        // storage round takes through `delayed_destroy_slab_reports_at` before reaching here --
-        // the point of the tally is the total per round, and which of the three is which is a
-        // question for a profile rather than a counter.
-        crate::durability_metrics::record_scan("block_store_trash_dir_walk", 1);
-        for entry in std::fs::read_dir(&trash_dir)? {
-            // COUNTED HERE, AT THE TOP, AND NOT WHERE THE ENTRY GETS A NAME. What this number is
-            // for is telling a round that STOPPED from a round that walked on, and those two
-            // differ in iterations, not in classifications -- put the increment after the budget
-            // check below and both readings come back equal to the budget, which is the hole this
-            // field exists to close.
+        let mut retained_too_young = Vec::new();
+        let mut retained_too_young_physical_bytes = 0;
+        let mut restore_blocked = Vec::new();
+        let mut examined = 0usize;
+        let mut budget_exhausted = false;
+        // Only successful work spends the cap; skipped rows continue into the remainder.
+        for entry in scan.into_entries() {
             examined += 1;
-            // THE BUDGET IS CHECKED BEFORE THE ENTRY IS EVEN NAMED, and it stops the round rather
-            // than advancing to the next entry. Continuing would walk the remaining eighty
-            // thousand directory entries to do no work; stopping is what makes a capped round
-            // cost the budget rather than the directory. The unexamined entries stay exactly as
-            // they are, and `budget_exhausted` tells the caller there are more.
             if max_slabs_per_round > 0 && processed >= max_slabs_per_round {
                 budget_exhausted = true;
                 break;
@@ -3078,7 +3122,7 @@ impl BlockStore {
             let Some(id) = delayed_destroy_slab_id_from_name(&entry.file_name()) else {
                 continue;
             };
-            // THE MANIFEST STAMP, READ ONCE AND USED TWICE. The age test below needs it, and so
+            // THE COMMIT-TIME MANIFEST STAMP. The age test below needs it, and so
             // does the earliest-arrival this round may publish -- which has to account for the
             // entries the age test never reaches, or a round narrowed by a caller's list could
             // never publish anything, and that list is exactly what the periodic cycle passes.
@@ -3110,8 +3154,16 @@ impl BlockStore {
             // "too young to destroy", it is NOT FOR DESTROYING, and waiting longer would not
             // make it safe. It also must not be left where it is -- quarantine is a rename out
             // of the store, so the reader that needs it cannot reach it until the file is back.
-            if live_block_slab_ids.contains(&id) {
-                if restore_slab_from_delayed_destroy_unsynced(&root, id, &entry.path())? {
+            if live_block_slab_ids.contains(&id) || inner.slabs.protected(id)
+                || inner.read_pins.contains_key(&id) {
+                let restored_now = if slab_path(&root, id).exists() {
+                    false
+                } else {
+                    entry.validate_for_action()?;
+                    inner.note_quarantine_scan_change();
+                    restore_slab_from_delayed_destroy_unsynced(&root, id, &entry.path())?
+                };
+                if restored_now {
                     set_slab_state(&mut inner.slabs, id, BlockStoreSlabState::Sealed);
                     restored.push(id);
                     restored_physical_bytes += bytes;
@@ -3154,7 +3206,7 @@ impl BlockStore {
             // round with the full hour of grace skipped. The mtime is a weaker clock (a rename
             // keeps the mtime of the last append, so it runs EARLY and the window it grants is
             // shorter than the real one) but it is a clock, and a short window beats none.
-            let quarantined_at = stamped_at.or_else(|| file_modified_unix_ms(&entry.path()));
+            let quarantined_at = stamped_at.or_else(|| entry.modified_unix_ms());
             if let Some(quarantined_at) = quarantined_at {
                 if now_unix_ms().saturating_sub(quarantined_at) < min_age_ms {
                     // HELD, SO STILL IN THE DIRECTORY -- and `stamped_at`, not `quarantined_at`.
@@ -3174,6 +3226,8 @@ impl BlockStore {
                 }
             }
             purged_physical_bytes += bytes;
+            entry.validate_for_action()?;
+            inner.note_quarantine_scan_change();
             std::fs::remove_file(entry.path())?;
             set_slab_state(&mut inner.slabs, id, BlockStoreSlabState::Purged);
             purged.push(id);
@@ -3256,12 +3310,14 @@ impl BlockStore {
         // trash directory and acts on none of it. Measured on a sixteen-slab quarantine: three
         // directory fsyncs plus a full manifest rewrite per round, for no durable change.
         if !purged.is_empty() || !restored.is_empty() {
+            #[cfg(test)]
+            quarantine_scan::notify(quarantine_scan::ScanPoint::BeforeSync);
             sync_delayed_destroy_dirs(&root)?;
             inner.persist_slab_manifest_counted()?;
             inner.cleanup_purged_reservations(&purged, &trash_dir)?;
         }
         retained_too_young.sort_unstable();
-        Ok(BlockStorePurgeDelayedDestroyReport {
+        let report = BlockStorePurgeDelayedDestroyReport {
             purged_block_slab_ids: purged,
             purged_physical_bytes,
             retained_too_young_block_slab_ids: retained_too_young,
@@ -3275,7 +3331,9 @@ impl BlockStore {
             examined_block_slabs: examined,
             declined_without_examining: false,
             quarantine_arrivals_seen: inner.quarantine_arrivals,
-        })
+        };
+        drop(inner);
+        Ok(report)
     }
 
     /// Record that a purge round checked the whole quarantine against a real live set.
@@ -3390,7 +3448,7 @@ impl BlockStore {
             if only.map(|only| !only.contains(&block_slab_id)).unwrap_or(false) {
                 continue;
             }
-            if let Some(slab) = inner.slabs.get_mut(&block_slab_id) {
+            if let Some(mut slab) = inner.slabs.get_mut(&block_slab_id) {
                 let stamp = slab.updated_unix_ms.unwrap_or_else(now_unix_ms);
                 slab.updated_unix_ms = Some(stamp.saturating_sub(age_ms));
                 moved += 1;
@@ -3404,6 +3462,7 @@ impl BlockStore {
         // what a clock stepping backwards would look like from the cache's side, and the answer
         // is the same in both cases: withdraw the claim and let the next round walk.
         inner.delayed_destroy_earliest_unix_ms = None;
+        inner.note_quarantine_scan_change();
         inner.persist_slab_manifest_counted()?;
         Ok(moved)
     }
@@ -3483,7 +3542,7 @@ impl BlockStore {
 
     pub fn stats(&self) -> BlockStoreStats {
         crate::engine::shard_guard::note_store_read();
-        let mut stats = self.inner.lock().expect("block store lock poisoned").stats;
+        let mut stats = self.inner.lock().expect("block store lock poisoned").stats_snapshot();
         self.read_view.counters.merge_into(&mut stats);
         stats
     }
@@ -3523,8 +3582,7 @@ impl BlockStore {
     /// Called from the one inner funnel every compaction entry point routes through, so a caller
     /// cannot compact without opening a window.
     pub(crate) fn mark_write_window_at_compaction(&self, baseline: u64) {
-        let mut inner = self.inner.lock().expect("block store lock poisoned");
-        inner.stats.bytes_written_at_last_compaction = baseline;
+        self.write_accounting.mark_window(baseline);
     }
 }
 
@@ -3608,6 +3666,12 @@ pub(crate) fn block_wal_single_barrier() -> bool {
 /// path starts paying per barrier for a file that grows per write, and both are worth revisiting
 /// together -- with the group-size table above as the guide to how much is there.
 impl BlockStoreInner {
+    fn stats_snapshot(&self) -> BlockStoreStats {
+        let mut stats = self.stats;
+        self.write_accounting.merge_into(&mut stats);
+        stats
+    }
+
     fn reserve_checkpoint_slab_ids(
         &mut self,
         count: u64,
@@ -3642,6 +3706,7 @@ impl BlockStoreInner {
 
 fn roll_slab_inner(
     inner: &mut BlockStoreInner,
+    retired: &mut Vec<Arc<slab_record::SlabRecord>>,
 ) -> Result<BlockStoreRollReport, BlockStoreError> {
     inner.check_owned_recovery()?;
     std::fs::create_dir_all(&inner.root)?;
@@ -3673,7 +3738,7 @@ fn roll_slab_inner(
     file.sync_all()?;
     sync_parent_dir(&path)?;
     let transition_unix_ms = now_unix_ms();
-    if let Some(previous) = inner.slabs.get_mut(&previous_block_slab_id) {
+    if let Some(mut previous) = inner.slabs.get_mut(&previous_block_slab_id) {
         previous.state = BlockStoreSlabState::Sealed;
         previous.updated_unix_ms = Some(transition_unix_ms);
     }
@@ -3695,7 +3760,7 @@ fn roll_slab_inner(
         first_error: None,
     };
     let block_slab_id = inner.block_slab_id;
-    inner.slabs.insert(block_slab_id, new_slab);
+    inner.slabs.insert(block_slab_id, new_slab, retired);
     inner.persist_slab_manifest_counted()?;
     Ok(BlockStoreRollReport {
         previous_block_slab_id,
@@ -3721,7 +3786,7 @@ fn slab_lifecycle_states(summary: &BlockStoreSlabSummary) -> Vec<String> {
 }
 
 fn compute_slab_usage(
-    slabs: &BTreeMap<u64, BlockStoreSlabDescriptor>,
+    slabs: &impl SlabView,
 ) -> Vec<BlockStoreSlabUsage> {
     #[derive(Debug, Clone)]
     struct SlabUsageAcc {
@@ -3742,7 +3807,7 @@ fn compute_slab_usage(
     }
 
     let mut usage_by_slab = BTreeMap::<u64, SlabUsageAcc>::new();
-    for slab in slabs.values() {
+    slabs.visit_descriptors(&mut |slab| {
         let (live, reclaimable, purged) = match slab.state {
             BlockStoreSlabState::Active | BlockStoreSlabState::Sealed => {
                 (slab.physical_bytes, 0, 0)
@@ -3798,7 +3863,7 @@ fn compute_slab_usage(
             (None, right) => right,
             (left, None) => left,
         };
-    }
+    });
     usage_by_slab.into_values().map(|acc| acc.usage).collect()
 }
 

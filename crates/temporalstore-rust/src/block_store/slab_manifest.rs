@@ -5,7 +5,7 @@
 
 use super::*;
 use super::slab_ids::*;
-use super::slab_manifest_wire::{decode_slab_manifest, encode_slab_manifest};
+use super::slab_manifest_wire::decode_slab_manifest;
 use std::fs::File;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -13,6 +13,66 @@ use std::sync::atomic::{AtomicU64, Ordering};
 #[cfg(test)]
 #[path = "quarantine_restart_tests.rs"]
 mod quarantine_restart_tests;
+
+#[cfg(test)]
+mod rebuild_record_tests {
+    use super::*;
+
+    #[test]
+    fn missing_and_corrupt_manifests_rebuild_delayed_only_and_existing_rows() {
+        for corrupt in [false, true] {
+            let root = tempfile::tempdir().unwrap();
+            let store = BlockStore::new(root.path());
+            let absent = store.append(b"delayed-only payload").unwrap();
+            store.roll_slab().unwrap();
+            let overlap = store.append(b"live inspected overlap payload").unwrap();
+            store.roll_slab().unwrap();
+            let survivor = store.append(b"survivor exact data").unwrap();
+            store.sync_durable().unwrap();
+            drop(store);
+            let mut tally = BlockStoreReadTally::start();
+            let baseline = rebuild_slab_manifest_at(root.path(), &mut tally).unwrap().snapshot();
+            std::fs::create_dir_all(delayed_destroy_dir(root.path())).unwrap();
+            std::fs::rename(slab_path(root.path(), absent.block_slab_id()),
+                delayed_destroy_path(root.path(), absent.block_slab_id())).unwrap();
+            std::fs::write(delayed_destroy_path(root.path(), overlap.block_slab_id()),
+                b"older quarantined physical bytes").unwrap();
+            let reports = delayed_destroy_slab_reports_at(root.path()).unwrap();
+            if corrupt {
+                std::fs::write(slab_manifest_path(root.path()), b"invalid manifest frame").unwrap();
+                assert!(load_slab_manifest_at(root.path(), &mut tally).is_err());
+            } else {
+                std::fs::remove_file(slab_manifest_path(root.path())).unwrap();
+                assert!(!slab_manifest_path(root.path()).exists());
+            }
+            let rebuilt = rebuild_slab_manifest_at(root.path(), &mut tally).unwrap();
+            let existing = rebuilt.get(&overlap.block_slab_id()).unwrap().clone();
+            let mut expected_existing = baseline[&overlap.block_slab_id()].clone();
+            let overlap_report = reports.iter().find(|row| row.block_slab_id == overlap.block_slab_id()).unwrap();
+            expected_existing.state = BlockStoreSlabState::DelayedDestroy;
+            expected_existing.updated_unix_ms = existing.updated_unix_ms;
+            expected_existing.physical_bytes = overlap_report.physical_bytes;
+            assert!(existing.updated_unix_ms.is_some());
+            assert_eq!(existing, expected_existing, "all other inspected fields must survive merge");
+            let missing = rebuilt.get(&absent.block_slab_id()).unwrap().clone();
+            let absent_report = reports.iter().find(|row| row.block_slab_id == absent.block_slab_id()).unwrap();
+            assert_eq!(missing, BlockStoreSlabDescriptor {
+                stored_slab_id: absent.block_slab_id(), block_slab_id: absent.block_slab_id(),
+                owner_shard_id: None, state: BlockStoreSlabState::DelayedDestroy,
+                physical_bytes: absent_report.physical_bytes, logical_bytes: 0,
+                created_unix_ms: absent_report.modified_unix_ms, updated_unix_ms: missing.updated_unix_ms,
+                first_block_id: None, last_block_id: None, readable_prefix_physical_bytes: 0,
+                verified_source_mtime_unix_ms: None, has_corruption: false,
+                first_error_offset: None, first_error: None,
+            }, "a delayed-only row does not claim inspected contents or ownership");
+            assert!(missing.updated_unix_ms.is_some());
+            let reopened = BlockStore::new(root.path());
+            assert_eq!(reopened.read(&survivor).unwrap(), b"survivor exact data");
+            assert_eq!(reopened.delayed_destroy_slab_ids().unwrap(),
+                vec![absent.block_slab_id(), overlap.block_slab_id()]);
+        }
+    }
+}
 
 /// Every `write(2)` the manifest file is handed, counted for the life of the process.
 ///
@@ -54,10 +114,10 @@ impl<W: Write> Write for CountedFileWrites<W> {
 pub(super) fn load_slab_manifest_at(
     root: &Path,
     tally: &mut BlockStoreReadTally,
-) -> Result<BTreeMap<u64, BlockStoreSlabDescriptor>, BlockStoreError> {
+) -> Result<SlabCatalog, BlockStoreError> {
     let path = slab_manifest_path(root);
     if !path.exists() {
-        return Ok(BTreeMap::new());
+        return Ok(SlabCatalog::new());
     }
     let raw = read_block_store_file(&path, tally)?
         .into_bytes_charged_to_the_process_only();
@@ -78,8 +138,9 @@ pub(super) fn load_slab_manifest_at(
 pub(super) fn rebuild_slab_manifest_at(
     root: &Path,
     tally: &mut BlockStoreReadTally,
-) -> Result<BTreeMap<u64, BlockStoreSlabDescriptor>, BlockStoreError> {
-    let mut slabs = BTreeMap::new();
+) -> Result<SlabCatalog, BlockStoreError> {
+    let mut slabs = SlabCatalog::new();
+    let mut retired = Vec::new();
     let latest = latest_slab_id_at(root)?;
     let owned_formats = owned_writer::owned_format_ids(root)?;
     for block_slab_id in slab_ids_at(root)? {
@@ -115,18 +176,13 @@ pub(super) fn rebuild_slab_manifest_at(
                 has_corruption: report.has_corruption,
                 first_error_offset: report.first_error_offset,
                 first_error: report.first_error,
-            },
+            }, &mut retired,
         );
+        retired.clear(); // Startup-local catalog: no shared catalog guard to outlive.
     }
     for delayed in delayed_destroy_slab_reports_at(root)? {
-        slabs
-            .entry(delayed.block_slab_id)
-            .and_modify(|slab| {
-                slab.state = BlockStoreSlabState::DelayedDestroy;
-                slab.updated_unix_ms = Some(now_unix_ms());
-                slab.physical_bytes = delayed.physical_bytes;
-            })
-            .or_insert(BlockStoreSlabDescriptor {
+        let updated_unix_ms = Some(now_unix_ms());
+        let mut slab = slabs.ensure_with(delayed.block_slab_id, || BlockStoreSlabDescriptor {
                 stored_slab_id: delayed.block_slab_id,
                 block_slab_id: delayed.block_slab_id,
                 owner_shard_id: None,
@@ -134,7 +190,7 @@ pub(super) fn rebuild_slab_manifest_at(
                 physical_bytes: delayed.physical_bytes,
                 logical_bytes: 0,
                 created_unix_ms: delayed.modified_unix_ms,
-                updated_unix_ms: Some(now_unix_ms()),
+                updated_unix_ms,
                 first_block_id: None,
                 last_block_id: None,
                 readable_prefix_physical_bytes: 0,
@@ -143,6 +199,11 @@ pub(super) fn rebuild_slab_manifest_at(
                 first_error_offset: None,
                 first_error: None,
             });
+        // A disk-inspected row keeps all other fields; a delayed-only row keeps
+        // the historical unknown-owner/zero-readable-prefix defaults above.
+        slab.state = BlockStoreSlabState::DelayedDestroy;
+        slab.updated_unix_ms = updated_unix_ms;
+        slab.physical_bytes = delayed.physical_bytes;
     }
     Ok(slabs)
 }
@@ -180,8 +241,9 @@ pub(super) struct SlabManifestReconcileOutcome {
 
 pub(super) fn reconcile_slab_manifest_with_disk(
     root: &Path,
-    slabs: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
+    slabs: &mut SlabCatalog,
 ) -> Result<SlabManifestReconcileOutcome, BlockStoreError> {
+    let mut retired = Vec::new();
     let mut changed = false;
     let mut file_bytes_read = 0_u64;
     let mut file_reads = 0_u64;
@@ -219,7 +281,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
             if *block_slab_id == latest {
                 return true;
             }
-            let Some(slab) = slabs.get(block_slab_id) else {
+            let Some(slab) = slabs.get(block_slab_id).map(|slab| slab.clone()) else {
                 return true;
             };
             if slab.owner_shard_id.is_some() != owned_formats.contains(block_slab_id) {
@@ -311,8 +373,8 @@ pub(super) fn reconcile_slab_manifest_with_disk(
         } else {
             BlockStoreSlabState::Sealed
         };
-        match slabs.get_mut(block_slab_id) {
-            Some(slab) => {
+        if slabs.contains_key(block_slab_id) {
+                let mut slab = slabs.get_mut(block_slab_id).expect("reconciled record");
                 let old = slab.clone();
                 let content_changed = slab.stored_slab_id != *block_slab_id
                     || slab.block_slab_id != *block_slab_id
@@ -347,8 +409,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                 // whether the file still matches without reading it.
                 slab.verified_source_mtime_unix_ms = updated_unix_ms;
                 changed |= *slab != old;
-            }
-            None => {
+        } else {
                 slabs.insert(
                     *block_slab_id,
                     BlockStoreSlabDescriptor {
@@ -369,16 +430,16 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                         has_corruption: report.has_corruption,
                         first_error_offset: report.first_error_offset,
                         first_error: report.first_error,
-                    },
+                    }, &mut retired,
                 );
+                retired.clear(); // Reconcile is startup-local, not catalog-guarded.
                 changed = true;
-            }
-            }
+        }
         }
     }
 
     for (block_slab_id, report) in &delayed_slabs {
-        let old = slabs.get(block_slab_id).cloned();
+        let old = slabs.get(block_slab_id).map(|slab| slab.clone());
         slabs.insert(
             *block_slab_id,
             BlockStoreSlabDescriptor {
@@ -406,9 +467,10 @@ pub(super) fn reconcile_slab_manifest_with_disk(
                 has_corruption: false,
                 first_error_offset: None,
                 first_error: None,
-            },
+            }, &mut retired,
         );
-        changed |= slabs.get(block_slab_id) != old.as_ref();
+        retired.clear();
+        changed |= slabs.get(block_slab_id).as_deref() != old.as_ref();
     }
 
     let known_ids = slabs.keys().copied().collect::<Vec<_>>();
@@ -418,7 +480,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
         {
             continue;
         }
-        if let Some(slab) = slabs.get_mut(&block_slab_id) {
+        if let Some(mut slab) = slabs.get_mut(&block_slab_id) {
             if slab.state != BlockStoreSlabState::Purged {
                 slab.state = BlockStoreSlabState::Purged;
                 slab.updated_unix_ms = Some(now_unix_ms());
@@ -445,7 +507,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
     // each slab's GC utility is scored against the other slab's bytes. Enforcing the invariant
     // once, here, at the only point a stored id enters the process, is what makes every consumer
     // -- including the next one written -- correct without having to know about this.
-    for (block_slab_id, slab) in slabs.iter_mut() {
+    for (block_slab_id, mut slab) in slabs.iter_mut() {
         let normalised_slab_id = *block_slab_id;
         if slab.stored_slab_id != normalised_slab_id || slab.block_slab_id != *block_slab_id {
             slab.stored_slab_id = normalised_slab_id;
@@ -473,7 +535,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
 /// without handing over somewhere to count.
 pub(super) fn persist_slab_manifest(
     root: &Path,
-    slabs: &BTreeMap<u64, BlockStoreSlabDescriptor>,
+    slabs: &SlabCatalog,
     stats: &mut BlockStoreStats,
 ) -> Result<(), BlockStoreError> {
     std::fs::create_dir_all(root)?;
@@ -489,7 +551,7 @@ pub(super) fn persist_slab_manifest(
     // single checksummed frame, so its length and crc have to be known before the first byte goes
     // out; holding the encoded bytes is what that costs, and cloning every descriptor into a
     // `BlockStoreSlabManifest` first would hold them all a second time.
-    let bytes = encode_slab_manifest(1, slabs.values());
+    let bytes = super::slab_manifest_wire::encode_slab_record_manifest(1, slabs.values());
     {
         let mut temp = CountedFileWrites(std::fs::File::create(&temp_path)?);
         temp.write_all(&bytes)?;
@@ -519,12 +581,12 @@ pub(crate) fn slab_descriptors_summarised() -> u64 {
 }
 
 pub(super) fn summarize_slabs(
-    slabs: &BTreeMap<u64, BlockStoreSlabDescriptor>,
+    slabs: &impl SlabView,
 ) -> BlockStoreSlabSummary {
     let mut summary = BlockStoreSlabSummary::default();
-    SLAB_DESCRIPTORS_SUMMARISED.fetch_add(slabs.len() as u64, Ordering::Relaxed);
+    SLAB_DESCRIPTORS_SUMMARISED.fetch_add(slabs.descriptor_count() as u64, Ordering::Relaxed);
     let now = now_unix_ms();
-    for slab in slabs.values() {
+    slabs.visit_descriptors(&mut |slab| {
         update_oldest_slab_timestamp(&mut summary.oldest_known_slab_unix_ms, slab);
         summary.total_known_physical_bytes = summary
             .total_known_physical_bytes
@@ -570,7 +632,7 @@ pub(super) fn summarize_slabs(
                     .saturating_add(slab.physical_bytes);
             }
         }
-    }
+    });
     summary.oldest_known_slab_age_ms = summary
         .oldest_known_slab_unix_ms
         .map(|timestamp| now.saturating_sub(timestamp));
@@ -596,12 +658,12 @@ pub(super) fn update_oldest_slab_timestamp(
 }
 
 pub(super) fn ensure_slab_descriptor(
-    slabs: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
+    slabs: &mut SlabCatalog,
     root: &Path,
     block_slab_id: u64,
     state: BlockStoreSlabState,
 ) {
-    slabs.entry(block_slab_id).or_insert_with(|| {
+    drop(slabs.ensure_with(block_slab_id, || {
         let physical_bytes = slab_path(root, block_slab_id)
             .metadata()
             .map(|metadata| metadata.len())
@@ -624,9 +686,9 @@ pub(super) fn ensure_slab_descriptor(
             first_error_offset: None,
             first_error: None,
         }
-    });
+    }));
     let transition_unix_ms = now_unix_ms();
-    for slab in slabs.values_mut() {
+    for mut slab in slabs.values_mut() {
         if slab.block_slab_id == block_slab_id {
             slab.state = state;
             slab.updated_unix_ms = Some(transition_unix_ms);
@@ -638,15 +700,13 @@ pub(super) fn ensure_slab_descriptor(
 }
 
 pub(super) fn upsert_slab_after_append(
-    slabs: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
+    slabs: &mut SlabCatalog,
     block_slab_id: u64,
     physical_bytes: u64,
     logical_bytes_written: u64,
     block_id: u64,
 ) {
-    let slab = slabs
-        .entry(block_slab_id)
-        .or_insert(BlockStoreSlabDescriptor {
+    let mut slab = slabs.ensure_with(block_slab_id, || BlockStoreSlabDescriptor {
             stored_slab_id: block_slab_id,
             block_slab_id,
             owner_shard_id: None,
@@ -688,17 +748,11 @@ pub(super) fn upsert_slab_after_append(
 }
 
 pub(super) fn set_slab_state(
-    slabs: &mut BTreeMap<u64, BlockStoreSlabDescriptor>,
+    slabs: &mut SlabCatalog,
     block_slab_id: u64,
     state: BlockStoreSlabState,
 ) {
-    slabs
-        .entry(block_slab_id)
-        .and_modify(|slab| {
-            slab.state = state;
-            slab.updated_unix_ms = Some(now_unix_ms());
-        })
-        .or_insert(BlockStoreSlabDescriptor {
+    let mut slab = slabs.ensure_with(block_slab_id, || BlockStoreSlabDescriptor {
             stored_slab_id: block_slab_id,
             block_slab_id,
             owner_shard_id: None,
@@ -715,5 +769,7 @@ pub(super) fn set_slab_state(
             first_error_offset: None,
             first_error: None,
         });
+    slab.state = state;
+    slab.updated_unix_ms = Some(now_unix_ms());
 }
 

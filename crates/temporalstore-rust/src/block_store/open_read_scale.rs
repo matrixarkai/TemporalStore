@@ -484,6 +484,7 @@ const MODULES: &[(&str, &str)] = &[
     ("block_store_read.rs", include_str!("block_store_read.rs")),
     ("block_store_record.rs", include_str!("block_store_record.rs")),
     ("slab_backend.rs", include_str!("slab_backend.rs")),
+    ("slab_record.rs", include_str!("slab_record.rs")),
     ("slab_ids.rs", include_str!("slab_ids.rs")),
     ("slab_manifest.rs", include_str!("slab_manifest.rs")),
     ("slab_manifest_wire.rs", include_str!("slab_manifest_wire.rs")),

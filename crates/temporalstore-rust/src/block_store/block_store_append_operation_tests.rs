@@ -48,8 +48,8 @@ fn singleton_batches_reuse_the_active_append_handle() {
     assert_eq!(middle[0].offset(), first[0].offset() + first[0].length());
     assert_eq!(second[0].offset(), middle[1].offset() + middle[1].length());
     let inner = store.inner.lock().unwrap();
-    assert_eq!(inner.stats.writes, 4);
-    assert_eq!(inner.stats.logical_bytes_written, 27);
+    assert_eq!(inner.stats_snapshot().writes, 4);
+    assert_eq!(inner.stats_snapshot().logical_bytes_written, 27);
 }
 
 #[test]
@@ -127,7 +127,7 @@ fn failed_directory_creation_can_be_retried_without_phantom_writes() {
         {
             let inner = store.inner.lock().unwrap();
             assert!(!inner.root_created);
-            assert_eq!(inner.stats.writes, 0);
+            assert_eq!(inner.stats_snapshot().writes, 0);
         }
         std::fs::remove_file(&root).unwrap();
         let addresses = store.append_batch_with_block_metadata(records()).unwrap();
@@ -135,6 +135,6 @@ fn failed_directory_creation_can_be_retried_without_phantom_writes() {
         for address in addresses {
             assert_eq!(store.read(&address).unwrap(), b"record");
         }
-        assert_eq!(store.inner.lock().unwrap().stats.writes, count as u64);
+        assert_eq!(store.inner.lock().unwrap().stats_snapshot().writes, count as u64);
     }
 }

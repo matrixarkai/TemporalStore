@@ -662,3 +662,254 @@ mod probe {
         assert!(long - short < 12.0, "batched, 1,000 -> 10,000 points: {short:.1} -> {long:.1}\n{table}");
     }
 }
+
+mod logical_edit_generation {
+    use super::*;
+    use crate::engine::hashing::block_routing_bucket;
+    use crate::engine::state::{BlockLookupRef, BucketFlags, BucketNode, CoreIndex, StaleCause};
+    use crate::engine::storage_bucket_internals::{
+        file_series_blocks_after_write, sync_bucket_index_object_blocks_with_mode,
+    };
+
+    type OwnerRows = BTreeMap<u32, (u64, u64, u64, bool, bool, Vec<(u64, bool, bool, Identity)>)>;
+
+    fn owners(engine: &TemporalEngine) -> OwnerRows {
+        engine.shards.with_state(1, |state| {
+            let state = state.unwrap();
+            state.bucket_index.bucket_map.iter().map(|(id, bucket)| {
+                let mut blocks: Vec<_> = bucket.block_index.iter().map(|(handle, block)| (
+                    *handle, block.dirty(), block.deleted(), block_physical_identity_key(&block.address),
+                )).collect();
+                blocks.sort();
+                (*id, (bucket.dirty_generation, bucket.first_dirty_wal_sequence,
+                    bucket.first_dirty_index_log_sequence, bucket.dirty(), bucket.deleted(), blocks))
+            }).collect()
+        })
+    }
+
+    fn refs(engine: &TemporalEngine, key: &str) -> BTreeSet<(u32, u64)> {
+        engine.shards.with_state(1, |state| {
+            state.unwrap().bucket_index.object_block_refs("feature", key)
+                .map(|refs| refs.iter().map(|r| (r.routing_bucket, r.block_ref_key)).collect())
+                .unwrap_or_default()
+        })
+    }
+
+    struct ResetOldPath;
+    impl Drop for ResetOldPath {
+        fn drop(&mut self) { use_the_old_paths(false); }
+    }
+
+    #[test]
+    fn real_series_commands_preserve_generation_refs_and_independent_claims_in_both_modes() {
+        let _reset = ResetOldPath;
+        let old_dir = tempfile::tempdir().unwrap();
+        let new_dir = tempfile::tempdir().unwrap();
+        let old = open(old_dir.path(), 40);
+        let new = open(new_dir.path(), 40);
+        let mut rng = Rng(11);
+        let mut model = BTreeMap::new();
+        let mut newest = 1_900;
+        let mut edits = 0;
+        for n in 0..200 {
+            let command = step(&mut rng, n, &mut newest, &mut model, 40);
+            use_the_old_paths(true);
+            run(&old, command.clone());
+            use_the_old_paths(false);
+            run(&new, command);
+            assert_eq!(owners(&old), owners(&new), "owner metadata after write {n}");
+            assert_eq!(refs(&old, KEY), refs(&new, KEY), "exact refs after write {n}");
+            assert_eq!(blocks(&old), blocks(&new), "physical identities after write {n}");
+            assert_eq!(series(&new), model);
+            edits += 1;
+        }
+        assert_eq!(edits, 200);
+        old.flush_shard_index(1);
+        new.flush_shard_index(1);
+        assert_eq!(owners(&old), owners(&new));
+        assert_eq!(refs(&old, KEY), refs(&new, KEY));
+    }
+
+    #[test]
+    fn empty_clean_series_edits_and_external_helpers_keep_their_generation_rules() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = open(dir.path(), 8);
+        let empty = owners(&engine);
+        engine.shards.with_state_mut(1, |state| {
+            file_series_blocks_after_write(state.unwrap(), 1, "feature", KEY, vec![], vec![], true);
+        });
+        assert_eq!(owners(&engine), empty, "an empty edit must not invent an owner");
+        for at in [10, 20] {
+            run(&engine, Command::FeatureAppend { key: KEY.into(), points: vec![point(at, 1)] });
+        }
+        let before_refs = refs(&engine, KEY);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.unwrap();
+            let (start, end) = shard.routing_range();
+            let id = block_routing_bucket(KEY, start, end);
+            let addresses: Vec<_> = shard.features().get(KEY).unwrap().addresses().cloned().collect();
+            assert_eq!(addresses.len(), 2);
+            let generation = shard.bucket_index.bucket_map.get(&id).unwrap().dirty_generation;
+            let bucket_count = shard.bucket_index.bucket_map.len();
+            file_series_blocks_after_write(shard, 1, "feature", KEY, vec![], vec![], false);
+            assert_eq!(shard.bucket_index.bucket_map.len(), bucket_count);
+            assert_eq!(shard.bucket_index.bucket_map.get(&id).unwrap().dirty_generation, generation);
+            // A real clean insertion is still an edit; the old helper also advanced on its first address.
+            file_series_blocks_after_write(shard, 1, "feature", KEY, addresses.clone(), vec![], false);
+            assert_eq!(shard.bucket_index.bucket_map.get(&id).unwrap().dirty_generation, generation + 1);
+            // External dirty callers retain one immediate advance per unique filed address.
+            sync_bucket_index_object_blocks_with_mode(shard, 1, "feature", KEY, addresses.clone(), true, false);
+            assert_eq!(shard.bucket_index.bucket_map.get(&id).unwrap().dirty_generation, generation + 3);
+            // External clean callers retain the existing one-per-call first-address advance.
+            sync_bucket_index_object_blocks_with_mode(shard, 1, "feature", KEY, addresses, false, false);
+            assert_eq!(shard.bucket_index.bucket_map.get(&id).unwrap().dirty_generation, generation + 4);
+        });
+        assert_eq!(refs(&engine, KEY), before_refs);
+    }
+
+    #[test]
+    fn membership_only_removal_from_a_shared_block_has_the_same_epoch_in_both_modes() {
+        let _reset = ResetOldPath;
+        let left_dir = tempfile::tempdir().unwrap();
+        let right_dir = tempfile::tempdir().unwrap();
+        let left = open(left_dir.path(), 8);
+        let right = open(right_dir.path(), 8);
+        for engine in [&left, &right] {
+            run(engine, Command::FeatureAppend { key: KEY.into(), points: vec![point(10, 1), point(20, 2)] });
+        }
+        assert_eq!(blocks(&left).0.len(), 1, "the control must share one physical block");
+        let remove = Command::FeatureReplace { key: KEY.into(), start_ms: 10, end_ms: 10, points: vec![] };
+        use_the_old_paths(true);
+        run(&left, remove.clone());
+        use_the_old_paths(false);
+        run(&right, remove);
+        assert_eq!(series(&left), series(&right));
+        assert_eq!(series(&right).keys().copied().collect::<Vec<_>>(), vec![20]);
+        assert_eq!(owners(&left), owners(&right));
+        assert_eq!(refs(&left, KEY), refs(&right, KEY));
+        assert_eq!(blocks(&right).0.len(), 1);
+    }
+
+    #[test]
+    fn a_real_captured_dump_cannot_clear_a_later_series_edit_in_either_mode() {
+        let _reset = ResetOldPath;
+        for restate in [false, true] {
+            let dir = tempfile::tempdir().unwrap();
+            let engine = open(dir.path(), 3);
+            for at in [10, 20, 30] {
+                run(&engine, Command::FeatureAppend { key: KEY.into(), points: vec![point(at, 1)] });
+            }
+            let captured = engine.create_bucket_dump_manifest(1, []).unwrap();
+            assert!(!captured.bucket_ids.is_empty());
+            use_the_old_paths(restate);
+            run(&engine, Command::FeatureAppend { key: KEY.into(), points: vec![point(40, 2)] });
+            use_the_old_paths(false);
+            let changed = owners(&engine);
+            assert!(changed.values().any(|row| row.3));
+            let changed_refs = refs(&engine, KEY);
+            engine.clear_dumped_bucket_dirty_state(1, &captured);
+            assert_eq!(owners(&engine), changed, "stale completion changed the later owner, restate={restate}");
+            assert_eq!(refs(&engine, KEY), changed_refs);
+            let fresh = engine.create_bucket_dump_manifest(1, []).unwrap();
+            engine.clear_dumped_bucket_dirty_state(1, &fresh);
+            assert!(owners(&engine).values().all(|row| !row.3 && row.1 == 0 && row.2 == 0));
+            assert_eq!(refs(&engine, KEY), changed_refs);
+            assert_eq!(series(&engine).keys().copied().collect::<Vec<_>>(), vec![20, 30, 40]);
+        }
+    }
+
+    // Deliberately seed an old filing location with real stored bytes and canonical ref updates.
+    fn move_filing(shard: &mut ShardState, key: &str, address: &ElementEntry, destination: u32) {
+        let (source, handle) = shard.bucket_index.object_block_refs("feature", key).unwrap().iter()
+            .find_map(|r| {
+                let bucket = shard.bucket_index.bucket_map.get(&r.routing_bucket)?;
+                let block = bucket.block_index.get(&r.block_ref_key)?;
+                (block_physical_identity_key(&block.address) == block_physical_identity_key(address))
+                    .then_some((r.routing_bucket, r.block_ref_key))
+            }).unwrap();
+        let (block, generation, wal, index) = {
+            let CoreIndex { bucket_map, block_slab_live, .. } = &mut shard.bucket_index;
+            let mut bucket = bucket_map.get_mut(&source).unwrap();
+            let block = bucket.block_index.remove(&handle, block_slab_live, StaleCause::Overwrite).unwrap();
+            (block, bucket.dirty_generation, bucket.first_dirty_wal_sequence, bucket.first_dirty_index_log_sequence)
+        };
+        shard.bucket_index.remove_object_block_lookup_ref("feature", key, None,
+            &BlockLookupRef { routing_bucket: source, block_ref_key: handle });
+        let key: std::sync::Arc<str> = key.into();
+        let placed = {
+            let CoreIndex { bucket_map, block_slab_live, .. } = &mut shard.bucket_index;
+            let mut bucket = bucket_map.entry(destination).or_insert_with(|| BucketNode {
+                routing_bucket: destination,
+                flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
+                ..BucketNode::default()
+            });
+            bucket.dirty_generation = bucket.dirty_generation.max(generation);
+            bucket.first_dirty_wal_sequence = wal;
+            bucket.first_dirty_index_log_sequence = index;
+            bucket.set_dirty(true);
+            bucket.object_index.insert(block.object_id(1, &key));
+            bucket.insert_block(&key, block.clone(), block_slab_live)
+        };
+        shard.bucket_index.insert_object_block_lookup(destination, placed, &key, &block);
+    }
+
+    #[test]
+    fn partial_retirement_then_fallback_advances_each_actual_historical_bucket_once() {
+        let _reset = ResetOldPath;
+        for (restate, force_scan) in [(false, false), (true, false), (false, true), (true, true)] {
+            let dir = tempfile::tempdir().unwrap();
+            let engine = open(dir.path(), 8);
+            for at in [10, 20, 30] {
+                run(&engine, Command::FeatureAppend { key: KEY.into(), points: vec![point(at, 1)] });
+            }
+            run(&engine, Command::FeatureAppend { key: "peer-kept".into(), points: vec![point(90, 7)] });
+            engine.shards.with_state_mut(1, |state| {
+                let shard = state.unwrap();
+                let addresses: Vec<_> = shard.features().get(KEY).unwrap().addresses().cloned().collect();
+                let peer = shard.features().get("peer-kept").unwrap().addresses().next().unwrap().clone();
+                let (start, end) = shard.routing_range();
+                let landing = block_routing_bucket(KEY, start, end);
+                let peer_landing = block_routing_bucket("peer-kept", start, end);
+                let mut historical = landing.wrapping_add(1);
+                while historical == landing || historical == peer_landing { historical = historical.wrapping_add(1); }
+                move_filing(shard, KEY, &addresses[1], historical);
+                move_filing(shard, "peer-kept", &peer, historical);
+                let before: BTreeMap<_, _> = shard.bucket_index.bucket_map.iter().map(|(id, bucket)|
+                    (*id, (bucket.dirty_generation, bucket.first_dirty_wal_sequence, bucket.first_dirty_index_log_sequence))).collect();
+                {
+                    let features = shard.features_mut();
+                    let held = features.get_mut(KEY).unwrap();
+                    crate::engine::timestamped_series::TimestampedSeriesWrite::clear(held, 10);
+                    crate::engine::timestamped_series::TimestampedSeriesWrite::clear(held, 20);
+                }
+                let retired = crate::engine::packed_blocks::addresses_no_point_names(
+                    shard.features().get(KEY).unwrap(), addresses[..2].to_vec(),
+                );
+                assert_eq!(retired.len(), 2);
+                assert_eq!(block_physical_identity_key(&retired[0]), block_physical_identity_key(&addresses[0]),
+                    "the control must remove a present block before it encounters the historical miss");
+                if force_scan {
+                    // Keep real ref identities; force only the helper's existing cannot-target branch.
+                    shard.bucket_index.object_element_name_block_refs = None;
+                }
+                use_the_old_paths(restate);
+                // The first address is removable at landing; the second is only at the historical location.
+                file_series_blocks_after_write(shard, 1, "feature", KEY, vec![], addresses[..2].to_vec(), true);
+                use_the_old_paths(false);
+                for id in [landing, historical] {
+                    let bucket = shard.bucket_index.bucket_map.get(&id).unwrap();
+                    assert_eq!(bucket.dirty_generation, before[&id].0 + 1, "bucket {id}, restate={restate}");
+                    assert_eq!((bucket.first_dirty_wal_sequence, bucket.first_dirty_index_log_sequence),
+                        (before[&id].1, before[&id].2));
+                    assert!(bucket.dirty());
+                }
+                assert_eq!(shard.bucket_index.bucket_map.get(&peer_landing).unwrap().dirty_generation, before[&peer_landing].0);
+                let held_refs = shard.bucket_index.object_block_refs("feature", KEY).unwrap();
+                assert_eq!(held_refs.len(), 1);
+                assert!(held_refs.iter().all(|r| r.routing_bucket == landing));
+                assert_eq!(shard.bucket_index.object_block_refs("feature", "peer-kept").unwrap().len(), 1);
+            });
+            assert_eq!(series(&engine).keys().copied().collect::<Vec<_>>(), vec![30]);
+        }
+    }
+}

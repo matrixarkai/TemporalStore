@@ -617,6 +617,8 @@ pub(super) struct ShardState {
     pub(super) bucket_recency: HashMap<u32, u64>,
     #[serde(skip)]
     pub(super) dirty_objects: DirtyObjectIndex,
+    #[serde(skip)]
+    pub(super) blockless_owners: BTreeMap<u32, BTreeSet<ModelKey>>,
     /// Deleted keys still owed before this shard's next whole-index served checkpoint, counted
     /// DOWN: zero means the next logged-deletion round is DUE.
     ///
@@ -768,6 +770,7 @@ impl ShardState {
         self.routing_range_start = start_routing_bucket;
         self.routing_range_end = end_routing_bucket;
         self.routing_range_known = true;
+        super::storage_bucket_internals::rebuild_live_blockless_owners(self);
     }
 
     /// The range to file an unrouted block under.
@@ -10459,6 +10462,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         set_listing_from_map: _,
         feature_max_age_ms: _,
         dirty_objects: _,
+        blockless_owners: _,
         // A plain `u64` the decode leaves at 0 because it is `#[serde(skip)]`, and 0 is the value
         // this pass would want anyway: it means the first logged-deletion round after a load is
         // DUE, so a decoded image carries no claim to have checkpointed anything.

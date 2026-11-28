@@ -13,7 +13,7 @@ use super::*;
 fn mature_quarantine(store: &BlockStore) {
     let old = now_unix_ms().saturating_sub(DELAYED_DESTROY_MIN_AGE_MS + 1_000);
     let mut inner = store.inner.lock().unwrap();
-    for slab in inner.slabs.values_mut() {
+    for mut slab in inner.slabs.values_mut() {
         if slab.state == BlockStoreSlabState::DelayedDestroy {
             slab.updated_unix_ms = Some(old);
         }

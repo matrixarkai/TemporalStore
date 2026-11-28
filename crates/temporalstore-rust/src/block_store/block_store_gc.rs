@@ -426,7 +426,8 @@ impl BlockStore {
                     .metadata()
                     .map(|metadata| metadata.len())
                     .unwrap_or_default();
-                let slab = inner.slabs.get(&block_slab_id);
+                let descriptor = inner.slabs.get(&block_slab_id);
+                let slab = descriptor.as_deref();
                 let created_unix_ms = slab.and_then(|slab| slab.created_unix_ms);
                 let updated_unix_ms = slab.and_then(|slab| slab.updated_unix_ms);
                 let age_ms = updated_unix_ms
@@ -612,6 +613,7 @@ impl BlockStore {
                 && !holds_tallied_live_bytes
             {
                 removed_physical_bytes += slab_physical_bytes;
+                inner.note_quarantine_scan_change();
                 if delayed_destroy {
                     move_slab_to_delayed_destroy_unsynced(&inner.root, block_slab_id)?;
                     set_slab_state(

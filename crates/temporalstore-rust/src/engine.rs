@@ -6206,6 +6206,8 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             key,
             blob.get("context_entities"),
         );
+        let (start, end) = shard.routing_range();
+        storage_bucket_internals::refresh_live_blockless_owner(shard, key, start, end);
         // THE FOUR CONTAINER MAPS ARE NOT APPLIED HERE, and the reason is the whole shape of
         // `fold_carried_container_elements`: an element may only be restored once the fold has
         // FINISHED, because a later record in the same fold can take its block away again. See
@@ -8274,6 +8276,8 @@ fn delete_record_exact_with_identity_batch(
     removed |= shard.context_children_mut().remove(key).is_some();
     removed |= shard.context_summaries_mut().remove(key).is_some();
     removed |= shard.context_compressions_mut().remove(key).is_some();
+    let (start, end) = shard.routing_range();
+    storage_bucket_internals::refresh_live_blockless_owner(shard, key, start, end);
     removed
 }
 
@@ -8283,7 +8287,9 @@ const MAX_DELETE_IDENTITY_PROJECTION_REFS: usize = 256;
 ///
 /// An empty bucket retains the deleted id as a tombstone. A mixed bucket must drop it before any
 /// reconciliation, or a normal delete is reported as divergence.
-fn note_object_left_bucket(bucket: &mut BucketNode, deleted_object_ids: &BTreeSet<u64>) {
+fn note_object_left_bucket(
+    bucket: &mut BucketNode, deleted_object_ids: &BTreeSet<u64>, has_live_blockless_owner: bool,
+) {
     if bucket.block_index.is_empty() {
         bucket.object_index.extend(deleted_object_ids.iter().copied());
     } else {
@@ -8292,7 +8298,7 @@ fn note_object_left_bucket(bucket: &mut BucketNode, deleted_object_ids: &BTreeSe
         }
     }
     bucket.set_dirty(true);
-    let next_flag = bucket.block_index.is_empty();
+    let next_flag = bucket.block_index.is_empty() && !has_live_blockless_owner;
     bucket.set_deleted(next_flag);
     bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
     bucket.set_meta_loaded(true);
@@ -8404,7 +8410,9 @@ fn mark_bucket_index_object_deleted_with_identity_batch(
                 );
             }
             if !deleted_object_ids.is_empty() {
-                note_object_left_bucket(&mut bucket, &deleted_object_ids);
+                note_object_left_bucket(
+                    &mut bucket, &deleted_object_ids, shard.blockless_owners.contains_key(&routing_bucket),
+                );
                 bucket.deleted_object_index.extend(deleted_object_ids);
                 if let Some(owners) = shard.bucket_index.bucket_owners.get_mut() {
                     owners.forget_key(routing_bucket, key);
@@ -8468,7 +8476,9 @@ fn mark_bucket_index_object_deleted_with_identity_batch(
             }
         });
         if !deleted_object_ids.is_empty() {
-            note_object_left_bucket(&mut bucket, &deleted_object_ids);
+            note_object_left_bucket(
+                    &mut bucket, &deleted_object_ids, shard.blockless_owners.contains_key(&routing_bucket),
+                );
             // THE REPAIR AT THE REMOVAL SITE, over this bucket's own blocks. A delta over the
             // ids this delete dropped stood here and was wrong -- it left drift that the reconcile
             // it replaced had been repairing silently. All three arms of that reconcile are kept,
@@ -8824,7 +8834,7 @@ fn mark_bucket_index_block_deleted_recording(
             });
             bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.set_dirty(true);
-            let next_flag = bucket.block_index.is_empty();
+            let next_flag = bucket.block_index.is_empty() && !shard.blockless_owners.contains_key(&routing_bucket);
             bucket.set_deleted(next_flag);
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             bucket.set_meta_loaded(true);

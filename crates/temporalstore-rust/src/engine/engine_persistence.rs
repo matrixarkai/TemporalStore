@@ -4,6 +4,24 @@
 //! Index/manifest persistence + load/flush helper methods for TemporalEngine, split from engine.rs.
 use super::*;
 
+// Only an owned durable image, before it is served or its WAL suffix is replayed.
+// Locators, deletion authority, generations, model maps and deadlines remain intact.
+pub(super) fn clear_durable_image_dirty_flags(shard: &mut ShardState) {
+    // Release markers are transient, but ObjectRecord page bits survive encoding.
+    // Clear every covered String's retained dirt before a rebuild can restore it.
+    for slot in shard.strings_mut().values_mut() {
+        let (_, deleted) = slot.record.retained_page_state();
+        slot.record.retain_page_state(false, deleted);
+    }
+    for bucket in shard.bucket_index.bucket_map.values_mut() {
+        bucket.set_dirty(false);
+        for block in bucket.block_index.blocks_mut_unaccounted() {
+            block.set_dirty(false);
+        }
+    }
+}
+
+
 #[cfg(test)]
 #[path = "catalog_checkpoint_retirement_tests.rs"]
 mod catalog_checkpoint_retirement_tests;
@@ -512,6 +530,7 @@ impl TemporalEngine {
         }
         let catalog = self.fold_relocations_and_catalog(shard_id, &mut state);
         let loaded = if from_manifest {
+            clear_durable_image_dirty_flags(&mut state);
             rebuild_unserialized_model_maps_from_bucket_index(&mut state);
             rebuild_bucket_block_ownership(shard_id, &mut state, 0, u32::MAX);
             Some(state)
@@ -1696,5 +1715,193 @@ impl TemporalEngine {
             );
             stats
         }))
+    }
+}
+
+#[cfg(test)]
+#[test]
+fn selected_durable_manifest_load_is_clean_before_replaying_a_real_suffix() {
+    let dir = tempfile::tempdir().unwrap();
+    let blocks = dir.path().join("blocks");
+    let indexes = dir.path().join("indexes");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024, dir.path().join("cache-a"), &blocks, &indexes,
+    );
+    engine.load_shard(1);
+    assert!(engine.set_config(crate::control::SetConfigRequest {
+        shard_id: 1,
+        config: crate::control::Config {
+            version: 2,
+            async_storage: true,
+            ..Default::default()
+        },
+    }).ok);
+    for command in [
+        Command::SetAdd { key: "removed".into(), member: b"member".to_vec() },
+        Command::SetRemove { key: "removed".into(), member: b"member".to_vec() },
+        Command::SetAdd { key: "survivor".into(), member: b"kept".to_vec() },
+    ] {
+        let result = engine.execute(ExecuteRequest { shard_id: 1, command });
+        assert!(result.status.ok, "{:?}", result.status);
+    }
+    let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
+    assert_eq!(manifest.wal_sequence, 3);
+    let captured = decode_index_bytes(installable_image(&manifest).unwrap()).unwrap();
+    assert!(captured.bucket_index.bucket_map.values().any(|node| node.dirty()));
+    let generations = captured.bucket_index.bucket_map.iter()
+        .map(|(&id, node)| (id, node.dirty_generation))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    assert_eq!(super::storage_lifecycle_methods::wal_floor_of_index_image(&captured), Some(2));
+    let result = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::SetAdd { key: "suffix".into(), member: b"late".to_vec() },
+    });
+    assert!(result.status.ok, "{:?}", result.status);
+    let result = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::SetAdd { key: "survivor".into(), member: b"new".to_vec() },
+    });
+    assert!(result.status.ok, "{:?}", result.status);
+    let (records, truncated) = engine.wal_store.scan_decoded(1, 0, u64::MAX, 1 << 20).unwrap();
+    assert!(!truncated);
+    assert_eq!(records.iter().filter(|(_, record)| record.sequence > manifest.wal_sequence).count(), 2);
+    let mut suffix = Vec::new();
+    for (key, member, sequence) in [
+        ("suffix", b"late".as_slice(), 4),
+        ("survivor", b"new".as_slice(), 5),
+    ] {
+        let matching: Vec<_> = records.iter().filter(|(_, record)| record.sequence == sequence).collect();
+        assert_eq!(matching.len(), 1);
+        let (log_id, record) = matching[0];
+        let object_id = stable_block_object_id(1, "set", key);
+        let name = super::execute_on_shard::set_element_name(member);
+        let outcomes: Vec<_> = record.outcomes.iter().filter(|item| {
+            item.kind == "set" && item.object_key == key && item.object_id == object_id && !item.deleted
+        }).collect();
+        assert_eq!(outcomes.len(), 1);
+        let address = outcomes[0].resolved_address().expect("actual accepted suffix address");
+        assert!(crate::wal_record::is_wal_resident(address.block_slab_id()));
+        let staged: Vec<_> = record.staged_blocks.iter().filter(|block| {
+            block.object_id == object_id && block.element_name.as_deref() == Some(name.as_str())
+        }).collect();
+        assert_eq!(staged.len(), 1);
+        let folded = super::block_in_wal::wal_resident_key(object_id, Some(&name));
+        suffix.push((key, sequence, *log_id, object_id, name, folded, address, staged[0].bytes.clone()));
+    }
+    assert_eq!(engine.wal_store.stats_without_rescan(1).last_sequence, 5);
+    drop(engine);
+
+    let restarted = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024, dir.path().join("cache-b"), &blocks, &indexes,
+    );
+    let (loaded, watermark, _) = restarted.load_durable_index_with_catalog(1, false);
+    assert_eq!(watermark, manifest.wal_sequence, "must select the real durable manifest, not replay the whole WAL");
+    let loaded = loaded.expect("selected manifest image");
+    assert_eq!(loaded.applied_wal_sequence, Some(3));
+    assert!(loaded.dirty_objects.is_empty());
+    for (&id, node) in loaded.bucket_index.bucket_map.iter() {
+        assert!(!node.dirty(), "covered owner {id} is not pending work");
+        assert!(node.block_index.values().all(|block| !block.dirty()));
+        assert_eq!(Some(&node.dirty_generation), generations.get(&id));
+    }
+    assert_eq!(super::storage_lifecycle_methods::wal_floor_of_index_image(&loaded), Some(2));
+    assert!(collect_live_block_entries(&loaded).iter().any(|entry| {
+        entry.kind.as_str() == "set" && entry.object_key.as_ref() == "removed" && entry.deleted
+    }));
+    restarted.load_shard(1);
+    let assert_suffix_records = |engine: &TemporalEngine| {
+        for (key, sequence, log_id, object_id, name, folded, address, bytes) in &suffix {
+            engine.shards.with_state(1, |state| {
+                let state = state.unwrap();
+                assert_eq!(state.wal_resident_blocks.get(folded).map(|p| (p.log_id, p.sequence)), Some((*log_id, *sequence)));
+                assert!(collect_live_block_entries(state).iter().any(|entry| {
+                    entry.kind.as_str() == "set" && entry.object_key.as_ref() == *key && entry.address == *address
+                }));
+            });
+            let frame = engine.wal_store.read_frame_at_log_id(1, *log_id).unwrap().expect("real suffix frame retained");
+            let record = crate::wal::decode_wal_line(&frame).unwrap();
+            assert_eq!(record.sequence, *sequence);
+            assert!(record.outcomes.iter().any(|item| item.object_key == *key && item.resolved_address().as_ref() == Some(address)));
+            assert_eq!(super::block_in_wal::read_block_at(&engine.block_store, 1, *object_id, Some(name.as_str()), address), Some(bytes.clone()));
+        }
+    };
+    assert_suffix_records(&restarted);
+    let suffix_buckets = suffix.iter().map(|(key, _, _, _, _, _, _, _)|
+        restarted.routing_bucket_for_key(1, key)).collect::<Vec<_>>();
+    assert_eq!(suffix_buckets.iter().copied().collect::<std::collections::BTreeSet<_>>().len(), 2);
+    restarted.shards.with_state(1, |state| {
+        let state = state.unwrap();
+        assert_eq!(state.applied_wal_sequence, Some(5));
+        let dirty = state.bucket_index.bucket_map.dirty_buckets();
+        for ((key, _, _, _, _, _, address, _), &bucket) in suffix.iter().zip(&suffix_buckets) {
+            let node = state.bucket_index.bucket_map.get(&bucket).expect("actual replayed owner");
+            assert!(node.dirty() && !node.deleted() && dirty.contains(&bucket));
+            assert!(node.dirty_generation > generations.get(&bucket).copied().unwrap_or_default());
+            assert!(node.block_index.values().any(|block| block.address == *address && block.dirty()));
+            // Recorded-outcome replay files dirty owners/blocks, not request dirty keys or
+            // first-log claims. Unknown claims must refuse reclaim, never mean covered.
+            assert!(!state.dirty_objects.contains(*key));
+            assert_eq!(node.first_dirty_wal_sequence, 0);
+            assert_eq!(node.first_dirty_index_log_sequence, 0);
+        }
+    });
+    assert_eq!(restarted.index_log_store.stats_without_rescan(1).last_sequence, 0);
+    let before_publication = restarted.storage_wal_reclaim_plan(1, [], []);
+    assert!(!before_publication.safe_to_reclaim, "{before_publication:?}");
+    assert!(before_publication.blocker_reasons.iter().any(|reason| reason == "slot_generation_without_durable_dump"));
+    assert!(before_publication.retain_from_wal_sequence <= 4);
+    assert!(!restarted.apply_storage_wal_reclaim(before_publication).applied);
+    assert_suffix_records(&restarted);
+    for (key, members) in [
+        ("removed", Vec::new()),
+        ("survivor", vec![b"kept".to_vec(), b"new".to_vec()]),
+        ("suffix", vec![b"late".to_vec()]),
+    ] {
+        let result = restarted.execute(ExecuteRequest {
+            shard_id: 1, command: Command::SetMembers { key: key.into() },
+        });
+        assert!(result.status.ok, "{:?}", result.status);
+        assert_eq!(result.response, CommandResponse::Members { members });
+    }
+    let completed = restarted.create_bucket_dump_manifest(1, []).unwrap();
+    assert_eq!(completed.wal_sequence, 5);
+    let persisted = bucket_dump_io::list_bucket_dump_manifests_shared_at(&indexes, 1).unwrap()
+        .into_iter().find(|held| held.manifest_id == completed.manifest_id).expect("actual durable suffix publication");
+    assert!(!persisted.checksum.is_empty());
+    assert_eq!(bucket_dump_io::bucket_dump_manifest_checksum(&persisted).unwrap(), persisted.checksum);
+    let image = decode_index_bytes(installable_image(&persisted).unwrap()).unwrap();
+    assert_eq!(image.applied_wal_sequence, Some(5));
+    assert_eq!(super::storage_lifecycle_methods::wal_floor_of_index_image(&image), Some(2));
+    restarted.clear_dumped_bucket_dirty_state(1, &persisted);
+    restarted.shards.with_state(1, |state| {
+        let state = state.unwrap();
+        let pending = state.bucket_index.bucket_map.dirty_buckets();
+        for bucket in &suffix_buckets {
+            assert!(!pending.contains(bucket));
+            assert!(!state.bucket_index.bucket_map.get(bucket).unwrap().dirty());
+        }
+    });
+    let after_publication = restarted.storage_wal_reclaim_plan(1, [], []);
+    assert!(after_publication.safe_to_reclaim, "{after_publication:?}");
+    let reclaimed = restarted.apply_storage_wal_reclaim(after_publication);
+    assert!(reclaimed.applied && reclaimed.wal_records_removed > 0, "{reclaimed:?}");
+    assert_eq!(restarted.wal_store.block_retention_floor(1), Some(2));
+    assert_suffix_records(&restarted);
+    drop(restarted);
+    let reopened = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024, dir.path().join("cache-c"), &blocks, &indexes,
+    );
+    reopened.load_shard(1);
+    assert_suffix_records(&reopened);
+    for (key, members) in [
+        ("removed", Vec::new()),
+        ("survivor", vec![b"kept".to_vec(), b"new".to_vec()]),
+        ("suffix", vec![b"late".to_vec()]),
+    ] {
+        let result = reopened.execute(ExecuteRequest {
+            shard_id: 1, command: Command::SetMembers { key: key.into() },
+        });
+        assert!(result.status.ok, "{:?}", result.status);
+        assert_eq!(result.response, CommandResponse::Members { members });
     }
 }
