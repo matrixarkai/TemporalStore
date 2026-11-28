@@ -175,6 +175,12 @@ fn verify_dump_atomic_group(
     }
 }
 
+pub(super) enum DumpWalSource<'a> {
+    PortableCapture,
+    RecoveryCapture,
+    Committed(&'a std::collections::BTreeMap<u64, String>),
+}
+
 impl TemporalEngine {
     /// Check dependencies in the local WAL without rehydrating its registry.
     pub(super) fn read_local_dump_wal_dependencies(
@@ -183,11 +189,16 @@ impl TemporalEngine {
         anchor: u64,
         restored: &ShardState,
         entries: &[LiveBlockEntry],
-        committed_frames: Option<&std::collections::BTreeMap<u64, String>>,
+        source: DumpWalSource<'_>,
     ) -> Result<Option<VerifiedDumpWal>, Status> {
         use crate::engine::{live_block_key, storage_bucket_internals::ModelWalkTally};
         use crate::wal_record::is_wal_resident;
 
+        let (retain_tombstones, committed_frames) = match source {
+            DumpWalSource::PortableCapture => (false, None),
+            DumpWalSource::RecoveryCapture => (true, None),
+            DumpWalSource::Committed(frames) => (true, Some(frames)),
+        };
         let bad = |detail| Status::error("slot_dump_invalid_wal_binding", detail);
         // The on-disk bucket supplies the owner's filing. Never infer it using the target range.
         let mut filed = std::collections::BTreeMap::new();
@@ -212,6 +223,7 @@ impl TemporalEngine {
         // block before treating the manifest's sentinel as a WAL dependency.
         let mut raw = BTreeSet::new();
         let mut raw_tombstones = BTreeSet::new();
+        let mut tombstone_blocks = Vec::new();
         let mut dead_addresses = BTreeSet::new();
         for (owner, node) in &restored.bucket_index.bucket_map {
             let mut rows = std::collections::BTreeMap::new();
@@ -234,6 +246,9 @@ impl TemporalEngine {
                         return Err(bad("resident tombstone disagrees with its model, address or deletion state"));
                     }
                     raw_tombstones.insert((*owner, (kind.to_owned(), row.object_key.to_string(), address)));
+                    if retain_tombstones {
+                        tombstone_blocks.push((*owner, kind, row, address));
+                    }
                 } else if !raw.insert((*owner, kind, address)) {
                     return Err(bad("duplicate resident block address and owner"));
                 }
@@ -352,7 +367,36 @@ impl TemporalEngine {
             found.insert((kind.clone(), key.clone(), locator));
             floor = floor.min(placement.sequence);
             requirements.entry(placement.log_id).or_default().push(
-                (placement.sequence, owner, object, kind, key, field, locator));
+                (placement.sequence, owner, object, kind, key, field, locator, false));
+        }
+        for (owner, kind, row, locator) in tombstone_blocks {
+            let key = row.object_key.as_ref();
+            let field = row.element_name.as_ref();
+            let object = stable_block_object_id(shard_id, kind, key);
+            let logical_key = block_in_wal::wal_resident_key(object, Some(field));
+            let address_key = block_in_wal::wal_resident_address_key(object, locator);
+            let logical = restored.wal_resident_blocks.get(&logical_key);
+            let physical = restored.wal_resident_blocks.get(&address_key);
+            let Some(placement) = physical.or(logical) else {
+                // Metadata-only portable images never acquire a local WAL dependency.
+                continue;
+            };
+            if placement.sequence == 0 || placement.sequence > anchor {
+                return Err(bad("resident tombstone is outside the dump anchor"));
+            }
+            if physical.is_some() {
+                expected_placements.insert(address_key);
+            }
+            if logical.is_some_and(|logical| {
+                logical.log_id == placement.log_id && logical.sequence == placement.sequence
+            }) {
+                expected_placements.insert(logical_key);
+            }
+            floor = floor.min(placement.sequence);
+            requirements.entry(placement.log_id).or_default().push((
+                placement.sequence, owner, object, kind.to_owned(), key.to_owned(),
+                Some(field.to_owned()), locator, true,
+            ));
         }
         if filed.keys().ne(found.iter())
             || (committed_frames.is_some()
@@ -423,13 +467,35 @@ impl TemporalEngine {
                 let bindings = block_in_wal::outcome_block_bindings(&record.outcomes, &record.staged_blocks);
                 let mut packed_hashes = std::collections::BTreeMap::new();
                 let mut feature_points = std::collections::BTreeMap::new();
-                for (sequence, owner, object, kind, key, field, locator) in wants {
+                for (sequence, owner, object, kind, key, field, locator, deleted) in wants {
                     if record.sequence != *sequence {
                         return Err(bad("dump contains an unsupported or inconsistent resident binding"));
                     }
                     let row = bindings.get(&(*object, *locator))
                         .ok_or_else(|| bad("resident locator has no unique carried block"))?;
                     let block = &record.staged_blocks[*row];
+                    if *deleted {
+                        let name = field.as_deref().ok_or_else(|| bad("tombstone has no element name"))?;
+                        // Removal outcomes use the unscoped routing hash. The bucket is already
+                        // bound to its encoded tombstone row above.
+                        let outcome_bucket = crate::engine::block_routing_bucket(key, 0, u32::MAX);
+                        let matches = record.outcomes.iter().filter(|item| {
+                            item.deleted && item.meta && item.object_id == *object
+                                && item.routing_bucket == outcome_bucket
+                                && item.kind.as_str() == kind.as_str()
+                                && item.object_key == *key
+                                && item.element_name.as_deref() == Some(name)
+                                && item.resolved_address()
+                                    .is_some_and(|address| live_block_key(&address) == *locator)
+                        }).count();
+                        if matches != 1 || block.element_name.as_deref() != Some(name)
+                            || !super::container_blocks::tombstone_block(kind, name)
+                                .is_some_and(|bytes| bytes == block.bytes)
+                        {
+                            return Err(bad("resident tombstone has no exact WAL outcome and block"));
+                        }
+                        continue;
+                    }
                     let packed = if kind == "hash" && block.element_name.is_none() {
                         Some(packed_hashes.entry(*row).or_insert_with(|| packed_hash_selectors(block))
                             .as_ref().ok_or_else(|| bad("invalid packed Hash field inventory"))?)
@@ -536,7 +602,8 @@ impl TemporalEngine {
         let commitments = manifest.wal_frames.iter()
             .map(|frame| (frame.log_id, frame.sha256.clone())).collect();
         self.read_local_dump_wal_dependencies(
-            manifest.shard_id, manifest.wal_sequence, restored, entries, Some(&commitments),
+            manifest.shard_id, manifest.wal_sequence, restored, entries,
+            DumpWalSource::Committed(&commitments),
         )
     }
 }
@@ -742,7 +809,7 @@ mod tests {
             *id, bytes.len() as u64, &item,
         ).unwrap();
         let status = engine.read_local_dump_wal_dependencies(
-            1, capture.applied_wal_sequence.unwrap(), &capture, &entries, None,
+            1, capture.applied_wal_sequence.unwrap(), &capture, &entries, DumpWalSource::PortableCapture,
         ).err().expect("an offset into the current log is not a supported direct item");
         assert_eq!(status.code, "slot_dump_invalid_wal_binding");
         assert!(engine.list_bucket_dump_manifests(1).is_empty());
@@ -782,7 +849,7 @@ mod tests {
         series.set(500, address);
         let entries = super::super::storage_bucket_internals::collect_live_block_entries(&invalid);
         let status = engine.read_local_dump_wal_dependencies(
-            1, invalid.applied_wal_sequence.unwrap(), &invalid, &entries, None,
+            1, invalid.applied_wal_sequence.unwrap(), &invalid, &entries, DumpWalSource::PortableCapture,
         ).err().expect("a live timestamp must belong to the claimed carried frame");
         assert_eq!(status.code, "slot_dump_invalid_wal_binding");
         let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
@@ -968,7 +1035,7 @@ mod tests {
         snapshot.wal_resident_blocks.get_mut(&placement).unwrap().log_id = id;
         let entries = super::super::storage_bucket_internals::collect_live_block_entries(&snapshot);
         assert!(reopened.read_local_dump_wal_dependencies(
-            1, record.sequence, &snapshot, &entries, None,
+            1, record.sequence, &snapshot, &entries, DumpWalSource::PortableCapture,
         ).unwrap().is_some());
         let mut conflicting = Vec::new();
         for change in 0..10 {
@@ -1001,7 +1068,7 @@ mod tests {
             snapshot.wal_resident_blocks.get_mut(&placement).unwrap().sequence = record.sequence;
             snapshot.wal_resident_blocks.get_mut(&placement).unwrap().log_id = id;
             assert!(reopened.read_local_dump_wal_dependencies(
-                1, record.sequence, &snapshot, &entries, None,
+                1, record.sequence, &snapshot, &entries, DumpWalSource::PortableCapture,
             ).is_err(), "invalid List outcome case {case} must be rejected");
         }
     }
@@ -1164,7 +1231,7 @@ mod tests {
         assert!(!commitments.is_empty());
         let count = source.registration_count_for_test(1);
         let verified = source.read_local_dump_wal_dependencies(
-            1, manifest.wal_sequence, &state, &entries, Some(&commitments),
+            1, manifest.wal_sequence, &state, &entries, DumpWalSource::Committed(&commitments),
         ).unwrap().expect("resident dump must hold a WAL lease");
         assert!(verified.floor > 0);
         assert_eq!(source.registration_count_for_test(1), count);
@@ -1172,12 +1239,12 @@ mod tests {
         let mut changed = commitments.clone();
         changed.values_mut().next().unwrap().push('0');
         assert!(source.read_local_dump_wal_dependencies(
-            1, manifest.wal_sequence, &state, &entries, Some(&changed),
+            1, manifest.wal_sequence, &state, &entries, DumpWalSource::Committed(&changed),
         ).is_err());
         let foreign_root = tempfile::tempdir().unwrap();
         let foreign = engine_at(foreign_root.path());
         assert!(foreign.read_local_dump_wal_dependencies(
-            1, manifest.wal_sequence, &state, &entries, Some(&commitments),
+            1, manifest.wal_sequence, &state, &entries, DumpWalSource::Committed(&commitments),
         ).is_err());
         assert_eq!(foreign.registration_count_for_test(1), 0);
         let status = foreign.install_bucket_dump_manifest(&manifest).unwrap_err();

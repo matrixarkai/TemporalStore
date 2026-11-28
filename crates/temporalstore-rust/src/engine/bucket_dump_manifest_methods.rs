@@ -376,8 +376,13 @@ impl TemporalEngine {
             // A reused bulk image was decoded before capture. A new image
             // was encoded from this completed owned state.
             let entries = collect_live_block_entries(&dump_index_state);
+            let source = if completion.is_some() {
+                super::dump_wal_dependencies::DumpWalSource::RecoveryCapture
+            } else {
+                super::dump_wal_dependencies::DumpWalSource::PortableCapture
+            };
             let proof = self.read_local_dump_wal_dependencies(
-                shard_id, wal_sequence, &dump_index_state, &entries, None,
+                shard_id, wal_sequence, &dump_index_state, &entries, source,
             )?.ok_or_else(|| Status::error("slot_dump_invalid_wal_binding",
                 "captured resident dump has no verified WAL dependencies"))?;
             Some(proof)

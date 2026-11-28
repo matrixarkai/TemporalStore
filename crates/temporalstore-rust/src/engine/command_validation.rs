@@ -377,6 +377,7 @@ pub(crate) fn command_object_keys(command: &Command) -> CommandObjectKeys {
         | Command::FeatureQueryFiltered { .. }
         | Command::FeatureAggQuery { .. }
         | Command::FeatureProtoAggQuery { .. }
+        | Command::FeatureReduceQuery { .. }
         | Command::SequenceQuery { .. }
         | Command::WindowReduceRank { .. }
         | Command::ControlStateCount { .. }
@@ -795,6 +796,11 @@ pub(super) fn validate_command_preconditions(
                 || !record_exists(shard, key)
             {
                 return Err(Status::error("not_found", "key not found"));
+            }
+        }
+        Command::FeatureReduceQuery { reducer, scale, .. } => {
+            if let Err(error) = super::window_aggregate::check_typed(reducer, *scale) {
+                return Err(Status::error("invalid_argument", error.0));
             }
         }
         Command::FeatureAppend { key, points }
