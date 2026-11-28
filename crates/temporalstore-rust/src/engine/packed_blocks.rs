@@ -492,7 +492,7 @@ fn append_timestamped_kv_blocks_inner(
         for packed in &encoded_blocks {
             super::block_in_wal::stage(object_id, None, packed.as_slice());
         }
-        let addresses = block_store.append_batch_with_block_metadata(writes)?;
+        let addresses = block_store.append_batch_with_block_metadata_for_shard(shard_id, writes)?;
         if addresses.len() != chunk_points.len() {
             return Err(BlockStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
@@ -587,8 +587,7 @@ pub(super) fn chunk_timestamped_kv_points(points: Vec<FeaturePoint>) -> Vec<Vec<
     chunks
 }
 
-#[cfg(test)]
-pub(super) fn decode_feature_block(bytes: &[u8]) -> Option<Vec<FeaturePoint>> {
+pub(crate) fn decode_feature_block(bytes: &[u8]) -> Option<Vec<FeaturePoint>> {
     match decode_feature_block_strict(bytes) {
         PackedFeatureBlockDecode::Packed(points) => Some(points),
         PackedFeatureBlockDecode::Legacy | PackedFeatureBlockDecode::Corrupt(_) => None,

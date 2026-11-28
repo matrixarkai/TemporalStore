@@ -42,9 +42,9 @@ use crate::engine::timestamped_series::TimestampedSeries as _;
 use crate::types::CommandResponse;
 use std::collections::{BTreeMap, BTreeSet};
 
-const KEY: &str = "k";
+pub(super) const KEY: &str = "k";
 
-fn open(dir: &std::path::Path, bound: usize) -> TemporalEngine {
+pub(super) fn open(dir: &std::path::Path, bound: usize) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         1 << 22,
         dir.join("cache"),
@@ -68,7 +68,7 @@ fn open(dir: &std::path::Path, bound: usize) -> TemporalEngine {
     engine
 }
 
-fn run(engine: &TemporalEngine, command: Command) -> CommandResponse {
+pub(super) fn run(engine: &TemporalEngine, command: Command) -> CommandResponse {
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
         command,
@@ -116,37 +116,38 @@ type Identity = (u64, u64, u64, Option<u64>, Option<u64>);
 
 /// The blocks the points of the series name, and the blocks the bucket index files for the key.
 fn blocks(engine: &TemporalEngine) -> (BTreeSet<Identity>, Vec<Identity>, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named: BTreeSet<Identity> = shard
-        .features()
-        .get(KEY)
-        .map(|series| series.addresses().map(block_physical_identity_key).collect())
-        .unwrap_or_default();
-    let mut filed: Vec<Identity> = Vec::new();
-    if let Some(refs) = shard.bucket_index.object_block_refs("feature", KEY) {
-        for block_ref in refs.iter() {
-            let bucket = shard
-                .bucket_index
-                .bucket_map
-                .get(&block_ref.routing_bucket)
-                .expect("a ref names a bucket the index holds");
-            let block = bucket
-                .block_index
-                .get(&block_ref.block_ref_key)
-                .expect("a ref names a block its bucket holds");
-            filed.push(block_physical_identity_key(&block.address));
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.expect("shard 1 is loaded");
+        let named: BTreeSet<Identity> = shard
+            .features()
+            .get(KEY)
+            .map(|series| series.addresses().map(block_physical_identity_key).collect())
+            .unwrap_or_default();
+        let mut filed: Vec<Identity> = Vec::new();
+        if let Some(refs) = shard.bucket_index.object_block_refs("feature", KEY) {
+            for block_ref in refs.iter() {
+                let bucket = shard
+                    .bucket_index
+                    .bucket_map
+                    .get(&block_ref.routing_bucket)
+                    .expect("a ref names a bucket the index holds");
+                let block = bucket
+                    .block_index
+                    .get(&block_ref.block_ref_key)
+                    .expect("a ref names a block its bucket holds");
+                filed.push(block_physical_identity_key(&block.address));
+            }
         }
-    }
-    filed.sort();
-    // Every block of every bucket, so a block the refs forgot is counted too.
-    let in_buckets: usize = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .map(|bucket| bucket.block_index.len())
-        .sum();
-    (named, filed, in_buckets)
+        filed.sort();
+        // Every block of every bucket, so a block the refs forgot is counted too.
+        let in_buckets: usize = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .map(|bucket| bucket.block_index.len())
+            .sum();
+        (named, filed, in_buckets)
+    })
 }
 
 fn assert_filing_matches_points(engine: &TemporalEngine, context: &str) {
@@ -162,7 +163,7 @@ fn assert_filing_matches_points(engine: &TemporalEngine, context: &str) {
     );
 }
 
-struct Rng(u64);
+pub(super) struct Rng(pub(super) u64);
 
 impl Rng {
     fn next(&mut self, bound: u64) -> u64 {
@@ -172,7 +173,7 @@ impl Rng {
 }
 
 /// One write of the sequence, as the command to send and what it does to the model.
-fn step(rng: &mut Rng, n: usize, newest: &mut u64, model: &mut BTreeMap<u64, Vec<u8>>, bound: usize) -> Command {
+pub(super) fn step(rng: &mut Rng, n: usize, newest: &mut u64, model: &mut BTreeMap<u64, Vec<u8>>, bound: usize) -> Command {
     let command = match rng.next(100) {
         // A few points anywhere in a window the series has already filled: replaces and
         // interleaves, so one block's points are not contiguous.
@@ -552,20 +553,21 @@ fn the_capture_of_a_key_names_the_series_it_holds() {
     for at in [40u64, 5, 300, 20] {
         run(&engine, Command::FeatureAppend { key: KEY.to_string(), points: vec![point(at, 0)] });
     }
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    let held: BTreeMap<u64, ElementEntry> = shard
-        .features()
-        .get(KEY)
-        .unwrap()
-        .points()
-        .map(|(at, address)| (at, address.clone()))
-        .collect();
-    assert_eq!(4, held.len());
-    let captured = capture_key_states(shard, &[KEY.to_string(), "absent".to_string()]);
-    assert_eq!(2, captured.len());
-    assert_eq!(blob_as_values(KEY, &held, &[]), captured[0].to_value());
-    assert_eq!(serde_json::json!({"key": "absent"}), captured[1].to_value());
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.unwrap();
+        let held: BTreeMap<u64, ElementEntry> = shard
+            .features()
+            .get(KEY)
+            .unwrap()
+            .points()
+            .map(|(at, address)| (at, address.clone()))
+            .collect();
+        assert_eq!(4, held.len());
+        let captured = capture_key_states(shard, &[KEY.to_string(), "absent".to_string()]);
+        assert_eq!(2, captured.len());
+        assert_eq!(blob_as_values(KEY, &held, &[]), captured[0].to_value());
+        assert_eq!(serde_json::json!({"key": "absent"}), captured[1].to_value());
+    });
 }
 
 #[cfg(feature = "alloc-probe")]

@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Table-scoped data routing through the metaserver."""
 
-from contextlib import closing, ExitStack
+from contextlib import closing, contextmanager, ExitStack
 from itertools import islice
 from math import isfinite
 from threading import Lock
@@ -11,7 +11,9 @@ from typing import Iterable, Iterator
 import grpc
 from temporalstore.v1 import temporalstore_pb2 as pb
 
-from .client import CommandClient
+from .cache_load_wire import LoadReply
+from .cache_wire import BatchCommand, CacheInsert
+from .client import CommandClient, write_outcome_is_unknown
 from .metadata import MetadataClient, MetadataError, RaftPrimaryUnavailable, Shard, TableTopology
 
 
@@ -26,10 +28,27 @@ _PARALLEL_READ_KINDS = frozenset({
     "string_len",
 })
 _READ_ROUTE_ERRORS = frozenset({"load_version_mismatch", "raft_not_leader"})
-_READ_RPC_ERRORS = frozenset({grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED})
+_INSERT_ROUTE_ERRORS = frozenset({
+    "load_version_mismatch", "raft_write_not_started", "raft_error", "write_outcome_unknown",
+})
+_TRANSIENT_RPC_ERRORS = frozenset({grpc.StatusCode.UNAVAILABLE, grpc.StatusCode.DEADLINE_EXCEEDED})
 _MAX_INFLIGHT_READ_SHARDS = 8
 
 
+
+
+def _remaining_read_timeout(deadline: float) -> float:
+    remaining = deadline - monotonic()
+    if remaining <= 0:
+        raise MetadataError("deadline_exceeded", "table read deadline expired")
+    return remaining
+
+
+def _undispatched_reads(group) -> pb.BatchExecuteResponse:
+    status = pb.Status(code="read_unavailable", message="table read deadline expired before dispatch")
+    return pb.BatchExecuteResponse(
+        responses=(pb.CommandResponse(status=status) for _ in group),
+    )
 
 
 class TableClient:
@@ -44,6 +63,7 @@ class TableClient:
         topology_ttl_seconds: float = 5.0,
         timeout_seconds: float = 10.0,
         parallel_reads: bool = False,
+        preserve_insert_outcomes: bool = False,
     ):
         if not namespace or not table:
             raise ValueError("namespace and table are required")
@@ -55,18 +75,29 @@ class TableClient:
         self._topology_ttl = topology_ttl_seconds
         self._timeout = timeout_seconds
         self._parallel_reads = parallel_reads
+        self._preserve_insert_outcomes = preserve_insert_outcomes
         self._topology = None
         self._expires_at = 0.0
         self._channels: dict[str, CommandClient] = {}
         self._lock = Lock()
         self._closed = False
 
-    def _current_topology(self) -> TableTopology:
-        with self._lock:
+    @contextmanager
+    def _timed_route_lock(self, deadline: float):
+        if not self._lock.acquire(timeout=_remaining_read_timeout(deadline)):
+            raise MetadataError("deadline_exceeded", "table routing wait exceeded the read deadline")
+        try:
+            yield
+        finally:
+            self._lock.release()
+
+    def _current_topology(self, deadline: float | None = None) -> TableTopology:
+        with self._lock if deadline is None else self._timed_route_lock(deadline):
             if self._closed:
                 raise RuntimeError("table client is closed")
             if self._topology is None or monotonic() >= self._expires_at:
-                self._topology = self._metadata.table_topology(self._namespace, self._table)
+                options = {} if deadline is None else {"timeout_seconds": _remaining_read_timeout(deadline)}
+                self._topology = self._metadata.table_topology(self._namespace, self._table, **options)
                 ttl = self._topology_ttl
                 if any(shard.uses_raft_route and not shard.primary_grpc for shard in self._topology.shards):
                     ttl = min(ttl, _ELECTION_TOPOLOGY_TTL_SECONDS)
@@ -81,7 +112,9 @@ class TableClient:
         return topology.table_id, None
 
     @staticmethod
-    def _shard_for_command(topology: TableTopology, command: pb.Command) -> Shard:
+    def _shard_for_command(topology: TableTopology, command: BatchCommand) -> Shard:
+        if isinstance(command, CacheInsert):
+            return topology.shard_for_key(command.key)
         kind = command.WhichOneof("kind")
         body = getattr(command, kind) if kind is not None else None
         key = getattr(body, "key", None)
@@ -89,12 +122,12 @@ class TableClient:
             raise ValueError("table routing requires a single-key command")
         return topology.shard_for_key(key)
 
-    def _channel_for(self, shard: Shard) -> CommandClient:
+    def _channel_for(self, shard: Shard, deadline: float | None = None) -> CommandClient:
         if not shard.primary_grpc:
             if shard.uses_raft_route and shard.primary is None:
                 raise RaftPrimaryUnavailable(shard.shard_id)
             raise MetadataError("no_grpc_primary", f"shard {shard.shard_id} has no gRPC primary")
-        with self._lock:
+        with self._lock if deadline is None else self._timed_route_lock(deadline):
             if self._closed:
                 raise RuntimeError("table client is closed")
             channel = self._channels.get(shard.primary_grpc)
@@ -109,29 +142,42 @@ class TableClient:
                 self._expires_at = 0.0
 
     def execute(self, command: pb.Command) -> pb.ExecuteResponse:
-        topology = self._current_topology()
-        shard = self._shard_for_command(topology, command)
-        channel = self._channel_for(shard)
-        try:
-            response = channel.execute(shard.shard_id, command, load_version=shard.load_version or None)
-        except grpc.RpcError as error:
-            if error.code() == grpc.StatusCode.UNAVAILABLE:
+        is_read = command.WhichOneof("kind") in _PARALLEL_READ_KINDS
+        deadline = monotonic() + self._timeout if is_read else None
+        for attempt in range(2 if is_read else 1):
+            topology = self._current_topology(deadline)
+            shard = self._shard_for_command(topology, command)
+            channel = self._channel_for(shard, deadline)
+            options = {} if deadline is None else {"timeout_seconds": _remaining_read_timeout(deadline)}
+            try:
+                response = channel.execute(shard.shard_id, command,
+                                           load_version=shard.load_version or None, **options)
+            except grpc.RpcError as error:
+                if error.code() != grpc.StatusCode.UNAVAILABLE:
+                    raise
                 self._invalidate_route(topology)
-            raise
-        if response.status.code in _ROUTE_ERROR_CODES:
-            self._invalidate_route(topology)
-        return response
+                if not is_read or attempt or monotonic() >= deadline:
+                    raise
+                continue
+            if response.status.code in _ROUTE_ERROR_CODES:
+                self._invalidate_route(topology)
+                if is_read and not attempt and response.status.code in _READ_ROUTE_ERRORS and monotonic() < deadline:
+                    continue
+            return response
 
     def batch_execute(
-        self, commands: Iterable[pb.Command], *, timeout_seconds: float | None = None,
-        allow_partial_reads: bool = False,
-    ) -> list[pb.CommandResponse]:
+        self, commands: Iterable[BatchCommand], *, timeout_seconds: float | None = None,
+        allow_partial_reads: bool = False, borrowed_load: bool = False,
+    ) -> list[pb.CommandResponse | LoadReply]:
         """Return results in request order.
 
         A read-only batch can opt in to per-shard errors for temporary routing
         and transport failures. Other failures are propagated to the caller.
+        An explicit read timeout is shared by route discovery and shard RPCs.
         """
         options = {"allow_partial_reads": True} if allow_partial_reads else {}
+        if borrowed_load:
+            options["borrowed_load"] = True
         indexed = sorted(
             self.iter_batch_responses(commands, timeout_seconds=timeout_seconds, **options),
             key=lambda item: item[0],
@@ -139,17 +185,27 @@ class TableClient:
         return [result for _, result in indexed]
 
     def iter_batch_responses(
-        self, commands: Iterable[pb.Command], *, timeout_seconds: float | None = None,
-        allow_partial_reads: bool = False,
-    ) -> Iterator[tuple[int, pb.CommandResponse]]:
-        """Yield shard results in request positions, with optional per-shard read failures."""
+        self, commands: Iterable[BatchCommand], *, timeout_seconds: float | None = None,
+        allow_partial_reads: bool = False, borrowed_load: bool = False,
+    ) -> Iterator[tuple[int, pb.CommandResponse | LoadReply]]:
+        """Yield indexed shard results, including opted-in read or insert failures."""
         commands = list(commands)
         if not commands:
             return
-        read_only = all(command.WhichOneof("kind") in _PARALLEL_READ_KINDS for command in commands)
+        read_only = all(
+            not isinstance(command, CacheInsert)
+            and command.WhichOneof("kind") in _PARALLEL_READ_KINDS for command in commands
+        )
         if allow_partial_reads and not read_only:
             raise ValueError("partial results require a read-only batch")
-        topology = self._current_topology()
+        if borrowed_load and not (read_only and all(c.HasField("string_get") for c in commands)):
+            raise ValueError("borrowed load replies require string_get commands")
+        deadline = None
+        if read_only and timeout_seconds is not None:
+            if not isfinite(timeout_seconds) or timeout_seconds <= 0:
+                raise ValueError("read timeout must be finite and positive")
+            deadline = monotonic() + timeout_seconds
+        topology = self._current_topology(deadline)
         groups: dict[Shard, list[tuple[int, pb.Command]]] = {}
         for position, command in enumerate(commands):
             shard = self._shard_for_command(topology, command)
@@ -159,7 +215,7 @@ class TableClient:
         missing = []
         for shard, group in groups.items():
             try:
-                channels[shard] = self._channel_for(shard)
+                channels[shard] = self._channel_for(shard, deadline)
             except RaftPrimaryUnavailable as error:
                 if not allow_partial_reads:
                     raise
@@ -168,26 +224,45 @@ class TableClient:
         if missing:
             groups = {shard: groups[shard] for shard in channels}
             yield from missing
+        recoverable_inserts = self._preserve_insert_outcomes and all(
+            isinstance(command, CacheInsert) or (
+                command.HasField("string_set_conditional")
+                and command.string_set_conditional.condition == pb.STRING_SET_CONDITION_IF_NOT_EXISTS
+            )
+            for command in commands
+        )
         parallel = len(groups) > 1 and self._parallel_reads and read_only
         try:
+            response_options = {"borrowed_load": True} if borrowed_load else {}
             responses = self._batch_responses(
-                groups, channels, parallel, timeout_seconds, allow_partial_reads,
+                groups, channels, parallel, timeout_seconds, allow_partial_reads or recoverable_inserts,
+                deadline, **response_options,
             )
             with closing(responses) as batches:
                 for group, response in batches:
                     if isinstance(response, grpc.RpcError):
-                        if response.code() == grpc.StatusCode.UNAVAILABLE:
-                            self._invalidate_route(topology)
-                        if response.code() not in _READ_RPC_ERRORS:
+                        if response.code() not in _TRANSIENT_RPC_ERRORS and not (
+                            recoverable_inserts and write_outcome_is_unknown(response)
+                        ):
                             raise response
-                        status = pb.Status(code="read_unavailable", message=response.details() or "")
+                        if recoverable_inserts or response.code() == grpc.StatusCode.UNAVAILABLE:
+                            self._invalidate_route(topology)
+                        code = "read_unavailable"
+                        if recoverable_inserts:
+                            shard = self._shard_for_command(topology, group[0][1])
+                            code = (
+                                "write_outcome_unknown" if shard.uses_raft_route
+                                else "write_durability_unconfirmed"
+                            )
+                        status = pb.Status(code=code, message=response.details() or "")
                     elif len(response.responses) != len(group):
                         status = (response.status if not response.status.ok else pb.Status(
                             code="invalid_batch", message="datanode returned the wrong response count",
                         ))
                         if status.code in _ROUTE_ERROR_CODES:
                             self._invalidate_route(topology)
-                        if not (allow_partial_reads and status.code in _READ_ROUTE_ERRORS):
+                        if not ((allow_partial_reads and status.code in _READ_ROUTE_ERRORS)
+                                or (recoverable_inserts and status.code in _INSERT_ROUTE_ERRORS)):
                             raise MetadataError(status.code, status.message)
                     else:
                         status = None
@@ -207,10 +282,21 @@ class TableClient:
             raise
 
     @staticmethod
-    def _batch_responses(groups, channels, parallel, timeout_seconds, preserve_rpc_error):
+    def _batch_responses(groups, channels, parallel, timeout_seconds, preserve_rpc_error, deadline,
+                         *, borrowed_load=False):
         options = {} if timeout_seconds is None else {"timeout_seconds": timeout_seconds}
+        if borrowed_load:
+            options["borrowed_load"] = True
         if not parallel:
             for shard, group in groups.items():
+                if deadline is not None:
+                    try:
+                        options["timeout_seconds"] = _remaining_read_timeout(deadline)
+                    except MetadataError:
+                        if not preserve_rpc_error:
+                            raise
+                        yield group, _undispatched_reads(group)
+                        continue
                 try:
                     response = channels[shard].batch_execute(
                         shard.shard_id, (command for _, command in group),
@@ -228,7 +314,16 @@ class TableClient:
         while window := list(islice(pending, _MAX_INFLIGHT_READ_SHARDS)):
             with ExitStack() as inflight:
                 futures = []
+                pending_deadline = []
                 for shard, group in window:
+                    if deadline is not None:
+                        try:
+                            options["timeout_seconds"] = _remaining_read_timeout(deadline)
+                        except MetadataError:
+                            if not preserve_rpc_error:
+                                raise
+                            pending_deadline.append(group)
+                            continue
                     future = channels[shard]._start_batch(
                         shard.shard_id, (command for _, command in group),
                         load_version=shard.load_version or None,
@@ -244,6 +339,8 @@ class TableClient:
                             raise
                         response = error
                     yield group, response
+                for group in pending_deadline:
+                    yield group, _undispatched_reads(group)
 
     def close(self) -> None:
         with self._lock:

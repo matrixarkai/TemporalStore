@@ -11050,7 +11050,7 @@ mod tests {
         assert_eq!(
             LINEAGE_ONLY_FIELDS.len(),
             22,
-            "the lineage list changed size; if a field was deliberately dropped, say so and              update this number, because dropping one is how a served ref starts carrying it"
+            "the lineage list changed size; if a field was deliberately dropped, say so and update this number, because dropping one is how a served ref starts carrying it"
         );
         assert_eq!(SCORE_ONLY_FIELDS.len(), 4, "the score list changed size");
         for field in LINEAGE_ONLY_FIELDS.iter().chain(SCORE_ONLY_FIELDS.iter()) {

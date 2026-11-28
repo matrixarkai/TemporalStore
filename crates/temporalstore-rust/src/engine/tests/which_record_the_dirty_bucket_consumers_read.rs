@@ -65,19 +65,20 @@ const END_ROUTING_BUCKET: u32 = 15;
 
 /// Every bucket's two records of the same fact: `(node.dirty(), set count)`.
 fn both_records(engine: &crate::TemporalEngine) -> BTreeMap<u32, (bool, u64)> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .map(|(routing_bucket, bucket)| {
-            (
-                *routing_bucket,
-                (bucket.dirty(), shard.dirty_objects.bucket_count(*routing_bucket)),
-            )
-        })
-        .collect()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| {
+                (
+                    *routing_bucket,
+                    (bucket.dirty(), shard.dirty_objects.bucket_count(*routing_bucket)),
+                )
+            })
+            .collect()
+    })
 }
 
 #[test]
@@ -153,9 +154,8 @@ fn which_record_the_dirty_bucket_consumers_read() {
     // ---- the dump-coverage report is empty whichever record it reads, and the clause below would
     // ---- be asserting nothing. A partial dump is also the shape `max_dump_buckets_per_round`
     // ---- asks for in production, so this is the ordinary case rather than a contrived one.
-    let one_dirty_bucket = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
+    let one_dirty_bucket = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
         shard
             .bucket_index
             .bucket_map
@@ -163,7 +163,7 @@ fn which_record_the_dirty_bucket_consumers_read() {
             .find(|(_routing_bucket, bucket)| bucket.dirty())
             .map(|(routing_bucket, _bucket)| *routing_bucket)
             .expect("the writes above left at least one bucket dirty")
-    };
+    });
     let _partial = engine.apply_storage_lifecycle(crate::StorageLifecycleRequest {
         shard_id: 1,
         selected_dump_buckets: vec![one_dirty_bucket],
@@ -256,9 +256,8 @@ fn which_record_the_dirty_bucket_consumers_read() {
     // ---- NOW FORCE THEM APART. Assigned straight onto the node, which is legitimate here only
     // ---- because the flag is an independent record: a flag derived from the set would be
     // ---- recomputed back into agreement and this plant would measure nothing.
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1");
         shard
             .bucket_index
             .bucket_map
@@ -271,7 +270,7 @@ fn which_record_the_dirty_bucket_consumers_read() {
             .get_mut(&forced_clean)
             .expect("the bucket chosen above is in the map")
             .set_dirty(false);
-    }
+    });
 
     // ---- ASK ALL THREE CONSUMERS. `storage_lifecycle_plan` PLANS and does not apply: applying
     // ---- would dump, and a dump clears the very flags that were just forced.

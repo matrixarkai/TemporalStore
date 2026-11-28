@@ -53,6 +53,12 @@ fn facts(path: &Path) -> Facts {
     facts
 }
 
+/// Replay anchor and resident-block floor observed from the same image bytes.
+pub(super) fn recovery_bounds(path: &Path) -> (u64, Option<u64>) {
+    let facts = facts(path);
+    (facts.anchor, facts.wal_floor)
+}
+
 pub(super) fn read(path: &Path) -> u64 {
     facts(path).anchor
 }
@@ -125,7 +131,7 @@ mod tests {
                 .status
                 .ok
         );
-        let mut shard = engine.shards.read().unwrap()[&1].clone();
+        let mut shard = engine.shards.with_state(1, |state| state.unwrap().clone());
         let expected = super::super::storage_lifecycle_methods::wal_floor_of_index_image(&shard);
         assert!(expected.is_some_and(|floor| floor > 0));
         let path = dir.path().join("base");

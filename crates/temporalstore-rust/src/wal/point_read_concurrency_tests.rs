@@ -47,11 +47,12 @@ fn prepared_io_and_completion_do_not_wait_for_writer_mutex() {
     let (sequence, id) = append(&store, 1);
     let before = store.raw_stats(1);
     let mut prepared = prepare(&store, 1, id, sequence).unwrap().unwrap();
-    let held = store.inner.lock().unwrap();
+    let shard_writer = store.shard_writer(1);
+    let held = shard_writer.lock_inner_raw();
     let (result, bytes) = prepared.load(63, 63, None);
     assert_eq!(block(finish(&store, prepared, result, bytes)), staged(1)[63].bytes);
     assert_eq!(*held.point_reads.active.lock().unwrap(), 0);
-    assert_eq!(held.point_reads.stats(held.stats).reads, before.reads + 1);
+    assert_eq!(held.point_read_counts.stats(held.stats).reads, before.reads + 1);
     drop(held);
     assert_eq!(store.block_retention_floor(1), None);
     let after = store.raw_stats(1);
@@ -93,7 +94,8 @@ fn independent_reads_finish_together_while_the_writer_mutex_is_held() {
     let plans: Vec<_> = (0..MAX_IN_FLIGHT).map(|_| prepare(&store, 1, id, sequence).unwrap().unwrap()).collect();
     let ready = Arc::new(std::sync::Barrier::new(MAX_IN_FLIGHT));
     let (sender, receiver) = mpsc::channel();
-    let held = store.inner.lock().unwrap();
+    let shard_writer = store.shard_writer(1);
+    let held = shard_writer.lock_inner_raw();
     let threads: Vec<_> = plans.into_iter().enumerate().map(|(index, mut plan)| {
         let ready = Arc::clone(&ready);
         let sender = sender.clone();
@@ -110,7 +112,7 @@ fn independent_reads_finish_together_while_the_writer_mutex_is_held() {
         let (index, bytes) = receiver.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(bytes, expected[index].bytes);
     }
-    assert_eq!(held.point_reads.stats(held.stats).reads, before + MAX_IN_FLIGHT as u64);
+    assert_eq!(held.point_read_counts.stats(held.stats).reads, before + MAX_IN_FLIGHT as u64);
     assert_eq!(*held.point_reads.active.lock().unwrap(), 0);
     drop(held);
     for thread in threads { thread.join().unwrap(); }
@@ -150,9 +152,10 @@ fn missing_and_invalid_reads_release_admission_and_retention() {
     let before = store.raw_stats(1).reads;
     assert!(read(&store, 1, id, sequence, 0, u64::MAX, None).is_err());
     assert_eq!(store.block_retention_floor(1), None);
-    let inner = store.inner.lock().unwrap();
+    let shard_writer = store.shard_writer(1);
+    let inner = shard_writer.lock_inner_raw();
     assert_eq!(*inner.point_reads.active.lock().unwrap(), 0);
-    assert_eq!(inner.point_reads.stats(inner.stats).reads, before + 1);
+    assert_eq!(inner.point_read_counts.stats(inner.stats).reads, before + 1);
 }
 
 #[test]

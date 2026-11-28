@@ -404,9 +404,10 @@ fn amplification_counted_in_items_moves_and_a_dump_resets_it() {
 
     // ---------- DUMPED: a dump re-serializes the live set, so the superseded records are gone.
     let candidates: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        shard.bucket_index.bucket_map.keys().copied().collect()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            shard.bucket_index.bucket_map.keys().copied().collect()
+        })
     };
     assert!(!candidates.is_empty(), "no bucket to dump, so the reset below would be a no-op");
     let lifecycle = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {

@@ -830,7 +830,7 @@ impl RaftCluster {
         };
         #[cfg(test)]
         self.perform_armed_follower_window_interleaving(node_id, watermark);
-        let rebuilt = rebuild_snapshot_engine_in(&snapshot, open_replica_engine(factory.as_ref())?);
+        let rebuilt = rebuild_snapshot_engine_in(&snapshot, open_replica_engine(factory.as_ref())?)?;
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         #[cfg(test)]
         let _guard_mark = crate::snapshot_probe::GuardMark::new();
@@ -989,7 +989,7 @@ impl RaftCluster {
                 .iter()
                 .map(|(node_id, factory)| {
                     let engine = open_replica_engine(factory.as_ref())?;
-                    Ok((*node_id, rebuild_snapshot_engine_in(&snapshot, engine)))
+                    Ok((*node_id, rebuild_snapshot_engine_in(&snapshot, engine)?))
                 })
                 .collect::<Result<Vec<_>, RaftError>>()?;
             // The per-node COPY of the image is a pure function of the snapshot for exactly the
@@ -1028,7 +1028,7 @@ impl RaftCluster {
             for node_id in &targets {
                 if !prebuilt.iter().any(|(id, _)| id == node_id) {
                     let engine = open_replica_engine(inner.nodes[node_id].engine_factory.as_ref())?;
-                    prebuilt.push((*node_id, rebuild_snapshot_engine_in(&snapshot, engine)));
+                    prebuilt.push((*node_id, rebuild_snapshot_engine_in(&snapshot, engine)?));
                 }
             }
             let mut carried = Some(snapshot);
@@ -1620,10 +1620,11 @@ pub(super) fn build_state_image(
     };
     let mut slabs = Vec::with_capacity(slab_ids.len());
     for block_slab_id in slab_ids {
-        let bytes = block_store.read_slab(block_slab_id).ok()?;
+        let (bytes, owner_shard_id) = block_store.read_slab_for_transfer(block_slab_id).ok()?;
         slabs.push(RaftSnapshotStateImageSlab {
             block_slab_id,
             bytes,
+            owner_shard_id,
         });
     }
     let (start_routing_bucket, end_routing_bucket) = engine.shard_routing_range(shard_id);
@@ -1661,22 +1662,10 @@ fn build_installed_engine(
             #[cfg(test)]
             install_probe::note_slab_install();
             block_store
-                .install_slab(slab.block_slab_id, &slab.bytes)
+                .install_transferred_slab(slab.block_slab_id, &slab.bytes, slab.owner_shard_id)
                 .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
         }
-        // An image with no range cannot be installed: see `RaftSnapshotStateImage::routing_range`.
-        // Refused by name, so the failure says WHAT arrived rather than that a field was missing.
-        let routing_range = image.routing_range.ok_or_else(|| {
-            RaftError::SnapshotEncoding(format!(
-                "snapshot state image for shard {shard_id} carries no routing range, so the buckets \
-                 its index names cannot be accounted for. It was encoded before the range travelled \
-                 with the image; re-take the snapshot from a leader running this build."
-            ))
-        })?;
-        engine
-            .install_index_bytes_in_empty_wal(shard_id, &image.index_bytes, routing_range)
-            .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
-        engine.load_shard(shard_id);
+        install_snapshot_index(&engine, shard_id, image)?;
     } else {
         engine.load_shard(shard_id);
         for entry in &snapshot.entries {
