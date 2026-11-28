@@ -156,19 +156,20 @@ fn snapshot(engine: &crate::TemporalEngine, label: impl Into<String>) -> Snapsho
     // THE BLOCK-GRANULAR FIGURE, read from the shard's own maintained tally rather than
     // recomputed here, so this arm and the GC's candidate selection are reading one number.
     let live_block_granular = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        if shard.bucket_index.block_slab_live.is_ready() {
-            Some(
-                shard
-                    .bucket_index
-                    .block_slab_live
-                    .iter()
-                    .fold(0_u64, |total, (_, tally)| total.saturating_add(tally.bytes)),
-            )
-        } else {
-            None
-        }
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            if shard.bucket_index.block_slab_live.is_ready() {
+                Some(
+                    shard
+                        .bucket_index
+                        .block_slab_live
+                        .iter()
+                        .fold(0_u64, |total, (_, tally)| total.saturating_add(tally.bytes)),
+                )
+            } else {
+                None
+            }
+        })
     };
     // THE RECORDED COLUMN, from the shard's own retired-range record and from the field the shard
     // publishes out of it. Read together so that a disagreement between them shows up here.
@@ -232,9 +233,10 @@ fn the_amplification_set_under_rewrite() {
         // bucket's CURRENT generation, and a round that compacts changes generations -- a set
         // captured once goes stale and later rounds would ask for manifests that do not exist.
         let buckets: Vec<u32> = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
-            shard.bucket_index.bucket_map.keys().copied().collect()
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard is loaded");
+                shard.bucket_index.bucket_map.keys().copied().collect()
+            })
         };
         assert!(
             !buckets.is_empty(),

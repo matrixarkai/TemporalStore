@@ -184,15 +184,16 @@ impl Lengths {
 
 /// Lengths of the `Many` arm only -- the lists a scan actually walks.
 fn many_arm_lengths(engine: &TemporalEngine) -> Lengths {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut lengths = Lengths::default();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        if matches!(bucket.block_index, BlockIndexMap::Many(_)) {
-            *lengths.counts.entry(bucket.block_index.len()).or_default() += 1;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let mut lengths = Lengths::default();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            if matches!(bucket.block_index, BlockIndexMap::Many(_)) {
+                *lengths.counts.entry(bucket.block_index.len()).or_default() += 1;
+            }
         }
-    }
-    lengths
+        lengths
+    })
 }
 
 /// (Empty, One, Many) bucket counts.
@@ -201,17 +202,18 @@ fn many_arm_lengths(engine: &TemporalEngine) -> Lengths {
 /// in the node plus one allocation instead of the width of a whole entry. The three-way split is
 /// unchanged, and it is still what the container decision turns on.
 fn arms(engine: &TemporalEngine) -> (usize, usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut counts = (0usize, 0usize, 0usize);
-    for bucket in shard.bucket_index.bucket_map.values() {
-        match &bucket.block_index {
-            BlockIndexMap::Empty => counts.0 += 1,
-            BlockIndexMap::One(_, _) => counts.1 += 1,
-            BlockIndexMap::Many(_) => counts.2 += 1,
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let mut counts = (0usize, 0usize, 0usize);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            match &bucket.block_index {
+                BlockIndexMap::Empty => counts.0 += 1,
+                BlockIndexMap::One(_, _) => counts.1 += 1,
+                BlockIndexMap::Many(_) => counts.2 += 1,
+            }
         }
-    }
-    counts
+        counts
+    })
 }
 
 /// THE ARM HISTOGRAM AND THE BLOCKS-PER-KEY DISTRIBUTION, AT BOTH RANGES, AT TWO CORPUS SIZES.
@@ -252,16 +254,15 @@ fn the_block_list_length_distribution_is_reported_as_a_histogram() {
                     );
                 }
             }
-            let indexed: usize = {
-                let shards = engine.shards.read().expect("engine lock poisoned");
-                let shard = shards.get(&1).expect("shard is loaded");
+            let indexed: usize = engine.shards.with_state(1, |shard| {
+                let shard = shard.expect("shard is loaded");
                 shard
                     .bucket_index
                     .bucket_map
                     .values()
                     .map(|bucket| bucket.block_index.len())
                     .sum()
-            };
+            });
             assert_eq!(
                 indexed,
                 keys.len(),
@@ -974,9 +975,8 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         // pair is taken from `block_identities_in`, which is the same per-bucket projection every
         // production sweep uses. Built OUTSIDE the counted spans below, so the two container
         // measurements are over the identical values they were before.
-        let by_bucket: Vec<Vec<(std::sync::Arc<str>, BlockIndex)>> = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
+        let by_bucket: Vec<Vec<(std::sync::Arc<str>, BlockIndex)>> = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard is loaded");
             let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
             shard
                 .bucket_index
@@ -990,7 +990,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
                         .map(|(handle, block)| {
                             let key = named.get(handle).unwrap_or_else(|| {
                                 panic!(
-                                    "the block at handle {handle} is named by nothing beside it,                                      so this fixture cannot hand it on"
+                                    "the block at handle {handle} is named by nothing beside it, so this fixture cannot hand it on"
                                 )
                             });
                             (std::sync::Arc::clone(key), block.clone())
@@ -999,7 +999,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
                 })
                 .filter(|blocks: &Vec<(std::sync::Arc<str>, BlockIndex)>| !blocks.is_empty())
                 .collect()
-        };
+        });
         let blocks: usize = by_bucket.iter().map(|b| b.len()).sum();
         assert_eq!(
             blocks,
@@ -1258,9 +1258,8 @@ fn what_the_slots_owned_element_headroom_costs() {
             .collect(),
     );
 
-    let (slots, with_array, kinds) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let (slots, with_array, kinds) = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let mut slots = 0usize;
         let mut with_array = 0usize;
         let mut kinds = 0usize;
@@ -1274,7 +1273,7 @@ fn what_the_slots_owned_element_headroom_costs() {
             }
         }
         (slots, with_array, kinds)
-    };
+    });
 
     let array_width = std::mem::size_of::<Option<Box<Vec<(u64, ElementEntry)>>>>();
     let slot = std::mem::size_of::<ObjectSlot>();
@@ -1388,30 +1387,31 @@ fn what_the_published_arm_cannot_see_in_container_capacity() {
                 })
                 .collect(),
         );
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let (mut bl, mut bc, mut ol, mut oc) = (0usize, 0usize, 0usize, 0usize);
-        for bucket in shard.bucket_index.bucket_map.values() {
-            let (l, c) = bucket.block_index.list_len_and_capacity();
-            bl += l;
-            bc += c;
-            let (l, c) = bucket.object_index.slots_len_and_capacity();
-            ol += l;
-            oc += c;
-        }
-        let unseen = (bc - bl) * block_entry + (oc - ol) * slot_entry;
-        println!();
-        println!("  {keys} keys, {VALUE}-byte values, shipped 0..{SHIPPED_END}");
-        println!("    block lists  len {bl} cap {bc}   ({block_entry} B an entry)");
-        println!("    slot arrays  len {ol} cap {oc}   ({slot_entry} B an entry)");
-        println!(
-            "    unseen by the clone: {unseen} B = {:.2} B/key",
-            unseen as f64 / keys as f64
-        );
-        // NON-VACUITY, both containers populated, or this census is over nothing.
-        assert!(bl > 0, "{keys} keys produced no block list, so this is not the shipped range");
-        assert!(ol > 0, "{keys} keys produced no slot array");
-        (keys, unseen, bc - bl + oc - ol)
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard is loaded");
+            let (mut bl, mut bc, mut ol, mut oc) = (0usize, 0usize, 0usize, 0usize);
+            for bucket in shard.bucket_index.bucket_map.values() {
+                let (l, c) = bucket.block_index.list_len_and_capacity();
+                bl += l;
+                bc += c;
+                let (l, c) = bucket.object_index.slots_len_and_capacity();
+                ol += l;
+                oc += c;
+            }
+            let unseen = (bc - bl) * block_entry + (oc - ol) * slot_entry;
+            println!();
+            println!("  {keys} keys, {VALUE}-byte values, shipped 0..{SHIPPED_END}");
+            println!("    block lists  len {bl} cap {bc}   ({block_entry} B an entry)");
+            println!("    slot arrays  len {ol} cap {oc}   ({slot_entry} B an entry)");
+            println!(
+                "    unseen by the clone: {unseen} B = {:.2} B/key",
+                unseen as f64 / keys as f64
+            );
+            // NON-VACUITY, both containers populated, or this census is over nothing.
+            assert!(bl > 0, "{keys} keys produced no block list, so this is not the shipped range");
+            assert!(ol > 0, "{keys} keys produced no slot array");
+            (keys, unseen, bc - bl + oc - ol)
+        })
     };
 
     let (k1, u1, s1) = weigh(ONE_X);
@@ -1861,27 +1861,28 @@ fn a_read_examines_entries_only_where_a_block_list_exists() {
         load_on(&engine, end_routing_bucket);
         let keys = seed_routed(&engine, SMALL);
 
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        reset_block_lookup_entries_examined();
-        let mut served = 0usize;
-        for key in keys.iter().take(1_000) {
-            if crate::engine::bucket_store::bucket_index_block_address(
-                shard, "string", key, None,
-            )
-            .is_some()
-            {
-                served += 1;
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard is loaded");
+            reset_block_lookup_entries_examined();
+            let mut served = 0usize;
+            for key in keys.iter().take(1_000) {
+                if crate::engine::bucket_store::bucket_index_block_address(
+                    shard, "string", key, None,
+                )
+                .is_some()
+                {
+                    served += 1;
+                }
             }
-        }
-        let examined = block_lookup_entries_examined();
-        assert_eq!(1_000, served, "the fixture resolved {served} of 1,000 keys");
-        charged.insert(end_routing_bucket, (examined, served));
-        println!(
-            "  0..{end_routing_bucket}: {examined} list entries examined over {served} \
+            let examined = block_lookup_entries_examined();
+            assert_eq!(1_000, served, "the fixture resolved {served} of 1,000 keys");
+            charged.insert(end_routing_bucket, (examined, served));
+            println!(
+                "  0..{end_routing_bucket}: {examined} list entries examined over {served} \
              resolutions ({:.4} a read)",
-            examined as f64 / served as f64
-        );
+                examined as f64 / served as f64
+            );
+        });
     }
 
     let (wide_examined, _) = charged[&WIDE_END];
@@ -1926,9 +1927,8 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
     load_on(&engine, NARROW_END);
     let keys = seed_routed(&engine, SMALL);
 
-    let (distinct, total, listed_keys) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let (distinct, total, listed_keys) = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         // THE KEYS COME FROM THE LOOKUP BESIDE THE BLOCKS, not from the blocks. That is a
         // STRONGER claim than the field read was, and deliberately: a block the lookup does not
         // name would have been counted under its own copy of the key before, and is refused
@@ -1953,7 +1953,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
             }
         }
         (handles.len(), total, object_keys)
-    };
+    });
 
     assert_eq!(
         total, distinct,
@@ -1977,9 +1977,8 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
     // taking it out cannot be one borrow, and splitting them into two phases is simpler than
     // splitting the borrow.
     let planted = {
-        let (routing_bucket, handle, key) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
+        let (routing_bucket, handle, key) = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard is loaded");
             let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
             let mut found = None;
             for bucket in shard.bucket_index.bucket_map.values() {
@@ -1993,31 +1992,31 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
                 }
             }
             found.expect("the index held at least one block to plant a loss in")
-        };
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
-        let mut live = BlockSlabLiveIndex::default();
-        let mut bucket = shard
-            .bucket_index
-            .bucket_map
-            .get_mut(&routing_bucket)
-            .expect("the bucket named a moment ago is still there");
-        assert!(
-            bucket.block_index.remove(&handle, &mut live, crate::engine::state::StaleCause::Removed).is_some(),
-            "the planted removal took nothing out, so the count below cannot have moved"
-        );
-        key
+        });
+        engine.shards.with_state_mut(1, |shard| {
+            let shard = shard.expect("shard is loaded");
+            let mut live = BlockSlabLiveIndex::default();
+            let mut bucket = shard
+                .bucket_index
+                .bucket_map
+                .get_mut(&routing_bucket)
+                .expect("the bucket named a moment ago is still there");
+            assert!(
+                bucket.block_index.remove(&handle, &mut live, crate::engine::state::StaleCause::Removed).is_some(),
+                "the planted removal took nothing out, so the count below cannot have moved"
+            );
+            key
+        })
     };
-    let after: usize = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let after: usize = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         shard
             .bucket_index
             .bucket_map
             .values()
             .map(|bucket| bucket.block_index.len())
             .sum()
-    };
+    });
     assert_eq!(
         total - 1,
         after,

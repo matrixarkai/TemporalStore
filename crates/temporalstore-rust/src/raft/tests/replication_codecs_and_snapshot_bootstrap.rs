@@ -952,6 +952,53 @@ fn raft_transport_append_entries_catches_up_lagging_replica() {
 }
 
 #[test]
+fn removed_local_replica_hears_the_leader_without_accepting_entries() {
+    let replica = RaftCluster::new_single_shard(1, [1, 2, 3]);
+    replica.set_local_node_id(3);
+    replica.apply_membership_change_safely([1, 2]).unwrap();
+    replica.set_alive(1, false).unwrap();
+
+    let term = replica.hard_state(1).unwrap().current_term;
+    let heartbeat = AppendEntriesRequest {
+        rpc: None,
+        shard_id: 1,
+        term,
+        leader_id: 1,
+        target_id: 3,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: Vec::new(),
+        leader_commit: 0,
+    };
+    let before = replica.leader_contact_epoch();
+
+    for invalid in [
+        AppendEntriesRequest { target_id: 4, ..heartbeat.clone() },
+        AppendEntriesRequest { leader_id: 2, ..heartbeat.clone() },
+        AppendEntriesRequest { term: term - 1, ..heartbeat.clone() },
+    ] {
+        assert!(matches!(
+            replica.receive_append_entries(invalid),
+            Err(RaftError::NodeNotFound(_))
+        ));
+        assert_eq!(replica.leader_contact_epoch(), before);
+        assert!(matches!(
+            replica.plan_membership_change([1, 2, 3]),
+            Err(RaftError::LeaderUnavailable)
+        ));
+    }
+
+    assert!(matches!(
+        replica.receive_append_entries(heartbeat),
+        Err(RaftError::NodeNotFound(3))
+    ));
+    assert_eq!(replica.leader_contact_epoch(), before + 1);
+    assert_eq!(replica.membership().voters, vec![1, 2]);
+    replica.apply_membership_change_safely([1, 2, 3]).unwrap();
+    assert_eq!(replica.membership().voters, vec![1, 2, 3]);
+}
+
+#[test]
 fn raft_transport_rejects_stale_append_entries_and_behind_vote() {
     let cluster = RaftCluster::new_single_shard(1, [1, 2, 3]);
     cluster
@@ -1273,7 +1320,7 @@ fn rejected_higher_term_append_still_steps_down_the_old_leader() {
     }).unwrap();
     assert!(!reply.success);
     assert_eq!(reply.term, 5);
-    assert_eq!(reply.reject_reason.as_deref(), Some("log_mismatch"));
+    assert_eq!(reply.reject_reason.as_deref(), Some("out_of_order_append_queued"));
     assert_eq!(cluster.local_status(1).unwrap().role, RaftRole::Follower);
     assert!(!cluster.is_local_leader(1));
 }

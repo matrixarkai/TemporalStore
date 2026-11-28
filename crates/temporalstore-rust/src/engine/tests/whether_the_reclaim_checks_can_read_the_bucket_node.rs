@@ -62,23 +62,24 @@ const END_ROUTING_BUCKET: u32 = 15;
 
 /// Every bucket's two records of the same fact, plus the claim it could name over the log.
 fn phase_state(engine: &crate::TemporalEngine) -> BTreeMap<u32, (bool, u64, u64)> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .map(|(routing_bucket, bucket)| {
-            (
-                *routing_bucket,
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| {
                 (
-                    bucket.dirty(),
-                    shard.dirty_objects.bucket_count(*routing_bucket),
-                    bucket.first_dirty_wal_sequence,
-                ),
-            )
-        })
-        .collect()
+                    *routing_bucket,
+                    (
+                        bucket.dirty(),
+                        shard.dirty_objects.bucket_count(*routing_bucket),
+                        bucket.first_dirty_wal_sequence,
+                    ),
+                )
+            })
+            .collect()
+    })
 }
 
 /// The buckets whose node reads dirty while the object-keyed set holds nothing for them.
@@ -295,17 +296,12 @@ fn whether_the_reclaim_checks_can_read_the_bucket_node() {
         .keys()
         .find(|bucket| !tail_dirty.contains(bucket))
         .expect("the tail dump did not name every bucket");
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        shards
-            .get_mut(&1)
-            .expect("shard 1")
-            .bucket_index
-            .bucket_map
+    engine.shards.with_state_mut(1, |state| {
+        state.expect("shard 1").bucket_index.bucket_map
             .get_mut(&a_bucket)
             .expect("the bucket chosen above is in the map")
             .set_dirty(true);
-    }
+    });
     let floor_forced = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
     let floor_state = phase_state(&engine);
 
@@ -315,18 +311,13 @@ fn whether_the_reclaim_checks_can_read_the_bucket_node() {
     // ---- is still 0 because the dump cleared it alongside the flag, so a plan reading the node
     // ---- must report it as unable to name one -- and that is the regression this move is gated
     // ---- against, reached deliberately here to show which record decides it.
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let mut bucket = shards
-            .get_mut(&1)
-            .expect("shard 1")
-            .bucket_index
-            .bucket_map
+    engine.shards.with_state_mut(1, |state| {
+        let mut bucket = state.expect("shard 1").bucket_index.bucket_map
             .get_mut(&a_bucket)
             .expect("the bucket chosen above is in the map");
         bucket.set_dirty(true);
         bucket.dirty_generation = bucket.dirty_generation.saturating_add(10_000);
-    }
+    });
     let covered_forced = engine.storage_wal_reclaim_plan(1, Vec::new(), Vec::new());
     let covered_state = phase_state(&engine);
 

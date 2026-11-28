@@ -3700,7 +3700,7 @@ fn a_rejected_append_retreats_to_an_earlier_entry() {
     let second = cluster.build_append_entries_request(3).unwrap();
     assert!(
         second.prev_log_index < first.prev_log_index,
-        "a rejection must lower the point the next request asks about, but it stayed at {} --          the retry is identical, so the peer can never converge",
+        "a rejection must lower the point the next request asks about, but it stayed at {} -- the retry is identical, so the peer can never converge",
         second.prev_log_index
     );
 }

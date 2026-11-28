@@ -17,6 +17,14 @@ pub(super) fn load_shard_with_inner(
     inner: &DataNodeRuntimeInner,
     request: LoadShardRequest,
 ) -> LoadShardResponse {
+    load_shard_with_shared_tail_inner(inner, request, || Ok(()))
+}
+
+pub(super) fn load_shard_with_shared_tail_inner(
+    inner: &DataNodeRuntimeInner,
+    request: LoadShardRequest,
+    replay_tail: impl FnOnce() -> Result<(), Status>,
+) -> LoadShardResponse {
     let _generation = inner.shard_generation_lock(request.shard_id)
         .write()
         .expect("shard generation lock poisoned");
@@ -41,7 +49,7 @@ pub(super) fn load_shard_with_inner(
         request.load_version,
         None,
     );
-    let response = inner.engine.load_shard_with(request.clone());
+    let response = inner.engine.load_shard_with_shared_tail(request.clone(), replay_tail);
     record_lifecycle_state_inner(
         inner,
         request.shard_id,

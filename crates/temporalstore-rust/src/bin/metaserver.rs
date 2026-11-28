@@ -44,11 +44,16 @@ use temporalstore_rust::{
 };
 use tracing::{debug, error, info, warn};
 
+#[path = "metaserver/grpc.rs"]
+mod grpc;
+
 fn main() {
     temporalstore_rust::telemetry::init();
-    let addr = temporalstore_rust::env_flag::env_value("TS_META_BIND_ADDR")
-        .or_else(|| temporalstore_rust::env_flag::env_value("TS_META_ADDR"))
-        .unwrap_or_else(|| "127.0.0.1:17001".to_string());
+    let explicit_bind = temporalstore_rust::env_flag::env_value("TS_META_BIND_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_META_ADDR"));
+    let grpc_bind = temporalstore_rust::env_flag::env_value("TS_META_GRPC_BIND_ADDR")
+        .or_else(|| explicit_bind.is_none().then(|| "127.0.0.1:17201".to_owned()));
+    let addr = explicit_bind.unwrap_or_else(|| "127.0.0.1:17001".to_owned());
     let backend = MetaBackend::from_env().expect("failed to initialize metaserver backend");
     let scheduler =
         MetaTaskScheduler::from_env().expect("failed to initialize metaserver scheduler");
@@ -342,7 +347,7 @@ fn main() {
             }
             MetaBackend::Raft(_) => {
                 warn!(
-                    "TS_RAFT_AUTO_FAILOVER ignored: this setting drives failover for datanode                      raft shard groups, which the raft backend does not do -- a frozen datanode                      leaves its groups without a trigger and writes to them stall"
+                    "TS_RAFT_AUTO_FAILOVER ignored: this setting drives failover for datanode raft shard groups, which the raft backend does not do -- a frozen datanode leaves its groups without a trigger and writes to them stall"
                 );
                 None
             }
@@ -354,6 +359,10 @@ fn main() {
     // security-relevant setting. Changing the variable on a running process
     // deliberately does nothing.
     let admin_token = temporalstore_rust::meta::admin_auth_token();
+    if let Some(grpc_addr) = grpc_bind {
+        grpc::start(&grpc_addr, backend.clone(), admin_token.clone())
+            .expect("metaserver gRPC bind failed");
+    }
     if admin_token.is_some() {
         info!("metaserver admin token required (TS_META_ADMIN_TOKEN is set)");
     }

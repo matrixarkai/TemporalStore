@@ -50,3 +50,65 @@ class TablePlacementTest(unittest.TestCase):
         shard = MetadataClient._decode_shard(row)
         self.assertEqual((shard.primary, shard.primary_grpc, shard.load_version),
                          ("assigned:1000", "assigned:2000", 4))
+
+
+def test_metadata_grpc_uses_versioned_topology_and_bearer_credentials():
+    from concurrent.futures import ThreadPoolExecutor
+
+    import grpc
+    from temporalstore_sdk import commands as pb
+
+    seen = []
+
+    def topology(request, context):
+        seen.append((request.namespace_name, request.table_name, request.old_topology_version))
+        assert ("authorization", "Bearer test-token") in context.invocation_metadata()
+        response = pb.MetadataTableTopologyResponse(
+            status=pb.Status(ok=True), table_id=7, topology_version=42, first_shard_id=73, shard_count=1,
+            unchanged=bool(request.old_topology_version),
+        )
+        if not response.unchanged:
+            response.shards.add(
+                shard_id=73, uses_raft_route=True, primary_addr="leader:17002",
+                primary_grpc="leader:17202", load_version=8,
+            )
+        return response
+
+    handler = grpc.unary_unary_rpc_method_handler(
+        topology, request_deserializer=pb.MetadataTableTopologyRequest.FromString,
+        response_serializer=pb.MetadataTableTopologyResponse.SerializeToString,
+    )
+    with ThreadPoolExecutor(max_workers=1) as worker:
+        server = grpc.server(worker)
+        server.add_generic_rpc_handlers((
+            grpc.method_handlers_generic_handler("temporalstore.v1.MetadataService", {"GetTableTopology": handler}),
+        ))
+        port = server.add_insecure_port("127.0.0.1:0")
+        server.start()
+        client = MetadataClient(f"127.0.0.1:{port}", credential_provider=lambda: "test-token")
+        try:
+            first = client.table_topology("kvcache", "model")
+            assert (first.table_id, first.version) == (7, 42)
+            shard = first.shard_for_key("chunk")
+            assert (shard.shard_id, shard.primary_grpc, shard.load_version) == (73, "leader:17202", 8)
+            assert shard.uses_raft_route
+            assert client.table_topology("kvcache", "model", previous=first) is first
+            assert seen == [("kvcache", "model", 0), ("kvcache", "model", 42)]
+        finally:
+            client.close()
+            server.stop(0).wait()
+
+def test_topology_uses_the_smaller_explicit_or_default_timeout():
+    from unittest.mock import Mock
+
+    from temporalstore_sdk import commands as pb
+
+    from contextlib import closing
+
+    with closing(MetadataClient("grpc://127.0.0.1:1", timeout_seconds=5)) as client:
+        client._topology_rpc = Mock(return_value=pb.MetadataTableTopologyResponse(
+            status=pb.Status(ok=True), first_shard_id=73, shard_count=1,
+        ))
+        client.table_topology("kvcache", "model", timeout_seconds=0.25)
+        client.table_topology("kvcache", "model", timeout_seconds=30)
+        assert [call.kwargs["timeout"] for call in client._topology_rpc.call_args_list] == [0.25, 5]

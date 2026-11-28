@@ -169,38 +169,40 @@ fn blocks_and_index_rows(
         .iter()
         .map(|key| stable_block_object_id(1, kind, key))
         .collect();
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut blocks = 0usize;
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut rows: BTreeSet<u64> = BTreeSet::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.deleted() || block.model_id().as_str() != kind {
-                continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let mut blocks = 0usize;
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut rows: BTreeSet<u64> = BTreeSet::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.deleted() || block.model_id().as_str() != kind {
+                    continue;
+                }
+                if !keys.contains(&**named.at(bucket.routing_bucket, *handle)) {
+                    continue;
+                }
+                blocks += 1;
             }
-            if !keys.contains(&**named.at(bucket.routing_bucket, *handle)) {
-                continue;
+            for object_id in &bucket.object_index {
+                if wanted.contains(object_id) {
+                    rows.insert(*object_id);
+                }
             }
-            blocks += 1;
         }
-        for object_id in &bucket.object_index {
-            if wanted.contains(object_id) {
-                rows.insert(*object_id);
-            }
-        }
-    }
-    (blocks, rows.len())
+        (blocks, rows.len())
+    })
 }
 
 fn tombstone_holds(engine: &TemporalEngine, object_id: u64) -> bool {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .any(|bucket| bucket.deleted_object_index.contains(&object_id))
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .any(|bucket| bucket.deleted_object_index.contains(&object_id))
+    })
 }
 
 /// The element names of one key's live blocks, sorted. An absent element name reads as the empty string,
@@ -215,21 +217,22 @@ fn tombstone_holds(engine: &TemporalEngine, object_id: u64) -> bool {
 /// identity and whose body yields blanks is worse than a missing helper, so it returns the count it
 /// actually computes. Element identity is `resident_fields` below.
 fn live_block_count(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut held = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if !block.deleted()
-                && block.model_id().as_str() == kind
-                && &**named.at(bucket.routing_bucket, *handle) == key
-            {
-                held += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut held = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if !block.deleted()
+                    && block.model_id().as_str() == kind
+                    && &**named.at(bucket.routing_bucket, *handle) == key
+                {
+                    held += 1;
+                }
             }
         }
-    }
-    held
+        held
+    })
 }
 
 /// THE FIELD NAMES THIS OBJECT HOLDS, from the authority for them.
@@ -238,13 +241,14 @@ fn live_block_count(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
 /// from. It is where element identity went when it came off the entry, so it is where the questions
 /// about element identity in this module are now asked.
 fn resident_fields(engine: &TemporalEngine, key: &str) -> std::collections::BTreeSet<String> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    shard
-        .bucket_index.hashes
-        .get(key)
-        .map(|fields| fields.keys().map(|name| name.to_string()).collect())
-        .unwrap_or_default()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        shard
+            .bucket_index.hashes
+            .get(key)
+            .map(|fields| fields.keys().map(|name| name.to_string()).collect())
+            .unwrap_or_default()
+    })
 }
 
 fn percentile(sorted: &[usize], p: f64) -> usize {

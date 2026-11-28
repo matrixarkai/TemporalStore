@@ -784,18 +784,19 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     // being checked.
     // ---------------------------------------------------------------------------------------------
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
-        let fields = shard
-            .bucket_index.hashes
-            .elements_mut_for_test(KEY)
-            .expect("the fixture's hash is in the container");
-        let removed = fields.remove("field-0");
-        assert!(
-            removed.is_some(),
-            "the fixture could not take `field-0` out of the container, so the route below was \
-             never driven and the rest of this test would measure a warm shard"
-        );
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let fields = shard
+                .bucket_index.hashes
+                .elements_mut_for_test(KEY)
+                .expect("the fixture's hash is in the container");
+            let removed = fields.remove("field-0");
+            assert!(
+                removed.is_some(),
+                "the fixture could not take `field-0` out of the container, so the route below was \
+                 never driven and the rest of this test would measure a warm shard"
+            );
+        })
     }
 
     let parted = four_answers(&engine, KEY);
@@ -1021,11 +1022,12 @@ impl FourAnswers {
 /// Read all four at once, so a stage cannot compare numbers taken at different moments.
 fn four_answers(engine: &TemporalEngine, key: &str) -> FourAnswers {
     let (container, index) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let container = shard.bucket_index.hashes.get(key).map(|fields| fields.len()).unwrap_or(0);
-        let index = super::bucket_index_element_name_block_addresses(shard, "hash", key).len();
-        (container, index)
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let container = shard.bucket_index.hashes.get(key).map(|fields| fields.len()).unwrap_or(0);
+            let index = super::bucket_index_element_name_block_addresses(shard, "hash", key).len();
+            (container, index)
+        })
     };
     let length_command = length_answer(
         engine,
