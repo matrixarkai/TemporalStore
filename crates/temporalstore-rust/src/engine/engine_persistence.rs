@@ -1705,6 +1705,14 @@ fn selected_durable_manifest_load_is_clean_before_replaying_a_real_suffix() {
         64 * 1024 * 1024, dir.path().join("cache-a"), &blocks, &indexes,
     );
     engine.load_shard(1);
+    assert!(engine.set_config(crate::control::SetConfigRequest {
+        shard_id: 1,
+        config: crate::control::Config {
+            version: 2,
+            async_storage: true,
+            ..Default::default()
+        },
+    }).ok);
     for command in [
         Command::SetAdd { key: "removed".into(), member: b"member".to_vec() },
         Command::SetRemove { key: "removed".into(), member: b"member".to_vec() },
