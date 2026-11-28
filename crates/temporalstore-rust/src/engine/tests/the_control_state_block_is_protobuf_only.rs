@@ -92,29 +92,30 @@ fn the_load_path_reads_a_protobuf_block_and_counts_the_unreadable() {
     engine.load_shard(SHARD);
     {
         let (start, end) = engine.shard_routing_range(SHARD);
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&SHARD).expect("the shard is loaded");
-        let mut store = |key: &str, bytes: Vec<u8>| {
-            assert!(
-                append_control_state_block(
-                    &engine.cache,
-                    &engine.block_store,
-                    SHARD,
-                    shard,
-                    key,
-                    &bytes,
-                    start,
-                    end,
-                    false,
-                ),
-                "{key}: the block was not stored"
-            );
-        };
-        store("ctr-block", encode_control_state_block(&series(&[(10, 100), (20, 7)])));
-        // The JSON object the writer used to store: refused now, so a series stored that way is absent.
-        store("ctr-json", serde_json::to_vec(&series(&[(10, 1)])).unwrap());
-        store("ctr-garbage", b"{not json".to_vec());
-        store("ctr-nothing", vec![0x78, 0x01]);
+        engine.shards.with_state_mut(SHARD, |state| {
+            let shard = state.expect("the shard is loaded");
+            let mut store = |key: &str, bytes: Vec<u8>| {
+                assert!(
+                    append_control_state_block(
+                        &engine.cache,
+                        &engine.block_store,
+                        SHARD,
+                        shard,
+                        key,
+                        &bytes,
+                        start,
+                        end,
+                        false,
+                    ),
+                    "{key}: the block was not stored"
+                );
+            };
+            store("ctr-block", encode_control_state_block(&series(&[(10, 100), (20, 7)])));
+            // The JSON object the writer used to store: refused now, so a series stored that way is absent.
+            store("ctr-json", serde_json::to_vec(&series(&[(10, 1)])).unwrap());
+            store("ctr-garbage", b"{not json".to_vec());
+            store("ctr-nothing", vec![0x78, 0x01]);
+        })
     }
     engine.flush_shard_index(SHARD);
     drop(engine);
@@ -182,12 +183,13 @@ fn a_counter_write_stores_a_block_a_fraction_of_the_json_size_and_a_restart_read
     crate::engine::ALWAYS_WRITE_COUNTER_BLOCK.with(|flag| flag.set(false));
 
     let (in_memory, stored) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&SHARD).expect("the shard is loaded");
-        let in_memory = shard.control_state().get("ctr").expect("the series").clone();
-        let slot = shard.control_state_blocks().get("ctr").expect("the block");
-        let stored = engine.block_store.read(&slot.address()).expect("the block reads");
-        (in_memory, stored)
+        engine.shards.with_state(SHARD, |state| {
+            let shard = state.expect("the shard is loaded");
+            let in_memory = shard.control_state().get("ctr").expect("the series").clone();
+            let slot = shard.control_state_blocks().get("ctr").expect("the block");
+            let stored = engine.block_store.read(&slot.address()).expect("the block reads");
+            (in_memory, stored)
+        })
     };
     assert_eq!(in_memory.len() as u64, points);
     assert_eq!(

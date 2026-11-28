@@ -199,6 +199,71 @@ fn length_and_range_answer_what_the_whole_read_answers() {
 }
 
 #[test]
+fn cold_string_lengths_use_only_address_or_header_bytes() {
+    const VALUE_BYTES: usize = (2 << 20) + 51;
+    let payload = vec![0xff; VALUE_BYTES];
+    for (async_storage, compression_enabled) in [(true, false), (false, false), (false, true)] {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        let engine = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
+            64 << 10,
+            root.join("cache"),
+            root.join("blocks"),
+            root.join("indexes"),
+            BlockStoreOptions {
+                compression_enabled,
+                compression_min_bytes: 0,
+                compression_level: 1,
+            },
+            false,
+        );
+        engine.load_shard(1);
+        assert!(engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage,
+                    ..Config::default()
+                },
+            })
+            .ok);
+        set(&engine, "chunk", &payload);
+        let address = engine
+            .shards
+            .with_state(1, |shard| shard.unwrap().string_address("chunk").unwrap());
+        assert_eq!(address.block_slab_id() == HOT_BLOCK_SLAB_ID, async_storage);
+        if compression_enabled {
+            assert!(address.length() < VALUE_BYTES as u64);
+        }
+        engine.cache().invalidate_shard(1).unwrap();
+
+        let before = engine.block_store().stats().bytes_read;
+        let wal = engine.write_ahead_log_store();
+        let wal_before = wal.stats(1).bytes_read;
+        assert_eq!(length(&engine, "chunk"), VALUE_BYTES as i64);
+        assert_eq!(wal.stats(1).bytes_read, wal_before);
+        let slab_bytes = engine.block_store().stats().bytes_read - before;
+        let expected = if async_storage {
+            0
+        } else {
+            (crate::block_store::BLOCK_RECORD_HEADER_LEN + 4) as u64
+        };
+        assert_eq!(slab_bytes, expected, "storage mode {async_storage}");
+
+        let before = engine.block_store().stats().bytes_read;
+        assert_eq!(engine.plan_cache_reclamation(1, 0).map(|(bytes, _)| bytes), Some(VALUE_BYTES as u64));
+        assert_eq!(wal.stats(1).bytes_read, wal_before);
+        assert_eq!(engine.block_store().stats().bytes_read - before, expected);
+
+        assert_eq!(
+            run(&engine, Command::StringGet { key: "chunk".to_string() }),
+            CommandResponse::Bytes { value: Some(payload.clone()) }
+        );
+    }
+}
+
+#[test]
 fn a_lapsed_string_has_no_length_and_no_range() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
@@ -212,6 +277,10 @@ fn a_lapsed_string_has_no_length_and_no_range() {
         },
     );
     std::thread::sleep(std::time::Duration::from_millis(30));
+    assert_eq!(
+        engine.plan_cache_reclamation(1, 1),
+        Some((5, vec![("kept".to_string(), 5)])),
+    );
     assert_eq!(0, length(&engine, "lapsed"));
     assert_eq!(None, range(&engine, "lapsed", 0, -1));
     assert_eq!(5, length(&engine, "kept"));

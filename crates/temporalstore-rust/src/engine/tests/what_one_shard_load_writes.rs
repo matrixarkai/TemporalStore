@@ -75,14 +75,11 @@ fn load_cost(keys: usize, flush_before_close: bool) -> LoadCost {
         let engine = engine_over(dir.path());
         engine.load_shard(SHARD);
         seed(&engine, keys);
-        let seeded = engine
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .get(&SHARD)
-            .expect("shard is loaded")
-            .strings()
-            .len();
+        let seeded = engine.shards.with_state(SHARD, |state| {
+            state.expect("shard is loaded")
+                .strings()
+                .len()
+        });
         assert_eq!(
             keys, seeded,
             "the seed must have landed, or nothing below means anything"
@@ -102,14 +99,11 @@ fn load_cost(keys: usize, flush_before_close: bool) -> LoadCost {
 
     // THE REGIME. A load that served nothing did not load anything, and would report a
     // flattering zero.
-    let served = engine
-        .shards
-        .read()
-        .expect("engine lock poisoned")
-        .get(&SHARD)
-        .expect("shard is loaded after a reopen")
-        .strings()
-        .len();
+    let served = engine.shards.with_state(SHARD, |state| {
+        state.expect("shard is loaded after a reopen")
+            .strings()
+            .len()
+    });
     assert_eq!(
         keys, served,
         "the reopened engine serves {served} of {keys} key(s), so this is a load that lost rows \

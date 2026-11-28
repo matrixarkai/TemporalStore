@@ -37,6 +37,7 @@ use std::collections::BTreeMap;
 
 fn shard_with(shard_id: crate::types::ShardId, scale: u64) -> crate::meta::ServerShardServingState {
     crate::meta::ServerShardServingState {
+        raft_role: None,
         shard_id,
         storage: crate::control::ShardCanonicalStorageStats {
             live_block_bytes: 100 * scale,

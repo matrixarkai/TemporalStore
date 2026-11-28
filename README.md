@@ -46,27 +46,27 @@ others; choose the API and acknowledgement policy before measuring a workload.
 
 ### LLM KV cache with LMCache and vLLM
 
-TemporalStore can serve as the L2 storage tier for LMCache. vLLM uses
-`LMCacheMPConnector` to send and retrieve KV blocks through the LMCache server,
-so a worker serving the same model and KV layout can reuse a cached prefix. The adapter streams KV
-payloads through the datanode's blob API and batches metadata operations for
-lookup and expiry.
+TemporalStore provides a shared L2 cache for LMCache and vLLM. vLLM's
+`LMCacheMPConnector` exchanges KV blocks with its local LMCache server.
+LMCache uses the same TemporalStore Python SDK as the Feast integration.
+TemporalStore places each model and parallel layout in a table and stores
+each KV chunk as one binary value. The table owns placement, expiry, and
+replication. Workers using the same model and layout reuse a shared table.
 
-1. Start a TemporalStore datanode and install the Python adapter from this
-   checkout with `python -m pip install ./integrations/feast ./integrations/lmcache`.
-2. Start LMCache with the TemporalStore adapter and point it at the datanode's
-   blob and command endpoints.
-3. Start vLLM with `LMCacheMPConnector`. To verify an L2 hit, clear LMCache L1
-   on the test deployment and repeat a prompt after its KV blocks have been
-   stored. The TemporalStore adapter's load counter should increase.
-
-The adapter supports a capacity budget, eviction, and optional metadata
-expiry. For redundancy, configure an adapter for each independent datanode.
-With LMCache's default store policy, each block is sent to all configured
-replicas and can be loaded from a reachable replica that accepted it.
+1. Install the SDK and adapter from this checkout with
+   `python -m pip install ./integrations/python-sdk ./integrations/feast ./integrations/lmcache`.
+2. Create a namespace and a replicated table for the model layout. Configure
+   each worker's LMCache adapter with the metaserver's `meta_url` and the
+   shared `namespace`. The SDK discovers the owning shard and sends native
+   gRPC requests to its datanode.
+3. Start vLLM with `LMCacheMPConnector`. For a cross-worker smoke test, disable
+   vLLM prefix caching, send a fresh prompt, and wait for the sum of the
+   writer's `stores` and `stores_confirmed_by_read` counters to increase.
+   Clear LMCache L1 on both workers with `POST /cache/clear`. Repeat the
+   prompt on the second worker and check that its L2 `loads` counter increased.
 
 See the [LMCache integration guide](integrations/lmcache/README.md) for
-configuration, replica setup, a vLLM smoke test, and the L2 benchmark.
+model-layout naming, adapter configuration, and benchmarking commands.
 
 ### Feast API support
 
@@ -444,7 +444,9 @@ docker compose -f docker-compose.single-node.yml up --build -d
 curl -fsS http://127.0.0.1:17102/health
 ```
 
-The Compose setup runs a metaserver on `17101` and a data node on `17102`.
+The Compose setup exposes gRPC on `127.0.0.1:17201` for metadata and
+`127.0.0.1:17202` for commands. HTTP health and compatibility endpoints are
+available on ports `17101` and `17102`.
 A named volume preserves data across container restarts. `/health` checks process
 liveness, not whether every shard can serve requests.
 

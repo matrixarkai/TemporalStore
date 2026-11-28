@@ -78,6 +78,7 @@ const GUARD_LARGE: usize = 8_000;
 
 /// The shipped batch limit (`DEFAULT_EVICTION_BATCH_LIMIT`).
 const BATCH: usize = 16;
+const FIXTURE_SHARD_ID: u64 = 1;
 
 fn evict_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
@@ -86,7 +87,7 @@ fn evict_engine(dir: &std::path::Path) -> TemporalEngine {
         dir.join("blocks"),
         dir.join("indexes"),
     );
-    engine.load_shard(1);
+    engine.load_shard(FIXTURE_SHARD_ID);
     engine.use_sampled_eviction_for_test();
     engine
 }
@@ -149,6 +150,7 @@ fn scale_key(ordinal: usize) -> String {
 fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
     const BATCH_SIZE: usize = 500;
     let mut index = from;
+    let mut next_batch_slab = None;
     while index < to {
         let end = (index + BATCH_SIZE).min(to);
         let mut commands = Vec::new();
@@ -161,7 +163,7 @@ fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
             cursor += 1;
         }
         let response = engine.batch_execute(crate::types::BatchExecuteRequest {
-            shard_id: 1,
+            shard_id: FIXTURE_SHARD_ID,
             commands,
         });
         assert!(
@@ -169,15 +171,33 @@ fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
             "seed write failed at {index}: {:?}",
             response.status
         );
+        let (first_slab, last_slab) = engine.shards.with_state(FIXTURE_SHARD_ID, |state| {
+            let shard = state.expect("fixture shard loaded");
+            let slab_of = |ordinal| {
+                shard
+                    .string_address(&scale_key(ordinal))
+                    .expect("seeded string has a block address")
+                    .block_slab_id()
+            };
+            (slab_of(index), slab_of(end - 1))
+        });
+        assert_eq!(first_slab, last_slab, "seed batch {index}..{end} crossed slabs");
+        if let Some(expected) = next_batch_slab {
+            assert_eq!(first_slab, expected, "seed batch {index}..{end} missed its new slab");
+        }
         let rolled = engine
             .block_store
-            .prepare_next_slab_with_target(1)
+            .prepare_next_slab_for_shard(FIXTURE_SHARD_ID, 1)
             .expect("rolling the block slab between seed batches");
         assert!(
             rolled.is_some(),
             "the roll after the batch ending at {end} did not happen, so this batch and the next \
              share a slab and the layout the slab-span guard depends on is not the one described"
         );
+        let rolled = rolled.unwrap();
+        assert_eq!(rolled.previous_block_slab_id, last_slab);
+        assert_ne!(rolled.new_block_slab_id, last_slab);
+        next_batch_slab = Some(rolled.new_block_slab_id);
         index = end;
     }
 }
@@ -188,13 +208,14 @@ fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
 /// silent, so the direction guard compares this map element by element against the same map taken
 /// before the round: a key that kept its entry but lost a block would pass a presence check.
 fn live_blocks_by_key(engine: &TemporalEngine) -> BTreeMap<String, usize> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut counts = BTreeMap::new();
-    for entry in crate::engine::collect_live_block_entries(shard) {
-        *counts.entry(entry.object_key.to_string()).or_insert(0) += 1;
-    }
-    counts
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let mut counts = BTreeMap::new();
+        for entry in crate::engine::collect_live_block_entries(shard) {
+            *counts.entry(entry.object_key.to_string()).or_insert(0) += 1;
+        }
+        counts
+    })
 }
 
 /// Objects each routing bucket still claims, by bucket.
@@ -204,42 +225,45 @@ fn live_blocks_by_key(engine: &TemporalEngine) -> BTreeMap<String, usize> {
 /// holds nothing. The model maps do not record it, so [`live_blocks_by_key`] cannot see it go; a
 /// release that dropped it would be silent everywhere else in this file.
 fn objects_by_bucket(engine: &TemporalEngine) -> BTreeMap<u32, usize> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.object_index.object_count()))
-        .collect()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.object_index.object_count()))
+            .collect()
+    })
 }
 
 /// Slab ids the shard's live blocks actually sit on, and how many blocks sit on each.
 fn live_blocks_by_slab(engine: &TemporalEngine) -> BTreeMap<u64, usize> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut by_slab = BTreeMap::new();
-    for entry in crate::engine::collect_live_block_entries(shard) {
-        *by_slab.entry(entry.address.block_slab_id()).or_insert(0) += 1;
-    }
-    by_slab
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let mut by_slab = BTreeMap::new();
+        for entry in crate::engine::collect_live_block_entries(shard) {
+            *by_slab.entry(entry.address.block_slab_id()).or_insert(0) += 1;
+        }
+        by_slab
+    })
 }
 
 /// The slab ids the named routing buckets hold resident blocks on.
 fn slabs_spanned_by(engine: &TemporalEngine, buckets: &BTreeSet<u32>) -> BTreeSet<u64> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let mut slabs = BTreeSet::new();
-    for routing_bucket in buckets {
-        if let Some(bucket) = shard.bucket_index.bucket_map.get(routing_bucket) {
-            for block in bucket.block_index.values() {
-                if !block.deleted() {
-                    slabs.insert(block.address.block_slab_id());
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let mut slabs = BTreeSet::new();
+        for routing_bucket in buckets {
+            if let Some(bucket) = shard.bucket_index.bucket_map.get(routing_bucket) {
+                for block in bucket.block_index.values() {
+                    if !block.deleted() {
+                        slabs.insert(block.address.block_slab_id());
+                    }
                 }
             }
         }
-    }
-    slabs
+        slabs
+    })
 }
 
 /// Everything one round of `apply_storage_eviction` cost and did, in counters rather than clocks.
@@ -280,13 +304,11 @@ struct RoundCost {
 /// Every counter is reset immediately before the call and read immediately after, which is what
 /// makes a process-wide counter mean one round; the suite runs `--test-threads=1`.
 fn one_round(engine: &TemporalEngine, records: usize, batch_limit: usize, dump: bool) -> RoundCost {
-    let buckets = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&1)
+    let buckets = engine.shards.with_state(1, |state| {
+        state
             .map(|shard| shard.bucket_index.bucket_map.len())
             .unwrap_or_default()
-    };
+    });
     crate::engine::reset_model_map_addresses_visited();
     crate::engine::reset_bucket_release_model_derivations();
     crate::engine::reset_bucket_scoped_model_entries();
@@ -343,27 +365,28 @@ fn plain_release_round(engine: &TemporalEngine, records: usize) -> RoundCost {
         .collect::<Vec<_>>();
     crate::engine::reset_model_map_addresses_visited();
     crate::engine::reset_bucket_release_model_derivations();
-    let mut shards = engine.shards.write().expect("shards lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 loaded");
-    let buckets = shard.bucket_index.bucket_map.len();
-    let outcome = release_bucket_blocks(shard, &candidates);
-    RoundCost {
-        records,
-        buckets,
-        victims: candidates.len(),
-        model_visits: crate::engine::model_map_addresses_visited(),
-        model_emitted: 0,
-        resident_visits: 0,
-        live_scan: 0,
-        recency_cloned: 0,
-        released_buckets: outcome.released_buckets.len(),
-        released_blocks: outcome.released_blocks,
-        refused: outcome.refused_buckets,
-        derivations: crate::engine::bucket_release_model_derivations(),
-        index_bytes_before: 0,
-        index_bytes_after: 0,
-        round_nanos: 0,
-    }
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let buckets = shard.bucket_index.bucket_map.len();
+        let outcome = release_bucket_blocks(shard, &candidates);
+        RoundCost {
+            records,
+            buckets,
+            victims: candidates.len(),
+            model_visits: crate::engine::model_map_addresses_visited(),
+            model_emitted: 0,
+            resident_visits: 0,
+            live_scan: 0,
+            recency_cloned: 0,
+            released_buckets: outcome.released_buckets.len(),
+            released_blocks: outcome.released_blocks,
+            refused: outcome.refused_buckets,
+            derivations: crate::engine::bucket_release_model_derivations(),
+            index_bytes_before: 0,
+            index_bytes_after: 0,
+            round_nanos: 0,
+        }
+    })
 }
 
 /// THE CONTROL FOR EVERY "THE ROUND WALKS NOTHING" CLAIM IN THIS FILE.
@@ -375,12 +398,13 @@ fn plain_release_round(engine: &TemporalEngine, records: usize) -> RoundCost {
 /// every claim below perfectly.
 fn verify_walk_visits(engine: &TemporalEngine, buckets: &[u32]) -> u64 {
     crate::engine::reset_model_map_addresses_visited();
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 loaded");
-    let _ = crate::engine::storage_bucket_internals::verify_release_matches_model_maps(
-        shard, buckets,
-    );
-    crate::engine::model_map_addresses_visited()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
+        let _ = crate::engine::storage_bucket_internals::verify_release_matches_model_maps(
+            shard, buckets,
+        );
+        crate::engine::model_map_addresses_visited()
+    })
 }
 
 fn ratio(small: u64, large: u64) -> f64 {
@@ -428,13 +452,11 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
     let by_slab = live_blocks_by_slab(&engine);
     // The ids, not only the count: clause 3 below needs the set a SCAN-ordered selection would
     // reach, and `bucket_map` is ordered, so its leading entries are exactly that set.
-    let all_buckets: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&1)
+    let all_buckets: Vec<u32> = engine.shards.with_state(1, |state| {
+        state
             .map(|shard| shard.bucket_index.bucket_map.keys().copied().collect())
             .unwrap_or_default()
-    };
+    });
     let buckets = all_buckets.len();
     // The slabs of every bucket BEFORE the round: the round releases its victims' blocks, so the
     // victims' slabs can only be read from before it.
@@ -579,9 +601,9 @@ fn the_release_actuator_is_refused_at_the_shipped_setting_and_releases_with_the_
             .iter()
             .map(|victim| victim.routing_bucket)
             .collect::<Vec<_>>();
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
-        let outcome = release_bucket_blocks(shard, &candidates);
+        let outcome = engine.shards.with_state_mut(1, |state| {
+            release_bucket_blocks(state.expect("shard 1 loaded"), &candidates)
+        });
         assert_eq!(
             outcome.released_buckets.len() + outcome.refused_buckets,
             candidates.len(),
@@ -1044,9 +1066,8 @@ fn what_an_eviction_round_costs_on_a_large_store_in_both_victim_regimes() {
         //
         // Both are wall clock on a box that sits between load 4 and 30, so they are the weakest
         // rows in this file and nothing is asserted about them. The counters above are the claim.
-        let (hold_ns, walk_ns) = {
-            let mut shards = engine.shards.write().expect("shards lock poisoned");
-            let Some(shard) = shards.get_mut(&1) else {
+        let (hold_ns, walk_ns) = engine.shards.with_state_mut(1, |state| {
+            let Some(shard) = state else {
                 panic!("shard 1 loaded");
             };
             let started = std::time::Instant::now();
@@ -1064,7 +1085,7 @@ fn what_an_eviction_round_costs_on_a_large_store_in_both_victim_regimes() {
                 "the proxy walk emitted nothing, so it did not run the traversal it stands in for"
             );
             (hold_ns, walk_ns)
-        };
+        });
         let release = release.stop().allocs;
 
         Arm {
@@ -1303,13 +1324,11 @@ fn an_eviction_round_cannot_keep_up_with_the_store_it_is_draining() {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = evict_engine(dir.path());
         seed_with_a_slab_roll(&engine, records);
-        let buckets = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            shards
-                .get(&1)
+        let buckets = engine.shards.with_state(1, |state| {
+            state
                 .map(|shard| shard.bucket_index.bucket_map.len())
                 .unwrap_or_default()
-        };
+        });
 
         let mut blocks_released = 0usize;
         let mut model_visits = 0u64;
@@ -1756,9 +1775,8 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
     seed_with_a_slab_roll(&engine, GUARD_SMALL);
 
     // Sixteen routing buckets that actually hold resident blocks, in a stable order.
-    let candidates: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let candidates: Vec<u32> = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         shard
             .bucket_index
             .bucket_map
@@ -1767,7 +1785,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
             .map(|(routing_bucket, _)| *routing_bucket)
             .take(BATCH)
             .collect()
-    };
+    });
     assert_eq!(
         candidates.len(),
         BATCH,
@@ -1784,9 +1802,8 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
 
     // THE ORACLE, and the before-state, read directly off the shard and independently of what the
     // release is about to do. The terms are the release's own residency and per-block terms.
-    let (oracle_released, oracle_dirty, blocks_before, objects_before) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    let (oracle_released, oracle_dirty, blocks_before, objects_before) = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         let mut released = Vec::new();
         let mut dirty = Vec::new();
         let mut blocks = BTreeMap::new();
@@ -1819,17 +1836,16 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
             }
         }
         (released, dirty, blocks, objects)
-    };
+    });
 
     let live_blocks_before = live_blocks_by_key(&engine);
 
     crate::engine::reset_model_map_addresses_visited();
     crate::engine::reset_bucket_release_model_derivations();
-    let outcome = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 loaded");
+    let outcome = engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         release_bucket_blocks(shard, &candidates)
-    };
+    });
     let derivations = crate::engine::bucket_release_model_derivations();
     let live_blocks_after = live_blocks_by_key(&engine);
 
@@ -1890,9 +1906,8 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
         "the mixed batch ran {derivations} whole-store derivation(s); the release is local"
     );
 
-    {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 loaded");
         for routing_bucket in &oracle_dirty {
             let bucket = shard
                 .bucket_index
@@ -1936,7 +1951,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
                 bucket.object_index.object_count()
             );
         }
-    }
+    });
 
     assert_eq!(
         live_blocks_after.len(),

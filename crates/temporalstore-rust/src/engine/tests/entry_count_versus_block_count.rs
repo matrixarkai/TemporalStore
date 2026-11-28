@@ -261,34 +261,35 @@ fn seed_all_kinds(engine: &TemporalEngine, elements: usize) -> Vec<(&'static str
 /// addresses those entries hold, so "one block, two entries" is visible as the two numbers
 /// disagreeing rather than having to be inferred.
 fn entries_and_blocks(engine: &TemporalEngine, kind: &str, object_key: &str) -> (usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    // THE OBJECT A BLOCK BELONGS TO COMES FROM THE LOOKUP BESIDE IT, not off the block. The
-    // model spelling is still the page's own field and is still read there.
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    let mut entries = 0usize;
-    let mut blocks: BTreeSet<(u64, u64, u64)> = BTreeSet::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.deleted() {
-                continue;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        // THE OBJECT A BLOCK BELONGS TO COMES FROM THE LOOKUP BESIDE IT, not off the block. The
+        // model spelling is still the page's own field and is still read there.
+        let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+        let mut entries = 0usize;
+        let mut blocks: BTreeSet<(u64, u64, u64)> = BTreeSet::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.deleted() {
+                    continue;
+                }
+                if block.model_id().as_str() != kind {
+                    continue;
+                }
+                match keys.live_identity(bucket.routing_bucket, *handle) {
+                    Some((_, named)) if &**named == object_key => {}
+                    _ => continue,
+                }
+                entries += 1;
+                blocks.insert((
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                ));
             }
-            if block.model_id().as_str() != kind {
-                continue;
-            }
-            match keys.live_identity(bucket.routing_bucket, *handle) {
-                Some((_, named)) if &**named == object_key => {}
-                _ => continue,
-            }
-            entries += 1;
-            blocks.insert((
-                block.address.block_slab_id(),
-                block.address.offset(),
-                block.address.length(),
-            ));
         }
-    }
-    (entries, blocks.len())
+        (entries, blocks.len())
+    })
 }
 
 /// THE BATCHING ARITHMETIC THE WHOLE MODULE IS ABOUT, IN ONE FUNCTION.
@@ -765,18 +766,42 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
     // nameless block entry recoverable. The container maps are durable now too, which is the
     // change that made the collapse safe -- so both sides are asserted, and a regression that
     // made either map non-durable reddens here.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    // EVERY PREDICATE BELOW ASKS THE LOOKUP WHICH OBJECT A BLOCK BELONGS TO. The block has no
-    // answer of its own any more, and the lookup is the structure beside it that does.
-    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
-    for (kind, key) in [
-        ("hash", "fold-h"),
-        ("set", "fold-t"),
-        ("zset", "fold-z"),
-        ("list", "fold-l"),
-    ] {
-        let entries = shard
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        // EVERY PREDICATE BELOW ASKS THE LOOKUP WHICH OBJECT A BLOCK BELONGS TO. The block has no
+        // answer of its own any more, and the lookup is the structure beside it that does.
+        let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
+        for (kind, key) in [
+            ("hash", "fold-h"),
+            ("set", "fold-t"),
+            ("zset", "fold-z"),
+            ("list", "fold-l"),
+        ] {
+            let entries = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .flat_map(|bucket| {
+                    bucket
+                        .block_index
+                        .iter()
+                        .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
+                })
+                .filter(|(routing_bucket, handle, block)| {
+                    !block.deleted()
+                        && block.model_id().as_str() == kind
+                        && keys
+                            .live_identity(*routing_bucket, *handle)
+                            .is_some_and(|(_, named)| &**named == key)
+                })
+                .count();
+            assert_eq!(
+                entries, 1,
+                "{kind} key {key} must hold exactly one live block entry -- it holds {entries}, so the \
+             one-entry-a-block shape this module contrasts against is not what is on this revision"
+            );
+        }
+        let anonymous = shard
             .bucket_index
             .bucket_map
             .values()
@@ -788,57 +813,34 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
             })
             .filter(|(routing_bucket, handle, block)| {
                 !block.deleted()
-                    && block.model_id().as_str() == kind
+                    && block.model_id().as_str() == "feature"
                     && keys
                         .live_identity(*routing_bucket, *handle)
-                        .is_some_and(|(_, named)| &**named == key)
+                        .is_some_and(|(_, named)| &**named == "fold-f")
             })
             .count();
         assert_eq!(
-            entries, 1,
-            "{kind} key {key} must hold exactly one live block entry -- it holds {entries}, so the \
-             one-entry-a-block shape this module contrasts against is not what is on this revision"
+            anonymous, 1,
+            "the series must hold exactly one block entry -- it holds {anonymous}"
         );
-    }
-    let anonymous = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .flat_map(|bucket| {
-            bucket
-                .block_index
-                .iter()
-                .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
-        })
-        .filter(|(routing_bucket, handle, block)| {
-            !block.deleted()
-                && block.model_id().as_str() == "feature"
-                && keys
-                    .live_identity(*routing_bucket, *handle)
-                    .is_some_and(|(_, named)| &**named == "fold-f")
-        })
-        .count();
-    assert_eq!(
-        anonymous, 1,
-        "the series must hold exactly one block entry -- it holds {anonymous}"
-    );
-    assert!(
-        shard.features().contains_key("fold-f"),
-        "the series must hold a durable model-map entry, because that is what makes its nameless \
+        assert!(
+            shard.features().contains_key("fold-f"),
+            "the series must hold a durable model-map entry, because that is what makes its nameless \
          block entry recoverable"
-    );
-    assert!(
-        shard.bucket_index.hashes.get("fold-h").is_some(),
-        "the HASH must hold a durable model-map entry too. That is the half that changed: a \
+        );
+        assert!(
+            shard.bucket_index.hashes.get("fold-h").is_some(),
+            "the HASH must hold a durable model-map entry too. That is the half that changed: a \
          container element's identity used to live on its entry, and with the entry nameless the \
          durable map is the only source -- if this reddens, the collapse has outrun the durability \
          that makes it safe"
-    );
-    println!("every kind files one nameless block entry; the durable maps are what name the elements");
-    println!(
-        "and `apply_key_states` folds `features` but none of `hashes`/`sets`/`zsets`/`lists`, so \
+        );
+        println!("every kind files one nameless block entry; the durable maps are what name the elements");
+        println!(
+            "and `apply_key_states` folds `features` but none of `hashes`/`sets`/`zsets`/`lists`, so \
          the element name is the container element's only fold-route copy"
-    );
+        );
+    });
 }
 
 // =================================================================================================
@@ -884,9 +886,8 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
             .collect(),
     );
 
-    let today_block_bytes = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let today_block_bytes = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
         let lengths = shard
             .bucket_index
@@ -921,7 +922,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
              element's name"
         );
         lengths[0]
-    };
+    });
     assert!(
         today_block_bytes > 0,
         "a field block of zero bytes is not a block, and every ratio below would divide by it"

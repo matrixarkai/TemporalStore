@@ -46,7 +46,7 @@ pub(super) const COMPACTION_ROUND_BLOCK_REFS: usize = 2_048;
 ///
 /// The relocation itself was never the problem -- it has a 256 MiB budget and resumes. This is
 /// the survey around it.
-fn slab_block_counts_by_slab(block_store: &BlockStore) -> BTreeMap<u64, u64> {
+pub(super) fn slab_block_counts_by_slab(block_store: &BlockStore) -> BTreeMap<u64, u64> {
     block_store
         .slab_block_counts()
         .unwrap_or_default()
@@ -72,6 +72,15 @@ pub(super) fn compaction_utility_report_from_entries(
     shard: &ShardState,
     entries: &[LiveBlockEntry],
 ) -> ShardCompactionUtilityReport {
+    let counts = slab_block_counts_by_slab(block_store);
+    compaction_utility_report_from_counts(shard, entries, &counts)
+}
+
+pub(super) fn compaction_utility_report_from_counts(
+    shard: &ShardState,
+    entries: &[LiveBlockEntry],
+    slab_block_counts: &BTreeMap<u64, u64>,
+) -> ShardCompactionUtilityReport {
     let addresses = entries
         .iter()
         .filter(|entry| !entry.deleted)
@@ -81,7 +90,6 @@ pub(super) fn compaction_utility_report_from_entries(
         .iter()
         .map(|address| address.block_slab_id())
         .collect::<BTreeSet<_>>();
-    let slab_block_counts = slab_block_counts_by_slab(block_store);
     let total_block_count = live_block_slab_ids
         .iter()
         .map(|block_slab_id| {
@@ -104,7 +112,7 @@ pub(super) fn compaction_utility_report_from_entries(
         live_block_refs,
         stale_block_estimate,
         live_ref_density_basis_points,
-        model_policies: model_compaction_policy_reports(shard, &entries, &slab_block_counts),
+        model_policies: model_compaction_policy_reports(shard, entries, slab_block_counts),
     }
 }
 
@@ -1174,7 +1182,7 @@ fn flush_container_batch(
     // that stays true when the elements inside them move between blocks.
     let ordinal = u32::try_from(batch_ordinal).unwrap_or(u32::MAX);
     let new_address = block_store
-        .append_block_of_object(&bytes, object_id, Some(routing_bucket), ordinal)
+        .append_block_of_object_for_shard(shard_id, &bytes, object_id, Some(routing_bucket), ordinal)
         .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
     let _ = cache.put(
         CacheKey::page_with_slot_generation(
@@ -1288,7 +1296,8 @@ pub(super) fn compact_block_addresses<'a>(
         // give every block of a multi-block object the same index, and the index entries would
         // collide -- which reads back as a reload losing rows.
         let new_address = block_store
-            .append_block_of_object(
+            .append_block_of_object_for_shard(
+                shard_id,
                 &bytes,
                 Some(stable_block_object_id(shard_id, model_id, &object_key)),
                 Some(routing_bucket),
@@ -1354,7 +1363,8 @@ pub(super) fn compact_feature_block_addresses(
             continue;
         };
         let new_address = block_store
-            .append_block_of_object(
+            .append_block_of_object_for_shard(
+                shard_id,
                 &bytes,
                 Some(stable_block_object_id(shard_id, model_id, object_key)),
                 Some(routing_bucket),

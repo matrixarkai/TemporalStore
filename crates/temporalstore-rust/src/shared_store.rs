@@ -18,7 +18,7 @@ use thiserror::Error;
 
 use tokio::sync::oneshot;
 
-use crate::block_store::{BlockStoreError, LazyCheckpointSlab, BlockStore, SharedSlabSource};
+use crate::block_store::{BlockStore, BlockStoreError, BlockStoreReadSnapshot, LazyCheckpointSlab, SharedSlabSource};
 use crate::engine::TemporalEngine;
 use crate::sdk::{self, v1};
 use crate::types::{Command, ExecuteRequest, ShardId, Status};
@@ -157,6 +157,88 @@ pub struct SharedStoreWalEntry {
     pub outcomes: Vec<crate::wal::WalOutcomeItem>,
 }
 
+/// Match an addressed outcome to its carried payload. Timestamped series stage
+/// a carrier per packed address, followed by outcomes for its points in the same
+/// chunk order. The payload must also contain every point using that address.
+#[doc(hidden)]
+pub fn shared_wal_carriers(
+    outcomes: &[crate::wal::WalOutcomeItem],
+    blocks: &[crate::wal::StagedBlock],
+) -> Vec<Option<usize>> {
+    let mut exact = BTreeMap::<_, Vec<usize>>::new();
+    let mut unnamed = BTreeMap::<u64, Vec<usize>>::new();
+    for (index, block) in blocks.iter().enumerate() {
+        let field = block.element_name.as_deref();
+        exact.entry((block.object_id, field)).or_default().push(index);
+        if field.is_none() {
+            unnamed.entry(block.object_id).or_default().push(index);
+        }
+    }
+    let mut result = vec![None; outcomes.len()];
+    let mut exact_outcomes = BTreeMap::<_, Vec<(usize, (u64, u64))>>::new();
+    let mut grouped = BTreeMap::<u64, (Vec<Vec<(usize, u64)>>, BTreeMap<(u64, u64), usize>)>::new();
+    for (position, outcome) in outcomes.iter().enumerate() {
+        let Some(address) = outcome.resolved_address() else { continue };
+        let selector = (outcome.object_id, outcome.element_name.as_deref());
+        if exact.contains_key(&selector) {
+            exact_outcomes.entry(selector).or_default()
+                .push((position, (address.address_word(), address.length())));
+            continue;
+        }
+        let Some(name) = outcome.element_name.as_deref() else { continue };
+        let point = match outcome.kind.as_str() {
+            "context_event" => name.get(..16).filter(|_| name.len() == 32)
+                .and_then(|part| u64::from_str_radix(part, 16).ok()),
+            "feature" | "context_index" | "context_audit" | "context_child"
+            | "context_summary" | "context_compression" | "context_entity" => name.parse::<u64>().ok(),
+            _ => None,
+        };
+        let Some(point) = point else { continue };
+        let (groups, keys) = grouped.entry(outcome.object_id).or_default();
+        let key = (address.address_word(), address.length());
+        let group = *keys.entry(key).or_insert_with(|| {
+            groups.push(Vec::new());
+            groups.len() - 1
+        });
+        groups[group].push((position, point));
+    }
+    // Within one selector, staging and outcome emission use the same append
+    // order. Each distinct source address must have its own carried frame.
+    for (selector, addressed) in exact_outcomes {
+        let indices = &exact[&selector];
+        let mut order = BTreeMap::new();
+        for &(_, address) in &addressed {
+            let next = order.len();
+            order.entry(address).or_insert(next);
+        }
+        if order.len() != indices.len() {
+            continue;
+        }
+        for (position, address) in addressed {
+            result[position] = Some(indices[order[&address]]);
+        }
+    }
+    for (object, (groups, _)) in grouped {
+        let Some(indices) = unnamed.get(&object) else { continue };
+        if groups.len() != indices.len() {
+            continue;
+        }
+        for (group, &index) in groups.into_iter().zip(indices) {
+            let Some(points) = crate::engine::decode_shared_wal_packed_block(&blocks[index].bytes) else {
+                continue;
+            };
+            let timestamps = points.into_iter().map(|point| point.timestamp_ms)
+                .collect::<std::collections::BTreeSet<_>>();
+            if group.iter().all(|(_, point)| timestamps.contains(point)) {
+                for (position, _) in group {
+                    result[position] = Some(index);
+                }
+            }
+        }
+    }
+    result
+}
+
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct SharedStoreWalOffsetMetadata {
@@ -236,6 +318,24 @@ pub struct SharedStoreCheckpointManifest {
     /// than failing to parse -- one shape, current or refused, no second reader.
     #[serde(default)]
     pub routing_range: Option<crate::engine::routing_range_stamp::RoutingRangeStamp>,
+}
+
+impl SharedStoreCheckpointManifest {
+    fn validate_slab_addresses(&self) -> Result<(), BlockStoreError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for slab in &self.block_slabs {
+            if slab.block_slab_id > crate::block_store::MAX_ADDRESSABLE_BLOCK_SLAB_ID
+                || !seen.insert(slab.block_slab_id)
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "checkpoint contains an invalid or duplicate slab ID",
+                ).into());
+            }
+            slab_owner_from_transfer_key(slab.block_slab_id, &slab.key)?;
+        }
+        Ok(())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -518,6 +618,8 @@ pub struct SharedStoreReplicator<O> {
     /// Appends a WAL segment takes before the next one starts. See
     /// [`SHARED_STORE_WAL_SEGMENT_APPENDS_DEFAULT`].
     wal_segment_appends: usize,
+    /// Maximum encoded length of a segment log object on the configured backend.
+    wal_segment_max_bytes: Option<u64>,
     /// The segment each shard is being appended to by this replicator and its clones.
     active_segments: Arc<Mutex<BTreeMap<ShardId, ActiveWalSegment>>>,
     /// Bounds on retrying a failed publish. See [`SharedStorePublishRetry`].
@@ -610,6 +712,7 @@ impl<O> Clone for SharedStoreReplicator<O> {
             // that started cold would pay a whole read to learn it.
             offset_index_cache: Arc::clone(&self.offset_index_cache),
             wal_segment_appends: self.wal_segment_appends,
+            wal_segment_max_bytes: self.wal_segment_max_bytes,
             // SHARED, so every clone of a writer's replicator appends to the one active segment.
             active_segments: Arc::clone(&self.active_segments),
             publish_retry: self.publish_retry,
@@ -970,6 +1073,73 @@ impl<O> SharedStoreReplicator<O>
 where
     O: ObjectStore + 'static,
 {
+    fn attach_bound_lazy_checkpoint<F>(
+        &self,
+        manifest: &SharedStoreCheckpointManifest,
+        generation: String,
+        bindings: crate::block_store::slab_restore_bindings::SlabRestoreBindings,
+        block_store: &BlockStore,
+        make_source: F,
+    ) -> Result<(), SharedStoreReplicationError>
+    where
+        F: FnOnce(Arc<O>, BTreeMap<u64, SharedSlabAddress>) -> Arc<dyn SharedSlabSource>,
+    {
+        let source_ids = bindings.local_sources(&generation)?;
+        let (&first, _) = source_ids.first_key_value().ok_or_else(invalid_slab_transfer_key)?;
+        let (&last, _) = source_ids.last_key_value().ok_or_else(invalid_slab_transfer_key)?;
+        if last - first + 1 != source_ids.len() as u64 {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData, "saved lazy checkpoint has a noncontiguous allocation",
+            ).into());
+        }
+        let original = make_source(Arc::clone(&self.object_store), checkpoint_slab_addresses(manifest));
+        let lazy_slabs = manifest.block_slabs.iter().map(|slab| {
+            let id = bindings.translate_slab_id(&generation, slab.block_slab_id)?;
+            Ok(LazyCheckpointSlab {
+                block_slab_id: u64::from(id),
+                physical_bytes: slab.byte_size,
+                logical_bytes: slab.logical_bytes,
+                first_block_id: slab.first_block_id,
+                last_block_id: slab.last_block_id,
+                created_unix_ms: slab.created_unix_ms,
+                updated_unix_ms: slab.updated_unix_ms,
+            })
+        }).collect::<Result<Vec<_>, std::io::Error>>()?;
+        block_store.install_lazy_checkpoint_slabs(&lazy_slabs)?;
+        let source = Arc::new(BoundCheckpointSlabSource {
+            original, generation: generation.clone(), bindings, source_ids,
+        });
+        block_store.attach_checkpoint_slab_source(first, last, &generation, source)?;
+        Ok(())
+    }
+
+    fn reattach_lazy_checkpoint_sources_with<F>(
+        &self, block_store: &BlockStore, make_source: F,
+    ) -> Result<(), SharedStoreReplicationError>
+    where
+        F: Fn(Arc<O>, BTreeMap<u64, SharedSlabAddress>) -> Arc<dyn SharedSlabSource>,
+    {
+        for (generation, bytes) in block_store.saved_lazy_checkpoint_manifests()? {
+            if sha256_hex(&bytes) != generation {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData, "saved lazy checkpoint digest mismatch",
+                ).into());
+            }
+            let manifest = decode_checkpoint_manifest(&bytes)?;
+            if manifest.cluster_id != self.cluster_id {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData, "saved lazy checkpoint cluster mismatch",
+                ).into());
+            }
+            manifest.validate_slab_addresses()?;
+            let ids = manifest.block_slabs.iter().map(|slab| slab.block_slab_id as u32)
+                .collect::<Vec<_>>();
+            let bindings = block_store.bind_checkpoint_slab_ids(&generation, &ids, false)?;
+            self.attach_bound_lazy_checkpoint(&manifest, generation, bindings, block_store, &make_source)?;
+        }
+        Ok(())
+    }
+
     pub fn new(cluster_id: impl Into<String>, object_store: Arc<O>) -> Self {
         Self {
             cluster_id: cluster_id.into(),
@@ -982,6 +1152,7 @@ where
             cursor_abandon: None,
             offset_index_cache: Arc::new(Mutex::new(BTreeMap::new())),
             wal_segment_appends: shared_store_wal_segment_appends(),
+            wal_segment_max_bytes: None,
             active_segments: Arc::new(Mutex::new(BTreeMap::new())),
             publish_retry: SharedStorePublishRetry::default(),
         }
@@ -1006,6 +1177,7 @@ where
             cursor_abandon: None,
             offset_index_cache: Arc::new(Mutex::new(BTreeMap::new())),
             wal_segment_appends: shared_store_wal_segment_appends(),
+            wal_segment_max_bytes: None,
             active_segments: Arc::new(Mutex::new(BTreeMap::new())),
             publish_retry: SharedStorePublishRetry::default(),
         }
@@ -1023,6 +1195,12 @@ where
     /// Evaluated per batch: a batch is one append to each object of a segment and never spans two.
     pub fn with_wal_segment_appends(mut self, appends: usize) -> Self {
         self.wal_segment_appends = appends.max(1);
+        self
+    }
+
+    /// Roll before the next encoded append would exceed the backend's object limit.
+    pub fn with_wal_segment_max_bytes(mut self, max_bytes: u64) -> Self {
+        self.wal_segment_max_bytes = Some(max_bytes.max(1));
         self
     }
 
@@ -1233,11 +1411,11 @@ where
         &self,
         entry: SharedStoreWalEntry,
     ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
-        let segment = self.segment_for_append(entry.shard_id, entry.wal_index);
-        let key = self.wal_segment_log_key(entry.shard_id, segment.first_index);
-        let index_key = self.wal_segment_index_key(entry.shard_id, segment.first_index);
         let command_metadata = wal_command_metadata(entry.command.as_ref())?;
         let frame = encode_wal_proto_frame(&entry, self.wal_frame_format)?;
+        let segment = self.segment_for_append(entry.shard_id, entry.wal_index, frame.len() as u64)?;
+        let key = self.wal_segment_log_key(entry.shard_id, segment.first_index);
+        let index_key = self.wal_segment_index_key(entry.shard_id, segment.first_index);
         let receipt = self
             .append_resolved(&key, Bytes::from(frame), segment.log_len)
             .await?;
@@ -1254,20 +1432,29 @@ where
         Ok(Some(receipt))
     }
 
-    /// The segment the next batch starting at `wal_index` is appended to.
-    ///
-    /// A writer that has no active segment, which is every writer that has just started, opens a
-    /// new one named by this batch's first index, so the extent count a previous owner left in an
-    /// older segment never has to be learned. A segment that has taken its quota is closed the same
-    /// way. The decision is per batch because a batch is one append to each object and its entries
-    /// share one span, so it cannot be split across segments.
-    fn segment_for_append(&self, shard_id: ShardId, wal_index: u64) -> ActiveWalSegment {
+    /// Reuse an active segment only if it can hold the complete encoded append.
+    /// A restarted writer opens a segment named by its next index, so it never
+    /// has to infer an earlier owner's append count or object length.
+    fn segment_for_append(
+        &self,
+        shard_id: ShardId,
+        wal_index: u64,
+        append_bytes: u64,
+    ) -> Result<ActiveWalSegment, SharedStoreReplicationError> {
+        let max_bytes = self.wal_segment_max_bytes.unwrap_or(u64::MAX);
+        if append_bytes > max_bytes {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("encoded WAL entry requires {append_bytes} bytes; the limit is {max_bytes}"),
+            ).into());
+        }
         let mut active = self
             .active_segments
             .lock()
             .expect("active WAL segment table poisoned");
-        match active.get(&shard_id).copied() {
-            Some(segment) if segment.appends < self.wal_segment_appends => segment,
+        Ok(match active.get(&shard_id).copied() {
+            Some(segment) if segment.appends < self.wal_segment_appends
+                && segment.log_len <= max_bytes - append_bytes => segment,
             _ => {
                 let segment = ActiveWalSegment {
                     first_index: wal_index,
@@ -1278,7 +1465,7 @@ where
                 active.insert(shard_id, segment);
                 segment
             }
-        }
+        })
     }
 
     /// Counts an append to the log object, as soon as it has landed. Counted BEFORE the index
@@ -1436,14 +1623,25 @@ where
     /// index is its own object, so no single-object barrier exists; the batch degrades to per-entry
     /// publishes (still correct, just no fsync coalescing — the win is inherent to append-blob mode).
     ///
-    /// Durability: this returns `Ok` only after the covering append(s) have reached the store, so a
-    /// caller that fans `Ok` out to waiters can never ack a write before its barrier completed.
+    /// A size-limited backend may require multiple appends. Each entry is durable only after
+    /// both its log frame and offset index have been written.
     pub async fn publish_wal_entries_batch(
         &self,
         entries: &[SharedStoreWalEntry],
     ) -> Result<Vec<SharedStoreWriteReport>, SharedStoreReplicationError> {
+        let mut reports = Vec::with_capacity(entries.len());
+        self.publish_wal_entries_counted(entries, &mut reports).await?;
+        Ok(reports)
+    }
+
+    // Retain successfully published prefix entries if a later append fails.
+    async fn publish_wal_entries_counted(
+        &self,
+        entries: &[SharedStoreWalEntry],
+        reports: &mut Vec<SharedStoreWriteReport>,
+    ) -> Result<(), SharedStoreReplicationError> {
         if entries.is_empty() {
-            return Ok(Vec::new());
+            return Ok(());
         }
         let shard_id = entries[0].shard_id;
         let single_shard = entries.iter().all(|entry| entry.shard_id == shard_id);
@@ -1454,20 +1652,15 @@ where
         if !append_blob_mode || !single_shard {
             // No single-object barrier available (PerKeyObject, or a mixed-shard batch): publish each
             // entry on its own durable barrier. Correct, just uncoalesced.
-            let mut reports = Vec::with_capacity(entries.len());
             for entry in entries {
                 let receipt = self.publish_wal_entry(entry.clone()).await?;
                 reports.push(write_report_from_receipt(entry.wal_index, receipt.as_ref()));
             }
-            return Ok(reports);
+            return Ok(());
         }
 
         // R2 single-writer fence: re-validate ownership once before the coalesced append.
         self.enforce_fence(shard_id).await?;
-        let segment = self.segment_for_append(shard_id, entries[0].wal_index);
-        let wal_blob_key = self.wal_segment_log_key(shard_id, segment.first_index);
-        let wal_index_key = self.wal_segment_index_key(shard_id, segment.first_index);
-
         // Concatenate every entry's length-prefixed frame into one append payload, remembering each
         // frame's length (and command metadata) so per-entry offsets can be derived from the single
         // receipt below.
@@ -1510,6 +1703,27 @@ where
                 (payload, spans)
             }
         };
+        if let Some(max_bytes) = self.wal_segment_max_bytes {
+            if wal_payload.len() as u64 > max_bytes && entries.len() > 1 {
+                // Reject an oversized entry before publishing any of this batch.
+                for entry in entries {
+                    let bytes = encode_wal_proto_frame(entry, self.wal_frame_format)?.len() as u64;
+                    if bytes > max_bytes {
+                        return Err(std::io::Error::new(
+                            std::io::ErrorKind::InvalidInput,
+                            format!("encoded WAL entry requires {bytes} bytes; the limit is {max_bytes}"),
+                        ).into());
+                    }
+                }
+                drop(wal_payload);
+                let mid = entries.len() / 2;
+                Box::pin(self.publish_wal_entries_counted(&entries[..mid], reports)).await?;
+                return Box::pin(self.publish_wal_entries_counted(&entries[mid..], reports)).await;
+            }
+        }
+        let segment = self.segment_for_append(shard_id, entries[0].wal_index, wal_payload.len() as u64)?;
+        let wal_blob_key = self.wal_segment_log_key(shard_id, segment.first_index);
+        let wal_index_key = self.wal_segment_index_key(shard_id, segment.first_index);
         let receipt = self
             .append_resolved(&wal_blob_key, Bytes::from(wal_payload), segment.log_len)
             .await?;
@@ -1518,7 +1732,6 @@ where
         // Derive each entry's [start, end) from the batch receipt and build the concatenated
         // offset-index payload, then make it durable in a single append.
         let mut offset_metadatas = Vec::with_capacity(entries.len());
-        let mut reports = Vec::with_capacity(entries.len());
         for ((entry, (span_from, span_to)), metadata) in entries
             .iter()
             .zip(entry_spans.into_iter())
@@ -1540,15 +1753,6 @@ where
                 command_encoding: metadata.encoding,
             };
             offset_metadatas.push(offset_metadata);
-            reports.push(SharedStoreWriteReport {
-                wal_index: entry.wal_index,
-                published: true,
-                queued: false,
-                wal_blob_start_offset: Some(start),
-                wal_blob_end_offset: Some(end),
-                wal_blob_bytes_written: Some(end.saturating_sub(start)),
-                wal_blob_object_length: Some(receipt.object_length),
-            });
         }
         // One frame for a container, whose entries all share a span; entry frames otherwise.
         let offset_payload = match encode_wal_offset_container_frame(&offset_metadatas, &wal_blob_key)
@@ -1569,7 +1773,16 @@ where
             .append_resolved(&wal_index_key, Bytes::from(offset_payload), segment.index_len)
             .await?;
         self.note_segment_index_len(shard_id, landed.object_length);
-        Ok(reports)
+        reports.extend(offset_metadatas.into_iter().map(|metadata| SharedStoreWriteReport {
+            wal_index: metadata.wal_index,
+            published: true,
+            queued: false,
+            wal_blob_start_offset: Some(metadata.wal_blob_start_offset),
+            wal_blob_end_offset: Some(metadata.wal_blob_end_offset),
+            wal_blob_bytes_written: Some(metadata.wal_blob_bytes_written),
+            wal_blob_object_length: Some(metadata.wal_blob_object_length),
+        }));
+        Ok(())
     }
 
     pub async fn lookup_wal_offset_metadata(
@@ -1866,10 +2079,18 @@ where
     ) -> Result<Vec<u64>, SharedStoreReplicationError> {
         let mut published = Vec::new();
         for block_slab_id in block_store.slab_ids()? {
+            let (bytes, owner) = block_store.read_slab_for_transfer(block_slab_id)?;
+            let key = match owner {
+                Some(owner) => format!(
+                    "{}{}", self.block_slab_prefix(shard_id),
+                    owned_block_slab_object_name(block_slab_id, owner),
+                ),
+                None => self.block_slab_key(shard_id, block_slab_id),
+            };
             self.object_store
                 .put(
-                    &self.block_slab_key(shard_id, block_slab_id),
-                    Bytes::from(block_store.read_slab(block_slab_id)?),
+                    &key,
+                    Bytes::from(bytes),
                 )
                 .await?;
             published.push(block_slab_id);
@@ -1898,14 +2119,87 @@ where
         // that read returns nothing with no error. Materialising them first means the index names
         // only slabs this checkpoint actually uploads.
         let image = engine.export_portable_checkpoint_index(shard_id)?;
-        let local_slabs: std::collections::BTreeSet<_> = block_store.slab_ids()?.into_iter().collect();
-        if let Some(missing) = image.block_slab_ids.iter().find(|id| !local_slabs.contains(id)) {
-            return Err(SharedStoreReplicationError::CheckpointSlabNotDurable {
-                shard_id,
-                block_slab_id: *missing,
-            });
+        let _retained_slabs = Self::prepare_checkpoint_slabs(shard_id, &image, block_store)?;
+        self.publish_captured_checkpoint(shard_id, checkpoint_wal_index, image, block_store).await
+    }
+
+    /// Publish a file-backed checkpoint from the exact applied frontier carried by
+    /// its portable image. The caller supplies payloads for only the uncovered tail.
+    #[doc(hidden)]
+    pub async fn publish_file_checkpoint(
+        &self,
+        shard_id: ShardId,
+        engine: &TemporalEngine,
+        block_store: &BlockStore,
+        prepare_tail: impl FnOnce(u64) -> Result<Vec<SharedStoreWalEntry>, std::io::Error>,
+    ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
+        self.enforce_fence(shard_id).await?;
+        let image = engine.export_file_checkpoint_index(shard_id)?;
+        let _retained_slabs = Self::prepare_checkpoint_slabs(shard_id, &image, block_store)?;
+        let frontier = image.local_wal_frontier.ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "file checkpoint image has no WAL frontier")
+        })?;
+        let entries = prepare_tail(frontier)?;
+        let mut previous = frontier;
+        for entry in &entries {
+            if entry.shard_id != shard_id || previous.checked_add(1) != Some(entry.wal_index) {
+                return Err(SharedStoreReplicationError::ReplayGap {
+                    expected: previous.saturating_add(1), actual: entry.wal_index,
+                });
+            }
+            previous = entry.wal_index;
+        }
+        // A receiver's local WAL starts at zero. Its installed image separately
+        // records the boundary already consumed in this shared stream.
+        let source_offset = match &image.file_restore_origin {
+            Some((source, offset)) if source == &self.cluster_id => *offset,
+            Some(_) => return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData, "checkpoint was restored from another shared WAL source",
+            ).into()),
+            None => 0,
+        };
+        let to_shared = |local: u64| source_offset.checked_add(local).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::InvalidData, "shared WAL sequence exhausted")
+        });
+        let shared_frontier = to_shared(frontier)?;
+        to_shared(previous)?;
+        for mut entry in entries {
+            entry.wal_index = to_shared(entry.wal_index)?;
+            self.publish_wal_entry(entry).await?;
+        }
+        self.enforce_fence(shard_id).await?;
+        self.publish_captured_checkpoint(shard_id, shared_frontier, image, block_store).await
+    }
+
+    fn prepare_checkpoint_slabs(
+        shard_id: ShardId,
+        image: &crate::engine::PortableCheckpointImage,
+        block_store: &BlockStore,
+    ) -> Result<BlockStoreReadSnapshot, SharedStoreReplicationError> {
+        let mut retained = BlockStoreReadSnapshot::new(block_store);
+        for &id in &image.block_slab_ids {
+            retained.pin(id);
+        }
+        for &block_slab_id in &image.block_slab_ids {
+            if !block_store.has_local_slab(block_slab_id)? {
+                // Fetch only a named dependency, and validate its bound source.
+                block_store.ensure_slab_present(block_slab_id)?;
+                if !block_store.has_local_slab(block_slab_id)? {
+                    return Err(SharedStoreReplicationError::CheckpointSlabNotDurable { shard_id, block_slab_id });
+                }
+            }
         }
         block_store.sync_durable()?;
+        Ok(retained)
+    }
+
+    async fn publish_captured_checkpoint(
+        &self,
+        shard_id: ShardId,
+        checkpoint_wal_index: u64,
+        image: crate::engine::PortableCheckpointImage,
+        block_store: &BlockStore,
+    ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         let checkpoint_id = uuid::Uuid::new_v4().to_string();
         let prefix = self.checkpoint_prefix(shard_id, &checkpoint_id);
         let index_key = format!("{prefix}index/shard.index.json");
@@ -1916,46 +2210,33 @@ where
 
         // Snapshot the local slab descriptors so each uploaded slab carries its sealed-slab
         // metadata (logical bytes + block-id range) into the manifest for S3 restore-time install.
-        let slab_by_slab: BTreeMap<u64, _> = block_store
-            .slab_descriptors()
-            .into_iter()
-            .map(|slab| (slab.block_slab_id, slab))
-            .collect();
-        let mut block_slabs = Vec::new();
-        let mut uploaded_slab_ids = std::collections::BTreeSet::new();
-        for block_slab_id in block_store.slab_ids()? {
-            let bytes = block_store.read_slab(block_slab_id)?;
+        let slab_by_slab = block_store.checkpoint_slab_descriptors(&image.block_slab_ids);
+        let mut block_slabs = Vec::with_capacity(image.block_slab_ids.len());
+        for block_slab_id in image.block_slab_ids {
+            let (bytes, owner) = block_store.read_slab_for_transfer(block_slab_id)?;
+            let name = match owner {
+                Some(owner) => owned_block_slab_object_name(block_slab_id, owner),
+                None => block_slab_object_name(block_slab_id),
+            };
             let key = format!(
                 "{prefix}block_segments/{}",
-                block_slab_object_name(block_slab_id)
+                name
             );
-            self.object_store
-                .put(&key, Bytes::from(bytes.clone()))
-                .await?;
-            uploaded_slab_ids.insert(block_slab_id);
+            let byte_size = bytes.len() as u64;
+            let sha256 = sha256_hex(&bytes);
+            self.object_store.put(&key, Bytes::from(bytes)).await?;
             let slab = slab_by_slab.get(&block_slab_id);
             block_slabs.push(SharedStoreBlockSlab {
                 block_slab_id,
                 key,
-                byte_size: bytes.len() as u64,
-                sha256: sha256_hex(&bytes),
+                byte_size,
+                sha256,
                 logical_bytes: slab.map(|slab| slab.logical_bytes).unwrap_or(0),
                 first_block_id: slab.and_then(|slab| slab.first_block_id),
                 last_block_id: slab.and_then(|slab| slab.last_block_id),
                 created_unix_ms: slab.and_then(|slab| slab.created_unix_ms),
                 updated_unix_ms: slab.and_then(|slab| slab.updated_unix_ms),
             });
-        }
-
-        // Check the exact captured image, not a later live view. A log-only address
-        // is not embedded payload and cannot be omitted from a portable checkpoint.
-        for referenced in image.block_slab_ids {
-            if !uploaded_slab_ids.contains(&referenced) {
-                return Err(SharedStoreReplicationError::CheckpointSlabNotDurable {
-                    shard_id,
-                    block_slab_id: referenced,
-                });
-            }
         }
 
         let manifest = SharedStoreCheckpointManifest {
@@ -2011,10 +2292,15 @@ where
         let mut restored = Vec::new();
         for key in self.object_store.list(&prefix).await? {
             let Some(block_slab_id) = parse_block_slab_id(&key) else {
+                if key.contains(".owned_") {
+                    return Err(invalid_slab_transfer_key().into());
+                }
                 continue;
             };
             let bytes = self.object_store.get(&key).await?;
-            block_store.install_slab(block_slab_id, &bytes)?;
+            block_store.install_transferred_slab(
+                block_slab_id, &bytes, slab_owner_from_transfer_key(block_slab_id, &key)?,
+            )?;
             restored.push(block_slab_id);
         }
         restored.sort_unstable();
@@ -2130,6 +2416,7 @@ where
         engine: &TemporalEngine,
         block_store: &BlockStore,
     ) -> Result<(), SharedStoreReplicationError> {
+        manifest.validate_slab_addresses()?;
         let index = self.object_store.get(&manifest.index_key).await?;
         verify_checksum(
             &manifest.index_key,
@@ -2143,13 +2430,56 @@ where
                 what: format!("checkpoint manifest {} records none", manifest.checkpoint_id),
             }
         })?;
-        engine.install_index_bytes(manifest.shard_id, &index, routing_range)?;
-
-        for slab in &manifest.block_slabs {
+        let transfer_owners = manifest.block_slabs.iter()
+            .map(|slab| slab_owner_from_transfer_key(slab.block_slab_id, &slab.key))
+            .collect::<Result<Vec<_>, _>>()?;
+        // The producer writes a fresh durable checkpoint identity per image.
+        // Hash the entire manifest to bind retries to its exact declared bytes.
+        let generation = transfer_owners.iter().any(Option::is_some)
+            .then(|| sha256_hex(&encode_checkpoint_manifest(manifest)));
+        let bindings = generation.as_ref().map(|generation| {
+            let source_ids = manifest.block_slabs.iter().map(|slab| slab.block_slab_id as u32)
+                .collect::<Vec<_>>();
+            block_store.bind_checkpoint_slab_ids(generation, &source_ids, true)
+        }).transpose()?;
+        let translated_index;
+        let index = match (&generation, &bindings) {
+            (Some(generation), Some(bindings)) => {
+                translated_index = crate::engine::translate_portable_checkpoint_index(
+                    &index, generation, bindings,
+                )?;
+                translated_index.as_slice()
+            }
+            _ => index.as_ref(),
+        };
+        let mut retained = crate::block_store::BlockStoreReadSnapshot::new(block_store);
+        for (slab, owner) in manifest.block_slabs.iter().zip(transfer_owners) {
             let bytes = self.object_store.get(&slab.key).await?;
             verify_checksum(&slab.key, &bytes, slab.byte_size, &slab.sha256)?;
-            block_store.install_slab(slab.block_slab_id, &bytes)?;
+            if let (Some(generation), Some(bindings)) = (&generation, &bindings) {
+                let rewritten;
+                let (destination, bytes) = if owner.is_some() {
+                    let source = crate::block_store::slab_restore_bindings::SourceSlab {
+                        lineage: generation.clone(),
+                        slab_id: slab.block_slab_id as u32,
+                    };
+                    let mut owned_bytes = bytes.to_vec();
+                    let destination = bindings.translate_slab(&source, &mut owned_bytes, owner)?;
+                    rewritten = owned_bytes;
+                    (destination, rewritten.as_slice())
+                } else {
+                    (bindings.translate_slab_id(generation, slab.block_slab_id)?, bytes.as_ref())
+                };
+                block_store.stage_transferred_slab(
+                    u64::from(destination), bytes, owner, &mut retained, true,
+                )?;
+                continue;
+            }
+            block_store.stage_transferred_slab(
+                slab.block_slab_id, &bytes, owner, &mut retained, false,
+            )?;
         }
+        engine.install_index_bytes(manifest.shard_id, index, routing_range)?;
         Ok(())
     }
 
@@ -2189,12 +2519,53 @@ where
         after_wal_index: u64,
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        self.replay_wal_inner(shard_id, after_wal_index, engine, false).await
+    }
+
+    #[doc(hidden)]
+    pub fn restored_file_frontier(
+        &self,
+        shard_id: ShardId,
+        engine: &TemporalEngine,
+    ) -> Result<Option<u64>, Status> {
+        engine.local_file_restore_frontier(shard_id, &self.cluster_id)
+    }
+
+    /// File restore stages the entire remote tail before installing its local image.
+    #[doc(hidden)]
+    pub async fn recover_file_wal(
+        &self,
+        shard_id: ShardId,
+        after_wal_index: u64,
+        engine: &TemporalEngine,
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        let report = self.replay_wal_inner(shard_id, after_wal_index, engine, true).await?;
+        let needs_checkpoint = report.applied > 0 || (after_wal_index > 0
+            && self.restored_file_frontier(shard_id, engine).map_err(|status| {
+                SharedStoreReplicationError::ApplyFailed { wal_index: after_wal_index, status }
+            })? != Some(after_wal_index));
+        if needs_checkpoint {
+            engine.commit_file_restore_image(shard_id, &self.cluster_id, report.last_wal_index)
+                .map_err(|status| SharedStoreReplicationError::ApplyFailed {
+                    wal_index: report.last_wal_index, status,
+                })?;
+        }
+        Ok(report)
+    }
+
+    async fn replay_wal_inner(
+        &self,
+        shard_id: ShardId,
+        after_wal_index: u64,
+        engine: &TemporalEngine,
+        file_restore: bool,
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
         if matches!(
             self.wal_append_mode,
             SharedStoreWalAppendMode::ProtobufAppendBlob
         ) {
             return self
-                .replay_wal_from_offset_metadata(shard_id, after_wal_index, engine)
+                .replay_wal_from_offset_metadata(shard_id, after_wal_index, engine, file_restore)
                 .await;
         }
         let wal_entries = self.load_wal_entries(shard_id).await?;
@@ -2223,10 +2594,10 @@ where
             report.applied += 1;
             report.last_wal_index = wal_index;
             if window.len() >= REPLAY_APPLY_WINDOW {
-                Self::apply_replayed_window(shard_id, &mut window, engine)?;
+                Self::apply_replayed_window(shard_id, &mut window, engine, file_restore)?;
             }
         }
-        Self::apply_replayed_window(shard_id, &mut window, engine)?;
+        Self::apply_replayed_window(shard_id, &mut window, engine, file_restore)?;
         Ok(report)
     }
 
@@ -2254,6 +2625,7 @@ where
         shard_id: ShardId,
         window: &mut Vec<(u64, SharedStoreWalEntry)>,
         engine: &TemporalEngine,
+        file_restore: bool,
     ) -> Result<(), SharedStoreReplicationError> {
         if window.is_empty() {
             return Ok(());
@@ -2261,7 +2633,7 @@ where
         let last_in_window = window.last().map(|(index, _)| *index).unwrap_or_default();
         let (applied, commit) = engine.apply_one_coalesced_batch(|| {
             for (wal_index, entry) in window.drain(..) {
-                Self::apply_replayed_wal_entry(shard_id, wal_index, entry, engine)?;
+                Self::apply_replayed_wal_entry(shard_id, wal_index, entry, engine, file_restore)?;
             }
             Ok::<(), SharedStoreReplicationError>(())
         });
@@ -2279,9 +2651,26 @@ where
         wal_index: u64,
         entry: SharedStoreWalEntry,
         engine: &TemporalEngine,
+        file_restore: bool,
     ) -> Result<(), SharedStoreReplicationError> {
         if !entry.outcomes.is_empty() {
-            if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_blocks) {
+            // An outcome's address comes from the publishing store. Even a valid local
+            // record at that number may belong to another allocation lineage.
+            let carriers = shared_wal_carriers(&entry.outcomes, &entry.staged_blocks);
+            if entry.outcomes.iter().zip(&carriers).any(|(item, carrier)| {
+                item.resolved_address().is_some() && carrier.is_none()
+            }) {
+                return Err(SharedStoreReplicationError::ApplyFailed {
+                    wal_index,
+                    status: Status::error(
+                        "shared_wal_unbound_address",
+                        "shared WAL outcome names an address without carrying its block",
+                    ),
+                });
+            }
+            if !engine.install_shared_outcomes_with_carriers(
+                shard_id, &entry.outcomes, &entry.staged_blocks, Some(&carriers),
+            ) {
                 return Err(SharedStoreReplicationError::ApplyFailed {
                     wal_index,
                     status: Status::error("shared_wal_outcome_refused", "a recorded outcome could not be installed"),
@@ -2295,9 +2684,12 @@ where
                 status: Status::error("shared_wal_entry_empty", "entry carries neither results nor an operation"),
             });
         };
-        let response = engine.execute_with_carried_blocks(
-            ExecuteRequest { shard_id, command }, entry.staged_blocks,
-        );
+        let request = ExecuteRequest { shard_id, command };
+        let response = if file_restore {
+            engine.stage_shared_wal_command_for_file_restore(request, entry.staged_blocks)
+        } else {
+            engine.execute_shared_wal_command(request, entry.staged_blocks)
+        };
         if !response.status.ok {
             return Err(SharedStoreReplicationError::ApplyFailed { wal_index, status: response.status });
         }
@@ -2309,6 +2701,7 @@ where
         shard_id: ShardId,
         after_wal_index: u64,
         engine: &TemporalEngine,
+        file_restore: bool,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
         // Only the segments that can hold an entry above `after_wal_index` are read, and the union
         // of their indexes is checked for a hole below, so a missing or shortened segment is a
@@ -2399,11 +2792,11 @@ where
                 report.offset_index_reads += 1;
                 report.range_bytes_read += range_bytes_read;
                 if window.len() >= REPLAY_APPLY_WINDOW {
-                    Self::apply_replayed_window(shard_id, &mut window, engine)?;
+                    Self::apply_replayed_window(shard_id, &mut window, engine, file_restore)?;
                 }
             }
         }
-        Self::apply_replayed_window(shard_id, &mut window, engine)?;
+        Self::apply_replayed_window(shard_id, &mut window, engine, file_restore)?;
         Ok(report)
     }
 
@@ -3297,6 +3690,43 @@ struct SharedSlabAddress {
     sha256: String,
 }
 
+#[derive(Debug)]
+struct BoundCheckpointSlabSource {
+    original: Arc<dyn SharedSlabSource>,
+    generation: String,
+    bindings: crate::block_store::slab_restore_bindings::SlabRestoreBindings,
+    source_ids: BTreeMap<u64, u32>,
+}
+
+impl SharedSlabSource for BoundCheckpointSlabSource {
+    fn slab_owner_shard_id(&self, local_id: u64) -> Result<Option<u64>, BlockStoreError> {
+        match self.source_ids.get(&local_id) {
+            Some(&original) => self.original.slab_owner_shard_id(u64::from(original)),
+            None => Ok(None),
+        }
+    }
+
+    fn fetch_slab(&self, local_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
+        let Some(&original) = self.source_ids.get(&local_id) else {
+            return Ok(None);
+        };
+        // The backend verifies the transferred bytes before their ID is rewritten.
+        let Some(mut bytes) = self.original.fetch_slab(u64::from(original))? else {
+            return Ok(None);
+        };
+        let owner = self.original.slab_owner_shard_id(u64::from(original))?;
+        self.bindings.translate_slab(
+            &crate::block_store::slab_restore_bindings::SourceSlab {
+                lineage: self.generation.clone(),
+                slab_id: original,
+            },
+            &mut bytes,
+            owner,
+        )?;
+        Ok(Some(bytes))
+    }
+}
+
 /// Lazy read-through source backing conformance recovery on the shared-filesystem
 /// (`FileObjectStore`) backend. Holds the checkpoint's slab address map (slab id ->
 /// shared object key) with no slab bytes, and resolves each slab on demand to a
@@ -3326,6 +3756,13 @@ impl SharedPathSlabSource {
 }
 
 impl SharedSlabSource for SharedPathSlabSource {
+    fn slab_owner_shard_id(&self, block_slab_id: u64) -> Result<Option<u64>, BlockStoreError> {
+        match self.slabs.get(&block_slab_id) {
+            Some(slab) => slab_owner_from_transfer_key(block_slab_id, &slab.key),
+            None => Ok(None),
+        }
+    }
+
     fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
         let Some(address) = self.slabs.get(&block_slab_id) else {
             return Ok(None);
@@ -3389,6 +3826,13 @@ impl MatrixObjectSlabSource {
 }
 
 impl SharedSlabSource for MatrixObjectSlabSource {
+    fn slab_owner_shard_id(&self, block_slab_id: u64) -> Result<Option<u64>, BlockStoreError> {
+        match self.slabs.get(&block_slab_id) {
+            Some(slab) => slab_owner_from_transfer_key(block_slab_id, &slab.key),
+            None => Ok(None),
+        }
+    }
+
     fn fetch_slab(&self, block_slab_id: u64) -> Result<Option<Vec<u8>>, BlockStoreError> {
         let Some(address) = self.slabs.get(&block_slab_id) else {
             return Ok(None);
@@ -3439,6 +3883,7 @@ where
         engine: &TemporalEngine,
         block_store: &BlockStore,
         make_source: F,
+        rebase_local_wal: bool,
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError>
     where
         F: FnOnce(Arc<O>, BTreeMap<u64, SharedSlabAddress>) -> Arc<dyn SharedSlabSource>,
@@ -3448,6 +3893,7 @@ where
             .await?
             .pop()
             .ok_or(SharedStoreReplicationError::CheckpointNotFound(shard_id))?;
+        manifest.validate_slab_addresses()?;
         let index = self.object_store.get(&manifest.index_key).await?;
         verify_checksum(
             &manifest.index_key,
@@ -3461,23 +3907,31 @@ where
                 what: format!("checkpoint manifest {} records none", manifest.checkpoint_id),
             }
         })?;
-        engine.install_index_bytes(manifest.shard_id, &index, routing_range)?;
-
-        let mut slabs = BTreeMap::new();
-        let mut max_slab_id = 0u64;
+        let install_index = |bytes: &[u8]| {
+            if rebase_local_wal {
+                engine.install_index_bytes_in_empty_wal(manifest.shard_id, bytes, routing_range)
+            } else {
+                engine.install_index_bytes(manifest.shard_id, bytes, routing_range)
+            }
+        };
+        let mut owned = false;
         for slab in &manifest.block_slabs {
-            max_slab_id = max_slab_id.max(slab.block_slab_id);
-            slabs.insert(
-                slab.block_slab_id,
-                SharedSlabAddress {
-                    key: slab.key.clone(),
-                    byte_size: slab.byte_size,
-                    sha256: slab.sha256.clone(),
-                },
-            );
+            owned |= slab_owner_from_transfer_key(slab.block_slab_id, &slab.key)?.is_some();
         }
-        let source = make_source(Arc::clone(&self.object_store), slabs);
-        block_store.attach_shared_slab_source(source);
+        if owned {
+            let manifest_bytes = encode_checkpoint_manifest(&manifest);
+            let generation = sha256_hex(&manifest_bytes);
+            let ids = manifest.block_slabs.iter().map(|slab| slab.block_slab_id as u32)
+                .collect::<Vec<_>>();
+            let bindings = block_store.bind_checkpoint_slab_ids(&generation, &ids, true)?;
+            let index = crate::engine::translate_portable_checkpoint_index(&index, &generation, &bindings)?;
+            block_store.persist_lazy_checkpoint_manifest(&generation, &manifest_bytes)?;
+            self.attach_bound_lazy_checkpoint(&manifest, generation, bindings, block_store, make_source)?;
+            install_index(&index)?;
+            return Ok(manifest);
+        }
+        let slabs = checkpoint_slab_addresses(&manifest);
+        let max_slab_id = slabs.last_key_value().map_or(0, |(id, _)| *id);
         // Roll local appends past the checkpoint's slab/block-id range so replayed WAL-tail
         // and new writes never overwrite a slab still served lazily from shared storage.
         if !manifest.block_slabs.is_empty() {
@@ -3501,8 +3955,21 @@ where
                 .collect();
             block_store.install_lazy_checkpoint_slabs(&lazy_slabs)?;
         }
+        let source = make_source(Arc::clone(&self.object_store), slabs);
+        block_store.attach_shared_slab_source(source);
+        install_index(&index)?;
         Ok(manifest)
     }
+}
+
+fn checkpoint_slab_addresses(manifest: &SharedStoreCheckpointManifest) -> BTreeMap<u64, SharedSlabAddress> {
+    manifest.block_slabs.iter().map(|slab| {
+        (slab.block_slab_id, SharedSlabAddress {
+            key: slab.key.clone(),
+            byte_size: slab.byte_size,
+            sha256: slab.sha256.clone(),
+        })
+    }).collect()
 }
 
 /// How many replayed entries share one durable barrier.
@@ -3829,6 +4296,13 @@ mod wal_run_extension {
 // why both layouts have their own test rather than one standing for both.
 
 impl SharedStoreReplicator<FileObjectStore> {
+    pub fn reattach_lazy_checkpoint_sources(
+        &self, block_store: &BlockStore,
+    ) -> Result<(), SharedStoreReplicationError> {
+        self.reattach_lazy_checkpoint_sources_with(block_store, |store, slabs| {
+            Arc::new(SharedPathSlabSource::new(store, slabs))
+        })
+    }
     /// Conformance LAZY restore for the shared-filesystem backend: install the served
     /// INDEX and a per-slab shared address map WITHOUT downloading any slab bytes.
     /// Old (pre-checkpoint) blocks are then read lazily through [`SharedPathSlabSource`]
@@ -3843,12 +4317,32 @@ impl SharedStoreReplicator<FileObjectStore> {
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         self.restore_index_and_block_addresses_with(shard_id, engine, block_store, |store, slabs| {
             Arc::new(SharedPathSlabSource::new(store, slabs)) as Arc<dyn SharedSlabSource>
-        })
+        }, false)
+        .await
+    }
+
+    #[doc(hidden)]
+    pub async fn restore_file_index_into_empty_local_wal(
+        &self,
+        shard_id: ShardId,
+        engine: &TemporalEngine,
+        block_store: &BlockStore,
+    ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
+        self.restore_index_and_block_addresses_with(shard_id, engine, block_store, |store, slabs| {
+            Arc::new(SharedPathSlabSource::new(store, slabs)) as Arc<dyn SharedSlabSource>
+        }, true)
         .await
     }
 }
 
 impl SharedStoreReplicator<MatrixObjectHttpStore> {
+    pub fn reattach_lazy_checkpoint_sources(
+        &self, block_store: &BlockStore,
+    ) -> Result<(), SharedStoreReplicationError> {
+        self.reattach_lazy_checkpoint_sources_with(block_store, |store, slabs| {
+            Arc::new(MatrixObjectSlabSource::new(store, slabs))
+        })
+    }
     /// Conformance LAZY restore for the *networked* matrixobject backend: install
     /// the served INDEX and a per-slab shared address map WITHOUT downloading any slab
     /// bytes. Old (pre-checkpoint) blocks are then fetched lazily over the network
@@ -3864,12 +4358,19 @@ impl SharedStoreReplicator<MatrixObjectHttpStore> {
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         self.restore_index_and_block_addresses_with(shard_id, engine, block_store, |store, slabs| {
             Arc::new(MatrixObjectSlabSource::new(store, slabs)) as Arc<dyn SharedSlabSource>
-        })
+        }, false)
         .await
     }
 }
 
 impl SharedStoreReplicator<NetworkedMatrixObject> {
+    pub fn reattach_lazy_checkpoint_sources(
+        &self, block_store: &BlockStore,
+    ) -> Result<(), SharedStoreReplicationError> {
+        self.reattach_lazy_checkpoint_sources_with(block_store, |store, slabs| {
+            Arc::new(MatrixObjectSlabSource::new(store, slabs))
+        })
+    }
     /// The same lazy restore for the networked store a node actually holds, whichever way
     /// it reaches the cluster. See the impl for [`MatrixObjectHttpStore`].
     pub async fn restore_index_and_block_addresses(
@@ -3880,7 +4381,7 @@ impl SharedStoreReplicator<NetworkedMatrixObject> {
     ) -> Result<SharedStoreCheckpointManifest, SharedStoreReplicationError> {
         self.restore_index_and_block_addresses_with(shard_id, engine, block_store, |store, slabs| {
             Arc::new(MatrixObjectSlabSource::new(store, slabs)) as Arc<dyn SharedSlabSource>
-        })
+        }, false)
         .await
     }
 }
@@ -3995,6 +4496,56 @@ where
         self.write_entry(shard_id, Some(command), Vec::new()).await
     }
 
+    /// Publish the applied commands of one request in their original order.
+    ///
+    /// The caller uses this with the synchronous writer whose publish lock covers the whole
+    /// request. An oversized request may use multiple durable appends.
+    pub async fn write_sync_batch(
+        &self,
+        shard_id: ShardId,
+        commands: Vec<Command>,
+    ) -> Result<(), SharedStoreReplicationError> {
+        self.write_sync_batch_counted(shard_id, commands).await
+            .map_err(|(_, error)| error)
+    }
+
+    /// On failure, return the length of the prefix proven durable by this request.
+    pub async fn write_sync_batch_counted(
+        &self,
+        shard_id: ShardId,
+        commands: Vec<Command>,
+    ) -> Result<(), (usize, SharedStoreReplicationError)> {
+        if self.mode != SharedStoreStorageMode::Sync || self.group_commit {
+            return Err((0, std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "request batches require a synchronous WAL writer with serialized publication",
+            ).into()));
+        }
+        if commands.is_empty() {
+            return Ok(());
+        }
+        let _order = self.publish_order.lock().await;
+        self.refuse_if_hole().map_err(|error| (0, error))?;
+        let first_index = self.next_wal_index.fetch_add(commands.len() as u64, Ordering::Relaxed);
+        let entries: Vec<_> = commands.into_iter().enumerate().map(|(offset, command)| SharedStoreWalEntry {
+            shard_id,
+            wal_index: first_index + offset as u64,
+            command: Some(command),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        }).collect();
+        let mut durable = Vec::with_capacity(entries.len());
+        let result = self.replicator.publish_wal_entries_counted(&entries, &mut durable).await;
+        if let Err(error) = &result {
+            self.record_hole(
+                first_index + durable.len() as u64,
+                first_index + entries.len() as u64 - 1,
+                error,
+            );
+        }
+        result.map_err(|error| (durable.len(), error))
+    }
+
     pub async fn write_outcomes(
         &self,
         shard_id: ShardId,
@@ -4004,6 +4555,12 @@ where
             return Err(SharedStoreReplicationError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "a shared maintenance frame must contain outcomes",
+            )));
+        }
+        if outcomes.iter().any(|item| item.resolved_address().is_some()) {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "an addressed shared WAL outcome requires its carried block",
             )));
         }
         self.write_entry(shard_id, None, outcomes).await
@@ -4098,7 +4655,7 @@ where
     /// writer drains a one-entry batch immediately, adding no latency.
     ///
     /// Durability invariant: a waiter is told `Ok` STRICTLY AFTER the append covering its entry
-    /// returned `Ok`; on failure every covered waiter (leader included) gets `Err`. A leader that
+    /// returned `Ok`; on failure each unpublished waiter gets `Err`. A leader that
     /// vanishes without delivering (its `waker` dropped) surfaces as `Err` to the follower — never
     /// a false ack. Exactly amortizes N durable barriers onto ~1 per group.
     async fn group_commit_write(
@@ -4156,43 +4713,36 @@ where
                 batch.iter().map(|waiter| waiter.entry.clone()).collect();
             // Entries numbered before an earlier round failed are refused, not published: they
             // would sit after the hole that round left.
+            let mut reports = Vec::with_capacity(entries.len());
             let result = match self.refuse_if_hole() {
                 Err(error) => Err(error),
-                Ok(()) => self.replicator.publish_wal_entries_batch(&entries).await,
+                Ok(()) => self.replicator
+                    .publish_wal_entries_counted(&entries, &mut reports).await,
             };
             if let Err(error) = &result {
-                if !matches!(error, SharedStoreReplicationError::UnresolvedWalHole { .. }) {
-                    let first = entries.iter().map(|entry| entry.wal_index).min().unwrap_or(0);
-                    let last = entries.iter().map(|entry| entry.wal_index).max().unwrap_or(0);
-                    self.record_hole(first, last, error);
+                let mut unresolved = entries[reports.len()..].iter().map(|entry| entry.wal_index);
+                if let Some(first) = unresolved.next() {
+                    let (first, last) = unresolved.fold((first, first), |(first, last), index| {
+                        (first.min(index), last.max(index))
+                    });
+                    if !matches!(error, SharedStoreReplicationError::UnresolvedWalHole { .. }) {
+                        self.record_hole(first, last, error);
+                    }
                 }
             }
-            match result {
-                Ok(reports) => {
-                    for (waiter, report) in batch.into_iter().zip(reports.into_iter()) {
-                        let outcome = GroupCommitOutcome::Committed(report);
-                        if waiter.entry.wal_index == wal_index {
-                            my_outcome = Some(outcome);
-                        } else {
-                            // A dropped receiver just means that follower's future was canceled;
-                            // its entry is already durable, so nothing to undo.
-                            let _ = waiter.waker.send(outcome);
-                        }
-                    }
-                }
-                Err(err) => {
-                    // The covering append failed: every entry in this round is NOT durable. Fan the
-                    // error out to all of them (never a false ack). The stringified error is shared;
-                    // the leader keeps a typed error for its own return.
-                    let message = err.to_string();
-                    for waiter in batch.into_iter() {
-                        let outcome = GroupCommitOutcome::Failed(message.clone());
-                        if waiter.entry.wal_index == wal_index {
-                            my_outcome = Some(outcome);
-                        } else {
-                            let _ = waiter.waker.send(outcome);
-                        }
-                    }
+            let message = result.err().map(|error| error.to_string());
+            let mut reports = reports.into_iter();
+            for waiter in batch {
+                let outcome = match reports.next() {
+                    Some(report) => GroupCommitOutcome::Committed(report),
+                    None => GroupCommitOutcome::Failed(
+                        message.as_ref().expect("unpublished entry without an error").clone(),
+                    ),
+                };
+                if waiter.entry.wal_index == wal_index {
+                    my_outcome = Some(outcome);
+                } else {
+                    let _ = waiter.waker.send(outcome);
                 }
             }
         }
@@ -4248,22 +4798,18 @@ where
         // itself, which it documents as "correct, just uncoalesced". So a mixed queue is slower
         // and never wrong.
         //
-        // ALL-OR-NOTHING ON FAILURE, which is simpler than the index arithmetic it replaces: the
-        // coalesced write is one append, so it either landed or it did not, and there is no
-        // prefix of it to keep. The whole run goes back on the queue in its original order.
-        let reports = match self.replicator.publish_wal_entries_batch(&drained).await {
-            Ok(reports) => reports,
-            Err(err) => {
-                let mut pending = self
-                    .pending
-                    .lock()
-                    .expect("shared-store async queue lock poisoned");
-                for entry in drained.iter().rev().cloned() {
-                    pending.push_front(entry);
-                }
-                return Err(err);
+        // If a later append failed, requeue only the entries without a completed durable barrier.
+        let mut reports = Vec::with_capacity(drained.len());
+        if let Err(error) = self.replicator.publish_wal_entries_counted(&drained, &mut reports).await {
+            let mut pending = self
+                .pending
+                .lock()
+                .expect("shared-store async queue lock poisoned");
+            for entry in drained.into_iter().skip(reports.len()).rev() {
+                pending.push_front(entry);
             }
-        };
+            return Err(error);
+        }
 
         let last = reports.last();
         let remaining = self.queued_len();
@@ -4279,12 +4825,35 @@ where
 }
 
 fn parse_block_slab_id(key: &str) -> Option<u64> {
-    key.rsplit('/')
+    let stem = key.rsplit('/')
         .next()?
         .strip_prefix("block_segment_")?
-        .strip_suffix(".seg")?
-        .parse()
-        .ok()
+        .strip_suffix(".seg")?;
+    match stem.split_once(".owned_") {
+        Some((id, owner)) => {
+            owner.parse::<u64>().ok()?;
+            id.parse().ok()
+        }
+        None => stem.parse().ok(),
+    }
+}
+
+fn invalid_slab_transfer_key() -> BlockStoreError {
+    std::io::Error::new(std::io::ErrorKind::InvalidData, "invalid owned slab object key").into()
+}
+
+fn slab_owner_from_transfer_key(id: u64, key: &str) -> Result<Option<u64>, BlockStoreError> {
+    let name = key.rsplit('/').next().unwrap_or_default();
+    let Some((_, owner)) = name.split_once(".owned_") else {
+        return Ok(None);
+    };
+    if parse_block_slab_id(key) != Some(id) {
+        return Err(invalid_slab_transfer_key());
+    }
+    owner.strip_suffix(".seg")
+        .and_then(|owner| owner.parse().ok())
+        .map(Some)
+        .ok_or_else(invalid_slab_transfer_key)
 }
 
 /// THE SUFFIX A BINARY SHARED-STORE OBJECT CARRIES.
@@ -5725,7 +6294,7 @@ fn decode_wal_offset_metadata_frames(
     Ok(bytes.len() - last_frame_start)
 }
 
-fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
+pub(crate) fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
     let kind = match command {
         Command::CommonExpire { key, ttl_ms } => {
             v1::command::Kind::CommonExpire(v1::CommonExpire {
@@ -6422,6 +6991,10 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
 /// same slab on local disk from inside a module this one cannot see.
 fn block_slab_object_name(block_slab_id: u64) -> String {
     format!("block_segment_{block_slab_id:020}.seg")
+}
+
+fn owned_block_slab_object_name(block_slab_id: u64, owner: u64) -> String {
+    format!("block_segment_{block_slab_id:020}.owned_{owner:020}.seg")
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -9379,6 +9952,70 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn file_checkpoint_uploads_only_captured_slabs_even_if_another_writer_adds_a_slab() {
+        let root = tempfile::tempdir().unwrap();
+        let source = test_engine(root.path(), "source");
+        source.load_shard(1);
+        let put = source.execute_durable(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: "captured".into(), value: b"kept value".to_vec() },
+        });
+        assert!(put.status.ok);
+        let image = source.export_file_checkpoint_index(1).unwrap();
+        let expected = image.block_slab_ids;
+        assert_eq!(expected.len(), 1);
+        let block_store = source.block_store();
+        let mut state = 0x1234_5678_u32;
+        let noise = (0..256 * 1024).map(|_| {
+            state ^= state << 13;
+            state ^= state >> 17;
+            state ^= state << 5;
+            state as u8
+        }).collect::<Vec<_>>();
+        let unrelated = block_store.append_block_of_object_for_shard(
+            42, &noise, None, None, 0,
+        ).unwrap();
+        block_store.roll_slab_for_shard(42).unwrap();
+        let unrelated = unrelated.block_slab_id();
+        assert!(!expected.contains(&unrelated));
+
+        let (store, replicator) = test_shared_store(root.path());
+        let mut arrived = None;
+        let manifest = replicator.publish_file_checkpoint(1, &source, &block_store, |_| {
+            block_store.roll_slab_for_shard(1).map_err(std::io::Error::other)?;
+            arrived = Some(block_store.append_block_of_object_for_shard(
+                1, b"after capture", None, None, 0,
+            ).map_err(std::io::Error::other)?.block_slab_id());
+            Ok(Vec::new())
+        }).await.unwrap();
+        let manifest_ids = manifest.block_slabs.iter().map(|entry| entry.block_slab_id)
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(manifest_ids, expected);
+        assert!(!manifest_ids.contains(&arrived.expect("fixture must create a later slab")));
+        assert!(block_store.slab_ids().unwrap().contains(&unrelated));
+        let actual = store.list(&replicator.checkpoint_prefix(1, &manifest.checkpoint_id)).await.unwrap()
+            .into_iter().filter(|key| key.contains("/block_segments/")).collect::<Vec<_>>();
+        assert_eq!(actual.len(), expected.len());
+        let mut bytes = 0u64;
+        for key in actual {
+            bytes += store.get(&key).await.unwrap().len() as u64;
+        }
+        let expected_bytes: u64 = expected.iter().map(|&id| block_store.read_slab(id).unwrap().len() as u64).sum();
+        assert_eq!(bytes, expected_bytes);
+        let excluded_bytes = block_store.read_slab(unrelated).unwrap().len();
+        assert!(excluded_bytes > 128 * 1024, "unrelated slab must be physically large");
+        println!("checkpoint_slab_upload_bytes={bytes} excluded_unrelated_slab_bytes={excluded_bytes}");
+
+        let follower = test_engine(root.path(), "follower");
+        replicator.restore_file_index_into_empty_local_wal(1, &follower, &follower.block_store()).await.unwrap();
+        follower.load_shard(1);
+        let result = follower.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key: "captured".into() },
+        });
+        assert_eq!(result.response, CommandResponse::Bytes { value: Some(b"kept value".to_vec()) });
+    }
+
+    #[tokio::test]
     async fn s4_publish_checkpoint_covers_every_index_referenced_slab() {
         // S4 completeness barrier: every slab the served index references must be uploaded and
         // recorded in the manifest before it is written, so a restore never resolves a live block
@@ -9427,16 +10064,14 @@ mod tests {
                 value: b"snapshot-value".to_vec(),
             },
         });
-        // The write landed in on-disk slab 0 and the index references it.
-        assert!(primary.live_block_slab_ids(1).contains(&0));
-        // Simulate a lost/never-durable slab: remove slab 0 from disk so slab_ids() no longer
-        // enumerates it while the in-memory index still references it.
-        let slab0 = dir
-            .path()
-            .join("primary-blocks")
-            .join("block_segment_00000000000000000000.seg");
-        std::fs::remove_file(&slab0).unwrap();
-        assert!(!primary.block_store().slab_ids().unwrap().contains(&0));
+        let image = primary.export_portable_checkpoint_index(1).unwrap();
+        assert_eq!(image.block_slab_ids.len(), 1);
+        let missing = *image.block_slab_ids.first().unwrap();
+        let path = dir.path().join("primary-blocks")
+            .join(format!("block_segment_{missing:020}.seg"));
+        // Remove an actual captured physical slab and keep its live reference.
+        std::fs::remove_file(&path).unwrap();
+        assert!(!primary.block_store().slab_ids().unwrap().contains(&missing));
 
         let (_store, replicator) = test_shared_store(dir.path());
         let err = replicator
@@ -9448,8 +10083,8 @@ mod tests {
                 err,
                 SharedStoreReplicationError::CheckpointSlabNotDurable {
                     shard_id: 1,
-                    block_slab_id: 0
-                }
+                    block_slab_id
+                } if block_slab_id == missing
             ),
             "expected CheckpointSlabNotDurable, got {err:?}"
         );
@@ -11329,6 +11964,25 @@ mod tests {
                 },
             ),
         }
+    }
+
+    #[test]
+    fn restore_checks_slab_ids_and_declared_owners_before_staging() {
+        let owned = SharedStoreBlockSlab {
+            key: owned_block_slab_object_name(3, 42),
+            ..sample_slab(3, true)
+        };
+        let valid = sample_checkpoint_manifest(true, vec![owned.clone(), sample_slab(4, false)]);
+        assert!(valid.validate_slab_addresses().is_ok());
+        let duplicated = sample_checkpoint_manifest(true, vec![owned.clone(), sample_slab(3, false)]);
+        assert!(duplicated.validate_slab_addresses().is_err());
+        let wrong_id = SharedStoreBlockSlab { block_slab_id: 4, ..owned };
+        assert!(sample_checkpoint_manifest(true, vec![wrong_id]).validate_slab_addresses().is_err());
+        let reserved = SharedStoreBlockSlab {
+            block_slab_id: u64::from(u32::MAX),
+            ..sample_slab(4, false)
+        };
+        assert!(sample_checkpoint_manifest(true, vec![reserved]).validate_slab_addresses().is_err());
     }
 
     #[test]
@@ -14268,6 +14922,44 @@ mod tests {
     /// side alone makes that parse return `None` for every object, and the loop `continue`s
     /// past all of them -- so the restore reports success having installed nothing at all.
     /// Nothing raises an error on that path.
+    #[tokio::test]
+    async fn slab_transfer_uses_declared_ownership_not_payload_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let (objects, replicator) = test_shared_store(dir.path());
+        let shape_store = BlockStore::new(dir.path().join("shape"));
+        let raw_id = shape_store.roll_slab_for_shard(0).unwrap().new_block_slab_id;
+        let raw = shape_store.read_slab(raw_id).unwrap();
+
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let source = engine.block_store();
+        source.install_slab(raw_id, &raw).unwrap();
+        let written = source.append_block_of_object_for_shard(0, b"owned", None, None, 0).unwrap();
+        source.sync_durable().unwrap();
+        let owned_id = written.block_slab_id();
+        replicator.publish_index(1, &engine).await.unwrap();
+        replicator.publish_block_slabs(1, &source).await.unwrap();
+
+        let target = TemporalEngine::default();
+        let target_store = target.block_store();
+        replicator.restore_index_and_blocks(1, &target, &target_store).await.unwrap();
+        assert_eq!(target_store.exported_slab_owner(raw_id).unwrap(), None);
+        assert_eq!(target_store.read_logical_range(raw_id, 0, raw.len() as u64).unwrap(), raw);
+        assert_eq!(target_store.exported_slab_owner(owned_id).unwrap(), Some(0));
+        assert_eq!(target_store.read(&written).unwrap(), b"owned");
+
+        let mut damaged = source.read_slab(owned_id).unwrap();
+        damaged[0] ^= 1;
+        let key = format!("{}{}", replicator.block_slab_prefix(1),
+            owned_block_slab_object_name(owned_id, 0));
+        objects.put(&key, Bytes::from(damaged)).await.unwrap();
+        let rejected = TemporalEngine::default();
+        let rejected_store = rejected.block_store();
+        assert!(replicator.restore_index_and_blocks(1, &rejected, &rejected_store).await.is_err());
+        assert!(!rejected_store.slab_ids().unwrap().contains(&owned_id));
+        assert_eq!(rejected_store.exported_slab_owner(owned_id).unwrap(), None);
+    }
+
     #[test]
     fn the_block_slab_key_writer_and_reader_agree() {
         let dir = tempfile::tempdir().unwrap();

@@ -30,51 +30,59 @@ def main():
     parser.add_argument("--model", required=True)
     parser.add_argument("--vllm-url", default="http://127.0.0.1:8000")
     parser.add_argument(
-        "--reload-vllm-url", help="second vLLM worker attached to the same LMCache server"
+        "--reload-vllm-url", help="vLLM worker that replays the prompt"
     )
     parser.add_argument("--lmcache-url", default="http://127.0.0.1:8080")
+    parser.add_argument("--reload-lmcache-url", help="LMCache server attached to the replay worker")
     args = parser.parse_args()
+    if args.reload_lmcache_url and not args.reload_vllm_url:
+        parser.error("--reload-lmcache-url requires --reload-vllm-url")
+    writer = args.lmcache_url.rstrip("/")
+    reader = (args.reload_lmcache_url or writer).rstrip("/")
 
-    def adapter_status():
-        adapters = request(args.lmcache_url, "/status")["storage_manager"]["l2_adapters"]
+    def adapter_status(url):
+        adapters = request(url, "/status")["storage_manager"]["l2_adapters"]
         if not adapters or any(item.get("adapter") != "temporalstore" for item in adapters):
             raise RuntimeError("start LMCache with one or more TemporalStore adapters")
         return adapters
 
-    def changes(current, original, counter):
+    def changes(current, original, *counters):
         if len(current) != len(original):
             raise RuntimeError("the number of TemporalStore adapters changed during the test")
         return [
-            latest[counter] - previous[counter]
-            for latest, previous in zip(current, original)
+            sum(latest.get(counter, 0) - previous.get(counter, 0) for counter in counters)
+            for latest, previous in zip(current, original, strict=True)
         ]
 
     # Use fresh input so a previous smoke run cannot supply this test's store.
     prompt = f"Session {time.time_ns()}. " + "A cache holds computed key and value tensors. " * 96
     payload = {"model": args.model, "prompt": prompt, "max_tokens": 4, "temperature": 0}
-    before = adapter_status()
+    store_counters = ("stores", "stores_confirmed_by_read")
+    before = adapter_status(writer)
     first = request(args.vllm_url, "/v1/completions", payload)
     stored = wait_for(
-        adapter_status,
-        lambda status: all(count > 0 for count in changes(status, before, "stores")),
-        "L2 stores on every adapter",
+        lambda: adapter_status(writer),
+        lambda status: all(count > 0 for count in changes(status, before, *store_counters)),
+        "L2 store confirmations on every writer adapter",
     )
-    cleared = request(args.lmcache_url, "/cache/clear", {})
-    if cleared.get("status") != "ok":
-        raise RuntimeError(f"L1 clear failed: {cleared}")
+    for url in dict.fromkeys((writer, reader)):
+        cleared = request(url, "/cache/clear", {})
+        if cleared.get("status") != "ok":
+            raise RuntimeError(f"L1 clear failed at {url}: {cleared}")
+    before_reload = adapter_status(reader)
     second = request(
         args.reload_vllm_url or args.vllm_url, "/v1/completions", payload
     )
     loaded = wait_for(
-        adapter_status,
-        lambda status: any(count > 0 for count in changes(status, stored, "loads")),
-        "L2 loads",
+        lambda: adapter_status(reader),
+        lambda status: any(count > 0 for count in changes(status, before_reload, "loads")),
+        "L2 loads on the replay adapter",
     )
     if first["choices"][0]["text"] != second["choices"][0]["text"]:
         raise AssertionError("completion changed after loading the cached prefix")
     print(
-        f"PASS: TemporalStore stores {changes(stored, before, 'stores')}, "
-        f"loads {changes(loaded, stored, 'loads')}, "
+        f"PASS: TemporalStore store confirmations {changes(stored, before, *store_counters)}, "
+        f"loads {changes(loaded, before_reload, 'loads')}, "
         f"prompt tokens={first['usage']['prompt_tokens']}"
     )
 

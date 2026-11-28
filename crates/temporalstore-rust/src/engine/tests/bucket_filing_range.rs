@@ -296,28 +296,29 @@ fn neither_rebuild_can_drop_a_block_because_every_bucket_is_derived_in_range() {
             load_on(&engine, NARROW_END);
             let keys = seed(&engine, RECORDS);
 
-            let mut shards = engine.shards.write().expect("engine lock poisoned");
-            let shard = shards.get_mut(&1).expect("shard 1");
+            engine.shards.with_state_mut(1, |state| {
+                let shard = state.expect("shard 1");
 
-            // DENOMINATOR: the fixture really wrote what the rebuild is about to re-file, read off
-            // the MODEL MAP rather than the bucket index -- both rebuilds repopulate the index FROM
-            // the model maps, so the model map is the input and the index is the output.
-            assert_eq!(
-                shard.strings().len(),
-                keys.len(),
-                "{rebuild}/0..{rebuild_end}: the model map holds {} of {} written keys, so the \
-                 rebuild below is not being handed the fixture",
-                shard.strings().len(),
-                keys.len()
-            );
+                // DENOMINATOR: the fixture really wrote what the rebuild is about to re-file, read off
+                // the MODEL MAP rather than the bucket index -- both rebuilds repopulate the index FROM
+                // the model maps, so the model map is the input and the index is the output.
+                assert_eq!(
+                    shard.strings().len(),
+                    keys.len(),
+                    "{rebuild}/0..{rebuild_end}: the model map holds {} of {} written keys, so the \
+                     rebuild below is not being handed the fixture",
+                    shard.strings().len(),
+                    keys.len()
+                );
 
-            if is_ownership {
-                rebuild_bucket_block_ownership(1, shard, 0, rebuild_end);
-            } else {
-                rebuild_bucket_first_index(1, shard, 0, rebuild_end);
-            }
-            refresh_bucket_runtime_flags(shard);
-            observed.insert((rebuild_end, rebuild), bucket_contents(shard));
+                if is_ownership {
+                    rebuild_bucket_block_ownership(1, shard, 0, rebuild_end);
+                } else {
+                    rebuild_bucket_first_index(1, shard, 0, rebuild_end);
+                }
+                refresh_bucket_runtime_flags(shard);
+                observed.insert((rebuild_end, rebuild), bucket_contents(shard));
+            })
         }
     }
 
@@ -401,57 +402,58 @@ fn every_block_the_live_write_path_files_lands_inside_the_shards_range() {
         load_on(&engine, end_routing_bucket);
         let keys = seed(&engine, RECORDS);
 
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1");
 
-        let contents = bucket_contents(shard);
-        assert_eq!(
-            block_total(&contents),
-            keys.len(),
-            "0..{end_routing_bucket}: the fixture wrote {} keys and the index holds {} blocks",
-            keys.len(),
-            block_total(&contents)
-        );
+            let contents = bucket_contents(shard);
+            assert_eq!(
+                block_total(&contents),
+                keys.len(),
+                "0..{end_routing_bucket}: the fixture wrote {} keys and the index holds {} blocks",
+                keys.len(),
+                block_total(&contents)
+            );
 
-        let outside: Vec<u32> = contents
-            .keys()
-            .copied()
-            .filter(|routing_bucket| *routing_bucket > end_routing_bucket)
-            .collect();
-        println!(
-            "  0..{end_routing_bucket}: {} live blocks in {} buckets, {} buckets outside the range",
-            block_total(&contents),
-            contents.len(),
-            outside.len()
-        );
-        assert!(
-            outside.is_empty(),
-            "0..{end_routing_bucket}: {} buckets hold blocks but sit above the shard's end; the \
-             first few are {:?}. `append_value` is handed \
-             `block_routing_bucket(key, start, end)` and every filing site derives the same \
-             expression, so a block there is invisible to every reader that scopes by bucket.",
-            outside.len(),
-            &outside[..outside.len().min(5)]
-        );
+            let outside: Vec<u32> = contents
+                .keys()
+                .copied()
+                .filter(|routing_bucket| *routing_bucket > end_routing_bucket)
+                .collect();
+            println!(
+                "  0..{end_routing_bucket}: {} live blocks in {} buckets, {} buckets outside the range",
+                block_total(&contents),
+                contents.len(),
+                outside.len()
+            );
+            assert!(
+                outside.is_empty(),
+                "0..{end_routing_bucket}: {} buckets hold blocks but sit above the shard's end; the \
+                 first few are {:?}. `append_value` is handed \
+                 `block_routing_bucket(key, start, end)` and every filing site derives the same \
+                 expression, so a block there is invisible to every reader that scopes by bucket.",
+                outside.len(),
+                &outside[..outside.len().min(5)]
+            );
 
-        // AND THE FILING IS THE DERIVATION, key by key. "Inside the range" is satisfied by filing
-        // everything into bucket 0, so the agreement with the witness is what makes the assertion
-        // above worth having.
-        let mut expected: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-        for key in &keys {
-            expected
-                .entry(block_routing_bucket(key, 0, end_routing_bucket))
-                .or_default()
-                .push(key.clone());
-        }
-        for bucket_keys in expected.values_mut() {
-            bucket_keys.sort();
-        }
-        assert_eq!(
-            contents, expected,
-            "0..{end_routing_bucket}: the write path filed blocks into buckets the shard's own \
-             range does not put those keys in"
-        );
+            // AND THE FILING IS THE DERIVATION, key by key. "Inside the range" is satisfied by filing
+            // everything into bucket 0, so the agreement with the witness is what makes the assertion
+            // above worth having.
+            let mut expected: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+            for key in &keys {
+                expected
+                    .entry(block_routing_bucket(key, 0, end_routing_bucket))
+                    .or_default()
+                    .push(key.clone());
+            }
+            for bucket_keys in expected.values_mut() {
+                bucket_keys.sort();
+            }
+            assert_eq!(
+                contents, expected,
+                "0..{end_routing_bucket}: the write path filed blocks into buckets the shard's own \
+                 range does not put those keys in"
+            );
+        })
     }
 }
 
@@ -490,76 +492,77 @@ fn the_production_flush_files_every_block_where_the_shards_own_range_puts_it() {
         // THE PRODUCTION PATH.
         engine.flush_shard_index(1);
 
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
-        let contents = bucket_contents(shard);
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1");
+            let contents = bucket_contents(shard);
 
-        // DENOMINATOR: nothing was lost by the flush.
-        assert_eq!(
-            block_total(&contents),
-            keys.len(),
-            "0..{end_routing_bucket}: {} blocks went in and {} came out of the flush",
-            keys.len(),
-            block_total(&contents)
-        );
-
-        // THE WITNESS, built outside the index from the fixture's own key list.
-        let mut expected: BTreeMap<u32, Vec<String>> = BTreeMap::new();
-        for key in &keys {
-            expected
-                .entry(block_routing_bucket(key, 0, end_routing_bucket))
-                .or_default()
-                .push(key.clone());
-        }
-        for bucket_keys in expected.values_mut() {
-            bucket_keys.sort();
-        }
-
-        // And the witness must not be degenerate on the narrow arm: 400 keys over 1,024 buckets
-        // collide, so a witness with one key per bucket would mean the hash is not reducing.
-        if end_routing_bucket == NARROW_END {
-            assert!(
-                expected.len() < keys.len(),
-                "the narrow witness put {} keys into {} buckets with no collision at all, which \
-                 is not what a hash modulo 1,024 does to {} keys -- the witness is not being \
-                 computed on the narrow range",
+            // DENOMINATOR: nothing was lost by the flush.
+            assert_eq!(
+                block_total(&contents),
                 keys.len(),
-                expected.len(),
-                keys.len()
+                "0..{end_routing_bucket}: {} blocks went in and {} came out of the flush",
+                keys.len(),
+                block_total(&contents)
             );
-        }
 
-        println!(
-            "  0..{end_routing_bucket}: {} blocks in {} buckets, witness names {} buckets",
-            block_total(&contents),
-            contents.len(),
-            expected.len()
-        );
+            // THE WITNESS, built outside the index from the fixture's own key list.
+            let mut expected: BTreeMap<u32, Vec<String>> = BTreeMap::new();
+            for key in &keys {
+                expected
+                    .entry(block_routing_bucket(key, 0, end_routing_bucket))
+                    .or_default()
+                    .push(key.clone());
+            }
+            for bucket_keys in expected.values_mut() {
+                bucket_keys.sort();
+            }
 
-        // ELEMENT BY ELEMENT.
-        assert_eq!(
-            contents, expected,
-            "0..{end_routing_bucket}: the buckets the flush filed blocks into are not the buckets \
-             the shard's own range puts those keys in. Every rebuild takes the range as an \
-             argument and it decides the placement, so a disagreement here is a call site still \
-             passing `0, u32::MAX`."
-        );
+            // And the witness must not be degenerate on the narrow arm: 400 keys over 1,024 buckets
+            // collide, so a witness with one key per bucket would mean the hash is not reducing.
+            if end_routing_bucket == NARROW_END {
+                assert!(
+                    expected.len() < keys.len(),
+                    "the narrow witness put {} keys into {} buckets with no collision at all, which \
+                     is not what a hash modulo 1,024 does to {} keys -- the witness is not being \
+                     computed on the narrow range",
+                    keys.len(),
+                    expected.len(),
+                    keys.len()
+                );
+            }
 
-        // And no bucket outside the shard's own range, stated separately because a run that
-        // disagreed with the witness but stayed inside the range is a different defect from one
-        // that filed outside it.
-        let outside: Vec<u32> = contents
-            .keys()
-            .copied()
-            .filter(|routing_bucket| *routing_bucket > end_routing_bucket)
-            .collect();
-        assert!(
-            outside.is_empty(),
-            "0..{end_routing_bucket}: {} buckets hold blocks but sit above the shard's end; the \
-             first few are {:?}. A block there is invisible to every reader that scopes by bucket.",
-            outside.len(),
-            &outside[..outside.len().min(5)]
-        );
+            println!(
+                "  0..{end_routing_bucket}: {} blocks in {} buckets, witness names {} buckets",
+                block_total(&contents),
+                contents.len(),
+                expected.len()
+            );
+
+            // ELEMENT BY ELEMENT.
+            assert_eq!(
+                contents, expected,
+                "0..{end_routing_bucket}: the buckets the flush filed blocks into are not the buckets \
+                 the shard's own range puts those keys in. Every rebuild takes the range as an \
+                 argument and it decides the placement, so a disagreement here is a call site still \
+                 passing `0, u32::MAX`."
+            );
+
+            // And no bucket outside the shard's own range, stated separately because a run that
+            // disagreed with the witness but stayed inside the range is a different defect from one
+            // that filed outside it.
+            let outside: Vec<u32> = contents
+                .keys()
+                .copied()
+                .filter(|routing_bucket| *routing_bucket > end_routing_bucket)
+                .collect();
+            assert!(
+                outside.is_empty(),
+                "0..{end_routing_bucket}: {} buckets hold blocks but sit above the shard's end; the \
+                 first few are {:?}. A block there is invisible to every reader that scopes by bucket.",
+                outside.len(),
+                &outside[..outside.len().min(5)]
+            );
+        })
     }
 }
 
@@ -584,19 +587,20 @@ fn every_block_changes_bucket_with_the_range_because_the_range_decides_every_pla
         let engine = engine_on(dir.path());
         load_on(&engine, NARROW_END);
         let keys = seed(&engine, RECORDS);
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1");
-        rebuild_bucket_first_index(1, shard, 0, rebuild_end);
-        refresh_bucket_runtime_flags(shard);
-        let contents = bucket_contents(shard);
-        assert_eq!(
-            block_total(&contents),
-            keys.len(),
-            "end={rebuild_end}: {} blocks went in and {} came out",
-            keys.len(),
-            block_total(&contents)
-        );
-        contents
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1");
+            rebuild_bucket_first_index(1, shard, 0, rebuild_end);
+            refresh_bucket_runtime_flags(shard);
+            let contents = bucket_contents(shard);
+            assert_eq!(
+                block_total(&contents),
+                keys.len(),
+                "end={rebuild_end}: {} blocks went in and {} came out",
+                keys.len(),
+                block_total(&contents)
+            );
+            contents
+        })
     }
 
     /// Every (key -> bucket) pair, so two arms can be compared block by block rather than bucket by
@@ -704,64 +708,65 @@ fn the_ownership_report_names_a_block_filed_where_its_key_does_not_route() {
     load_on(&engine, NARROW_END);
     let keys = seed(&engine, 32);
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1");
 
-    // DENOMINATOR: the honest index reports nothing.
-    let entries = collect_live_block_entries(shard);
-    assert_eq!(entries.len(), keys.len(), "the fixture must hold one block per key");
-    let honest = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, NARROW_END);
-    assert!(
-        honest.mismatches.is_empty(),
-        "the untouched index already reports {} mismatch(es), so the report below cannot be \
-         attributed to the move: {:?}",
-        honest.mismatches.len(),
-        honest.mismatches
-    );
+        // DENOMINATOR: the honest index reports nothing.
+        let entries = collect_live_block_entries(shard);
+        assert_eq!(entries.len(), keys.len(), "the fixture must hold one block per key");
+        let honest = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, NARROW_END);
+        assert!(
+            honest.mismatches.is_empty(),
+            "the untouched index already reports {} mismatch(es), so the report below cannot be \
+             attributed to the move: {:?}",
+            honest.mismatches.len(),
+            honest.mismatches
+        );
 
-    // THE MOVE: take one bucket's node and file it under a bucket its key does not route to.
-    let moved_from = *shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .find(|(_, bucket)| !bucket.block_index.is_empty())
-        .map(|(routing_bucket, _)| routing_bucket)
-        .expect("some bucket holds a block");
-    let node = shard.bucket_index.bucket_map.remove(&moved_from).expect("the node");
-    let moved_to = (0..=NARROW_END)
-        .find(|candidate| !shard.bucket_index.bucket_map.contains_key(candidate) && *candidate != moved_from)
-        .expect("some bucket is free");
-    let blocks_moved = node.block_index.len();
-    shard.bucket_index.bucket_map.insert(
-        moved_to,
-        crate::engine::state::BucketNode { routing_bucket: moved_to, ..node },
-    );
-    assert!(blocks_moved > 0, "the move carried no block");
+        // THE MOVE: take one bucket's node and file it under a bucket its key does not route to.
+        let moved_from = *shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .find(|(_, bucket)| !bucket.block_index.is_empty())
+            .map(|(routing_bucket, _)| routing_bucket)
+            .expect("some bucket holds a block");
+        let node = shard.bucket_index.bucket_map.remove(&moved_from).expect("the node");
+        let moved_to = (0..=NARROW_END)
+            .find(|candidate| !shard.bucket_index.bucket_map.contains_key(candidate) && *candidate != moved_from)
+            .expect("some bucket is free");
+        let blocks_moved = node.block_index.len();
+        shard.bucket_index.bucket_map.insert(
+            moved_to,
+            crate::engine::state::BucketNode { routing_bucket: moved_to, ..node },
+        );
+        assert!(blocks_moved > 0, "the move carried no block");
 
-    let entries = collect_live_block_entries(shard);
-    let after = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, NARROW_END);
-    println!(
-        "  moved {blocks_moved} block(s) from bucket {moved_from} to {moved_to}: {} mismatch(es)",
-        after.mismatches.len()
-    );
-    assert_eq!(
-        blocks_moved,
-        after.mismatches.len(),
-        "the report named {} of {blocks_moved} moved block(s). A block filed where its key does not \
-         route is what this check exists to find, and it is the only comparison on this path with \
-         two independent sides.",
-        after.mismatches.len()
-    );
-    let named = after.mismatches.first().expect("one mismatch");
-    assert_eq!(
-        Some(moved_to),
-        named.actual_routing_bucket,
-        "the report must name the bucket the block is FILED in"
-    );
-    assert_eq!(
-        moved_from, named.expected_routing_bucket,
-        "and the bucket its KEY routes to, which is where it was"
-    );
+        let entries = collect_live_block_entries(shard);
+        let after = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, NARROW_END);
+        println!(
+            "  moved {blocks_moved} block(s) from bucket {moved_from} to {moved_to}: {} mismatch(es)",
+            after.mismatches.len()
+        );
+        assert_eq!(
+            blocks_moved,
+            after.mismatches.len(),
+            "the report named {} of {blocks_moved} moved block(s). A block filed where its key does not \
+             route is what this check exists to find, and it is the only comparison on this path with \
+             two independent sides.",
+            after.mismatches.len()
+        );
+        let named = after.mismatches.first().expect("one mismatch");
+        assert_eq!(
+            Some(moved_to),
+            named.actual_routing_bucket,
+            "the report must name the bucket the block is FILED in"
+        );
+        assert_eq!(
+            moved_from, named.expected_routing_bucket,
+            "and the bucket its KEY routes to, which is where it was"
+        );
+    })
 }
 
 // =============================================================================================
@@ -803,9 +808,8 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_block() {
     // DENOMINATOR ONE: the source's blocks carry explicit buckets, and they are outside the range
     // the target will be loaded with. Without this the install below cannot drop anything and a
     // pass says nothing.
-    let outside_the_target: usize = {
-        let shards = source.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
+    let outside_the_target: usize = source.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
         // Read off the bucket map -- where the blocks ARE on the source -- rather than off an
         // address, which carries no bucket to read.
         shard
@@ -815,7 +819,7 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_block() {
             .filter(|(routing_bucket, _)| **routing_bucket > NARROW_END)
             .map(|(_, bucket)| bucket.block_index.len())
             .sum()
-    };
+    });
     println!(
         "  source on 0..{WIDE_END}: {outside_the_target} of {RECORDS} blocks sit in a bucket above \
          {NARROW_END}"
@@ -827,11 +831,10 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_block() {
          it exists for"
     );
 
-    let buckets: Vec<u32> = {
-        let shards = source.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
+    let buckets: Vec<u32> = source.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
         shard.bucket_index.bucket_map.keys().copied().collect()
-    };
+    });
     assert!(!buckets.is_empty(), "the source holds no bucket to dump");
     let manifest = source
         .create_bucket_dump_manifest(1, buckets)
@@ -852,11 +855,10 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_block() {
         .expect("the manifest installs on the narrower shard");
 
     // DENOMINATOR TWO: the install put blocks in the index at all.
-    let installed = {
-        let shards = target.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
+    let installed = target.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
         collect_live_block_entries(shard).len()
-    };
+    });
     println!("  installed on 0..{NARROW_END}: {installed} of {RECORDS} blocks present");
     assert_eq!(
         installed, RECORDS,
@@ -905,10 +907,8 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
         let engine = engine_on(dir.path());
         load_on(&engine, NARROW_END);
         keys = seed(&engine, RECORDS);
-        let filed_outside;
-        {
-            let mut shards = engine.shards.write().expect("engine lock poisoned");
-            let shard = shards.get_mut(&1).expect("shard 1");
+        let filed_outside = engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1");
             let round_tripped = round_trip_every_block_through_the_wire(shard);
             assert_eq!(
                 round_tripped,
@@ -919,7 +919,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
             rebuild_bucket_first_index(1, shard, 0, WIDE_END);
             refresh_bucket_runtime_flags(shard);
             let contents = bucket_contents(shard);
-            filed_outside = contents
+            let filed_outside = contents
                 .keys()
                 .filter(|routing_bucket| **routing_bucket > NARROW_END)
                 .count();
@@ -929,7 +929,8 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
                 block_total(&contents),
                 contents.len()
             );
-        }
+            filed_outside
+        });
         // DENOMINATOR: the store really is in the broken state this test exists to migrate. A
         // run where the old argument had filed everything in range would pass every assertion
         // below for the wrong reason.
@@ -958,54 +959,53 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
             keys.len()
         );
 
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
-        let entries = collect_live_block_entries(shard);
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1");
+            let entries = collect_live_block_entries(shard);
 
-        // PART TWO: no block was orphaned or duplicated by the reload.
-        assert_eq!(
-            entries.len(),
-            keys.len(),
-            "the store went in holding {} blocks and came back holding {}. Anything other than \
-             equality is a block orphaned or a block duplicated by the load.",
-            keys.len(),
-            entries.len()
-        );
+            // PART TWO: no block was orphaned or duplicated by the reload.
+            assert_eq!(
+                entries.len(),
+                keys.len(),
+                "the store went in holding {} blocks and came back holding {}. Anything other than \
+                 equality is a block orphaned or a block duplicated by the load.",
+                keys.len(),
+                entries.len()
+            );
 
-        // PART THREE -- THE LOAD-BEARING ONE. Every block came back filed INSIDE the shard's own
-        // range, which is WHY no migration step is needed: the bucket the old argument chose was
-        // never written onto the address, so the rebuild the load runs derives the placement from
-        // the range the shard is stamped with. This used to be asserted as "the addresses are still
-        // unrouted"; an address cannot be routed now, so the statement moves to where the blocks
-        // actually are -- the keys of the bucket map.
-        let outside: Vec<u32> = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard 1");
-            shard
-                .bucket_index
-                .bucket_map
-                .iter()
-                .filter(|(routing_bucket, bucket)| {
-                    **routing_bucket > NARROW_END && !bucket.block_index.is_empty()
-                })
-                .map(|(routing_bucket, _)| *routing_bucket)
-                .collect()
-        };
-        println!(
-            "  after the restart: {readable} of {} records readable, {} blocks, {} buckets above \
-             the shard's end still holding blocks",
-            keys.len(),
-            entries.len(),
-            outside.len()
-        );
-        assert!(
-            outside.is_empty(),
-            "{} buckets above the shard's end came back holding blocks; the first few are {:?}. A \
-             block there is invisible to every reader that scopes by bucket, so if this ever holds, \
-             a store written before this change needs a rebuild before it is loaded with it and \
-             this test is the one that has to say so.",
-            outside.len(),
-            &outside[..outside.len().min(5)]
-        );
+            // PART THREE -- THE LOAD-BEARING ONE. Every block came back filed INSIDE the shard's own
+            // range, which is WHY no migration step is needed: the bucket the old argument chose was
+            // never written onto the address, so the rebuild the load runs derives the placement from
+            // the range the shard is stamped with. This used to be asserted as "the addresses are still
+            // unrouted"; an address cannot be routed now, so the statement moves to where the blocks
+            // actually are -- the keys of the bucket map.
+            let outside: Vec<u32> = {
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .iter()
+                    .filter(|(routing_bucket, bucket)| {
+                        **routing_bucket > NARROW_END && !bucket.block_index.is_empty()
+                    })
+                    .map(|(routing_bucket, _)| *routing_bucket)
+                    .collect()
+            };
+            println!(
+                "  after the restart: {readable} of {} records readable, {} blocks, {} buckets above \
+                 the shard's end still holding blocks",
+                keys.len(),
+                entries.len(),
+                outside.len()
+            );
+            assert!(
+                outside.is_empty(),
+                "{} buckets above the shard's end came back holding blocks; the first few are {:?}. A \
+                 block there is invisible to every reader that scopes by bucket, so if this ever holds, \
+                 a store written before this change needs a rebuild before it is loaded with it and \
+                 this test is the one that has to say so.",
+                outside.len(),
+                &outside[..outside.len().min(5)]
+            );
+        })
     }
 }

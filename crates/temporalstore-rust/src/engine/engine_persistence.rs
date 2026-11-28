@@ -79,6 +79,17 @@ pub fn reset_index_load_path_counts() {
     INDEX_LOADS_UNDECODABLE.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
+#[cfg(test)]
+thread_local! {
+    // Report an ambiguous error after the real durable writer has already published.
+    static FAIL_CLOSED_INSTALL_AFTER_RENAME: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+#[cfg(test)]
+pub(super) fn fail_closed_install_after_rename_for_test() {
+    FAIL_CLOSED_INSTALL_AFTER_RENAME.with(|fail| fail.set(true));
+}
+
 impl TemporalEngine {
     /// Raft state images move materialized state into a fresh engine-WAL namespace.
     /// The source engine's sequence does not identify any record in that new log.
@@ -88,7 +99,7 @@ impl TemporalEngine {
         bytes: &[u8],
         routing_range: crate::engine::routing_range_stamp::RoutingRangeStamp,
     ) -> Result<(), std::io::Error> {
-        if self.shards.read().expect("engine lock poisoned").contains_key(&shard_id)
+        if self.shards.handle(shard_id).is_some()
             || self.wal_store.stats_without_rescan(shard_id).last_sequence != 0
         {
             return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput,
@@ -113,13 +124,14 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
     ) -> Option<(ShardState, checkpoint_publication::CheckpointPublication)> {
-        let shards = self.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&shard_id)?;
-        let anchor = shard.checkpoint_wal_sequence()?;
-        let publication = self.checkpoint_publications.capture(shard_id);
-        let mut snapshot = shard.clone();
-        snapshot.applied_wal_sequence = Some(anchor);
-        drop(shards);
+        let (mut snapshot, publication) = self.shards.with_state(shard_id, |shard| {
+            let shard = shard?;
+            let anchor = shard.checkpoint_wal_sequence()?;
+            let publication = self.checkpoint_publications.capture(shard_id);
+            let mut snapshot = shard.clone();
+            snapshot.applied_wal_sequence = Some(anchor);
+            Some((snapshot, publication))
+        })?;
         // Release markers are memory-only. Persist complete block indexes in the owned
         // image without undoing eviction in the live shard or holding its read guard.
         storage_bucket_internals::restore_released_buckets_in_checkpoint(&mut snapshot, shard_id);
@@ -176,21 +188,34 @@ impl TemporalEngine {
         shard_id: ShardId,
     ) -> Result<Vec<u8>, std::io::Error> {
         if !bulk_ingest_mode() {
-            let shards = self.shards.read().expect("engine lock poisoned");
-            if let Some(shard) = shards.get(&shard_id) {
+            // Encode resident indexes under the owner read lock. A released image
+            // needs reconstruction, which can run on an owned copy after unlocking.
+            enum ServedIndex {
+                Bytes(Vec<u8>),
+                Released(ShardState),
+            }
+            let served = self.shards.with_state(shard_id, |shard| {
+                let Some(shard) = shard else { return Ok(None); };
                 if shard.checkpoint_wal_sequence().is_none() {
                     return Err(std::io::Error::new(std::io::ErrorKind::InvalidData,
                         "checkpoint state has an unapplied WAL prefix"));
                 }
-                if shard.bucket_index.released_buckets.is_empty() {
-                    return Ok(serialize_index(shard));
+                let image = if shard.bucket_index.released_buckets.is_empty() {
+                    ServedIndex::Bytes(serialize_index(shard))
+                } else {
+                    ServedIndex::Released(shard.clone())
+                };
+                Ok(Some(image))
+            })?;
+            match served {
+                Some(ServedIndex::Bytes(bytes)) => return Ok(bytes),
+                Some(ServedIndex::Released(mut snapshot)) => {
+                    storage_bucket_internals::restore_released_buckets_in_checkpoint(
+                        &mut snapshot, shard_id,
+                    );
+                    return Ok(serialize_index(&snapshot));
                 }
-                let mut snapshot = shard.clone();
-                drop(shards);
-                storage_bucket_internals::restore_released_buckets_in_checkpoint(
-                    &mut snapshot, shard_id,
-                );
-                return Ok(serialize_index(&snapshot));
+                None => {}
             }
         }
         fs::read(self.index_path(shard_id))
@@ -357,13 +382,21 @@ impl TemporalEngine {
     }
 
     fn read_index_base(&self, shard_id: ShardId) -> Option<(ShardState, bool)> {
+        self.read_index_base_with(shard_id, crate::engine::decode_index_bytes)
+    }
+
+    fn read_index_base_with(
+        &self,
+        shard_id: ShardId,
+        decode: fn(&[u8]) -> Result<ShardState, String>,
+    ) -> Option<(ShardState, bool)> {
         let read = fs::read(self.index_path(shard_id));
         let base_present = read.is_ok();
         // The base snapshot is materialized only at compaction/unload, so a crash before the
         // first compaction leaves no base -- start empty and rebuild from the index-log
         // deltas below.
         let shard = match read {
-            Ok(bytes) => match crate::engine::decode_index_bytes(&bytes) {
+            Ok(bytes) => match decode(&bytes) {
                 Ok(shard) => {
                     note_index_load(IndexLoadPath::Accepted);
                     shard
@@ -452,16 +485,16 @@ impl TemporalEngine {
         shard_id: ShardId,
         warm_cache: bool,
     ) -> (Option<ShardState>, u64, Option<crate::index_log::MetaItem>) {
-        let base = self.read_index_base(shard_id);
+        let base = self.read_index_base_with(shard_id, crate::engine::decode_index_bytes_inner);
         let mut watermark = base.as_ref().and_then(|(state, _)| state.applied_wal_sequence).unwrap_or(0);
         let mut selected = base.map(|(state, present)| (state, present, false));
         // Use the highest durable WAL frontier, not the last manifest in index-log order:
         // WAL reclamation can already have removed records covered by an earlier manifest.
-        if let Some(manifest) = durable_recovery_bucket_dump_manifest_at(&self.index_dir, shard_id)
+        if let Some(manifest) = durable_recovery_bucket_dump_manifest_shared_at(&self.index_dir, shard_id)
             .filter(|manifest| manifest.wal_sequence > watermark)
         {
             match installable_image(&manifest).map_err(|error| error.to_string())
-                .and_then(crate::engine::decode_index_bytes)
+                .and_then(crate::engine::decode_index_bytes_inner)
             {
                 Ok(state) => {
                     watermark = manifest.wal_sequence;
@@ -474,6 +507,9 @@ impl TemporalEngine {
             let catalog = self.index_log_store.recover_delta_records(shard_id, |_| {}).ok().flatten();
             return (None, watermark, catalog);
         };
+        if present {
+            crate::engine::state::repack_decoded_btrees(&mut state);
+        }
         let catalog = self.fold_relocations_and_catalog(shard_id, &mut state);
         let loaded = if from_manifest {
             rebuild_unserialized_model_maps_from_bucket_index(&mut state);
@@ -739,14 +775,15 @@ impl TemporalEngine {
         // the two numbers out and drops the guard before it returns, so no path ever HOLDS one of
         // these locks while acquiring the other.
         let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
-        let (mut snapshot, previous_anchor, anchor, publication) = {
+        let Some(owner) = self.shards.handle(shard_id) else { return; };
+        let Some((mut snapshot, previous_anchor, anchor, publication)) =
+            self.shards.with_handle_state_mut(&owner, |shard| {
             // Reconstruct everything the per-command bulk path deferred: promote
             // model-map blocks into bucket_index, rebuild the secondary views, refresh
             // runtime flags, then clone for encoding outside the write lock.
-            let mut shards = self.shards.write().expect("engine lock poisoned");
-            match shards.get_mut(&shard_id) {
+            match shard {
                 Some(shard) => {
-                    let Some(applied_anchor) = shard.checkpoint_wal_sequence() else { return; };
+                    let applied_anchor = shard.checkpoint_wal_sequence()?;
                     if promote_model_maps_to_bucket_index_authority(
                         shard_id,
                         shard,
@@ -787,11 +824,11 @@ impl TemporalEngine {
                         })
                         .unwrap_or(default_anchor);
                     let publication = self.checkpoint_publications.capture(shard_id);
-                    (shard.clone(), shard.applied_wal_sequence, anchor, publication)
+                    Some((shard.clone(), shard.applied_wal_sequence, anchor, publication))
                 }
-                None => return,
+                None => None,
             }
-        };
+        }) else { return; };
         snapshot.applied_wal_sequence = Some(anchor);
         let index_bytes = serialize_index(&snapshot);
         drop(snapshot);
@@ -808,11 +845,13 @@ impl TemporalEngine {
         if !matches!(published, Ok(Some(()))) {
             return;
         }
-        if let Some(shard) = self.shards.write().expect("engine lock poisoned").get_mut(&shard_id) {
-            if shard.applied_wal_sequence == previous_anchor {
-                shard.applied_wal_sequence = Some(anchor);
+        self.shards.with_handle_state_mut(&owner, |shard| {
+            if let Some(shard) = shard {
+                if shard.applied_wal_sequence == previous_anchor {
+                    shard.applied_wal_sequence = Some(anchor);
+                }
             }
-        }
+        });
     }
 
     /// MANIFEST-CONFORMANCE FOLD threshold check: dump the index catalog when the undumped index-log
@@ -888,12 +927,7 @@ impl TemporalEngine {
         // A dump for a shard this engine does not serve is a no-op; check BEFORE the durability
         // barrier so a background caller polling an unloaded shard does not pay (or issue) an
         // fsync for nothing.
-        if !self
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .contains_key(&shard_id)
-        {
+        if self.shards.handle(shard_id).is_none() {
             return None;
         }
         // Capture an immutable image and its anchor before syncing their backing storage.
@@ -1230,7 +1264,27 @@ impl TemporalEngine {
         })
     }
 
-    pub(super) fn validate_load_version(
+    // The caller owns the shard lifecycle reservation. A drained token proves
+    // the old publishers have quiesced and no new one can enter this incarnation.
+    pub(super) fn persist_index_bytes_during_close(
+        &self,
+        bytes: &[u8],
+        drained: &checkpoint_publication::DrainedPublication,
+    ) -> Result<(), std::io::Error> {
+        if !self.checkpoint_publications.is_current_close(drained) {
+            return Err(std::io::Error::new(std::io::ErrorKind::WouldBlock,
+                "checkpoint publication changed during shard install"));
+        }
+        fs::create_dir_all(&self.index_dir)?;
+        atomic_write_bytes(&self.index_path(drained.shard_id()), bytes)?;
+        #[cfg(test)]
+        if FAIL_CLOSED_INSTALL_AFTER_RENAME.with(|fail| fail.replace(false)) {
+            return Err(std::io::Error::other("injected failure after served index rename"));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn validate_load_version(
         &self,
         shard_id: ShardId,
         load_version: u64,

@@ -218,42 +218,6 @@ impl<'a> StreamTransfer<'a> {
         self.stream.write_all(buf)
     }
 
-    /// Stream exactly the advertised byte count from a file.
-    pub fn write_file(&mut self, file: std::fs::File, length: u64) -> std::io::Result<()> {
-        #[cfg(target_os = "linux")]
-        let length = self.send_file_linux(&file, length)?;
-        if length == 0 {
-            return Ok(());
-        }
-        let copied = std::io::copy(&mut file.take(length), self.stream)?;
-        if copied != length {
-            return Err(std::io::Error::new(
-                ErrorKind::UnexpectedEof,
-                "blob file ended before its advertised length",
-            ));
-        }
-        Ok(())
-    }
-
-    #[cfg(target_os = "linux")]
-    fn send_file_linux(&mut self, file: &std::fs::File, mut remaining: u64) -> std::io::Result<u64> {
-        use rustix::io::Errno;
-
-        // With a null offset, sendfile advances the file cursor. A buffered fallback
-        // can therefore continue from the first byte that has not been transferred.
-        while remaining > 0 {
-            let count = remaining.min(0x7fff_f000) as usize;
-            match rustix::fs::sendfile(&*self.stream, file, None, count) {
-                Ok(0) => break,
-                Ok(sent) => remaining -= sent as u64,
-                Err(Errno::INTR) => continue,
-                Err(Errno::INVAL | Errno::NOSYS | Errno::OPNOTSUPP | Errno::XDEV) => break,
-                Err(error) => return Err(error.into()),
-            }
-        }
-        Ok(remaining)
-    }
-
     /// Flush the socket after the response has been written.
     pub fn flush(&mut self) -> std::io::Result<()> {
         self.stream.flush()

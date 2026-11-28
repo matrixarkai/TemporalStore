@@ -128,6 +128,37 @@ impl RaftClusterInner {
         self.promote_best_live_follower()
     }
 
+    pub(super) fn ensure_proposal_leader(&mut self) -> Result<(), RaftError> {
+        let Some(local_node_id) = self.local_node_id else {
+            return self.ensure_live_leader();
+        };
+        let is_local_leader = self.leader_id == local_node_id
+            && self.nodes.get(&local_node_id).is_some_and(|node| {
+                node.alive && node.role == RaftRole::Leader
+            });
+        if !is_local_leader {
+            return Err(RaftError::NotLeader { node_id: local_node_id }.before_proposal_append());
+        }
+        Ok(())
+    }
+
+    /// Admission under the same lock as append. After append, quorum
+    /// failures can leave an entry that a later leader may commit.
+    pub(super) fn check_proposal_quorum(&self) -> Result<usize, RaftError> {
+        if let Some((live, required)) = self.joint_majority_failure() {
+            return Err(RaftError::NoMajority { live, required }.before_proposal_append());
+        }
+        let required = self.required_majority();
+        let live = self.live_quorum_participants();
+        if live < required {
+            return Err(RaftError::NoMajority { live, required }.before_proposal_append());
+        }
+        if !self.leader_lease_valid() {
+            return Err(RaftError::LeaderUnavailable.before_proposal_append());
+        }
+        Ok(required)
+    }
+
     pub(super) fn promote_best_live_follower(&mut self) -> Result<(), RaftError> {
         let candidate = self.best_live_candidate()?;
         self.elect_leader(candidate)
@@ -196,7 +227,7 @@ impl RaftClusterInner {
                     leader_snapshot.clone(),
                     leader_log.clone(),
                     leader_commit_index,
-                );
+                )?;
             }
             if node.commit_index >= leader_commit_index {
                 caught_up.push(node.id);
@@ -237,7 +268,10 @@ impl RaftClusterInner {
                 .max(snapshot_floor.min(leader_commit_index));
             if let Some(snapshot) = leader_snapshot.clone() {
                 if node_last_log_or_snapshot_index(node) < snapshot.last_included_index {
-                    install_snapshot_state_for_role(node, snapshot);
+                    if let Err(error) = install_snapshot_state_for_role(node, snapshot) {
+                        tracing::error!(%error, "snapshot catch-up refused");
+                        continue;
+                    }
                 }
             }
             node.log = leader_log
@@ -749,40 +783,35 @@ impl RaftClusterInner {
         // leader owes its peers no durability: each persists its own hard state before answering
         // an RPC, and re-learns the rest from AppendEntries on restart. Persist only our own
         // record. Unset -- the in-process test cluster -- keeps persisting every node.
-        let local_only = self.local_node_id;
-        // A persist that finds nothing changed is the common one (a heartbeat, a read-index, a
-        // catch-up bookkeeping write). Decide that from the record WITHOUT its log and the log's
-        // length and ends, so it costs the same at any log length: building the whole record
-        // first copied every entry just to hash three numbers of them.
-        if coalesce {
-            if let (Some(local), Some(node)) =
-                (local_only, local_only.and_then(|id| self.nodes.get(&id)))
-            {
-                // A node holding an installed snapshot takes the ordinary path below: the record
-                // without its log still carries that image, and copying it here would be one more
-                // copy of the image per persist.
-                if node.installed_snapshot.is_none() {
-                if let Some((_, bare)) = self.wal_record_for_with(local, false) {
-                    let fingerprint = raft_durable_fingerprint_of(
-                        &bare,
-                        node.log.len(),
-                        node.log.first().map(|entry| (entry.index, entry.term)),
-                        node.log.last().map(|entry| (entry.index, entry.term)),
-                    );
-                    if self.last_durable_fingerprint.get(&local) == Some(&fingerprint) {
-                        return Ok(Vec::new());
-                    }
-                }
+        if let Some(local) = self.local_node_id {
+            let Some((_, metadata)) = self.wal_record_for_with(local, false) else {
+                return Ok(Vec::new());
+            };
+            let entries = &self.nodes[&local].log;
+            let fingerprint = coalesce.then(|| {
+                raft_durable_fingerprint_of(
+                    &metadata,
+                    entries.len(),
+                    entries.first().map(|entry| (entry.index, entry.term)),
+                    entries.last().map(|entry| (entry.index, entry.term)),
+                )
+            });
+            if let Some(fingerprint) = fingerprint {
+                if self.last_durable_fingerprint.get(&local) == Some(&fingerprint) {
+                    return Ok(Vec::new());
                 }
             }
+            // The WAL selects its delta directly from the live log while state is locked.
+            // Only a rebase needs an owned copy of earlier entries.
+            let append = wal
+                .stage_node_segmented_with_log(shard_id, local, &metadata, entries, &self.config)
+                .map_err(|err| RaftError::Wal(err.to_string()))?;
+            if let Some(fingerprint) = fingerprint {
+                self.last_durable_fingerprint.insert(local, fingerprint);
+            }
+            return Ok(vec![append]);
         }
-        // Build ONLY the record we are going to persist. Building every node's record and then
-        // skipping all but one clones the whole log once per node and discards the rest, which
-        // is O(log length) of pure waste on every persist.
-        let records = match local_only {
-            Some(local) => self.wal_record_for(local).into_iter().collect::<Vec<_>>(),
-            None => self.wal_records(),
-        };
+        let records = self.wal_records();
         let mut staged = Vec::new();
         for (node_id, record) in records {
             // P1: when coalescing is enabled, skip the fdatasync for a node whose durability-

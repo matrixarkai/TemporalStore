@@ -31,17 +31,18 @@ fn topology_deleted_samples_need_no_live_identity_inversion() {
                 .ok
         );
     }
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).unwrap();
-    let entries = collect_live_block_entries(shard);
-    let (snapshot, builds) = crate::engine::state::measure_block_identity_builds_for_test(|| {
-        storage_topology_snapshot_with_samples_from_entries(1, shard, &entries, Default::default())
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.unwrap();
+        let entries = collect_live_block_entries(shard);
+        let (snapshot, builds) = crate::engine::state::measure_block_identity_builds_for_test(|| {
+            storage_topology_snapshot_with_samples_from_entries(1, shard, &entries, Default::default())
+        });
+        assert_eq!(builds, 0);
+        assert!(snapshot.bucket_samples.iter().any(|bucket| bucket
+            .delete_markers
+            .iter()
+            .any(|marker| marker == "set:order")));
     });
-    assert_eq!(builds, 0);
-    assert!(snapshot.bucket_samples.iter().any(|bucket| bucket
-        .delete_markers
-        .iter()
-        .any(|marker| marker == "set:order")));
 }
 
 fn open(dir: &std::path::Path) -> TemporalEngine {
@@ -370,14 +371,14 @@ fn index_collection_keeps_refresh_selection_when_live_tallies_overreport() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path());
     seed(&engine, 32);
-    let old_address = engine.shards.read().unwrap().get(&1).unwrap()
-        .string_address("key-0").unwrap();
+    let old_address = engine.shards.with_state(1, |owner| owner.unwrap().string_address("key-0").unwrap());
     let manifest = engine.create_bucket_dump_manifest(1, Vec::new()).unwrap();
     assert!(manifest.block_slab_ids.contains(&old_address.block_slab_id()));
     engine.compact_shard_blocks(1).unwrap();
     assert!(!engine.live_block_slab_ids(1).contains(&old_address.block_slab_id()));
-    engine.shards.write().unwrap().get_mut(&1).unwrap()
-        .bucket_index.block_slab_live.add_address(&old_address);
+    engine.shards.with_state_mut(1, |owner| {
+        owner.unwrap().bucket_index.block_slab_live.add_address(&old_address);
+    });
     let request = StorageLifecycleRequest {
         shard_id: 1,
         min_undumped_wal_records: u64::MAX,

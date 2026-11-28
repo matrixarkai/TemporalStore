@@ -170,13 +170,14 @@ impl BlocksPerBucket {
 }
 
 fn blocks_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut hist = BlocksPerBucket::default();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        *hist.counts.entry(bucket.block_index.len()).or_default() += 1;
-    }
-    hist
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut hist = BlocksPerBucket::default();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            *hist.counts.entry(bucket.block_index.len()).or_default() += 1;
+        }
+        hist
+    })
 }
 
 fn probe_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
@@ -1409,281 +1410,282 @@ fn boxing_the_single_block_arm_costs_an_allocation_for_every_bucket_that_holds_o
     let engine = probe_engine(dir.path());
     seed_routed_keys(&engine, 40_000, 40, 1_000);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
     let hist = blocks_per_bucket(&engine);
-    hist.report("the store this is measured on");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        hist.report("the store this is measured on");
 
-    let buckets = hist.buckets();
-    let single_block = hist.holding(1);
-    assert!(buckets > 0, "denominator: the shard holds no buckets");
-    assert!(
-        hist.multi_block() > 0,
-        "the fixture reaches no multi-block bucket, so the Many arm is unexercised on both sides"
-    );
-    assert!(
-        single_block > 0,
-        "denominator: no bucket holds exactly one block, so the shape under test is unreached"
-    );
+        let buckets = hist.buckets();
+        let single_block = hist.holding(1);
+        assert!(buckets > 0, "denominator: the shard holds no buckets");
+        assert!(
+            hist.multi_block() > 0,
+            "the fixture reaches no multi-block bucket, so the Many arm is unexercised on both sides"
+        );
+        assert!(
+            single_block > 0,
+            "denominator: no bucket holds exactly one block, so the shape under test is unreached"
+        );
 
-    let keys: Vec<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
-    let order = production_order(&keys);
-    assert_eq!(buckets, order.len(), "the insert order lost buckets");
+        let keys: Vec<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
+        let order = production_order(&keys);
+        assert_eq!(buckets, order.len(), "the insert order lost buckets");
 
-    // --- Built the way production builds it: one insert at a time, not in key order. ---
-    //
-    // What the CONTROL is measured against: real `BucketNode`s, the type production stores, in a
-    // tree built exactly as the mirrors are. If the mirror does not charge what this charges, the
-    // mirror is not a mirror.
-    let mut partner: BTreeMap<u32, BucketNode> = BTreeMap::new();
-    let mut live_mirror: BTreeMap<u32, MirrorNode<BlockIndexMap>> = BTreeMap::new();
-    let mut boxed_mirror: BTreeMap<u32, MirrorNode<MirrorBoxedBlockIndex>> = BTreeMap::new();
-    for routing_bucket in &order {
-        let node = shard
+        // --- Built the way production builds it: one insert at a time, not in key order. ---
+        //
+        // What the CONTROL is measured against: real `BucketNode`s, the type production stores, in a
+        // tree built exactly as the mirrors are. If the mirror does not charge what this charges, the
+        // mirror is not a mirror.
+        let mut partner: BTreeMap<u32, BucketNode> = BTreeMap::new();
+        let mut live_mirror: BTreeMap<u32, MirrorNode<BlockIndexMap>> = BTreeMap::new();
+        let mut boxed_mirror: BTreeMap<u32, MirrorNode<MirrorBoxedBlockIndex>> = BTreeMap::new();
+        for routing_bucket in &order {
+            let node = shard
+                .bucket_index
+                .bucket_map
+                .get(routing_bucket)
+                .expect("the bucket is in the map it was keyed from");
+            partner.insert(*routing_bucket, node.clone());
+            live_mirror.insert(*routing_bucket, mirror_live_node(node));
+            boxed_mirror.insert(*routing_bucket, mirror_boxed_node(node));
+        }
+
+        // --- And built full, from a sorted iterator, as the second row. ---
+        let live_full: BTreeMap<u32, MirrorNode<BlockIndexMap>> = shard
             .bucket_index
             .bucket_map
-            .get(routing_bucket)
-            .expect("the bucket is in the map it was keyed from");
-        partner.insert(*routing_bucket, node.clone());
-        live_mirror.insert(*routing_bucket, mirror_live_node(node));
-        boxed_mirror.insert(*routing_bucket, mirror_boxed_node(node));
-    }
+            .iter()
+            .map(|(routing_bucket, node)| (*routing_bucket, mirror_live_node(node)))
+            .collect();
+        let boxed_full: BTreeMap<u32, MirrorNode<MirrorBoxedBlockIndex>> = shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, node)| (*routing_bucket, mirror_boxed_node(node)))
+            .collect();
 
-    // --- And built full, from a sorted iterator, as the second row. ---
-    let live_full: BTreeMap<u32, MirrorNode<BlockIndexMap>> = shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .map(|(routing_bucket, node)| (*routing_bucket, mirror_live_node(node)))
-        .collect();
-    let boxed_full: BTreeMap<u32, MirrorNode<MirrorBoxedBlockIndex>> = shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .map(|(routing_bucket, node)| (*routing_bucket, mirror_boxed_node(node)))
-        .collect();
+        for (name, held) in [
+            ("control partner", partner.len()),
+            ("live mirror", live_mirror.len()),
+            ("boxed mirror", boxed_mirror.len()),
+            ("live mirror, full", live_full.len()),
+            ("boxed mirror, full", boxed_full.len()),
+        ] {
+            assert_eq!(buckets, held, "the {name} lost buckets on the way in");
+        }
 
-    for (name, held) in [
-        ("control partner", partner.len()),
-        ("live mirror", live_mirror.len()),
-        ("boxed mirror", boxed_mirror.len()),
-        ("live mirror, full", live_full.len()),
-        ("boxed mirror, full", boxed_full.len()),
-    ] {
-        assert_eq!(buckets, held, "the {name} lost buckets on the way in");
-    }
+        let real_bytes = clone_alloc_bytes(&shard.bucket_index.bucket_map);
+        let real_calls = clone_allocs(&shard.bucket_index.bucket_map);
+        let partner_bytes = clone_alloc_bytes(&partner);
+        let partner_calls = clone_allocs(&partner);
+        let live_bytes = clone_alloc_bytes(&live_mirror);
+        let live_calls = clone_allocs(&live_mirror);
+        let boxed_bytes = clone_alloc_bytes(&boxed_mirror);
+        let boxed_calls = clone_allocs(&boxed_mirror);
+        let live_full_bytes = clone_alloc_bytes(&live_full);
+        let live_full_calls = clone_allocs(&live_full);
+        let boxed_full_bytes = clone_alloc_bytes(&boxed_full);
+        let boxed_full_calls = clone_allocs(&boxed_full);
 
-    let real_bytes = clone_alloc_bytes(&shard.bucket_index.bucket_map);
-    let real_calls = clone_allocs(&shard.bucket_index.bucket_map);
-    let partner_bytes = clone_alloc_bytes(&partner);
-    let partner_calls = clone_allocs(&partner);
-    let live_bytes = clone_alloc_bytes(&live_mirror);
-    let live_calls = clone_allocs(&live_mirror);
-    let boxed_bytes = clone_alloc_bytes(&boxed_mirror);
-    let boxed_calls = clone_allocs(&boxed_mirror);
-    let live_full_bytes = clone_alloc_bytes(&live_full);
-    let live_full_calls = clone_allocs(&live_full);
-    let boxed_full_bytes = clone_alloc_bytes(&boxed_full);
-    let boxed_full_calls = clone_allocs(&boxed_full);
+        // A boxed arm allocates once per single-block bucket; those are not tree nodes and must come
+        // out before any fill is reported, or the boxed rows read as an 8%-full tree.
+        let boxes = single_block as u64;
 
-    // A boxed arm allocates once per single-block bucket; those are not tree nodes and must come
-    // out before any fill is reported, or the boxed rows read as an 8%-full tree.
-    let boxes = single_block as u64;
-
-    println!("\n=== one clone of the bucket map, by the counting allocator ===");
-    println!("  store path length held at {path_length} characters");
-    println!(
-        "  buckets={buckets}  single-block={single_block}  blocks={}",
-        hist.blocks()
-    );
-    println!(
-        "  {:<40} {:>12} {:>12} {:>12} {:>22}",
-        "map", "bytes", "allocations", "tree nodes", "buckets/node (of 11)"
-    );
-    for (name, bytes, calls, node_calls) in [
-        ("the real bucket map, as production built it", real_bytes, real_calls, real_calls),
-        ("control partner: real nodes, harness order", partner_bytes, partner_calls, partner_calls),
-        ("mirror, live index           [CONTROL]", live_bytes, live_calls, live_calls),
-        ("mirror, single block boxed", boxed_bytes, boxed_calls, boxed_calls - boxes),
-        ("mirror, live index, FULL tree", live_full_bytes, live_full_calls, live_full_calls),
-        ("mirror, boxed, FULL tree", boxed_full_bytes, boxed_full_calls, boxed_full_calls - boxes),
-    ] {
-        let (per_node, fraction) = fill(buckets, node_calls);
+        println!("\n=== one clone of the bucket map, by the counting allocator ===");
+        println!("  store path length held at {path_length} characters");
         println!(
-            "  {name:<40} {bytes:>12} {calls:>12} {node_calls:>12} {:>15.2} ({:>4.1}%)",
-            per_node,
-            100.0 * fraction
+            "  buckets={buckets}  single-block={single_block}  blocks={}",
+            hist.blocks()
         );
-    }
+        println!(
+            "  {:<40} {:>12} {:>12} {:>12} {:>22}",
+            "map", "bytes", "allocations", "tree nodes", "buckets/node (of 11)"
+        );
+        for (name, bytes, calls, node_calls) in [
+            ("the real bucket map, as production built it", real_bytes, real_calls, real_calls),
+            ("control partner: real nodes, harness order", partner_bytes, partner_calls, partner_calls),
+            ("mirror, live index           [CONTROL]", live_bytes, live_calls, live_calls),
+            ("mirror, single block boxed", boxed_bytes, boxed_calls, boxed_calls - boxes),
+            ("mirror, live index, FULL tree", live_full_bytes, live_full_calls, live_full_calls),
+            ("mirror, boxed, FULL tree", boxed_full_bytes, boxed_full_calls, boxed_full_calls - boxes),
+        ] {
+            let (per_node, fraction) = fill(buckets, node_calls);
+            println!(
+                "  {name:<40} {bytes:>12} {calls:>12} {node_calls:>12} {:>15.2} ({:>4.1}%)",
+                per_node,
+                100.0 * fraction
+            );
+        }
 
-    // --- THE CONTROL, and it is exact. The mirror node has to be indistinguishable from the
-    // --- real node to the allocator when the two trees are built identically. ---
-    assert_eq!(
-        partner_bytes, live_bytes,
-        "the mirror of the live index charges {live_bytes} B where a tree of REAL BucketNodes \
-         built the same way charges {partner_bytes} B; the mirror is not a mirror and every \
-         figure below is fiction"
-    );
-    assert_eq!(
-        partner_calls, live_calls,
-        "the mirror of the live index makes {live_calls} allocations where a tree of real \
-         BucketNodes built the same way makes {partner_calls}"
-    );
-    assert!(
-        real_calls > 0 && live_calls > 0,
-        "a clone charged zero allocations; the probe is not counting and every row is a zero that \
-         reads as good news"
-    );
-
-    // --- AND THE DIRECTION. The harness tree must be FULLER than production's, so the byte
-    // --- figure below is a floor on the boxed shape's win rather than a fit to it. ---
-    let (real_per_node, real_fraction) = fill(buckets, real_calls);
-    let (harness_per_node, harness_fraction) = fill(buckets, live_calls);
-    println!(
-        "\n  fill: production {real_per_node:.2} buckets a node ({:.1}%), harness \
-         {harness_per_node:.2} ({:.1}%)",
-        100.0 * real_fraction,
-        100.0 * harness_fraction
-    );
-    assert!(
-        live_calls <= real_calls,
-        "the harness tree has {live_calls} nodes against production's {real_calls} -- it is EMPTIER \
-         than production's, so the narrower value type has more unfilled slot to save here than it \
-         would in production and the figure below would be an overstatement rather than a floor"
-    );
-
-    // --- THE CANDIDATE, at production's fill and at full. ---
-    let per_bucket_saving = size_of::<BucketNode>() - size_of::<MirrorNode<MirrorBoxedBlockIndex>>();
-    let arithmetic_saving = per_bucket_saving * buckets;
-    let measured = boxed_bytes as i64 - live_bytes as i64;
-    let measured_full = boxed_full_bytes as i64 - live_full_bytes as i64;
-    let extra_calls = boxed_calls as i64 - live_calls as i64;
-    let extra_calls_full = boxed_full_calls as i64 - live_full_calls as i64;
-
-    println!("\n=== what boxing the single block actually costs ===");
-    println!(
-        "  by size_of arithmetic      : {:>+12} B  ({per_bucket_saving} B a bucket over {buckets} \
-         buckets)",
-        -(arithmetic_saving as i64)
-    );
-    println!(
-        "  by the allocator, as built : {measured:>+12} B  {extra_calls:>+12} allocations  \
-         ({:+.2} B a bucket)",
-        measured as f64 / buckets as f64
-    );
-    println!(
-        "  by the allocator, full tree: {measured_full:>+12} B  {extra_calls_full:>+12} \
-         allocations  ({:+.2} B a bucket)",
-        measured_full as f64 / buckets as f64
-    );
-
-    // WHAT #1958 SAID, RECONSTRUCTED, AND WHERE IT PARTS COMPANY WITH THE ALLOCATOR.
-    //
-    // Its row priced the node saving by `size_of` (80 B a bucket) and the allocation by the
-    // allocator (112 B a bucket) and subtracted one from the other. The node saving does not stop
-    // at the node: the value slot it sits in is one of eleven a tree node carries whether or not
-    // it fills them, so the saving per bucket is the width saving times the SLOTS per bucket.
-    let slots_per_bucket = 11.0 * live_calls as f64 / buckets as f64;
-    println!("\n=== the two instruments, side by side, per bucket ===");
-    println!(
-        "  node saving by size_of                : {per_bucket_saving:>8} B a bucket"
-    );
-    println!(
-        "  slots a bucket actually occupies      : {slots_per_bucket:>8.3}  (11 a node, \
-         {:.2} buckets a node)",
-        buckets as f64 / live_calls as f64
-    );
-    println!(
-        "  node saving as the allocator sees it  : {:>8.1} B a bucket  ({:.2}x the arithmetic)",
-        per_bucket_saving as f64 * slots_per_bucket,
-        slots_per_bucket
-    );
-    println!(
-        "  the boxed block, charged               : {:>8} B a bucket that holds one block",
-        size_of::<BlockIndex>()
-    );
-    println!(
-        "  net, measured                         : {:>+8.1} B a bucket",
-        measured as f64 / buckets as f64
-    );
-
-    // ONE ALLOCATION PER SINGLE-BLOCK BUCKET, at both fills. This is the figure that does not move
-    // with the tree shape, the store path, or the box, and it is the cost the width cannot show.
-    for (label, calls) in [("as built", extra_calls), ("full tree", extra_calls_full)] {
+        // --- THE CONTROL, and it is exact. The mirror node has to be indistinguishable from the
+        // --- real node to the allocator when the two trees are built identically. ---
+        assert_eq!(
+            partner_bytes, live_bytes,
+            "the mirror of the live index charges {live_bytes} B where a tree of REAL BucketNodes \
+             built the same way charges {partner_bytes} B; the mirror is not a mirror and every \
+             figure below is fiction"
+        );
+        assert_eq!(
+            partner_calls, live_calls,
+            "the mirror of the live index makes {live_calls} allocations where a tree of real \
+             BucketNodes built the same way makes {partner_calls}"
+        );
         assert!(
-            calls as usize >= single_block,
-            "boxing charged {calls} extra allocations ({label}) against {single_block} single-block \
-             buckets; it is supposed to be at least one apiece, and fewer means the shape under \
-             test is not being built"
+            real_calls > 0 && live_calls > 0,
+            "a clone charged zero allocations; the probe is not counting and every row is a zero that \
+             reads as good news"
         );
-    }
-    println!(
-        "\n  the allocation count is the durable figure: {:+} allocations for {single_block} \
-         single-block buckets, {:.4} apiece, and it does not move with the tree shape",
-        extra_calls,
-        extra_calls as f64 / single_block as f64
-    );
 
-    // WHAT THE ALLOCATOR UNDERCHARGES. Each added request is 104 bytes and is served out of a
-    // larger chunk; at eight bytes of rounding apiece that is what the counted figure omits.
-    let undercount = (single_block * 8) as i64;
-    println!(
-        "  and the counted bytes omit the allocator's own rounding: {single_block} requests of {} \
-         B, at least {undercount} B of chunk beyond what is charged above",
-        size_of::<BlockIndex>()
-    );
-    println!(
-        "  net of that rounding, as built: {:+} B ({:+.2} B a bucket)",
-        measured + undercount,
-        (measured + undercount) as f64 / buckets as f64
-    );
-
-    // THE SIGN, REPORTED RATHER THAN ASSERTED IN ONE DIRECTION.
-    //
-    // This test is not here to confirm a conclusion. It asserts what it can prove -- the added
-    // allocation per single-block bucket, which is what the width cannot show -- and reports the
-    // byte figure with the instruments' disagreement laid out beside it. The byte figure depends
-    // on the tree's fill and the allocator's rounding, both of which are measured above; the count
-    // does not depend on either.
-    if measured + undercount < 0 {
+        // --- AND THE DIRECTION. The harness tree must be FULLER than production's, so the byte
+        // --- figure below is a floor on the boxed shape's win rather than a fit to it. ---
+        let (real_per_node, real_fraction) = fill(buckets, real_calls);
+        let (harness_per_node, harness_fraction) = fill(buckets, live_calls);
         println!(
-            "\n  SIGN: by bytes alone the boxed shape is CHEAPER here by {} B ({:.2} B a bucket), \
-             which is the opposite of the +32 B a bucket #1958 computed -- because its node saving \
-             was `size_of` arithmetic and its allocation was an allocator figure, and at this \
-             tree's fill a bucket occupies {slots_per_bucket:.2} value slots and not one.",
-            -(measured + undercount),
-            -(measured + undercount) as f64 / buckets as f64
+            "\n  fill: production {real_per_node:.2} buckets a node ({:.1}%), harness \
+             {harness_per_node:.2} ({:.1}%)",
+            100.0 * real_fraction,
+            100.0 * harness_fraction
         );
-    } else {
+        assert!(
+            live_calls <= real_calls,
+            "the harness tree has {live_calls} nodes against production's {real_calls} -- it is EMPTIER \
+             than production's, so the narrower value type has more unfilled slot to save here than it \
+             would in production and the figure below would be an overstatement rather than a floor"
+        );
+
+        // --- THE CANDIDATE, at production's fill and at full. ---
+        let per_bucket_saving = size_of::<BucketNode>() - size_of::<MirrorNode<MirrorBoxedBlockIndex>>();
+        let arithmetic_saving = per_bucket_saving * buckets;
+        let measured = boxed_bytes as i64 - live_bytes as i64;
+        let measured_full = boxed_full_bytes as i64 - live_full_bytes as i64;
+        let extra_calls = boxed_calls as i64 - live_calls as i64;
+        let extra_calls_full = boxed_full_calls as i64 - live_full_calls as i64;
+
+        println!("\n=== what boxing the single block actually costs ===");
         println!(
-            "\n  SIGN: by bytes the boxed shape costs {} B more ({:.2} B a bucket)",
+            "  by size_of arithmetic      : {:>+12} B  ({per_bucket_saving} B a bucket over {buckets} \
+             buckets)",
+            -(arithmetic_saving as i64)
+        );
+        println!(
+            "  by the allocator, as built : {measured:>+12} B  {extra_calls:>+12} allocations  \
+             ({:+.2} B a bucket)",
+            measured as f64 / buckets as f64
+        );
+        println!(
+            "  by the allocator, full tree: {measured_full:>+12} B  {extra_calls_full:>+12} \
+             allocations  ({:+.2} B a bucket)",
+            measured_full as f64 / buckets as f64
+        );
+
+        // WHAT #1958 SAID, RECONSTRUCTED, AND WHERE IT PARTS COMPANY WITH THE ALLOCATOR.
+        //
+        // Its row priced the node saving by `size_of` (80 B a bucket) and the allocation by the
+        // allocator (112 B a bucket) and subtracted one from the other. The node saving does not stop
+        // at the node: the value slot it sits in is one of eleven a tree node carries whether or not
+        // it fills them, so the saving per bucket is the width saving times the SLOTS per bucket.
+        let slots_per_bucket = 11.0 * live_calls as f64 / buckets as f64;
+        println!("\n=== the two instruments, side by side, per bucket ===");
+        println!(
+            "  node saving by size_of                : {per_bucket_saving:>8} B a bucket"
+        );
+        println!(
+            "  slots a bucket actually occupies      : {slots_per_bucket:>8.3}  (11 a node, \
+             {:.2} buckets a node)",
+            buckets as f64 / live_calls as f64
+        );
+        println!(
+            "  node saving as the allocator sees it  : {:>8.1} B a bucket  ({:.2}x the arithmetic)",
+            per_bucket_saving as f64 * slots_per_bucket,
+            slots_per_bucket
+        );
+        println!(
+            "  the boxed block, charged               : {:>8} B a bucket that holds one block",
+            size_of::<BlockIndex>()
+        );
+        println!(
+            "  net, measured                         : {:>+8.1} B a bucket",
+            measured as f64 / buckets as f64
+        );
+
+        // ONE ALLOCATION PER SINGLE-BLOCK BUCKET, at both fills. This is the figure that does not move
+        // with the tree shape, the store path, or the box, and it is the cost the width cannot show.
+        for (label, calls) in [("as built", extra_calls), ("full tree", extra_calls_full)] {
+            assert!(
+                calls as usize >= single_block,
+                "boxing charged {calls} extra allocations ({label}) against {single_block} single-block \
+                 buckets; it is supposed to be at least one apiece, and fewer means the shape under \
+                 test is not being built"
+            );
+        }
+        println!(
+            "\n  the allocation count is the durable figure: {:+} allocations for {single_block} \
+             single-block buckets, {:.4} apiece, and it does not move with the tree shape",
+            extra_calls,
+            extra_calls as f64 / single_block as f64
+        );
+
+        // WHAT THE ALLOCATOR UNDERCHARGES. Each added request is 104 bytes and is served out of a
+        // larger chunk; at eight bytes of rounding apiece that is what the counted figure omits.
+        let undercount = (single_block * 8) as i64;
+        println!(
+            "  and the counted bytes omit the allocator's own rounding: {single_block} requests of {} \
+             B, at least {undercount} B of chunk beyond what is charged above",
+            size_of::<BlockIndex>()
+        );
+        println!(
+            "  net of that rounding, as built: {:+} B ({:+.2} B a bucket)",
             measured + undercount,
             (measured + undercount) as f64 / buckets as f64
         );
-    }
-    println!(
-        "  WHAT IT BUYS THAT WITH: {single_block} allocations that did not exist, one for every \
-         bucket that holds a single block -- a per-bucket allocation on the write path, one \
-         dependent load on every block read, and {single_block} small scattered chunks for the \
-         allocator to fragment around. The bytes are within this instrument's own rounding; the \
-         allocations are not."
-    );
 
-    // --- THE RESIDUAL, reported rather than assumed away, with its own planted marker in
-    // --- `the_clone_instrument_used_here_recovers_a_planted_megabyte_exactly`. ---
-    let node_widths = (size_of::<BucketNode>() * buckets) as i64;
-    let residual = real_bytes as i64 - node_widths;
-    println!(
-        "\n  residual: the map charges {residual} B beyond {node_widths} B of node width \
-         ({:.2} B a bucket) -- key arrays, node headers, the value slots nothing filled, and what \
-         each node owns on the heap",
-        residual as f64 / buckets as f64
-    );
-    assert!(
-        residual > 0,
-        "the residual is {residual}; at or below zero the two instruments are not independent and \
-         the comparison cannot notice anything"
-    );
+        // THE SIGN, REPORTED RATHER THAN ASSERTED IN ONE DIRECTION.
+        //
+        // This test is not here to confirm a conclusion. It asserts what it can prove -- the added
+        // allocation per single-block bucket, which is what the width cannot show -- and reports the
+        // byte figure with the instruments' disagreement laid out beside it. The byte figure depends
+        // on the tree's fill and the allocator's rounding, both of which are measured above; the count
+        // does not depend on either.
+        if measured + undercount < 0 {
+            println!(
+                "\n  SIGN: by bytes alone the boxed shape is CHEAPER here by {} B ({:.2} B a bucket), \
+                 which is the opposite of the +32 B a bucket #1958 computed -- because its node saving \
+                 was `size_of` arithmetic and its allocation was an allocator figure, and at this \
+                 tree's fill a bucket occupies {slots_per_bucket:.2} value slots and not one.",
+                -(measured + undercount),
+                -(measured + undercount) as f64 / buckets as f64
+            );
+        } else {
+            println!(
+                "\n  SIGN: by bytes the boxed shape costs {} B more ({:.2} B a bucket)",
+                measured + undercount,
+                (measured + undercount) as f64 / buckets as f64
+            );
+        }
+        println!(
+            "  WHAT IT BUYS THAT WITH: {single_block} allocations that did not exist, one for every \
+             bucket that holds a single block -- a per-bucket allocation on the write path, one \
+             dependent load on every block read, and {single_block} small scattered chunks for the \
+             allocator to fragment around. The bytes are within this instrument's own rounding; the \
+             allocations are not."
+        );
+
+        // --- THE RESIDUAL, reported rather than assumed away, with its own planted marker in
+        // --- `the_clone_instrument_used_here_recovers_a_planted_megabyte_exactly`. ---
+        let node_widths = (size_of::<BucketNode>() * buckets) as i64;
+        let residual = real_bytes as i64 - node_widths;
+        println!(
+            "\n  residual: the map charges {residual} B beyond {node_widths} B of node width \
+             ({:.2} B a bucket) -- key arrays, node headers, the value slots nothing filled, and what \
+             each node owns on the heap",
+            residual as f64 / buckets as f64
+        );
+        assert!(
+            residual > 0,
+            "the residual is {residual}; at or below zero the two instruments are not independent and \
+             the comparison cannot notice anything"
+        );
+    })
 }
 
 // ---------------------------------------------------------------------------------------------

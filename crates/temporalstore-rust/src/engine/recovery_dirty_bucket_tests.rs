@@ -51,13 +51,9 @@ fn seed(engine: &TemporalEngine, count: usize) {
 }
 
 fn scan_control(engine: &TemporalEngine, covered: &BTreeSet<u32>) -> Vec<u32> {
-    let dirty = engine
-        .shards
-        .read()
-        .unwrap()
-        .get(&SHARD)
-        .map(super::super::storage_reporting::dirty_bucket_nodes)
-        .unwrap_or_default();
+    let dirty = engine.shards.with_state(SHARD, |state| {
+        state.map(super::super::storage_reporting::dirty_bucket_nodes).unwrap_or_default()
+    });
     engine
         .bucket_storage_summaries(SHARD)
         .into_iter()
@@ -109,15 +105,14 @@ fn missing_dirty_bucket_selection_does_not_list_live_blocks() {
 fn empty_dirty_nodes_remain_visible_without_blocks() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path());
-    {
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&SHARD).unwrap();
+    engine.shards.with_state_mut(SHARD, |state| {
+        let shard = state.unwrap();
         super::super::storage_bucket_internals::mark_object_dirty_at_bucket(
             shard,
             "string:metadata-only",
             700,
         );
-    }
+    });
     let covered = BTreeSet::new();
     assert_eq!(scan_control(&engine, &covered), vec![700]);
     assert_eq!(measured(&engine, &covered), vec![700]);
@@ -209,28 +204,15 @@ fn node_flags_not_key_ledger_counts_decide_coverage() {
     seed(&engine, 32);
     let before = scan_control(&engine, &BTreeSet::new());
     assert!(!before.is_empty());
-    engine
-        .shards
-        .write()
-        .unwrap()
-        .get_mut(&SHARD)
-        .unwrap()
-        .dirty_objects
-        .clear();
+    engine.shards.with_state_mut(SHARD, |state| {
+        state.unwrap().dirty_objects.clear();
+    });
     assert_eq!(scan_control(&engine, &BTreeSet::new()), before);
     assert_eq!(measured(&engine, &BTreeSet::new()), before);
     let clean_bucket = before[0];
-    engine
-        .shards
-        .write()
-        .unwrap()
-        .get_mut(&SHARD)
-        .unwrap()
-        .bucket_index
-        .bucket_map
-        .get_mut(&clean_bucket)
-        .unwrap()
-        .set_dirty(false);
+    engine.shards.with_state_mut(SHARD, |state| {
+        state.unwrap().bucket_index.bucket_map.get_mut(&clean_bucket).unwrap().set_dirty(false);
+    });
     let expected = scan_control(&engine, &BTreeSet::new());
     assert_eq!(expected.len() + 1, before.len());
     assert!(!expected.contains(&clean_bucket));

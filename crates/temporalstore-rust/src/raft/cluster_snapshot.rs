@@ -749,7 +749,7 @@ impl RaftCluster {
     /// discarded. The snapshot it installs carries the marker that keeps `prev_log_index` /
     /// `prev_log_term` answerable across the trim, exactly as a leader-sent snapshot would.
     fn maybe_compact_local_follower(&self) -> Result<Option<RaftSnapshotTriggerReport>, RaftError> {
-        let (node_id, shard_id, watermark, engine, applied_log_bytes, limit, report_base) = {
+        let (node_id, shard_id, watermark, engine, factory, applied_log_bytes, limit, report_base) = {
             let inner = self.inner.read().expect("raft cluster lock poisoned");
             let Some(node_id) = inner.local_node_id else {
                 // The in-process model: the leader's compaction already trims every node.
@@ -797,6 +797,7 @@ impl RaftCluster {
                 inner.shard_id,
                 node.applied_index,
                 node.engine.clone(),
+                node.engine_factory.clone(),
                 applied_log_bytes,
                 limit,
                 (inner.leader_id, node.applied_index, last_snapshot_index),
@@ -829,7 +830,7 @@ impl RaftCluster {
         };
         #[cfg(test)]
         self.perform_armed_follower_window_interleaving(node_id, watermark);
-        let rebuilt = rebuild_snapshot_engine(&snapshot);
+        let rebuilt = rebuild_snapshot_engine_in(&snapshot, open_replica_engine(factory.as_ref())?)?;
         let mut inner = self.inner.write().expect("raft cluster lock poisoned");
         #[cfg(test)]
         let _guard_mark = crate::snapshot_probe::GuardMark::new();
@@ -978,13 +979,19 @@ impl RaftCluster {
             let provisional = {
                 let inner = self.inner.read().expect("raft cluster lock poisoned");
                 install_targets(&inner, snapshot.last_included_index)
+                    .into_iter()
+                    .map(|node_id| (node_id, inner.nodes[&node_id].engine_factory.clone()))
+                    .collect::<Vec<_>>()
             };
             #[cfg(test)]
             self.perform_armed_install_window_interleaving();
             let mut prebuilt = provisional
                 .iter()
-                .map(|node_id| (*node_id, rebuild_snapshot_engine(&snapshot)))
-                .collect::<Vec<_>>();
+                .map(|(node_id, factory)| {
+                    let engine = open_replica_engine(factory.as_ref())?;
+                    Ok((*node_id, rebuild_snapshot_engine_in(&snapshot, engine)?))
+                })
+                .collect::<Result<Vec<_>, RaftError>>()?;
             // The per-node COPY of the image is a pure function of the snapshot for exactly the
             // same reason the engine is, so it is made here too. One fewer than the targets: the
             // last install takes the original, which is dropped when the loop ends anyway.
@@ -1016,18 +1023,23 @@ impl RaftCluster {
             // declared above `inner`, so they are dropped after it: freeing a whole engine is
             // itself work, and it happens once the guard has been released.
             let targets = install_targets(&inner, snapshot.last_included_index);
+            // A node revived during the build window also needs a prepared engine.
+            // Complete fallible allocation before publishing any replacement.
+            for node_id in &targets {
+                if !prebuilt.iter().any(|(id, _)| id == node_id) {
+                    let engine = open_replica_engine(inner.nodes[node_id].engine_factory.as_ref())?;
+                    prebuilt.push((*node_id, rebuild_snapshot_engine_in(&snapshot, engine)?));
+                }
+            }
             let mut carried = Some(snapshot);
             let mut targets = targets.into_iter().peekable();
             while let Some(node_id) = targets.next() {
                 let is_last = targets.peek().is_none();
-                // Both halves of what this node needs come off the guard where one was built for
-                // it. The `None` arms are the newly-qualified node -- nothing was built for it,
-                // and it is built for here, under the guard, so that WHICH nodes install is the
-                // same set it has always been.
-                let engine = match prebuilt.iter().position(|(id, _)| *id == node_id) {
-                    Some(position) => prebuilt.swap_remove(position).1,
-                    None => rebuild_snapshot_engine(carried.as_ref().expect("held below")),
-                };
+                let position = prebuilt
+                    .iter()
+                    .position(|(id, _)| *id == node_id)
+                    .expect("engine prepared for each install target");
+                let engine = prebuilt.swap_remove(position).1;
                 let Some(held) = carried.as_ref() else {
                     break;
                 };
@@ -1275,7 +1287,7 @@ impl RaftCluster {
     ) -> Result<(), RaftError> {
         // PREFLIGHT. These three answers depend only on cluster and node scalars, so they are
         // reachable under the read guard and reject a hopeless snapshot before it costs a build.
-        let shard_id = {
+        let (shard_id, factory) = {
             let inner = self.inner.read().expect("raft cluster lock poisoned");
             if snapshot.shard_id != inner.shard_id {
                 return Err(RaftError::SnapshotShardMismatch {
@@ -1293,11 +1305,12 @@ impl RaftCluster {
                     local_commit_index: node.commit_index,
                 });
             }
-            inner.shard_id
+            (inner.shard_id, node.engine_factory.clone())
         };
 
         // BUILD, holding NO cluster guard.
-        let engine = build_installed_engine(shard_id, &snapshot)?;
+        let fresh = open_replica_engine(factory.as_ref())?;
+        let engine = build_installed_engine(shard_id, &snapshot, fresh)?;
         let applied = installed_applied_set(&snapshot);
 
         // PUBLISH.
@@ -1607,10 +1620,11 @@ pub(super) fn build_state_image(
     };
     let mut slabs = Vec::with_capacity(slab_ids.len());
     for block_slab_id in slab_ids {
-        let bytes = block_store.read_slab(block_slab_id).ok()?;
+        let (bytes, owner_shard_id) = block_store.read_slab_for_transfer(block_slab_id).ok()?;
         slabs.push(RaftSnapshotStateImageSlab {
             block_slab_id,
             bytes,
+            owner_shard_id,
         });
     }
     let (start_routing_bucket, end_routing_bucket) = engine.shard_routing_range(shard_id);
@@ -1635,8 +1649,8 @@ pub(super) fn build_state_image(
 fn build_installed_engine(
     shard_id: ShardId,
     snapshot: &RaftSnapshot,
+    engine: TemporalEngine,
 ) -> Result<TemporalEngine, RaftError> {
-    let engine = TemporalEngine::default();
     if let Some(image) = &snapshot.state_image {
         // S2: reconstruct state from the opaque image (index + slabs) in O(state) -- no
         // full-history entry replay. Mirrors the shared-store lazy restore: install slabs,
@@ -1648,22 +1662,10 @@ fn build_installed_engine(
             #[cfg(test)]
             install_probe::note_slab_install();
             block_store
-                .install_slab(slab.block_slab_id, &slab.bytes)
+                .install_transferred_slab(slab.block_slab_id, &slab.bytes, slab.owner_shard_id)
                 .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
         }
-        // An image with no range cannot be installed: see `RaftSnapshotStateImage::routing_range`.
-        // Refused by name, so the failure says WHAT arrived rather than that a field was missing.
-        let routing_range = image.routing_range.ok_or_else(|| {
-            RaftError::SnapshotEncoding(format!(
-                "snapshot state image for shard {shard_id} carries no routing range, so the buckets \
-                 its index names cannot be accounted for. It was encoded before the range travelled \
-                 with the image; re-take the snapshot from a leader running this build."
-            ))
-        })?;
-        engine
-            .install_index_bytes_in_empty_wal(shard_id, &image.index_bytes, routing_range)
-            .map_err(|err| RaftError::SnapshotEncoding(err.to_string()))?;
-        engine.load_shard(shard_id);
+        install_snapshot_index(&engine, shard_id, image)?;
     } else {
         engine.load_shard(shard_id);
         for entry in &snapshot.entries {

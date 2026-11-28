@@ -98,9 +98,8 @@ fn a_space_ratio_whose_numerator_falls() {
     // (label, published numerator, published denominator, proposed numerator, proposed denominator)
     let read = |label: String| -> (String, u64, u64, u64, u64) {
         let slabs = engine.block_store.slab_summary();
-        let live_blocks = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
+        let live_blocks = engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
             if shard.bucket_index.block_slab_live.is_ready() {
                 shard
                     .bucket_index
@@ -110,7 +109,7 @@ fn a_space_ratio_whose_numerator_falls() {
             } else {
                 0
             }
-        };
+        });
         (
             label,
             slabs.total_known_physical_bytes,
