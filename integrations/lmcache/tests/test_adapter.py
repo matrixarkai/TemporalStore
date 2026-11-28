@@ -1051,6 +1051,62 @@ class AdapterTest(unittest.TestCase):
         self.assertEqual(client.iter_batch_responses.call_args.args[0], [commands[1], commands[3]])
         wait.assert_called_once_with(0.25)
 
+    def test_cache_load_releases_each_copied_response_before_yielding(self):
+        from weakref import ref
+
+        from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
+        from lmcache_temporalstore.kv import ValueBackend
+
+        class Response(dict):
+            pass
+
+        for mode in ("local", "direct", "proxy"):
+            with self.subTest(mode=mode):
+                if mode == "local":
+                    backend = ValueBackend(Mock(), Mock(), 0)
+                else:
+                    backend = TableValueBackend(
+                        "grpc://127.0.0.1:1", "kvcache", 2, 1, 0,
+                        proxy_grpc_target="127.0.0.1:2" if mode == "proxy" else "",
+                    )
+                keys = [Key("first"), Key("second")]
+                for key in keys:
+                    key.model_name, key.kv_rank = "fixture/model", 0
+                items = [(key, memoryview(bytearray(1024 * 1024))) for key in keys]
+                held = []
+
+                def local_replies(_):
+                    responses = [Response(value=b"a" * len(items[0][1])),
+                                 Response(value=b"b" * len(items[1][1]))]
+                    held.extend(ref(x) for x in responses)
+                    return responses
+
+                def grpc_replies(entries, **_):
+                    for index, (_, document) in enumerate(entries):
+                        response = types.SimpleNamespace(
+                            status=pb.Status(ok=True),
+                            value=memoryview(bytes((97 + index,)) * len(items[index][1])),
+                        )
+                        held.append(ref(response.value))
+                        yield index, document, response
+
+                runner = "_execute" if mode == "local" else "_iter_responses"
+                replies = local_replies if mode == "local" else grpc_replies
+                try:
+                    with patch.object(backend, runner, side_effect=replies):
+                        results = backend.load_into(items)
+                        self.assertTrue(next(results))
+                        self.assertEqual(bytes(items[0][1]), b"a" * len(items[0][1]))
+                        self.assertIsNone(held[0]())
+                        self.assertIsNotNone(held[1]())
+                        self.assertTrue(next(results))
+                        self.assertEqual(bytes(items[1][1]), b"b" * len(items[1][1]))
+                        self.assertIsNone(held[1]())
+                        with self.assertRaises(StopIteration):
+                            next(results)
+                finally:
+                    backend.close()
+
     def test_kv_backend_keeps_one_binary_value_and_rejects_wrong_destination_size(self):
         adapter = adapter_module.TemporalStoreL2Adapter({"storage_backend": "kv"})
         self.addCleanup(adapter.close)

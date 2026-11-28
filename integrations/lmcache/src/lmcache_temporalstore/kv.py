@@ -91,7 +91,11 @@ class ValueBackend:
     def load_into(self, items: list[tuple[ObjectKey, memoryview]]) -> Iterator[bool]:
         for batch, entries in self._load_batches(items):
             responses = self._execute(entries)
-            for (_, destination), answer in zip(batch, responses, strict=True):
+            if len(responses) != len(batch):
+                raise ValueError("storage returned the wrong number of load responses")
+            for index, (_, destination) in enumerate(batch):
+                answer = responses[index]
+                responses[index] = None
                 payload = decode_bytes(answer.get("value"))
                 found = payload is not None and len(payload) == len(destination)
                 if found:
