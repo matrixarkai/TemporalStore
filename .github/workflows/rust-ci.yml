@@ -678,6 +678,137 @@ jobs:
             cargo test --release -p temporalstore-rust --lib "$t" -- --exact --test-threads=1 2>&1 | tee /tmp/wal-segment-gate.log
             grep -q 'test result: ok\. 1 passed; 0 failed;' /tmp/wal-segment-gate.log || { echo "guard did not run and pass: $t"; exit 1; }
           done
+      - name: Series logical-edit generation controls (required)
+        timeout-minutes: 45
+        env:
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          """Run exact release generation controls and retain bounded evidence."""
+          if not __debug__:
+              raise RuntimeError('generation gate requires non-optimized Python')
+          import hashlib
+          import os
+          from pathlib import Path
+          import re
+          import selectors
+          import signal
+          import subprocess
+          import sys
+          import time
+
+          sys.path.insert(0, str(Path('scripts').resolve()))
+          from owned_slab_locking_gate import require_one_pass, write_receipt
+
+          SERIES = 'engine::tests::a_feature_series_at_its_cap_files_only_what_changed::logical_edit_generation::'
+          TRACKER = 'engine::storage_bucket_internals::series_generation_tracker_tests::'
+          CONTROLS = [
+              (SERIES + 'real_series_commands_preserve_generation_refs_and_independent_claims_in_both_modes', False),
+              (SERIES + 'empty_clean_series_edits_and_external_helpers_keep_their_generation_rules', False),
+              (SERIES + 'membership_only_removal_from_a_shared_block_has_the_same_epoch_in_both_modes', False),
+              (SERIES + 'a_real_captured_dump_cannot_clear_a_later_series_edit_in_either_mode', False),
+              (SERIES + 'partial_retirement_then_fallback_advances_each_actual_historical_bucket_once', False),
+              (TRACKER + 'inline_tracker_retains_max_spills_by_distinct_bucket_and_finishes_survivors', False),
+              (TRACKER + 'only_a_second_distinct_bucket_allocates_tracker_storage', True),
+              ('engine::tests::a_feature_series_at_its_cap_files_only_what_changed::the_old_and_the_new_filing_store_the_same', False),
+          ]
+          if len(CONTROLS) != 8 or len({name for name, _ in CONTROLS}) != 8 or [probe for _, probe in CONTROLS] != [False] * 6 + [True, False]:
+              raise ValueError('expected six new default controls, one allocation control, then the original oracle')
+          folder = Path(os.environ['RUNNER_TEMP']) / 'series-generation-controls'
+          folder.mkdir(parents=True, exist_ok=True)
+          receipt_path = folder / 'receipt.json'
+          receipt = dict(status='running', complete=False, expected=8, default_expected=7,
+                         alloc_probe_expected=1, new_controls_expected=7, original_oracle_expected=1,
+                         scope='all-eight-generation-and-byte-oracle-controls',
+                         results=[], public_head=os.environ['PR_HEAD_SHA'])
+          write_receipt(receipt_path, receipt)
+
+
+          def cancelled(signum, _frame):
+              raise InterruptedError(f'cancelled by signal {signum}')
+
+
+          for signum in (signal.SIGINT, signal.SIGTERM):
+              signal.signal(signum, cancelled)
+          try:
+              receipt['actual_checkout'] = subprocess.check_output(['git', 'rev-parse', 'HEAD'], timeout=10).decode().strip()
+              receipt['actual_tree'] = subprocess.check_output(['git', 'rev-parse', 'HEAD^{tree}'], timeout=10).decode().strip()
+              for index, (selector, alloc_probe) in enumerate(CONTROLS):
+                  argv = ['cargo', 'test', '--locked', '--release', '-p', 'temporalstore-rust', '--lib']
+                  if alloc_probe:
+                      argv += ['--features', 'alloc-probe']
+                  argv += [selector, '--', '--exact', '--test-threads=1', '--color', 'never']
+                  log = folder / f'{index:03d}.log'
+                  print(' '.join(argv), flush=True)
+                  with log.open('wb') as output:
+                      process = subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                          env={**os.environ, 'CARGO_TERM_COLOR': 'never', 'CARGO_BUILD_JOBS': '1', 'RUST_TEST_THREADS': '1'},
+                          start_new_session=True)
+                      try:
+                          deadline, size = time.monotonic() + 600, 0
+                          with selectors.DefaultSelector() as ready:
+                              ready.register(process.stdout, selectors.EVENT_READ)
+                              while True:
+                                  remaining = deadline - time.monotonic()
+                                  if remaining <= 0 or not ready.select(remaining):
+                                      raise TimeoutError('generation control exceeded ten minutes')
+                                  chunk = os.read(process.stdout.fileno(), 65536)
+                                  if not chunk:
+                                      break
+                                  room = 2 * 1024 * 1024 - size
+                                  output.write(chunk[:room])
+                                  size += min(room, len(chunk))
+                                  if len(chunk) > room:
+                                      raise ValueError('generation control log exceeded two MiB')
+                          code = process.wait(timeout=10)
+                      finally:
+                          if process.poll() is None:
+                              os.killpg(process.pid, signal.SIGKILL)
+                          process.wait()
+                          process.stdout.close()
+                  raw = log.read_bytes()
+                  text = raw.decode('utf-8', errors='strict')
+                  summary = require_one_pass(selector, text, code)
+                  if not re.fullmatch(r'test result: ok\. 1 passed; 0 failed; 0 ignored; 0 measured; [0-9]+ filtered out; finished in [0-9]+(?:\.[0-9]+)?s', summary):
+                      raise ValueError('generation control has an invalid complete summary')
+                  receipt['results'].append(dict(selector=selector, features=['alloc-probe'] if alloc_probe else [],
+                      command=argv, exit_code=code, summary=summary, log=log.name, bytes=len(raw),
+                      sha256=hashlib.sha256(raw).hexdigest()))
+                  write_receipt(receipt_path, receipt)
+                  if len(receipt['results']) == 7:
+                      # Retain completed new-control evidence before the original oracle can fail.
+                      # This snapshot does not qualify the entire eight-control gate.
+                      new_controls = dict(status='passed', complete=True, expected=7,
+                          default_expected=6, alloc_probe_expected=1, scope='new-generation-controls-only',
+                          public_head=receipt['public_head'], actual_checkout=receipt['actual_checkout'],
+                          actual_tree=receipt['actual_tree'], results=list(receipt['results']),
+                          original_oracle_required=True, original_oracle_complete=False, full_eight_complete=False)
+                      write_receipt(folder / 'new-controls-receipt.json', new_controls)
+                  print('PASS exact generation control: ' + selector, flush=True)
+              if len(receipt['results']) != 8:
+                  raise ValueError('not all eight generation and original-oracle controls completed')
+              receipt.update(status='passed', complete=True)
+          except BaseException as error:
+              receipt.update(status='failed', complete=False, error=str(error))
+              raise
+          finally:
+              write_receipt(receipt_path, receipt)
+          PY
+
+      - name: Retain series logical-edit generation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: series-generation-controls-${{ github.event.pull_request.head.sha || github.sha }}
+          retention-days: 7
+          compression-level: 9
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/series-generation-controls/*.log
+            ${{ runner.temp }}/series-generation-controls/receipt.json
+            ${{ runner.temp }}/series-generation-controls/new-controls-receipt.json
+
       - name: cargo test (pending owner and durable image, three named tests, hard gate)
         timeout-minutes: 20
         run: |

@@ -6598,6 +6598,85 @@ thread_local! {
 /// WHAT IT FALLS BACK TO. A retired block that is not where its identity says it is filed leaves
 /// the index in a state this cannot narrow, so the whole live set is restated -- the old path, for
 /// the case the index and the series already disagree.
+#[derive(Default)]
+struct SeriesGenerationEdits {
+    first: Option<(u32, u64)>,
+    spill: BTreeMap<u32, u64>,
+}
+
+impl SeriesGenerationEdits {
+    fn record(&mut self, routing_bucket: u32, generation: u64) {
+        match self.first {
+            None => self.first = Some((routing_bucket, generation)),
+            Some((first_bucket, prior)) if first_bucket == routing_bucket => {
+                self.first = Some((first_bucket, prior.max(generation)));
+            }
+            Some(_) => {
+                self.spill.entry(routing_bucket)
+                    .and_modify(|prior| *prior = (*prior).max(generation))
+                    .or_insert(generation);
+            }
+        }
+    }
+
+    fn for_each(self, mut visit: impl FnMut(u32, u64)) {
+        let Self { mut first, spill } = self;
+        for (routing_bucket, generation) in spill {
+            if let Some((first_bucket, prior)) = first {
+                if first_bucket < routing_bucket {
+                    first = None;
+                    visit(first_bucket, prior);
+                }
+            }
+            visit(routing_bucket, generation);
+        }
+        if let Some((routing_bucket, generation)) = first {
+            visit(routing_bucket, generation);
+        }
+    }
+
+    fn finish(self, shard: &mut ShardState) {
+        self.for_each(|routing_bucket, prior| {
+            if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+                bucket.dirty_generation = bucket.dirty_generation.max(prior).saturating_add(1);
+            }
+        });
+    }
+}
+
+enum FilingGeneration<'a> {
+    Immediate,
+    Series(&'a mut SeriesGenerationEdits),
+}
+
+impl FilingGeneration<'_> {
+    fn changed(&mut self, routing_bucket: u32, bucket: &mut BucketNode, advance: bool) {
+        match self {
+            Self::Immediate => {
+                if advance {
+                    bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
+                }
+            }
+            Self::Series(changed) => {
+                changed.record(routing_bucket, bucket.dirty_generation);
+            }
+        }
+    }
+
+    fn reload(&mut self, shard: &mut ShardState, shard_id: ShardId, routing_bucket: u32) {
+        let prior = match self {
+            Self::Immediate => None,
+            Self::Series(_) => shard.bucket_index.bucket_map.get(&routing_bucket)
+                .map(|bucket| bucket.dirty_generation),
+        };
+        if reload_released_bucket(shard, shard_id, routing_bucket) {
+            if let (Self::Series(changed), Some(prior)) = (self, prior) {
+                changed.record(routing_bucket, prior);
+            }
+        }
+    }
+}
+
 pub(super) fn file_series_blocks_after_write(
     shard: &mut ShardState,
     shard_id: ShardId,
@@ -6607,9 +6686,31 @@ pub(super) fn file_series_blocks_after_write(
     vacated: Vec<ElementEntry>,
     dirty: bool,
 ) {
+    // The caller holds the canonical owner exclusively until this complete edit returns.
+    // Internal filing cannot publish/capture an intermediate generation. Empty edits allocate
+    // no entries; the first bucket stays inline, including repeated touches. Only a second
+    // distinct bucket uses spill storage; partial retirement and fallback share this collector.
+    let mut changed = SeriesGenerationEdits::default();
+    file_series_blocks_after_write_inner(
+        shard, shard_id, kind, object_key, published, vacated, dirty,
+        &mut FilingGeneration::Series(&mut changed),
+    );
+    changed.finish(shard);
+}
+
+fn file_series_blocks_after_write_inner(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    published: Vec<ElementEntry>,
+    vacated: Vec<ElementEntry>,
+    dirty: bool,
+    generation: &mut FilingGeneration<'_>,
+) {
     if vacated.is_empty() {
-        sync_bucket_index_object_blocks_with_mode(
-            shard, shard_id, kind, object_key, published, dirty, false,
+        sync_bucket_index_object_blocks_with_generation(
+            shard, shard_id, kind, object_key, published, dirty, false, generation,
         );
         return;
     }
@@ -6624,11 +6725,21 @@ pub(super) fn file_series_blocks_after_write(
             None => vacated,
         }
     };
+    // A removed point can leave its shared block live. That is a real membership edit
+    // even when no block needs filing/retirement; the restating path must not acquire
+    // an extra epoch merely for refiling that same block. Never mint an empty owner.
+    if published.is_empty() && retired.is_empty() {
+        let (start, end) = shard.routing_range();
+        let routing_bucket = block_routing_bucket(object_key, start, end);
+        if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+            generation.changed(routing_bucket, &mut bucket, false);
+        }
+    }
     if !restate {
-        sync_bucket_index_object_blocks_with_mode(
-            shard, shard_id, kind, object_key, published, dirty, false,
+        sync_bucket_index_object_blocks_with_generation(
+            shard, shard_id, kind, object_key, published, dirty, false, generation,
         );
-        if retire_object_blocks(shard, shard_id, kind, object_key, &retired, dirty) {
+        if retire_object_blocks_with_generation(shard, shard_id, kind, object_key, &retired, dirty, generation) {
             return;
         }
     }
@@ -6637,7 +6748,9 @@ pub(super) fn file_series_blocks_after_write(
         .get(object_key)
         .map(|series| series.addresses().cloned().collect::<Vec<_>>())
         .unwrap_or_default();
-    sync_bucket_index_object_blocks(shard, shard_id, kind, object_key, live_addresses, dirty);
+    sync_bucket_index_object_blocks_with_generation(
+        shard, shard_id, kind, object_key, live_addresses, dirty, true, generation,
+    );
 }
 
 /// Remove the named blocks of one object from the bucket index, and from the object's block refs.
@@ -6652,13 +6765,27 @@ pub(super) fn retire_object_blocks(
     retired: &[ElementEntry],
     dirty: bool,
 ) -> bool {
+    retire_object_blocks_with_generation(
+        shard, shard_id, kind, object_key, retired, dirty, &mut FilingGeneration::Immediate,
+    )
+}
+
+fn retire_object_blocks_with_generation(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    retired: &[ElementEntry],
+    dirty: bool,
+    generation: &mut FilingGeneration<'_>,
+) -> bool {
     if retired.is_empty() {
         return true;
     }
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
     if !shard.bucket_index.released_buckets.is_empty() {
-        reload_released_bucket(shard, shard_id, routing_bucket);
+        generation.reload(shard, shard_id, routing_bucket);
     }
     let entry_kind = stored_model_kind(kind);
     let mut all_found = true;
@@ -6686,9 +6813,7 @@ pub(super) fn retire_object_blocks(
                         bucket.set_dirty(next_flag);
                         let next_flag = bucket.block_index.is_empty() && !shard.blockless_owners.contains_key(&routing_bucket);
                         bucket.set_deleted(next_flag);
-                        if dirty {
-                            bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
-                        }
+                        generation.changed(routing_bucket, &mut bucket, dirty);
                         classify_bucket_layout_after_block_removal(&mut bucket, removed);
                     }
                     removed
@@ -6750,6 +6875,22 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     dirty: bool,
     replace_existing: bool,
 ) {
+    sync_bucket_index_object_blocks_with_generation(
+        shard, shard_id, kind, object_key, addresses, dirty, replace_existing,
+        &mut FilingGeneration::Immediate,
+    );
+}
+
+fn sync_bucket_index_object_blocks_with_generation(
+    shard: &mut ShardState,
+    shard_id: ShardId,
+    kind: &str,
+    object_key: &str,
+    addresses: Vec<ElementEntry>,
+    dirty: bool,
+    replace_existing: bool,
+    generation: &mut FilingGeneration<'_>,
+) {
     // THE FEATURE NUMERIC VIEW DIES HERE, AND IT IS HERE BECAUSE THIS IS THE CHOKE POINT.
     //
     // `feature_values` is a derived numeric view of a feature series, folded once and then served
@@ -6796,7 +6937,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket)
         })];
         for routing_bucket in landing {
-            reload_released_bucket(shard, shard_id, routing_bucket);
+            generation.reload(shard, shard_id, routing_bucket);
         }
     }
     // TWO QUESTIONS WERE BEING ANSWERED BY ONE FLAG, AND ONLY ONE OF THEM SURVIVES.
@@ -6917,9 +7058,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             bucket.set_dirty(next_flag);
             let next_flag = bucket.block_index.is_empty() && !shard.blockless_owners.contains_key(&routing_bucket);
             bucket.set_deleted(next_flag);
-            if dirty {
-                bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
-            }
+            generation.changed(routing_bucket, &mut bucket, dirty);
             let next_flag = !bucket.block_index.is_empty();
             bucket.set_in_memory(next_flag);
             // THE REPAIR AT THE REMOVAL SITE. A delta over the id this call superseded stood
@@ -7008,9 +7147,10 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         let next_flag = bucket.dirty() | dirty;
         bucket.set_dirty(next_flag);
         bucket.set_deleted(false);
-        if dirty || touched_buckets.insert(routing_bucket) {
-            bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
-        }
+        let advance = dirty || touched_buckets.insert(routing_bucket);
+        // The edit collector observes every filed address, independently of the
+        // legacy cleanup set's short-circuit and the external caller's epoch rule.
+        generation.changed(routing_bucket, &mut bucket, advance);
         bucket.set_meta_loaded(true);
         bucket.set_loading(false);
         bucket.set_in_memory(true);
@@ -11222,4 +11362,115 @@ fn detached_bucket_index_drops_off_owner_and_preserves_physical_gc_liveness() {
     }).response, CommandResponse::Bytes { value: Some(vec![7; 128]) });
     assert!(engine.reload_released_bucket_index_blocks(1, bucket));
     assert!(engine.live_block_slab_ids(1).contains(&slab));
+}
+
+#[cfg(test)]
+mod series_generation_tracker_tests {
+    use super::*;
+
+    #[test]
+    fn inline_tracker_retains_max_spills_by_distinct_bucket_and_finishes_survivors() {
+        let mut edits = SeriesGenerationEdits::default();
+        assert!(edits.first.is_none());
+        assert!(edits.spill.is_empty());
+        edits.record(9, 4);
+        edits.record(9, 2);
+        edits.record(9, 7);
+        assert_eq!(edits.first, Some((9, 7)));
+        assert!(edits.spill.is_empty(), "repeated first-bucket edits must stay inline");
+        edits.record(3, 11);
+        edits.record(3, 1);
+        edits.record(3, 14);
+        edits.record(17, 2);
+        edits.record(9, 6);
+        assert_eq!(edits.first, Some((9, 7)));
+        assert_eq!(edits.spill.len(), 2);
+        assert_eq!(edits.spill.get(&3), Some(&14));
+        assert!(!edits.spill.contains_key(&9));
+
+        let mut shard = ShardState::default();
+        for (id, generation, wal, index) in [(9, 20, 5, 7), (3, 10, 11, 13)] {
+            shard.bucket_index.bucket_map.entry(id).or_insert_with(|| BucketNode {
+                routing_bucket: id, dirty_generation: generation,
+                first_dirty_wal_sequence: wal, first_dirty_index_log_sequence: index,
+                ..BucketNode::default()
+            });
+        }
+        edits.finish(&mut shard);
+        assert_eq!(shard.bucket_index.bucket_map.get(&9).unwrap().dirty_generation, 21);
+        assert_eq!(shard.bucket_index.bucket_map.get(&3).unwrap().dirty_generation, 15);
+        assert!(!shard.bucket_index.bucket_map.contains_key(&17), "do not recreate an absent bucket");
+        let node = shard.bucket_index.bucket_map.get(&3).unwrap();
+        assert_eq!((node.first_dirty_wal_sequence, node.first_dirty_index_log_sequence), (11, 13));
+        drop(node);
+
+        // A partial removal/recreated-node fallback keeps the pre-edit maximum, not its new default.
+        let mut fallback = SeriesGenerationEdits::default();
+        fallback.record(9, 21);
+        shard.bucket_index.bucket_map.remove(&9);
+        shard.bucket_index.bucket_map.entry(9).or_insert_with(|| BucketNode {
+            routing_bucket: 9, dirty_generation: 1, ..BucketNode::default()
+        });
+        fallback.record(9, 1);
+        fallback.record(3, 100);
+        shard.bucket_index.bucket_map.remove(&3);
+        fallback.finish(&mut shard);
+        assert_eq!(shard.bucket_index.bucket_map.get(&9).unwrap().dirty_generation, 22);
+        assert!(!shard.bucket_index.bucket_map.contains_key(&3));
+        assert_eq!(shard.bucket_index.bucket_map.len(), 1);
+
+        // First observed bucket can be anywhere in the order; no canonical landing assumption.
+        for ids in [[9, 3, 17], [3, 17, 9], [17, 9, 3]] {
+            let mut order = SeriesGenerationEdits::default();
+            for id in ids { order.record(id, u64::from(id)); }
+            let mut observed = Vec::new();
+            order.for_each(|id, generation| observed.push((id, generation)));
+            assert_eq!(observed, vec![(3, 3), (9, 9), (17, 17)]);
+        }
+    }
+
+    #[cfg(feature = "alloc-probe")]
+    #[test]
+    fn only_a_second_distinct_bucket_allocates_tracker_storage() {
+        use crate::alloc_probe::Probe;
+        use std::hint::black_box;
+
+        let warm = Probe::start();
+        warm.stop();
+        let canary = Probe::start();
+        let live = black_box(Box::new(black_box(23_u64)));
+        let positive = canary.stop();
+        assert!(positive.allocs > 0, "the real allocation counter must observe the control");
+        drop(live);
+
+        let single = Probe::start();
+        let mut edits = SeriesGenerationEdits::default();
+        for generation in 0..256 {
+            edits.record(black_box(9), black_box(generation));
+        }
+        black_box(&edits);
+        let single_counts = single.stop();
+        assert_eq!(single_counts.allocs, 0, "tracker-only first/repeated bucket allocated");
+        assert_eq!(edits.first, Some((9, 255)));
+        assert!(edits.spill.is_empty());
+
+        let spill = Probe::start();
+        edits.record(black_box(3), black_box(700));
+        black_box(&edits);
+        let spill_counts = spill.stop();
+        assert!(spill_counts.allocs > 0, "a second distinct bucket must exercise real spill storage");
+        assert_eq!(edits.spill.len(), 1);
+
+        let repeats = Probe::start();
+        for generation in 0..128 {
+            edits.record(black_box(9), black_box(generation));
+            edits.record(black_box(3), black_box(generation));
+        }
+        black_box(&edits);
+        let repeated_counts = repeats.stop();
+        assert_eq!(repeated_counts.allocs, 0, "existing inline/spill buckets must update in place");
+        assert_eq!(edits.first, Some((9, 255)));
+        assert_eq!(edits.spill.get(&3), Some(&700));
+        // These intervals cover only the tracker, not engine writes, refiling or the whole command.
+    }
 }
