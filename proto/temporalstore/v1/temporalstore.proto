@@ -666,7 +666,9 @@ enum FeatureReduceRounding {
 }
 
 message FeatureReduceUnit {}
-message FeatureReduceSample { bool sample = 1; }
+message FeatureReduceSample {
+  bool sample = 1;
+}
 message FeatureReduceDecay {
   uint64 half_life_ms = 1;
   uint64 as_of_ms = 2;
@@ -675,7 +677,9 @@ message FeatureReduceWilson {
   int64 at_least = 1;
   double z = 2;
 }
-message FeatureReduceWeighted { repeated double weights = 1; }
+message FeatureReduceWeighted {
+  repeated double weights = 1;
+}
 
 message FeatureAggregateQuery {
   string key = 1;
