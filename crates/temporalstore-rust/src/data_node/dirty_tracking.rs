@@ -296,8 +296,11 @@ pub(super) fn mark_dirty_keys(
 
 pub(super) fn command_was_applied(command: &Command, response: &ExecuteResponse) -> bool {
     response.status.ok
-        && (!matches!(command, Command::HashMultiSetIfTimestampOlder { .. })
-            || matches!(&response.response, CommandResponse::Integer { value } if *value > 0))
+        && (!matches!(
+            command,
+            Command::HashMultiSetIfTimestampOlder { .. }
+                | Command::StringSetConditional { return_old: false, .. }
+        ) || matches!(&response.response, CommandResponse::Integer { value } if *value > 0))
         && is_write_command(command)
 }
 

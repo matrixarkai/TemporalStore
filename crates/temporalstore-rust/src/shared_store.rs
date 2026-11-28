@@ -4503,17 +4503,27 @@ where
         shard_id: ShardId,
         commands: Vec<Command>,
     ) -> Result<(), SharedStoreReplicationError> {
+        self.write_sync_batch_counted(shard_id, commands).await
+            .map_err(|(_, error)| error)
+    }
+
+    /// On failure, return the length of the prefix proven durable by this request.
+    pub async fn write_sync_batch_counted(
+        &self,
+        shard_id: ShardId,
+        commands: Vec<Command>,
+    ) -> Result<(), (usize, SharedStoreReplicationError)> {
         if self.mode != SharedStoreStorageMode::Sync || self.group_commit {
-            return Err(std::io::Error::new(
+            return Err((0, std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "request batches require a synchronous WAL writer with serialized publication",
-            ).into());
+            ).into()));
         }
         if commands.is_empty() {
             return Ok(());
         }
         let _order = self.publish_order.lock().await;
-        self.refuse_if_hole()?;
+        self.refuse_if_hole().map_err(|error| (0, error))?;
         let first_index = self.next_wal_index.fetch_add(commands.len() as u64, Ordering::Relaxed);
         let entries: Vec<_> = commands.into_iter().enumerate().map(|(offset, command)| SharedStoreWalEntry {
             shard_id,
@@ -4531,7 +4541,7 @@ where
                 error,
             );
         }
-        result
+        result.map_err(|error| (durable.len(), error))
     }
 
     pub async fn write_outcomes(
