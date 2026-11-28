@@ -96,7 +96,8 @@ fn shared_rows_register_payloads_and_release_guard_before_barrier() {
         let engine = open(dir.path(), false);
         BEFORE_SHARED_ROW_COMMIT.with(|slot| {
             *slot.borrow_mut() = Some(Box::new(|engine, shard, sequence| {
-                assert!(engine.shards.try_write().is_ok());
+                assert!(!crate::engine::shard_write_guard::any_shard_guard_held());
+                engine.shards.with_state_mut(shard, |state| assert!(state.is_some()));
                 let stats = engine.wal_store.stats_without_rescan(shard);
                 assert_eq!(
                     (stats.writes, stats.syncs, stats.last_flushed_sequence),

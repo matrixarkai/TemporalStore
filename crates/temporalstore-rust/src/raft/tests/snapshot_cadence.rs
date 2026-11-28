@@ -675,6 +675,26 @@ fn the_slab_read_is_what_a_snapshot_is() {
     );
 }
 
+#[test]
+fn an_invalid_snapshot_index_cannot_publish_a_replacement_engine() {
+    let cluster = cluster_with(16);
+    let mut snapshot = cluster.create_snapshot().unwrap();
+    let image = snapshot.state_image.as_mut().expect("physical state image");
+    let range = image.routing_range.take();
+    assert!(matches!(
+        crate::raft::rebuild_snapshot_engine(&snapshot),
+        Err(RaftError::SnapshotEncoding(_))
+    ));
+    let image = snapshot.state_image.as_mut().unwrap();
+    image.routing_range = range;
+    image.index_bytes.truncate(1);
+    assert!(matches!(
+        crate::raft::rebuild_snapshot_engine(&snapshot),
+        Err(RaftError::SnapshotEncoding(_))
+    ));
+    assert_the_fixture_is_populated(&cluster, 16);
+}
+
 /// WHY INCREMENTAL IS NOT AVAILABLE -- established from the installers, not assumed.
 ///
 /// Every path that consumes a state image builds a FRESH `TemporalEngine` and replaces with it;
@@ -706,7 +726,7 @@ fn a_receiving_peer_cannot_apply_an_increment() {
     // A peer built from the WHOLE image serves every record. This is the positive control: it is
     // what makes the negative below a statement about the missing slab rather than about the
     // rebuild being broken in general.
-    let whole_peer = crate::raft::rebuild_snapshot_engine(&whole);
+    let whole_peer = crate::raft::rebuild_snapshot_engine(&whole).unwrap();
     let mut served_by_whole = 0usize;
     for index in 0..records {
         if read_back(&whole_peer, &format!("key-{index:08}")).is_some() {
@@ -734,7 +754,7 @@ fn a_receiving_peer_cannot_apply_an_increment() {
         dropped.block_slab_id,
         dropped.bytes.len()
     );
-    let partial_peer = crate::raft::rebuild_snapshot_engine(&partial);
+    let partial_peer = crate::raft::rebuild_snapshot_engine(&partial).unwrap();
     let mut served_by_partial = 0usize;
     for index in 0..records {
         if read_back(&partial_peer, &format!("key-{index:08}")).is_some() {
@@ -756,6 +776,62 @@ fn a_receiving_peer_cannot_apply_an_increment() {
 }
 
 /// Read one key back off an engine, element by element rather than by count.
+#[test]
+fn snapshot_slab_transfer_keeps_legacy_bytes_and_rejects_damaged_owned_data() {
+    let root = tempfile::tempdir().unwrap();
+    let shape = crate::block_store::BlockStore::new(root.path());
+    let raw_id = shape.roll_slab_for_shard(0).unwrap().new_block_slab_id;
+    let raw = shape.read_slab(raw_id).unwrap();
+    let leader = TemporalEngine::default();
+    let shard_id = 1;
+    leader.load_shard(shard_id);
+    let blocks = leader.block_store();
+    blocks.install_slab(raw_id, &raw).unwrap();
+    let written = blocks
+        .append_block_of_object_for_shard(0, b"owned", None, None, 0)
+        .unwrap();
+    blocks.sync_durable().unwrap();
+    let owned_id = written.block_slab_id();
+    let (start_routing_bucket, end_routing_bucket) = leader.shard_routing_range(shard_id);
+    let mut snapshot = RaftSnapshot {
+        shard_id,
+        last_included_term: 0,
+        last_included_index: 0,
+        external_snapshot_ref: None,
+        entries: Vec::new(),
+        state_image_externalized: false,
+        state_image: Some(RaftSnapshotStateImage {
+            index_bytes: leader.export_index_bytes(shard_id).unwrap(),
+            next_block_id: blocks.next_block_id(),
+            routing_range: Some(crate::engine::routing_range_stamp::RoutingRangeStamp {
+                start_routing_bucket, end_routing_bucket,
+            }),
+            slabs: vec![
+                RaftSnapshotStateImageSlab {
+                    block_slab_id: raw_id,
+                    bytes: raw.clone(),
+                    owner_shard_id: None,
+                },
+                RaftSnapshotStateImageSlab {
+                    block_slab_id: owned_id,
+                    bytes: blocks.read_slab(owned_id).unwrap(),
+                    owner_shard_id: Some(0),
+                },
+            ],
+        }),
+    };
+    let peer = crate::raft::rebuild_snapshot_engine(&snapshot).unwrap().block_store();
+    assert_eq!(peer.exported_slab_owner(raw_id).unwrap(), None);
+    assert_eq!(peer.read_logical_range(raw_id, 0, raw.len() as u64).unwrap(), raw);
+    assert_eq!(peer.exported_slab_owner(owned_id).unwrap(), Some(0));
+    assert_eq!(peer.read(&written).unwrap(), b"owned");
+    snapshot.state_image.as_mut().unwrap().slabs[1].bytes[0] ^= 1;
+    assert!(matches!(
+        crate::raft::rebuild_snapshot_engine(&snapshot),
+        Err(RaftError::SnapshotEncoding(_))
+    ));
+}
+
 fn read_back(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
     match engine
         .execute(ExecuteRequest {
@@ -822,7 +898,7 @@ fn a_peer_built_from_a_paced_snapshot_serves_the_leaders_elements_exactly() {
                     .installed_snapshot
                     .as_ref()
                     .expect("the peer holds the snapshot it installed"),
-            );
+            ).unwrap();
         compare_element_by_element(&leader, &restored, written, &format!("round {round} restart"));
         checkpoints += 1;
     }
@@ -941,7 +1017,7 @@ fn what_a_store_reads_in_total_for_the_same_work_under_each_cadence() {
                     .maybe_trigger_snapshot()
                     .expect("maybe_trigger_snapshot must succeed")
                     .triggered,
-                "the priming snapshot for the {label} arm did not fire, so its rounds below                  would not all be routine ones"
+                "the priming snapshot for the {label} arm did not fire, so its rounds below would not all be routine ones"
             );
         }
         set_cadence(&cluster, cadence, INTEGRAL_FLOOR);
@@ -1228,18 +1304,18 @@ fn an_independent_residual_recovers_a_planted_marker() {
     let (_, index_bytes, _) = installed_image(&cluster);
     let predicted = index_bytes * counts.engine_rebuilds;
     println!(
-        "  attribution: {} rebuilt engines x {index_bytes} B of served index = {predicted} B,          against a residual of {residual} B ({:.3}x)",
+        "  attribution: {} rebuilt engines x {index_bytes} B of served index = {predicted} B, against a residual of {residual} B ({:.3}x)",
         counts.engine_rebuilds,
         residual as f64 / predicted.max(1) as f64
     );
     assert!(
         counts.engine_rebuilds > 1 && index_bytes > 0,
-        "the attribution divides by {} rebuilds and {index_bytes} index bytes, so it would be an          identity rather than a prediction",
+        "the attribution divides by {} rebuilds and {index_bytes} index bytes, so it would be an identity rather than a prediction",
         counts.engine_rebuilds
     );
     assert!(
         residual > predicted * 7 / 10 && residual < predicted * 3 / 2,
-        "the residual is {residual} B against a predicted {predicted} B -- one served-index read          per rebuilt engine. Outside that band the residual is something else, and in particular          a residual near {} B would be a SECOND walk of the corpus that none of the counters in          this file can see",
+        "the residual is {residual} B against a predicted {predicted} B -- one served-index read per rebuilt engine. Outside that band the residual is something else, and in particular a residual near {} B would be a SECOND walk of the corpus that none of the counters in this file can see",
         predicted + counted
     );
 }

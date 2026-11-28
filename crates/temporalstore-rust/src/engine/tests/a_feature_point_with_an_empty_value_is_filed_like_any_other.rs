@@ -50,9 +50,10 @@ fn point(timestamp_ms: u64, value: &[u8]) -> FeaturePoint {
 
 /// The shard index serialises, which is what every persist of it needs.
 fn index_serialises(engine: &TemporalEngine) -> Result<(), String> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    serde_json::to_value(shard).map(|_| ()).map_err(|err| err.to_string())
+    engine.shards.with_state(1, |owner| {
+        let shard = owner.expect("shard 1");
+        serde_json::to_value(shard).map(|_| ()).map_err(|err| err.to_string())
+    })
 }
 
 #[test]

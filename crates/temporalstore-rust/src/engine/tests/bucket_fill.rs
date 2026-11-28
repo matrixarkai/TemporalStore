@@ -247,53 +247,56 @@ impl BlocksPerBucket {
 }
 
 fn blocks_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut hist = BlocksPerBucket::default();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        if bucket.block_index.is_empty() {
-            continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut hist = BlocksPerBucket::default();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            if bucket.block_index.is_empty() {
+                continue;
+            }
+            *hist.counts.entry(bucket.block_index.len()).or_default() += 1;
         }
-        *hist.counts.entry(bucket.block_index.len()).or_default() += 1;
-    }
-    hist
+        hist
+    })
 }
 
 /// Every bucket that holds a block, with the OBJECT KEYS it holds, deduplicated and sorted. The
 /// element-by-element picture a count cannot give.
 fn bucket_key_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<String>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    // A BUCKET THAT HOLDS NO BLOCK CONTRIBUTES NO ROW, which is what the `is_empty` skip said.
-    // It falls out of the walk rather than being tested for: a bucket with no blocks yields
-    // nothing to group under it.
-    let mut contents: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
-    for (routing_bucket, _handle, object_key, _block) in
-        super::blocks_with_identity(&shard.bucket_index)
-    {
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        // A BUCKET THAT HOLDS NO BLOCK CONTRIBUTES NO ROW, which is what the `is_empty` skip said.
+        // It falls out of the walk rather than being tested for: a bucket with no blocks yields
+        // nothing to group under it.
+        let mut contents: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
+        for (routing_bucket, _handle, object_key, _block) in
+            super::blocks_with_identity(&shard.bucket_index)
+        {
+            contents
+                .entry(routing_bucket)
+                .or_default()
+                .insert(object_key.to_string());
+        }
         contents
-            .entry(routing_bucket)
-            .or_default()
-            .insert(object_key.to_string());
-    }
-    contents
+    })
 }
 
 /// Every bucket with the BLOCK HANDLES it holds -- the map's own keys, which are object ids and
 /// therefore distinguish a container's element names. A key set cannot see a lost element name; this
 /// can.
 fn bucket_handle_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<u64>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut contents: BTreeMap<u32, BTreeSet<u64>> = BTreeMap::new();
-    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        let handles: BTreeSet<u64> = bucket.block_index.iter().map(|(handle, _)| *handle).collect();
-        if handles.is_empty() {
-            continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut contents: BTreeMap<u32, BTreeSet<u64>> = BTreeMap::new();
+        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+            let handles: BTreeSet<u64> = bucket.block_index.iter().map(|(handle, _)| *handle).collect();
+            if handles.is_empty() {
+                continue;
+            }
+            contents.insert(*routing_bucket, handles);
         }
-        contents.insert(*routing_bucket, handles);
-    }
-    contents
+        contents
+    })
 }
 
 fn flatten<T: Ord + Clone>(contents: &BTreeMap<u32, BTreeSet<T>>) -> BTreeSet<T> {
@@ -311,17 +314,18 @@ fn flatten<T: Ord + Clone>(contents: &BTreeMap<u32, BTreeSet<T>>) -> BTreeSet<T>
 /// from `One` to `Many` and still buys list capacity -- but it no longer buys the bucket's FIRST
 /// allocation, because the single block already had one. `inline_arm_trade.rs` is the measurement.
 fn block_index_arms(engine: &TemporalEngine) -> (usize, usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut arms = (0usize, 0usize, 0usize);
-    for bucket in shard.bucket_index.bucket_map.values() {
-        match &bucket.block_index {
-            crate::engine::state::BlockIndexMap::Empty => arms.0 += 1,
-            crate::engine::state::BlockIndexMap::One(_, _) => arms.1 += 1,
-            crate::engine::state::BlockIndexMap::Many(_) => arms.2 += 1,
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut arms = (0usize, 0usize, 0usize);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            match &bucket.block_index {
+                crate::engine::state::BlockIndexMap::Empty => arms.0 += 1,
+                crate::engine::state::BlockIndexMap::One(_, _) => arms.1 += 1,
+                crate::engine::state::BlockIndexMap::Many(_) => arms.2 += 1,
+            }
         }
-    }
-    arms
+        arms
+    })
 }
 
 fn total<T>(contents: &BTreeMap<u32, BTreeSet<T>>) -> usize {
@@ -848,11 +852,10 @@ fn a_store_reopened_on_the_other_range_keeps_every_block_in_both_directions() {
             .map(|handles| handles.len())
             .sum();
 
-        let entries = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard 1");
+        let entries = engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1");
             collect_live_block_entries(shard).len()
-        };
+        });
         println!(
             "  {direction} 0..{from_end} -> 0..{to_end}: {readable}/{RECORDS} readable, \
              {entries} live blocks, {buckets_before} buckets -> {} buckets, {} buckets holding \
@@ -1034,41 +1037,42 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
             let keys = seed_routed(&engine, records);
             let arms = block_index_arms(&engine);
 
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard 1");
-            let buckets = shard.bucket_index.bucket_map.len();
-            let blocks: usize = shard
-                .bucket_index
-                .bucket_map
-                .values()
-                .map(|bucket| bucket.block_index.len())
-                .sum();
-            assert_eq!(
-                blocks,
-                keys.len(),
-                "{records}/{end_routing_bucket}: the map holds {blocks} blocks for {} keys, so the \
-                 per-block divisor below is not the fixture's",
-                keys.len()
-            );
-            assert!(buckets > 0, "{records}/{end_routing_bucket}: no buckets to divide by");
-
-            let (bytes, allocs) = clone_counts(&shard.bucket_index.bucket_map);
-            assert!(
-                bytes > 0 && allocs > 0,
-                "{records}/{end_routing_bucket}: the instrument charged {bytes} B in {allocs} \
-                 calls for a map of {buckets} buckets; a zero reading is the instrument failing, \
-                 not the map being free"
-            );
-            observed.insert(
-                (records, end_routing_bucket),
-                Arm {
-                    bytes,
-                    allocs,
-                    buckets,
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard 1");
+                let buckets = shard.bucket_index.bucket_map.len();
+                let blocks: usize = shard
+                    .bucket_index
+                    .bucket_map
+                    .values()
+                    .map(|bucket| bucket.block_index.len())
+                    .sum();
+                assert_eq!(
                     blocks,
-                    arms,
-                },
-            );
+                    keys.len(),
+                    "{records}/{end_routing_bucket}: the map holds {blocks} blocks for {} keys, so the \
+                     per-block divisor below is not the fixture's",
+                    keys.len()
+                );
+                assert!(buckets > 0, "{records}/{end_routing_bucket}: no buckets to divide by");
+
+                let (bytes, allocs) = clone_counts(&shard.bucket_index.bucket_map);
+                assert!(
+                    bytes > 0 && allocs > 0,
+                    "{records}/{end_routing_bucket}: the instrument charged {bytes} B in {allocs} \
+                     calls for a map of {buckets} buckets; a zero reading is the instrument failing, \
+                     not the map being free"
+                );
+                observed.insert(
+                    (records, end_routing_bucket),
+                    Arm {
+                        bytes,
+                        allocs,
+                        buckets,
+                        blocks,
+                        arms,
+                    },
+                );
+            })
         }
     }
 
@@ -1232,51 +1236,52 @@ fn filling_a_bucket_coarsens_the_dirty_set_by_exactly_the_keys_it_holds() {
         load_on(&engine, end_routing_bucket);
         let keys = seed_routed(&engine, SMALL);
 
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1");
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1");
 
-        // DENOMINATOR: a freshly written store has every key dirty. If it did not, the drain
-        // below would drop nothing and report a clean zero for the wrong reason.
-        let dirty_buckets: Vec<(u32, u64)> = shard.dirty_objects.bucket_counts().collect();
-        let dirty_keys: usize = dirty_buckets.iter().map(|(_, count)| *count as usize).sum();
-        assert_eq!(
-            dirty_keys,
-            keys.len(),
-            "on 0..{end_routing_bucket} the dirty index holds {dirty_keys} keys after writing {}; \
-             the drain below is not over the fixture",
-            keys.len()
-        );
+            // DENOMINATOR: a freshly written store has every key dirty. If it did not, the drain
+            // below would drop nothing and report a clean zero for the wrong reason.
+            let dirty_buckets: Vec<(u32, u64)> = shard.dirty_objects.bucket_counts().collect();
+            let dirty_keys: usize = dirty_buckets.iter().map(|(_, count)| *count as usize).sum();
+            assert_eq!(
+                dirty_keys,
+                keys.len(),
+                "on 0..{end_routing_bucket} the dirty index holds {dirty_keys} keys after writing {}; \
+                 the drain below is not over the fixture",
+                keys.len()
+            );
 
-        let (empty_arm, one_arm, many_arm) = shard.dirty_objects.bucket_arms();
-        assert_eq!(
-            empty_arm, 0,
-            "on 0..{end_routing_bucket} {empty_arm} dirty buckets hold an Empty key set; a set \
-             that empties is meant to be dropped from the map by its caller"
-        );
+            let (empty_arm, one_arm, many_arm) = shard.dirty_objects.bucket_arms();
+            assert_eq!(
+                empty_arm, 0,
+                "on 0..{end_routing_bucket} {empty_arm} dirty buckets hold an Empty key set; a set \
+                 that empties is meant to be dropped from the map by its caller"
+            );
 
-        // THE MEASUREMENT: drain ONE bucket -- what a dump of one bucket drops -- and count it.
-        // The widest bucket, because that is the amplification an operator actually meets.
-        let widest = dirty_buckets
-            .iter()
-            .max_by_key(|(_, count)| *count)
-            .map(|(routing_bucket, _)| *routing_bucket)
-            .expect("a freshly written store has a dirty bucket");
-        let dropped = shard.dirty_objects.drain_buckets(&[widest]);
-        assert!(
-            dropped > 0,
-            "on 0..{end_routing_bucket} draining bucket {widest} dropped nothing, so this arm \
-             measures the drain not running rather than what it drains"
-        );
+            // THE MEASUREMENT: drain ONE bucket -- what a dump of one bucket drops -- and count it.
+            // The widest bucket, because that is the amplification an operator actually meets.
+            let widest = dirty_buckets
+                .iter()
+                .max_by_key(|(_, count)| *count)
+                .map(|(routing_bucket, _)| *routing_bucket)
+                .expect("a freshly written store has a dirty bucket");
+            let dropped = shard.dirty_objects.drain_buckets(&[widest]);
+            assert!(
+                dropped > 0,
+                "on 0..{end_routing_bucket} draining bucket {widest} dropped nothing, so this arm \
+                 measures the drain not running rather than what it drains"
+            );
 
-        println!(
-            "  0..{end_routing_bucket}: {} dirty buckets over {dirty_keys} dirty keys; \
-             DirtyKeySet arms (Empty {empty_arm}, One {one_arm}, Many {many_arm}); draining the \
-             widest bucket dropped {dropped} keys"
-        , dirty_buckets.len());
-        observed.insert(
-            end_routing_bucket,
-            (dirty_buckets.len(), dirty_keys, one_arm, many_arm, dropped),
-        );
+            println!(
+                "  0..{end_routing_bucket}: {} dirty buckets over {dirty_keys} dirty keys; \
+                 DirtyKeySet arms (Empty {empty_arm}, One {one_arm}, Many {many_arm}); draining the \
+                 widest bucket dropped {dropped} keys"
+            , dirty_buckets.len());
+            observed.insert(
+                end_routing_bucket,
+                (dirty_buckets.len(), dirty_keys, one_arm, many_arm, dropped),
+            );
+        })
     }
 
     let (wide_buckets, _, wide_one, wide_many, wide_dropped) =
@@ -1416,26 +1421,27 @@ fn an_objects_bucket_cannot_be_recomputed_from_its_key_once_the_range_has_moved(
 
     // And the stored lookup is right exactly where the recomputation is wrong: its refs carry the
     // bucket as filed rather than as computed.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut checked = 0usize;
-    for (_model, object, refs) in shard.bucket_index.object_block_lookup.iter() {
-        let sits_in = actual.get(object.as_ref()).copied();
-        for block_ref in refs.iter() {
-            assert_eq!(
-                Some(block_ref.routing_bucket),
-                sits_in,
-                "the lookup files {object} in bucket {} while the bucket map holds it in {sits_in:?}",
-                block_ref.routing_bucket
-            );
-            checked += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut checked = 0usize;
+        for (_model, object, refs) in shard.bucket_index.object_block_lookup.iter() {
+            let sits_in = actual.get(object.as_ref()).copied();
+            for block_ref in refs.iter() {
+                assert_eq!(
+                    Some(block_ref.routing_bucket),
+                    sits_in,
+                    "the lookup files {object} in bucket {} while the bucket map holds it in {sits_in:?}",
+                    block_ref.routing_bucket
+                );
+                checked += 1;
+            }
         }
-    }
-    assert_eq!(
-        checked, KEYS,
-        "checked {checked} stored block refs against {KEYS} objects; a lookup that held none \
-         would agree with the bucket map trivially"
-    );
+        assert_eq!(
+            checked, KEYS,
+            "checked {checked} stored block refs against {KEYS} objects; a lookup that held none \
+             would agree with the bucket map trivially"
+        );
+    })
 }
 
 /// WHAT A DERIVED READ WOULD COST, COUNTED, AT BOTH POPULATIONS.
@@ -1465,36 +1471,37 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
     }
 
     fn measure(engine: &TemporalEngine) -> Walk {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let mut walk = Walk::default();
-        let mut by_bucket: BTreeMap<u32, Vec<(u64, String)>> = BTreeMap::new();
-        for (routing_bucket, handle, object_key, _block) in
-            super::blocks_with_identity(&shard.bucket_index)
-        {
-            by_bucket
-                .entry(routing_bucket)
-                .or_default()
-                .push((handle, object_key.to_string()));
-        }
-        for entries in by_bucket.values() {
-            let mut per_object: BTreeMap<String, Vec<usize>> = BTreeMap::new();
-            for (at, (_handle, key)) in entries.iter().enumerate() {
-                per_object.entry(key.clone()).or_default().push(at);
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let mut walk = Walk::default();
+            let mut by_bucket: BTreeMap<u32, Vec<(u64, String)>> = BTreeMap::new();
+            for (routing_bucket, handle, object_key, _block) in
+                super::blocks_with_identity(&shard.bucket_index)
+            {
+                by_bucket
+                    .entry(routing_bucket)
+                    .or_default()
+                    .push((handle, object_key.to_string()));
             }
-            for positions in per_object.values() {
-                walk.objects += 1;
-                // A walk cannot stop before the end: it has no count to stop on.
-                walk.lengths.push(entries.len());
-                walk.element_names.push(positions.len());
-                let first = *positions.first().expect("non-empty");
-                let last = *positions.last().expect("non-empty");
-                if last - first + 1 != positions.len() {
-                    walk.scattered += 1;
+            for entries in by_bucket.values() {
+                let mut per_object: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+                for (at, (_handle, key)) in entries.iter().enumerate() {
+                    per_object.entry(key.clone()).or_default().push(at);
+                }
+                for positions in per_object.values() {
+                    walk.objects += 1;
+                    // A walk cannot stop before the end: it has no count to stop on.
+                    walk.lengths.push(entries.len());
+                    walk.element_names.push(positions.len());
+                    let first = *positions.first().expect("non-empty");
+                    let last = *positions.last().expect("non-empty");
+                    if last - first + 1 != positions.len() {
+                        walk.scattered += 1;
+                    }
                 }
             }
-        }
-        walk
+            walk
+        })
     }
 
     fn pct(sorted: &[usize], p: f64) -> usize {
@@ -1695,29 +1702,30 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
     }
 
     fn check(engine: &TemporalEngine, end_routing_bucket: u32) -> Verdict {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        // THE COMPARISON IS DERIVED-AGAINST-FILED AND THAT IS WHY THE POSITION DOOR IS RIGHT
-        // HERE. What is recomputed is where a key WOULD route on this range; the lookup records
-        // the bucket each block was FILED under, which is the bucket it sits in. So the inversion
-        // answers for every block, and a disagreement between the two is the finding rather than
-        // a missing name.
-        let mut verdict = Verdict { blocks: 0, filed_elsewhere: Vec::new() };
-        for (routing_bucket, _handle, object_key, block) in
-            super::blocks_with_identity(&shard.bucket_index)
-        {
-            if block.deleted() {
-                continue;
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            // THE COMPARISON IS DERIVED-AGAINST-FILED AND THAT IS WHY THE POSITION DOOR IS RIGHT
+            // HERE. What is recomputed is where a key WOULD route on this range; the lookup records
+            // the bucket each block was FILED under, which is the bucket it sits in. So the inversion
+            // answers for every block, and a disagreement between the two is the finding rather than
+            // a missing name.
+            let mut verdict = Verdict { blocks: 0, filed_elsewhere: Vec::new() };
+            for (routing_bucket, _handle, object_key, block) in
+                super::blocks_with_identity(&shard.bucket_index)
+            {
+                if block.deleted() {
+                    continue;
+                }
+                verdict.blocks += 1;
+                let computed = block_routing_bucket(&object_key, 0, end_routing_bucket);
+                if computed != routing_bucket {
+                    verdict
+                        .filed_elsewhere
+                        .push((object_key.to_string(), routing_bucket, computed));
+                }
             }
-            verdict.blocks += 1;
-            let computed = block_routing_bucket(&object_key, 0, end_routing_bucket);
-            if computed != routing_bucket {
-                verdict
-                    .filed_elsewhere
-                    .push((object_key.to_string(), routing_bucket, computed));
-            }
-        }
-        verdict
+            verdict
+        })
     }
 
     fn report(stage: &str, v: &Verdict) {
@@ -1776,11 +1784,10 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
         // PATH THREE: RELEASE AND RELOAD. A released bucket's blocks come back from the model maps,
         // where `rebuild_bucket_first_index` stamps only the object id -- the documented way a
         // block comes out of a reconstruct still unrouted.
-        let buckets: Vec<u32> = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
+        let buckets: Vec<u32> = engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
             shard.bucket_index.bucket_map.keys().copied().take(16).collect()
-        };
+        });
         let released = engine.release_bucket_index_blocks(1, buckets.clone());
         println!(
             "      release of {} buckets: (released, refused, blocks) = {released:?}",
@@ -1900,56 +1907,57 @@ fn the_loaded_range_is_reachable_from_the_state_the_bucket_set_reader_already_ta
     let routed = seed_routed(&engine, 400);
     let containers = seed_container(&engine, 8, 100);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
 
-    // The shard knows its own range, and it is the one it was loaded on.
-    let (start, end) = shard.routing_range();
-    assert_eq!(
-        (start, end),
-        (0, NARROW_END),
-        "the shard reports the range 0..{end} after being loaded on 0..{NARROW_END}; if a loaded \
-         shard did not carry its own range the recomputation below would have nothing to use"
-    );
+        // The shard knows its own range, and it is the one it was loaded on.
+        let (start, end) = shard.routing_range();
+        assert_eq!(
+            (start, end),
+            (0, NARROW_END),
+            "the shard reports the range 0..{end} after being loaded on 0..{NARROW_END}; if a loaded \
+             shard did not carry its own range the recomputation below would have nothing to use"
+        );
 
-    let mut compared = 0usize;
-    let mut agreed = 0usize;
-    for key in routed.iter().chain(containers.iter()) {
-        // What the lookup reports, the way the bucket-set reader reports it.
-        let mut reported: BTreeSet<u32> = BTreeSet::new();
-        for kind in crate::engine::storage_model_kinds() {
-            if let Some(entry) = shard.bucket_index.object_block_refs(kind, key) {
-                reported.extend(entry.iter().map(|block_ref| block_ref.routing_bucket));
+        let mut compared = 0usize;
+        let mut agreed = 0usize;
+        for key in routed.iter().chain(containers.iter()) {
+            // What the lookup reports, the way the bucket-set reader reports it.
+            let mut reported: BTreeSet<u32> = BTreeSet::new();
+            for kind in crate::engine::storage_model_kinds() {
+                if let Some(entry) = shard.bucket_index.object_block_refs(kind, key) {
+                    reported.extend(entry.iter().map(|block_ref| block_ref.routing_bucket));
+                }
+            }
+            if reported.is_empty() {
+                continue;
+            }
+            compared += 1;
+            // An object's blocks share ONE bucket, so the set the lookup reports is one element and
+            // the recomputation can be compared against it directly.
+            let computed = block_routing_bucket(key, start, end);
+            if reported.len() == 1 && reported.contains(&computed) {
+                agreed += 1;
             }
         }
-        if reported.is_empty() {
-            continue;
-        }
-        compared += 1;
-        // An object's blocks share ONE bucket, so the set the lookup reports is one element and
-        // the recomputation can be compared against it directly.
-        let computed = block_routing_bucket(key, start, end);
-        if reported.len() == 1 && reported.contains(&computed) {
-            agreed += 1;
-        }
-    }
-    assert_eq!(
-        compared,
-        routed.len() + containers.len(),
-        "compared {compared} objects against {} written; a lookup holding fewer would make the \
-         agreement below a statement about a subset",
-        routed.len() + containers.len()
-    );
-    println!(
-        "  {agreed} of {compared} objects: the bucket set the lookup reports is the single bucket \
-         recomputed from the range the shard itself carries. The range is reachable at the call \
-         site, so that reader is threadable and NOT the refutation."
-    );
-    assert_eq!(
-        agreed, compared,
-        "only {agreed} of {compared} objects agreed, so the recomputation does not reproduce what \
-         the lookup reports even with the loaded range in hand"
-    );
+        assert_eq!(
+            compared,
+            routed.len() + containers.len(),
+            "compared {compared} objects against {} written; a lookup holding fewer would make the \
+             agreement below a statement about a subset",
+            routed.len() + containers.len()
+        );
+        println!(
+            "  {agreed} of {compared} objects: the bucket set the lookup reports is the single bucket \
+             recomputed from the range the shard itself carries. The range is reachable at the call \
+             site, so that reader is threadable and NOT the refutation."
+        );
+        assert_eq!(
+            agreed, compared,
+            "only {agreed} of {compared} objects agreed, so the recomputation does not reproduce what \
+             the lookup reports even with the loaded range in hand"
+        );
+    })
 }
 
 /// THE ONE LIVE POPULATION WHERE RECOMPUTING A BUCKET IS UNSOUND: A PRE-STAMP STORE BUILT NARROW.
@@ -2054,66 +2062,67 @@ fn a_pre_stamp_store_built_narrow_is_adopted_onto_a_range_that_cannot_compute_it
         response.status
     );
 
-    let shards = reopened.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let (start, end) = shard.routing_range();
-    println!("  the reopened shard carries the range 0..{end} after being ASKED for 0..{NARROW_END}");
-    assert_eq!(
-        (start, end),
-        (0, u32::MAX),
-        "the pre-stamp store was adopted onto 0..{end} rather than the legacy whole keyspace; the \
-         mechanism this test rests on is not the one that ran"
-    );
+    reopened.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let (start, end) = shard.routing_range();
+        println!("  the reopened shard carries the range 0..{end} after being ASKED for 0..{NARROW_END}");
+        assert_eq!(
+            (start, end),
+            (0, u32::MAX),
+            "the pre-stamp store was adopted onto 0..{end} rather than the legacy whole keyspace; the \
+             mechanism this test rests on is not the one that ran"
+        );
 
-    // --- Does a recomputation on the ADOPTED range find the blocks? ---
-    let placed = super::blocks_with_identity(&shard.bucket_index);
-    let mut blocks = 0usize;
-    let mut computed_elsewhere = 0usize;
-    for (routing_bucket, _handle, object_key, block) in &placed {
-        if block.deleted() {
-            continue;
+        // --- Does a recomputation on the ADOPTED range find the blocks? ---
+        let placed = super::blocks_with_identity(&shard.bucket_index);
+        let mut blocks = 0usize;
+        let mut computed_elsewhere = 0usize;
+        for (routing_bucket, _handle, object_key, block) in &placed {
+            if block.deleted() {
+                continue;
+            }
+            blocks += 1;
+            if block_routing_bucket(object_key, start, end) != *routing_bucket {
+                computed_elsewhere += 1;
+            }
         }
-        blocks += 1;
-        if block_routing_bucket(object_key, start, end) != *routing_bucket {
-            computed_elsewhere += 1;
-        }
-    }
-    assert!(
-        blocks > 0,
-        "the reopened store holds no live blocks, so nothing below is measured"
-    );
+        assert!(
+            blocks > 0,
+            "the reopened store holds no live blocks, so nothing below is measured"
+        );
 
-    // The index still answers, which is what makes the derived answer the thing that would break.
-    let mut lookup_correct = 0usize;
-    for (_model, object, refs) in shard.bucket_index.object_block_lookup.iter() {
-        let sits_in: Option<u32> = placed
-            .iter()
-            .find(|(_, _, named, _)| named.as_ref() == object.as_ref())
-            .map(|(routing_bucket, ..)| *routing_bucket);
-        if refs.iter().all(|block_ref| Some(block_ref.routing_bucket) == sits_in) {
-            lookup_correct += 1;
+        // The index still answers, which is what makes the derived answer the thing that would break.
+        let mut lookup_correct = 0usize;
+        for (_model, object, refs) in shard.bucket_index.object_block_lookup.iter() {
+            let sits_in: Option<u32> = placed
+                .iter()
+                .find(|(_, _, named, _)| named.as_ref() == object.as_ref())
+                .map(|(routing_bucket, ..)| *routing_bucket);
+            if refs.iter().all(|block_ref| Some(block_ref.routing_bucket) == sits_in) {
+                lookup_correct += 1;
+            }
         }
-    }
 
-    println!(
-        "  a pre-stamp store built on 0..{NARROW_END} and adopted onto the whole keyspace: {} live \
-         blocks, and a bucket recomputed from the ADOPTED range misses {} of them ({:.2}%). The \
-         stored lookup answers correctly for {} objects, because it records where a block IS \
-         rather than where a key computes.",
-        blocks,
-        computed_elsewhere,
-        computed_elsewhere as f64 * 100.0 / blocks as f64,
-        lookup_correct
-    );
-    assert_eq!(
-        computed_elsewhere, blocks,
-        "only {computed_elsewhere} of {blocks} blocks are missed by the recomputation. If the \
-         adopted range could compute this store's buckets there would be no population where \
-         deriving a bucket is unsound, and the refutation would rest on cost alone"
-    );
-    assert!(
-        lookup_correct > 0,
-        "the stored lookup answered correctly for no object, so it is not the thing that keeps this \
-         store readable and the contrast above is unfounded"
-    );
+        println!(
+            "  a pre-stamp store built on 0..{NARROW_END} and adopted onto the whole keyspace: {} live \
+             blocks, and a bucket recomputed from the ADOPTED range misses {} of them ({:.2}%). The \
+             stored lookup answers correctly for {} objects, because it records where a block IS \
+             rather than where a key computes.",
+            blocks,
+            computed_elsewhere,
+            computed_elsewhere as f64 * 100.0 / blocks as f64,
+            lookup_correct
+        );
+        assert_eq!(
+            computed_elsewhere, blocks,
+            "only {computed_elsewhere} of {blocks} blocks are missed by the recomputation. If the \
+             adopted range could compute this store's buckets there would be no population where \
+             deriving a bucket is unsound, and the refutation would rest on cost alone"
+        );
+        assert!(
+            lookup_correct > 0,
+            "the stored lookup answered correctly for no object, so it is not the thing that keeps this \
+             store readable and the contrast above is unfounded"
+        );
+    })
 }

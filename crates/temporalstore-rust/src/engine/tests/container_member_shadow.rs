@@ -179,50 +179,52 @@ struct ZsetBlock {
 
 /// Every `zset` block the bucket index holds, read off the engine's own index.
 fn zset_blocks(engine: &TemporalEngine) -> Vec<ZsetBlock> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut blocks = Vec::new();
-    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        for (handle, block) in bucket.block_index.iter() {
-            if block.model_id().as_str() != "zset" {
-                continue;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut blocks = Vec::new();
+        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+            for (handle, block) in bucket.block_index.iter() {
+                if block.model_id().as_str() != "zset" {
+                    continue;
+                }
+                blocks.push(ZsetBlock {
+                    routing_bucket: *routing_bucket,
+                    object_key: named.at(*routing_bucket, *handle).to_string(),
+                    // THIS `expect` WAS THE MODULE'S OWN CONTROL AND IT CANNOT HOLD. It read
+                    // `page.element_name.as_deref().expect("a zset block is named by its element_name")`.
+                    // A zset block entry names no element -- that is the collapse -- so the walk
+                    // panicked rather than failing an assertion. The redundancy this module measures
+                    // between an element name and the block payload is what the collapse DELETED, so the
+                    // field is carried as the empty string and the arms that priced that redundancy
+                    // are restated where they are read.
+                    element_name: String::new(),
+                    address: block.address.clone(),
+                    dirty: block.dirty(),
+                    deleted: block.deleted(),
+                    log_backed: block.log_backed(),
+                });
             }
-            blocks.push(ZsetBlock {
-                routing_bucket: *routing_bucket,
-                object_key: named.at(*routing_bucket, *handle).to_string(),
-                // THIS `expect` WAS THE MODULE'S OWN CONTROL AND IT CANNOT HOLD. It read
-                // `page.element_name.as_deref().expect("a zset block is named by its element_name")`.
-                // A zset block entry names no element -- that is the collapse -- so the walk
-                // panicked rather than failing an assertion. The redundancy this module measures
-                // between an element name and the block payload is what the collapse DELETED, so the
-                // field is carried as the empty string and the arms that priced that redundancy
-                // are restated where they are read.
-                element_name: String::new(),
-                address: block.address.clone(),
-                dirty: block.dirty(),
-                deleted: block.deleted(),
-                log_backed: block.log_backed(),
-            });
         }
-    }
-    blocks
+        blocks
+    })
 }
 
 /// The members of one zset, as the model map holds them: raw bytes and a numeric score.
 fn model_members(engine: &TemporalEngine, key: &str) -> BTreeMap<Vec<u8>, u64> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    shard
-        .bucket_index.zsets
-        .get(key)
-        .map(|members| {
-            members
-                .iter()
-                .map(|(member, (biased, _))| (member.clone(), *biased))
-                .collect()
-        })
-        .unwrap_or_default()
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        shard
+            .bucket_index.zsets
+            .get(key)
+            .map(|members| {
+                members
+                    .iter()
+                    .map(|(member, (biased, _))| (member.clone(), *biased))
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
 }
 
 /// Element names held per routing bucket, as bucket COUNTS keyed by the number held.

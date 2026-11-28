@@ -85,7 +85,7 @@ def test_metadata_grpc_uses_versioned_topology_and_bearer_credentials():
         ))
         port = server.add_insecure_port("127.0.0.1:0")
         server.start()
-        client = MetadataClient(f"grpc://127.0.0.1:{port}", credential_provider=lambda: "test-token")
+        client = MetadataClient(f"127.0.0.1:{port}", credential_provider=lambda: "test-token")
         try:
             first = client.table_topology("kvcache", "model")
             assert (first.table_id, first.version) == (7, 42)
@@ -97,3 +97,18 @@ def test_metadata_grpc_uses_versioned_topology_and_bearer_credentials():
         finally:
             client.close()
             server.stop(0).wait()
+
+def test_topology_uses_the_smaller_explicit_or_default_timeout():
+    from unittest.mock import Mock
+
+    from temporalstore_sdk import commands as pb
+
+    from contextlib import closing
+
+    with closing(MetadataClient("grpc://127.0.0.1:1", timeout_seconds=5)) as client:
+        client._topology_rpc = Mock(return_value=pb.MetadataTableTopologyResponse(
+            status=pb.Status(ok=True), first_shard_id=73, shard_count=1,
+        ))
+        client.table_topology("kvcache", "model", timeout_seconds=0.25)
+        client.table_topology("kvcache", "model", timeout_seconds=30)
+        assert [call.kwargs["timeout"] for call in client._topology_rpc.call_args_list] == [0.25, 5]

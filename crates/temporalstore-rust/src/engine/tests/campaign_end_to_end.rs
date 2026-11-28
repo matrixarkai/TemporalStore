@@ -280,40 +280,43 @@ impl BlocksPerBucket {
 }
 
 fn blocks_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut hist = BlocksPerBucket::default();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        if bucket.block_index.is_empty() {
-            continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut hist = BlocksPerBucket::default();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            if bucket.block_index.is_empty() {
+                continue;
+            }
+            *hist.counts.entry(bucket.block_index.len()).or_default() += 1;
         }
-        *hist.counts.entry(bucket.block_index.len()).or_default() += 1;
-    }
-    hist
+        hist
+    })
 }
 
 /// (Empty, One, Many) arm counts over the whole bucket map -- released and empty buckets included,
 /// because a node exists whether or not its bucket holds a block and a node is what the per-bucket
 /// contribution is charged on.
 fn block_index_arms(engine: &TemporalEngine) -> (usize, usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut arms = (0usize, 0usize, 0usize);
-    for bucket in shard.bucket_index.bucket_map.values() {
-        match &bucket.block_index {
-            crate::engine::state::BlockIndexMap::Empty => arms.0 += 1,
-            crate::engine::state::BlockIndexMap::One(..) => arms.1 += 1,
-            crate::engine::state::BlockIndexMap::Many(..) => arms.2 += 1,
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut arms = (0usize, 0usize, 0usize);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            match &bucket.block_index {
+                crate::engine::state::BlockIndexMap::Empty => arms.0 += 1,
+                crate::engine::state::BlockIndexMap::One(..) => arms.1 += 1,
+                crate::engine::state::BlockIndexMap::Many(..) => arms.2 += 1,
+            }
         }
-    }
-    arms
+        arms
+    })
 }
 
 /// Nodes in the bucket map, whether or not their bucket holds a block.
 fn node_count(engine: &TemporalEngine) -> usize {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    shard.bucket_index.bucket_map.len()
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        shard.bucket_index.bucket_map.len()
+    })
 }
 
 // =============================================================================================

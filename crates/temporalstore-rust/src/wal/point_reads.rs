@@ -13,20 +13,29 @@ pub(super) struct State {
     available: std::sync::Condvar,
     indexed: crate::wal_proto::indexed::Cache,
     layouts: packed_frames::LayoutCache,
-    completed: Mutex<(u64, u64)>,
 }
 
 impl State {
     fn enter(self: Arc<Self>) -> Permit {
         let mut active = self.active.lock().expect("point read admission poisoned");
         while *active >= MAX_IN_FLIGHT {
-            active = self.available.wait(active).expect("point read admission poisoned");
+            active = self
+                .available
+                .wait(active)
+                .expect("point read admission poisoned");
         }
         *active += 1;
         drop(active);
         Permit { state: self }
     }
+}
 
+#[derive(Debug, Default)]
+pub(super) struct Counts {
+    completed: Mutex<(u64, u64)>,
+}
+
+impl Counts {
     fn complete(&self, bytes: u64) {
         let mut counts = self.completed.lock().expect("point read counts poisoned");
         counts.0 = counts.0.saturating_add(1);
@@ -47,7 +56,11 @@ struct Permit {
 
 impl Drop for Permit {
     fn drop(&mut self) {
-        let mut active = self.state.active.lock().expect("point read admission poisoned");
+        let mut active = self
+            .state
+            .active
+            .lock()
+            .expect("point read admission poisoned");
         *active -= 1;
         self.state.available.notify_one();
     }
@@ -60,6 +73,8 @@ struct PreparedRead {
     shard: ShardId,
     log_id: u64,
     sequence: u64,
+    counts: Arc<Counts>,
+    writer: std::sync::Weak<ShardWriter>,
 }
 
 fn prepare(
@@ -68,16 +83,56 @@ fn prepare(
     log_id: u64,
     sequence: u64,
 ) -> Result<Option<PreparedRead>, WriteAheadLogError> {
-    let state = Arc::clone(&store.lock_inner_raw().point_reads);
+    let writer = store.shard_writer(shard);
+    let (state, counts) = {
+        let inner = writer.lock_inner_raw();
+        (inner.point_reads.clone(), inner.point_read_counts.clone())
+    };
     // Admission waits outside both the writer mutex and the retention registry.
     let permit = state.enter();
-    let lease = store.retain_read_sequence(shard, sequence);
-    let mut inner = store.lock_inner();
-    let WriteAheadLogInner { root, point_readers, .. } = &mut *inner;
-    let Some(source) = point_readers.take(root, shard, log_id)? else {
-        return Ok(None);
+    let lease = {
+        let coordinator = &writer.coordinator;
+        let mut readers = coordinator
+            .read_retention
+            .lock()
+            .expect("read retention lock poisoned");
+        store.register_read_lease(coordinator, &mut readers, sequence)
     };
-    Ok(Some(PreparedRead { source, permit, _lease: lease, shard, log_id, sequence }))
+    for attempt in 0..2 {
+        let result = {
+            let mut inner = writer.lock_inner();
+            let WriteAheadLogInner {
+                root,
+                point_readers,
+                ..
+            } = &mut *inner;
+            point_readers.take(root, shard, log_id)
+        };
+        match result {
+            Ok(Some(source)) => {
+                return Ok(Some(PreparedRead {
+                    source,
+                    permit,
+                    _lease: lease,
+                    shard,
+                    log_id,
+                    sequence,
+                    counts,
+                    writer: Arc::downgrade(&writer),
+                }))
+            }
+            Ok(None) => return Ok(None),
+            Err(error)
+                if attempt == 0
+                    && point_readers::descriptor_pressure(&error)
+                    && store.evict_idle_reader_for_open(shard) =>
+            {
+                ()
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("bounded descriptor retry returns on its final attempt")
 }
 
 impl PreparedRead {
@@ -90,14 +145,23 @@ impl PreparedRead {
         let mut bytes_read = 0;
         let result = (|| {
             let selected = match packed_frames::PointReader::with_layout_cache(
-                &mut self.source.file, self.source.physical,
+                &mut self.source.file,
+                self.source.physical,
                 self.source.sealed.then_some(self.source.stamp).flatten(),
                 &self.permit.state.layouts,
             )? {
                 Some(mut reader) => {
                     let result = crate::wal_proto::indexed::read(
-                        &mut reader, 0, &self.permit.state.indexed, self.shard, self.log_id,
-                        self.sequence, index, object_id, element_name, &mut 0,
+                        &mut reader,
+                        0,
+                        &self.permit.state.indexed,
+                        self.shard,
+                        self.log_id,
+                        self.sequence,
+                        index,
+                        object_id,
+                        element_name,
+                        &mut 0,
                     );
                     bytes_read = reader.physical_bytes;
                     result
@@ -107,7 +171,9 @@ impl PreparedRead {
             if let Some(block) = selected? {
                 return Ok(Some(CarriedBlockRead::Block(block)));
             }
-            self.source.file.seek(SeekFrom::Start(self.source.physical))?;
+            self.source
+                .file
+                .seek(SeekFrom::Start(self.source.physical))?;
             let mut reader = BufReader::with_capacity(1024, &mut self.source.file);
             let raw = read_raw_record(&mut reader)?;
             if let Some(record) = raw.as_ref() {
@@ -120,19 +186,23 @@ impl PreparedRead {
 }
 
 fn finish(
-    store: &LocalWriteAheadLogStore,
+    _store: &LocalWriteAheadLogStore,
     prepared: PreparedRead,
     result: Result<Option<CarriedBlockRead>, WriteAheadLogError>,
     bytes_read: u64,
 ) -> Result<Option<CarriedBlockRead>, WriteAheadLogError> {
-    prepared.permit.state.complete(bytes_read);
+    prepared.counts.complete(bytes_read);
     if result.is_ok() {
         // Reuse is optional. A completed read must not queue behind an append or GC
         // merely to return a descriptor; the existing cache still enforces its bounds.
-        match store.inner.try_lock() {
-            Ok(mut inner) => inner.point_readers.put(prepared.source),
-            Err(std::sync::TryLockError::WouldBlock) => (),
-            Err(std::sync::TryLockError::Poisoned(_)) => panic!("write-ahead log lock poisoned"),
+        if let Some(writer) = prepared.writer.upgrade() {
+            match writer.inner.try_lock() {
+                Ok(mut inner) => inner.point_readers.put(prepared.source),
+                Err(std::sync::TryLockError::WouldBlock) => (),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    panic!("write-ahead log lock poisoned")
+                }
+            };
         }
     }
     result
@@ -157,3 +227,7 @@ pub(super) fn read(
 #[cfg(test)]
 #[path = "point_read_concurrency_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "read_budget_tests.rs"]
+mod budget_tests;

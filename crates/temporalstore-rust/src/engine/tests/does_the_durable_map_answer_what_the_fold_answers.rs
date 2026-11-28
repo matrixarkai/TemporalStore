@@ -192,13 +192,14 @@ fn fold_answer(engine: &TemporalEngine) -> (BTreeSet<Vec<u8>>, u64, u64) {
 fn map_answer(engine: &TemporalEngine) -> BTreeSet<Vec<u8>> {
     // The accessor pattern `hash_container_reload_authority` uses, rather than a helper that does
     // not exist: the engine's shard table is read-locked and the shard taken out of it.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    shard
-        .bucket_index.sets
-        .get(KEY)
-        .map(|members| members.keys().cloned().collect())
-        .unwrap_or_default()
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        shard
+            .bucket_index.sets
+            .get(KEY)
+            .map(|members| members.keys().cloned().collect())
+            .unwrap_or_default()
+    })
 }
 
 /// Drive one scenario and require the two mechanisms to agree.

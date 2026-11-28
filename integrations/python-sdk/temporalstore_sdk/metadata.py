@@ -80,7 +80,7 @@ class TableTopology:
 
 
 class MetadataClient:
-    """Resolve tables over the metaserver endpoint's selected transport."""
+    """Resolve tables over gRPC by default, or from an explicit HTTP URL."""
 
     def __init__(
         self,
@@ -90,7 +90,7 @@ class MetadataClient:
         timeout_seconds: float = 5.0,
         require_grpc: bool = False,
     ):
-        endpoint = urlsplit(url)
+        endpoint = urlsplit(url if "://" in url else f"grpc://{url}")
         if require_grpc and endpoint.scheme not in ("grpc", "grpcs"):
             raise ValueError("expected a grpc:// or grpcs:// metaserver URL")
         if (endpoint.scheme not in ("grpc", "grpcs", "http", "https") or not endpoint.hostname
@@ -121,13 +121,15 @@ class MetadataClient:
         *,
         previous: Optional[TableTopology] = None,
         location: str = "",
+        timeout_seconds: float | None = None,
     ) -> TableTopology:
         if not namespace or not table:
             raise ValueError("namespace and table are required")
         if previous is not None and (namespace, table) != (previous.namespace, previous.name):
             raise ValueError("previous topology is for a different table")
+        timeout = self._timeout if timeout_seconds is None else min(self._timeout, timeout_seconds)
         if self._topology_rpc is not None:
-            return self._table_topology_grpc(namespace, table, previous, location)
+            return self._table_topology_grpc(namespace, table, previous, location, timeout)
         request = {
             "namespace": namespace, "table_name": table, "client_location": location,
             "old_topology_version": previous.version if previous else 0,
@@ -136,7 +138,7 @@ class MetadataClient:
         token = self._credentials() if self._credentials is not None else None
         if token:
             headers["Authorization"] = f"Bearer {token}"
-        connection = self._connect(self._host, self._port, timeout=self._timeout)
+        connection = self._connect(self._host, self._port, timeout=timeout)
         try:
             connection.request("POST", "/tables/topology", json.dumps(request), headers)
             response = connection.getresponse()
@@ -162,7 +164,7 @@ class MetadataClient:
             table_id=info.get("table_id"),
         )
 
-    def _table_topology_grpc(self, namespace, table, previous, location) -> TableTopology:
+    def _table_topology_grpc(self, namespace, table, previous, location, timeout) -> TableTopology:
         token = self._credentials() if self._credentials is not None else None
         metadata = (("authorization", f"Bearer {token}"),) if token else None
         request = pb.MetadataTableTopologyRequest(
@@ -170,7 +172,7 @@ class MetadataClient:
             old_topology_version=previous.version if previous else 0,
         )
         try:
-            response = self._topology_rpc(request, timeout=self._timeout, metadata=metadata)
+            response = self._topology_rpc(request, timeout=timeout, metadata=metadata)
         except grpc.RpcError as error:
             raise MetadataError(error.code().name.lower(), error.details()) from error
         if not response.status.ok:

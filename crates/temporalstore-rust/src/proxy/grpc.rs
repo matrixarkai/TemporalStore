@@ -304,6 +304,7 @@ impl ProxyService {
                 &routing,
                 request.trace_id,
                 MESSAGE_LIMIT,
+                true,
             )
             .await
             .map_err(client_status)?;

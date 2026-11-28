@@ -4,10 +4,15 @@
 use super::*;
 use crate::meta::{
     AckResponse, DataRaftRoute, GetTableTopologyRequest, MetaRaftLeaderResponse,
-    ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest, TableShard,
-    TableTopologyResponse, TopologyVersionReport,
+    ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest, RegisterServerRequest,
+    RegisterShardRequest, ServerHeartbeatRequest, ServerHeartbeatResponse, ShardCacheBudget,
+    TableShard, TableTopologyResponse, TopologyVersionReport,
 };
-use crate::metaserver_files_proto::{table_meta_info_from_proto, topology_change_event_from_proto};
+use crate::metaserver_files_proto::{
+    numa_node_to_proto, server_runtime_load_to_proto, server_shard_serving_state_to_proto,
+    shard_load_to_proto, shard_stat_load_to_proto, table_meta_info_from_proto,
+    topology_change_event_from_proto,
+};
 use crate::sdk::v1;
 use std::future::Future;
 use std::sync::{mpsc, OnceLock};
@@ -15,6 +20,8 @@ use tokio::runtime::{Builder, Runtime};
 use tonic::transport::{Channel, Endpoint};
 
 type MetadataClient = v1::metadata_service_client::MetadataServiceClient<Channel>;
+type DatanodeMetadataClient =
+    v1::datanode_metadata_service_client::DatanodeMetadataServiceClient<Channel>;
 type ProxyMetadataClient = v1::proxy_metadata_service_client::ProxyMetadataServiceClient<Channel>;
 
 pub(super) fn runtime() -> Result<&'static Runtime, ClientError> {
@@ -217,6 +224,107 @@ impl TemporalStoreClient {
         })
     }
 
+    /// Register a distributed datanode on its configured metaserver gRPC endpoint.
+    pub fn register_datanode_grpc(
+        &self,
+        target: &str,
+        query: &RegisterServerRequest,
+    ) -> Result<Status, ClientError> {
+        let request = v1::MetadataRegisterServerRequest {
+            server_addr: query.server_addr.clone(),
+            grpc_addr: query.grpc_addr.clone(),
+            node_id: query.node_id,
+            location: query.location.clone(),
+            binary_version: query.binary_version.clone(),
+            numa_nodes: query.numa_nodes.iter().map(numa_node_to_proto).collect(),
+        };
+        let reply = self.metadata_rpc(
+            target,
+            self.inner.options.io_timeout_ms,
+            move |channel, token| async move {
+                DatanodeMetadataClient::new(channel)
+                    .register_server(authenticated(request, token)?)
+                    .await
+            },
+        )?;
+        decode_status(Some(reply))
+    }
+
+    /// Publish the initial placement of a shard hosted by this datanode.
+    pub fn register_datanode_shard_grpc(
+        &self,
+        target: &str,
+        query: &RegisterShardRequest,
+    ) -> Result<Status, ClientError> {
+        let request = v1::MetadataRegisterShardRequest {
+            shard_id: query.shard_id,
+            server_addr: query.server_addr.clone(),
+        };
+        let reply = self.metadata_rpc(
+            target,
+            self.inner.options.io_timeout_ms,
+            move |channel, token| async move {
+                DatanodeMetadataClient::new(channel)
+                    .register_shard(authenticated(request, token)?)
+                    .await
+            },
+        )?;
+        decode_status(Some(reply))
+    }
+
+    /// Report load and serving state and receive the current cache budgets.
+    pub fn datanode_heartbeat_grpc(
+        &self,
+        target: &str,
+        query: &ServerHeartbeatRequest,
+    ) -> Result<ServerHeartbeatResponse, ClientError> {
+        let request = v1::MetadataServerHeartbeatRequest {
+            server_addr: query.server_addr.clone(),
+            boot_time_ms: query.boot_time_ms,
+            binary_version: query.binary_version.clone(),
+            shard_loads: query.shard_loads.iter().map(shard_load_to_proto).collect(),
+            shard_stat_loads: query
+                .shard_stat_loads
+                .iter()
+                .map(shard_stat_load_to_proto)
+                .collect(),
+            runtime_load: Some(server_runtime_load_to_proto(&query.runtime_load)),
+            shard_states: query
+                .shard_states
+                .iter()
+                .map(server_shard_serving_state_to_proto)
+                .collect(),
+        };
+        let reply = self.metadata_rpc(
+            target,
+            self.inner.options.io_timeout_ms,
+            move |channel, token| async move {
+                DatanodeMetadataClient::new(channel)
+                    .max_encoding_message_size(40 * 1024 * 1024)
+                    .max_decoding_message_size(40 * 1024 * 1024)
+                    .heartbeat(authenticated(request, token)?)
+                    .await
+            },
+        )?;
+        Ok(ServerHeartbeatResponse {
+            status: decode_status(reply.status)?,
+            forbid_auto_register: reply.forbid_auto_register,
+            topology_version: reply.topology_version,
+            server_state: reply.server_state,
+            cache_budgets: reply
+                .cache_budgets
+                .into_iter()
+                .map(|budget| ShardCacheBudget {
+                    shard_id: budget.shard_id,
+                    table_id: budget.table_id,
+                    load_version: budget.load_version,
+                    raft_term: budget.raft_term,
+                    bytes: budget.bytes,
+                })
+                .collect(),
+        })
+    }
+
     pub(crate) fn register_proxy_grpc(
         &self,
         target: &str,
@@ -410,12 +518,10 @@ mod tests {
         );
         tokio::task::spawn_blocking(move || {
             let client = TemporalStoreClient::with_options(ClientOptions {
-                meta_addr: None,
-                meta_grpc_target: Some(target),
                 connect_timeout_ms: 3_000,
                 io_timeout_ms: 3_000,
                 meta_sync_deadline_ms: 3_000,
-                ..Default::default()
+                ..ClientOptions::direct(target)
             });
             let table = client.open_table_from_meta("kvcache", "model").unwrap();
             assert_eq!(table.options().table_id, 13);

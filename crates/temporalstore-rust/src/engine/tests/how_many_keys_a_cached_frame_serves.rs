@@ -103,20 +103,21 @@ fn measure(value: usize) -> (usize, usize, usize, usize, usize) {
 
     // GROUP BY THE FRAME'S OWN IDENTITY. `(slab, offset, length)` are the block-derived element names
     // of `CacheKey::page_with_slot`, so two rows in one group are two keys one frame would serve.
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut groups: BTreeMap<(u64, u64, u64), usize> = BTreeMap::new();
-    let mut rows = 0_usize;
-    for (_, slot) in shard.strings().iter() {
-        let address = slot.address();
-        *groups
-            .entry((address.block_slab_id(), address.offset(), address.length()))
-            .or_default() += 1;
-        rows += 1;
-    }
-    let largest = groups.values().copied().max().unwrap_or(0);
-    let shared = groups.values().filter(|count| **count > 1).count();
-    (value, groups.len(), rows, largest, shared)
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut groups: BTreeMap<(u64, u64, u64), usize> = BTreeMap::new();
+        let mut rows = 0_usize;
+        for (_, slot) in shard.strings().iter() {
+            let address = slot.address();
+            *groups
+                .entry((address.block_slab_id(), address.offset(), address.length()))
+                .or_default() += 1;
+            rows += 1;
+        }
+        let largest = groups.values().copied().max().unwrap_or(0);
+        let shared = groups.values().filter(|count| **count > 1).count();
+        (value, groups.len(), rows, largest, shared)
+    })
 }
 
 #[test]

@@ -158,14 +158,11 @@ fn fixture(
     engine.clear_dumped_bucket_dirty_state(SHARD, &manifest);
     // REGIME: the seed landed. An empty store has no buckets at all, and every arm below would
     // collapse into the no-bucket one without saying so.
-    let seeded = engine
-        .shards
-        .read()
-        .expect("shards lock poisoned")
-        .get(&SHARD)
-        .expect("shard is loaded")
-        .strings()
-        .len();
+    let seeded = engine.shards.with_state(SHARD, |state| {
+        state.expect("shard is loaded")
+            .strings()
+            .len()
+    });
     assert_eq!(
         keys, seeded,
         "the seed did not land, so nothing measured on this fixture means anything"
@@ -308,67 +305,68 @@ fn assert_routing_regime(
     start_routing_bucket: u32,
     end_routing_bucket: u32,
 ) {
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
-    let mut checked = 0usize;
-    for index in 0..LOOKUPS {
-        let key = absent_key(arm, index);
-        let routing_bucket = crate::engine::hashing::block_routing_bucket(
-            &key,
-            start_routing_bucket,
-            end_routing_bucket,
-        );
-        let bucket = shard.bucket_index.bucket_map.get(&routing_bucket);
-        match residency {
-            Residency::ResidentBucket => {
-                let bucket = bucket.unwrap_or_else(|| {
-                    panic!(
-                        "{arm}: key {key} routes to bucket {routing_bucket}, which is NOT in the \
-                         map -- this span is not measuring a resident bucket"
-                    )
-                });
-                assert!(
-                    bucket.in_memory(),
-                    "{arm}: key {key} routes to bucket {routing_bucket}, which is in the map but \
-                     NOT in memory -- this span is not measuring a resident bucket"
-                );
-                assert!(
-                    !shard.bucket_index.released_buckets.contains(&routing_bucket),
-                    "{arm}: bucket {routing_bucket} is in the released registry"
-                );
+    engine.shards.with_state(SHARD, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut checked = 0usize;
+        for index in 0..LOOKUPS {
+            let key = absent_key(arm, index);
+            let routing_bucket = crate::engine::hashing::block_routing_bucket(
+                &key,
+                start_routing_bucket,
+                end_routing_bucket,
+            );
+            let bucket = shard.bucket_index.bucket_map.get(&routing_bucket);
+            match residency {
+                Residency::ResidentBucket => {
+                    let bucket = bucket.unwrap_or_else(|| {
+                        panic!(
+                            "{arm}: key {key} routes to bucket {routing_bucket}, which is NOT in the \
+                             map -- this span is not measuring a resident bucket"
+                        )
+                    });
+                    assert!(
+                        bucket.in_memory(),
+                        "{arm}: key {key} routes to bucket {routing_bucket}, which is in the map but \
+                         NOT in memory -- this span is not measuring a resident bucket"
+                    );
+                    assert!(
+                        !shard.bucket_index.released_buckets.contains(&routing_bucket),
+                        "{arm}: bucket {routing_bucket} is in the released registry"
+                    );
+                }
+                Residency::ReleasedBucket => {
+                    let bucket = bucket.unwrap_or_else(|| {
+                        panic!(
+                            "{arm}: key {key} routes to bucket {routing_bucket}, which is NOT in the \
+                             map -- a released bucket must stay routable, so this span is measuring \
+                             the wrong thing"
+                        )
+                    });
+                    assert!(
+                        !bucket.in_memory() && bucket.meta_loaded() && !bucket.loading(),
+                        "{arm}: key {key} routes to bucket {routing_bucket}, whose residency flags do \
+                         not say released -- this span is not measuring a non-resident bucket"
+                    );
+                    assert!(
+                        shard.bucket_index.released_buckets.contains(&routing_bucket),
+                        "{arm}: bucket {routing_bucket} is not in the released registry"
+                    );
+                }
+                Residency::NoBucketAtAll => {
+                    assert!(
+                        bucket.is_none(),
+                        "{arm}: key {key} routes to bucket {routing_bucket}, which IS in the map -- \
+                         this span is not measuring a bucket that does not exist"
+                    );
+                }
             }
-            Residency::ReleasedBucket => {
-                let bucket = bucket.unwrap_or_else(|| {
-                    panic!(
-                        "{arm}: key {key} routes to bucket {routing_bucket}, which is NOT in the \
-                         map -- a released bucket must stay routable, so this span is measuring \
-                         the wrong thing"
-                    )
-                });
-                assert!(
-                    !bucket.in_memory() && bucket.meta_loaded() && !bucket.loading(),
-                    "{arm}: key {key} routes to bucket {routing_bucket}, whose residency flags do \
-                     not say released -- this span is not measuring a non-resident bucket"
-                );
-                assert!(
-                    shard.bucket_index.released_buckets.contains(&routing_bucket),
-                    "{arm}: bucket {routing_bucket} is not in the released registry"
-                );
-            }
-            Residency::NoBucketAtAll => {
-                assert!(
-                    bucket.is_none(),
-                    "{arm}: key {key} routes to bucket {routing_bucket}, which IS in the map -- \
-                     this span is not measuring a bucket that does not exist"
-                );
-            }
+            checked += 1;
         }
-        checked += 1;
-    }
-    assert_eq!(
-        LOOKUPS, checked,
-        "{arm}: the regime was checked for {checked} of {LOOKUPS} keys"
-    );
+        assert_eq!(
+            LOOKUPS, checked,
+            "{arm}: the regime was checked for {checked} of {LOOKUPS} keys"
+        );
+    });
 }
 
 /// Release every bucket on the shard, asserting that it actually happened.
@@ -383,17 +381,11 @@ fn release_everything(engine: &TemporalEngine) {
         "nothing was released ({released_buckets} buckets / {released_blocks} blocks, {refused} \
          refused), so what follows is not about a released bucket"
     );
-    let resident_blocks: usize = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        shards
-            .get(&SHARD)
-            .expect("shard is loaded")
-            .bucket_index
-            .bucket_map
-            .values()
+    let resident_blocks: usize = engine.shards.with_state(SHARD, |state| {
+        state.expect("shard is loaded").bucket_index.bucket_map.values()
             .map(|bucket| bucket.block_index.len())
             .sum()
-    };
+    });
     assert_eq!(
         0, resident_blocks,
         "{released_blocks} blocks were reported released but {resident_blocks} are still filed, so \
@@ -723,9 +715,8 @@ fn a_repeated_absent_key_is_still_not_cached_on_the_second_ask() {
     let missing = absent_key("repeat", 0);
 
     // REGIME: the key is absent and routes to a bucket that exists.
-    {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&SHARD).expect("shard is loaded");
+    engine.shards.with_state(SHARD, |state| {
+        let shard = state.expect("shard is loaded");
         assert!(
             !shard.strings().contains_key(missing.as_str()),
             "the absent probe key is in the resident map, so it is not absent"
@@ -736,7 +727,7 @@ fn a_repeated_absent_key_is_still_not_cached_on_the_second_ask() {
             shard.bucket_index.bucket_map.contains_key(&routing_bucket),
             "{missing} routes to bucket {routing_bucket}, which is not in the map"
         );
-    }
+    });
 
     let before = Work::take(&engine);
     assert_eq!(None, read_through(&engine, Route::Durable, &missing));
@@ -774,14 +765,11 @@ fn a_repeated_present_key_is_cached_on_the_first_ask_and_served_from_memory_on_t
 
     // REGIME: the key is present.
     assert!(
-        engine
-            .shards
-            .read()
-            .expect("shards lock poisoned")
-            .get(&SHARD)
-            .expect("shard is loaded")
-            .strings()
-            .contains_key(held.as_str()),
+        engine.shards.with_state(SHARD, |state| {
+            state.expect("shard is loaded")
+                .strings()
+                .contains_key(held.as_str())
+        }),
         "the present probe key is not in the resident map, so it is not present"
     );
 

@@ -523,10 +523,11 @@ fn a_warm_read_stamps_the_recency_of_the_bucket_its_key_belongs_to() {
 
     // Clear what the WRITES stamped, so what is asserted below was put there by a READ.
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("loaded shard");
-        shard.bucket_recency.clear();
-        assert!(shard.bucket_recency.is_empty());
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("loaded shard");
+            shard.bucket_recency.clear();
+            assert!(shard.bucket_recency.is_empty());
+        })
     }
 
     for name in &names {
@@ -543,22 +544,23 @@ fn a_warm_read_stamps_the_recency_of_the_bucket_its_key_belongs_to() {
         }
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("loaded shard");
-    let mut stamped: Vec<u32> = shard.bucket_recency.keys().copied().collect();
-    stamped.sort_unstable();
-    println!(
-        "  {KEYS} warm reads stamped {} buckets; the keys belong to {}",
-        stamped.len(),
-        expected.len()
-    );
-    assert_eq!(
-        stamped, expected,
-        "the buckets a read stamped are not the buckets its keys belong to. Reads stamp recency \
-         through the touched-key visitor, and nothing on the serving path reads this map back, so \
-         this is the only place a read that stopped stamping -- or stamped the wrong bucket -- \
-         is visible"
-    );
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("loaded shard");
+        let mut stamped: Vec<u32> = shard.bucket_recency.keys().copied().collect();
+        stamped.sort_unstable();
+        println!(
+            "  {KEYS} warm reads stamped {} buckets; the keys belong to {}",
+            stamped.len(),
+            expected.len()
+        );
+        assert_eq!(
+            stamped, expected,
+            "the buckets a read stamped are not the buckets its keys belong to. Reads stamp recency \
+             through the touched-key visitor, and nothing on the serving path reads this map back, so \
+             this is the only place a read that stopped stamping -- or stamped the wrong bucket -- \
+             is visible"
+        );
+    })
 }
 
 /// A WRITE STILL STAMPS ITS BUCKET TOO, THROUGH THE PRECOMPUTED VISITOR.
@@ -609,15 +611,16 @@ fn a_write_stamps_the_recency_of_the_bucket_its_key_belongs_to() {
         assert!(response.status.ok, "write: {:?}", response.status);
     }
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("loaded shard");
-    let mut stamped: Vec<u32> = shard.bucket_recency.keys().copied().collect();
-    stamped.sort_unstable();
-    assert_eq!(
-        stamped, expected,
-        "the buckets a write stamped are not the buckets its keys belong to; the owned arm of \
-         for_each_precomputed_touched_key is the one a write takes and it is not firing"
-    );
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("loaded shard");
+        let mut stamped: Vec<u32> = shard.bucket_recency.keys().copied().collect();
+        stamped.sort_unstable();
+        assert_eq!(
+            stamped, expected,
+            "the buckets a write stamped are not the buckets its keys belong to; the owned arm of \
+             for_each_precomputed_touched_key is the one a write takes and it is not firing"
+        );
+    })
 }
 
 /// THE VISITOR YIELDS EXACTLY THE KEYS THE COLLECTING FORM YIELDED, COMMAND BY COMMAND.
@@ -776,21 +779,22 @@ fn a_batched_write_stamps_the_recency_of_the_buckets_its_keys_belong_to() {
          that has nothing to do with the visitor"
     );
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("loaded shard");
-    let mut stamped: Vec<u32> = shard.bucket_recency.keys().copied().collect();
-    stamped.sort_unstable();
-    println!(
-        "  a batch of {KEYS} writes stamped {} buckets; the keys belong to {}",
-        stamped.len(),
-        expected.len()
-    );
-    assert_eq!(
-        stamped, expected,
-        "the buckets a BATCHED write stamped are not the buckets its keys belong to. This is the \
-         second of the two call sites the collecting helper was replaced at, and it is the one no \
-         test in this tree reached"
-    );
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("loaded shard");
+        let mut stamped: Vec<u32> = shard.bucket_recency.keys().copied().collect();
+        stamped.sort_unstable();
+        println!(
+            "  a batch of {KEYS} writes stamped {} buckets; the keys belong to {}",
+            stamped.len(),
+            expected.len()
+        );
+        assert_eq!(
+            stamped, expected,
+            "the buckets a BATCHED write stamped are not the buckets its keys belong to. This is the \
+             second of the two call sites the collecting helper was replaced at, and it is the one no \
+             test in this tree reached"
+        );
+    })
 }
 
 /// A READ COMMAND'S KEY IS BORROWED, NOT REBUILT.

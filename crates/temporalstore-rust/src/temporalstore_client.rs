@@ -131,6 +131,14 @@ impl ClientOptions {
         }
     }
 
+    /// Connect directly to table primaries discovered over gRPC.
+    pub fn direct(metadata_endpoint: impl Into<String>) -> Self {
+        Self {
+            meta_grpc_target: Some(metadata_endpoint.into()),
+            ..Self::default()
+        }
+    }
+
     fn http_options(&self) -> HttpRequestOptions {
         HttpRequestOptions {
             connect_timeout_ms: self.connect_timeout_ms,

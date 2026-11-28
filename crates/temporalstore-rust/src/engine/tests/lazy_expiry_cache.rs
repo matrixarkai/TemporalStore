@@ -85,13 +85,12 @@ fn assert_lazy_expiry_with_residents(trigger: Command, writes_new_field: bool, p
             ttl_ms: 250,
         },
     );
-    let deadline = {
-        let shards = engine.shards.read().unwrap();
-        *shards[&1]
+    let deadline = engine.shards.with_state(1, |shard| {
+        *shard.unwrap()
             .expires_at_ms()
             .get("due")
             .expect("deadline was recorded")
-    };
+    });
     // Keep valid legacy query entries alongside physical blocks to exercise invalidation itself.
     for field in ["a", "b"] {
         assert_eq!(
@@ -225,16 +224,15 @@ fn assert_lazy_expiry_with_residents(trigger: Command, writes_new_field: bool, p
             "expired field was visible after restart: {field}"
         );
     }
-    {
-        let shards = restored.shards.read().unwrap();
-        let row = shards[&1].bucket_index.hashes.get("due");
+    restored.shards.with_state(1, |shard| {
+        let row = shard.unwrap().bucket_index.hashes.get("due");
         for field in ["a", "b"] {
             assert!(
                 row.and_then(|row| row.get(field)).is_none(),
                 "expired field returned after restart: {field}"
             );
         }
-    }
+    });
     assert_eq!(
         run(
             &restored,
@@ -406,10 +404,12 @@ fn assert_independent_family_expiry(expire_base: bool) {
         },
     );
     let expired_key = if expire_base { "due" } else { &family_key };
-    let deadline = *engine.shards.read().unwrap()[&1]
-        .expires_at_ms()
-        .get(expired_key)
-        .unwrap();
+    let deadline = engine.shards.with_state(1, |shard| {
+        *shard.unwrap()
+            .expires_at_ms()
+            .get(expired_key)
+            .unwrap()
+    });
     for field in ["a", "b"] {
         assert_eq!(
             run(
@@ -551,10 +551,12 @@ fn lazy_expiry_is_recorded_even_when_a_selection_write_loses() {
         before,
         "a live losing write must remain a no-op"
     );
-    let deadline = *engine.shards.read().unwrap()[&1]
-        .expires_at_ms()
-        .get(family_key.as_str())
-        .unwrap();
+    let deadline = engine.shards.with_state(1, |shard| {
+        *shard.unwrap()
+            .expires_at_ms()
+            .get(family_key.as_str())
+            .unwrap()
+    });
     while now_ms() <= deadline {
         std::thread::sleep(std::time::Duration::from_millis(1));
     }
@@ -577,9 +579,9 @@ fn lazy_expiry_is_recorded_even_when_a_selection_write_loses() {
     drop(engine);
     let restored = engine_at(dir.path(), "cache-reopen");
     restored.load_shard(1);
-    assert!(!restored.shards.read().unwrap()[&1]
-        .strings()
-        .contains_key(family_key.as_str()));
+    assert!(!restored.shards.with_state(1, |shard| {
+        shard.unwrap().strings().contains_key(family_key.as_str())
+    }));
     assert_eq!(
         run(
             &restored,

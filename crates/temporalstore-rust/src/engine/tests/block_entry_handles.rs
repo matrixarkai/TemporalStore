@@ -322,45 +322,46 @@ fn is_hex_spelling_of_numbers(name: &str) -> bool {
 }
 
 fn blocks_per_object(engine: &TemporalEngine) -> BlocksPerObject {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut per_object: BTreeMap<(StoredModelKind, String), (usize, BTreeSet<String>)> =
-        BTreeMap::new();
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut measured = BlocksPerObject::default();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        let mut bucket_element_names: BTreeSet<Option<&str>> = BTreeSet::new();
-        for (handle, block) in bucket.block_index.iter() {
-            measured.blocks += 1;
-            // One member for any non-empty bucket: every entry carries the same absence.
-            bucket_element_names.insert(None::<&str>);
-            let slot = per_object
-                .entry((
-                    block.model_id(),
-                    named.at(bucket.routing_bucket, *handle).to_string(),
-                ))
-                .or_default();
-            slot.0 += 1;
-            // NO ELEMENT NAME ON THE ENTRY, so the element name columns of this census -- distinct
-            // names per object, name bytes, and the hex-spelled share of them -- are zero by
-            // construction. They are kept as columns because the arms below print them as the
-            // denominator for what a name WOULD have cost; each of those is restated where it is
-            // read.
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut per_object: BTreeMap<(StoredModelKind, String), (usize, BTreeSet<String>)> =
+            BTreeMap::new();
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut measured = BlocksPerObject::default();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            let mut bucket_element_names: BTreeSet<Option<&str>> = BTreeSet::new();
+            for (handle, block) in bucket.block_index.iter() {
+                measured.blocks += 1;
+                // One member for any non-empty bucket: every entry carries the same absence.
+                bucket_element_names.insert(None::<&str>);
+                let slot = per_object
+                    .entry((
+                        block.model_id(),
+                        named.at(bucket.routing_bucket, *handle).to_string(),
+                    ))
+                    .or_default();
+                slot.0 += 1;
+                // NO ELEMENT NAME ON THE ENTRY, so the element name columns of this census -- distinct
+                // names per object, name bytes, and the hex-spelled share of them -- are zero by
+                // construction. They are kept as columns because the arms below print them as the
+                // denominator for what a name WOULD have cost; each of those is restated where it is
+                // read.
+            }
+            *measured
+                .element_names_per_bucket
+                .entry(bucket_element_names.len())
+                .or_default() += 1;
         }
-        *measured
-            .element_names_per_bucket
-            .entry(bucket_element_names.len())
-            .or_default() += 1;
-    }
-    for ((_, object_key), (blocks, element_names)) in per_object.iter() {
-        *measured.histogram.entry(*blocks).or_default() += 1;
-        *measured
-            .element_names_per_object
-            .entry(element_names.len())
-            .or_default() += 1;
-        measured.object_key_bytes += object_key.len();
-    }
-    measured
+        for ((_, object_key), (blocks, element_names)) in per_object.iter() {
+            *measured.histogram.entry(*blocks).or_default() += 1;
+            *measured
+                .element_names_per_object
+                .entry(element_names.len())
+                .or_default() += 1;
+            measured.object_key_bytes += object_key.len();
+        }
+        measured
+    })
 }
 
 /// BLOCKS PER OBJECT IS TWO POPULATIONS, AT BOTH RANGES AND BOTH CORPUS SIZES.
@@ -585,76 +586,78 @@ const ENTRY_BYTES_A_HANDLE_SAVES: usize = 16;
 
 #[cfg(feature = "alloc-probe")]
 fn measure_object_key_table(engine: &TemporalEngine) -> TableCost {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut blocks = 0usize;
-    // Collected first, so the probe charges the TABLE and not the walk that feeds it.
-    //
-    // THE NAMES COME FROM THE LOOKUP, WHICH IS WHERE THE ALLOCATION THEY MEASURE NOW LIVES. The
-    // table this prices interns shared names; the blocks have none of their own, so the shared
-    // names the bucket's own lookup holds are the input, and that is the same set of `Arc`s the
-    // table would be fed in production.
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut names: Vec<Arc<str>> = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, _block) in bucket.block_index.iter() {
-            blocks += 1;
-            names.push(Arc::clone(named.at(bucket.routing_bucket, *handle)));
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut blocks = 0usize;
+        // Collected first, so the probe charges the TABLE and not the walk that feeds it.
+        //
+        // THE NAMES COME FROM THE LOOKUP, WHICH IS WHERE THE ALLOCATION THEY MEASURE NOW LIVES. The
+        // table this prices interns shared names; the blocks have none of their own, so the shared
+        // names the bucket's own lookup holds are the input, and that is the same set of `Arc`s the
+        // table would be fed in production.
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut names: Vec<Arc<str>> = Vec::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, _block) in bucket.block_index.iter() {
+                blocks += 1;
+                names.push(Arc::clone(named.at(bucket.routing_bucket, *handle)));
+            }
         }
-    }
-    let probe = Probe::start();
-    let mut table = CandidateTable::default();
-    for name in &names {
-        table.intern(name);
-    }
-    let counts = probe.stop();
-    let entries = table.len();
-    let resident = resident_bytes(&table);
-    // Held past the probe so nothing is freed inside the window.
-    std::hint::black_box(&table);
-    TableCost {
-        entries,
-        blocks,
-        chunk_bytes: counts.chunk_bytes,
-        request_bytes: counts.alloc_bytes,
-        allocations: counts.allocs,
-        resident_bytes: resident,
-    }
+        let probe = Probe::start();
+        let mut table = CandidateTable::default();
+        for name in &names {
+            table.intern(name);
+        }
+        let counts = probe.stop();
+        let entries = table.len();
+        let resident = resident_bytes(&table);
+        // Held past the probe so nothing is freed inside the window.
+        std::hint::black_box(&table);
+        TableCost {
+            entries,
+            blocks,
+            chunk_bytes: counts.chunk_bytes,
+            request_bytes: counts.alloc_bytes,
+            allocations: counts.allocs,
+            resident_bytes: resident,
+        }
+    })
 }
 
 #[cfg(feature = "alloc-probe")]
 fn measure_element_name_table(engine: &TemporalEngine) -> TableCost {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut blocks = 0usize;
-    let mut names: Vec<Arc<str>> = Vec::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, block) in bucket.block_index.iter() {
-            blocks += 1;
-            // NOTHING TO INTERN. This measured what a candidate intern table for element names
-            // would cost, over the names the entries held. The entries hold none, so the table
-            // has no input -- and the question it was pricing is settled more cheaply than it
-            // proposed: the name did not need interning, it needed removing, and `engine_storage_state.rs`'s pin
-            // records the sixteen bytes a block that recovered.
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut blocks = 0usize;
+        let mut names: Vec<Arc<str>> = Vec::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (_, block) in bucket.block_index.iter() {
+                blocks += 1;
+                // NOTHING TO INTERN. This measured what a candidate intern table for element names
+                // would cost, over the names the entries held. The entries hold none, so the table
+                // has no input -- and the question it was pricing is settled more cheaply than it
+                // proposed: the name did not need interning, it needed removing, and `engine_storage_state.rs`'s pin
+                // records the sixteen bytes a block that recovered.
+            }
         }
-    }
-    let probe = Probe::start();
-    let mut table = CandidateTable::default();
-    for name in &names {
-        table.intern(name);
-    }
-    let counts = probe.stop();
-    let entries = table.len();
-    let resident = resident_bytes(&table);
-    std::hint::black_box(&table);
-    TableCost {
-        entries,
-        blocks,
-        chunk_bytes: counts.chunk_bytes,
-        request_bytes: counts.alloc_bytes,
-        allocations: counts.allocs,
-        resident_bytes: resident,
-    }
+        let probe = Probe::start();
+        let mut table = CandidateTable::default();
+        for name in &names {
+            table.intern(name);
+        }
+        let counts = probe.stop();
+        let entries = table.len();
+        let resident = resident_bytes(&table);
+        std::hint::black_box(&table);
+        TableCost {
+            entries,
+            blocks,
+            chunk_bytes: counts.chunk_bytes,
+            request_bytes: counts.alloc_bytes,
+            allocations: counts.allocs,
+            resident_bytes: resident,
+        }
+    })
 }
 
 /// A HANDLE FOR `object_key` PAYS ON ONE POPULATION AND LOSES ON THE OTHER, and the break-even is
@@ -1292,38 +1295,39 @@ fn resolving_a_model_spelling_examines_no_block_index_entries() {
     seed_container_keys(&engine, 8, 100);
     seed_routed_keys(&engine, 200);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
 
-    crate::engine::state::reset_block_lookup_entries_examined();
-    let before = crate::engine::state::block_lookup_entries_examined();
-    let mut resolved = 0usize;
-    let mut folded = 0u64;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, block) in bucket.block_index.iter() {
-            // The resolution under test, folded so it cannot be optimised away.
-            let spelling = block.model_id().as_str();
-            folded = folded
-                .wrapping_mul(31)
-                .wrapping_add(spelling.len() as u64)
-                .wrapping_add(spelling.as_bytes()[0] as u64);
-            resolved += 1;
+        crate::engine::state::reset_block_lookup_entries_examined();
+        let before = crate::engine::state::block_lookup_entries_examined();
+        let mut resolved = 0usize;
+        let mut folded = 0u64;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (_, block) in bucket.block_index.iter() {
+                // The resolution under test, folded so it cannot be optimised away.
+                let spelling = block.model_id().as_str();
+                folded = folded
+                    .wrapping_mul(31)
+                    .wrapping_add(spelling.len() as u64)
+                    .wrapping_add(spelling.as_bytes()[0] as u64);
+                resolved += 1;
+            }
         }
-    }
-    let after = crate::engine::state::block_lookup_entries_examined();
+        let after = crate::engine::state::block_lookup_entries_examined();
 
-    println!(
-        "\n=== resolving a model spelling ===\n  {resolved} spellings resolved, \
-         BLOCK_LOOKUP_ENTRIES_EXAMINED {before} -> {after}, checksum {folded}"
-    );
-    assert!(resolved > 0, "no spelling was resolved, so the count below is free");
-    assert_ne!(0, folded, "the fold read nothing, so the loads may have been dropped");
-    assert_eq!(
-        before, after,
-        "resolving {resolved} model spellings moved the page-lookup counter from {before} to \
-         {after}. A spelling is supposed to be a match on one byte already inside the entry; a \
-         move here means it is going through an index"
-    );
+        println!(
+            "\n=== resolving a model spelling ===\n  {resolved} spellings resolved, \
+             BLOCK_LOOKUP_ENTRIES_EXAMINED {before} -> {after}, checksum {folded}"
+        );
+        assert!(resolved > 0, "no spelling was resolved, so the count below is free");
+        assert_ne!(0, folded, "the fold read nothing, so the loads may have been dropped");
+        assert_eq!(
+            before, after,
+            "resolving {resolved} model spellings moved the page-lookup counter from {before} to \
+             {after}. A spelling is supposed to be a match on one byte already inside the entry; a \
+             move here means it is going through an index"
+        );
+    })
 }
 
 // =================================================================================================
@@ -1352,11 +1356,10 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     // `eviction_dump_before_evict` is false would strand undumped writes with nothing to rebuild
     // them from. So the fixture dumps through the production lifecycle, which is what clears the
     // flag (`clear_dumped_bucket_dirty_state`).
-    let candidates: Vec<u32> = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let candidates: Vec<u32> = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
         shard.bucket_index.bucket_map.keys().copied().collect()
-    };
+    });
     assert!(!candidates.is_empty(), "the fixture produced no bucket to release");
     let lifecycle = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
         shard_id: 1,
@@ -1375,11 +1378,10 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     // so a fixture that fails a precondition has to say WHICH one -- otherwise it reads as a
     // release that simply had nothing to do, which is the shape that makes the comparison below
     // pass over an empty set.
-    let outcome = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard is loaded");
+    let outcome = engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard is loaded");
         crate::engine::storage_bucket_internals::release_bucket_blocks(shard, &candidates)
-    };
+    });
     println!(
         "  released {} buckets holding {} blocks, refused {}",
         outcome.released_buckets.len(),
@@ -1407,15 +1409,14 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     );
 
     for routing_bucket in &released {
-        let reloaded = {
-            let mut shards = engine.shards.write().expect("engine lock poisoned");
-            let shard = shards.get_mut(&1).expect("shard is loaded");
+        let reloaded = engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard is loaded");
             crate::engine::storage_bucket_internals::reload_released_bucket(
                 shard,
                 1,
                 *routing_bucket,
             )
-        };
+        });
         assert!(reloaded, "bucket {routing_bucket} was released and refused to reload");
     }
 
@@ -1448,23 +1449,24 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
 
 /// Every block's three names and its address identity, sorted, so two walks are comparable.
 fn block_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>, u64, u64)> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut triples: Vec<(String, String, Option<String>, u64, u64)> =
-        super::blocks_with_identity(&shard.bucket_index)
-            .into_iter()
-            .map(|(_, _, object_key, block)| {
-            (
-                block.model_id().as_str().to_string(),
-                object_key.to_string(),
-                None::<String>,
-                block.address.block_slab_id(),
-                block.address.offset(),
-            )
-        })
-        .collect();
-    triples.sort();
-    triples
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut triples: Vec<(String, String, Option<String>, u64, u64)> =
+            super::blocks_with_identity(&shard.bucket_index)
+                .into_iter()
+                .map(|(_, _, object_key, block)| {
+                (
+                    block.model_id().as_str().to_string(),
+                    object_key.to_string(),
+                    None::<String>,
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                )
+            })
+            .collect();
+        triples.sort();
+        triples
+    })
 }
 
 // =================================================================================================
@@ -2257,66 +2259,67 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
         ],
     );
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut zero_length_live = 0usize;
-    let mut nonzero_length_live = 0usize;
-    let mut deleted_blocks = 0usize;
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in bucket.block_index.iter() {
-            if block.deleted() {
-                deleted_blocks += 1;
-                continue;
-            }
-            if block.address.length() == 0 {
-                zero_length_live += 1;
-                println!(
-                    "  live zero-length block: model={} key={}",
-                    block.model_id().as_str(),
-                    named.at(bucket.routing_bucket, *handle)
-                );
-            } else {
-                nonzero_length_live += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut zero_length_live = 0usize;
+        let mut nonzero_length_live = 0usize;
+        let mut deleted_blocks = 0usize;
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in bucket.block_index.iter() {
+                if block.deleted() {
+                    deleted_blocks += 1;
+                    continue;
+                }
+                if block.address.length() == 0 {
+                    zero_length_live += 1;
+                    println!(
+                        "  live zero-length block: model={} key={}",
+                        block.model_id().as_str(),
+                        named.at(bucket.routing_bucket, *handle)
+                    );
+                } else {
+                    nonzero_length_live += 1;
+                }
             }
         }
-    }
-    let empty_length = shard.string_address("empty").map(|address| address.length());
-    let nonempty_length = shard.string_address("nonempty").map(|address| address.length());
-    println!(
-        "\n=== is `deleted` derivable from a zero length? ===\n  live zero-length \
-         {zero_length_live}, live non-zero {nonzero_length_live}, delete-marked {deleted_blocks}\n  \
-         model-map lengths: empty value {empty_length:?}, 32-byte value {nonempty_length:?}"
-    );
+        let empty_length = shard.string_address("empty").map(|address| address.length());
+        let nonempty_length = shard.string_address("nonempty").map(|address| address.length());
+        println!(
+            "\n=== is `deleted` derivable from a zero length? ===\n  live zero-length \
+             {zero_length_live}, live non-zero {nonzero_length_live}, delete-marked {deleted_blocks}\n  \
+             model-map lengths: empty value {empty_length:?}, 32-byte value {nonempty_length:?}"
+        );
 
-    // --- The fixture must have reached both writes, or the contrast is free. ---
-    assert_eq!(
-        2,
-        zero_length_live + nonzero_length_live,
-        "the fixture is supposed to produce exactly two live blocks and produced {}",
-        zero_length_live + nonzero_length_live
-    );
-    let empty_length = empty_length.expect("the empty write must have produced a block");
+        // --- The fixture must have reached both writes, or the contrast is free. ---
+        assert_eq!(
+            2,
+            zero_length_live + nonzero_length_live,
+            "the fixture is supposed to produce exactly two live blocks and produced {}",
+            zero_length_live + nonzero_length_live
+        );
+        let empty_length = empty_length.expect("the empty write must have produced a block");
 
-    // --- THE MEASURED FACT, which refutes the hypothesis this test was written for. ---
-    assert!(
-        empty_length > 0,
-        "an empty value produced a block of length {empty_length}. This test exists because a \
-         zero-length LIVE block would block the `length == 0` tombstone encoding, and the empty \
-         write is the route most likely to produce one -- if it ever does, the tombstone is \
-         unavailable and `deleted` must keep its bit"
-    );
-    assert_eq!(
-        0, zero_length_live,
-        "{zero_length_live} live blocks carry length 0. On this route none should: the block record \
-         carries a header. A live zero-length block here means the tombstone encoding is blocked"
-    );
-    println!(
-        "  FINDING: the shortest live block this route produces is {empty_length} B, so an empty \
-         value does NOT block a `length == 0` tombstone. That bounds one route, not the class -- \
-         `address_footprint::the_capacity_ceilings_each_narrowing_would_impose` asks it over a \
-         wide fixture, and `length` lives in `ElementEntry`, which another thread owns."
-    );
+        // --- THE MEASURED FACT, which refutes the hypothesis this test was written for. ---
+        assert!(
+            empty_length > 0,
+            "an empty value produced a block of length {empty_length}. This test exists because a \
+             zero-length LIVE block would block the `length == 0` tombstone encoding, and the empty \
+             write is the route most likely to produce one -- if it ever does, the tombstone is \
+             unavailable and `deleted` must keep its bit"
+        );
+        assert_eq!(
+            0, zero_length_live,
+            "{zero_length_live} live blocks carry length 0. On this route none should: the block record \
+             carries a header. A live zero-length block here means the tombstone encoding is blocked"
+        );
+        println!(
+            "  FINDING: the shortest live block this route produces is {empty_length} B, so an empty \
+             value does NOT block a `length == 0` tombstone. That bounds one route, not the class -- \
+             `address_footprint::the_capacity_ceilings_each_narrowing_would_impose` asks it over a \
+             wide fixture, and `length` lives in `ElementEntry`, which another thread owns."
+        );
+    })
 }
 
 // =================================================================================================
