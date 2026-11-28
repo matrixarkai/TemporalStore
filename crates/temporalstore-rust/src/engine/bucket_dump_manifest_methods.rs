@@ -1070,6 +1070,11 @@ impl TemporalEngine {
                 "slot dump manifest block segment ids must be sorted and unique",
             ));
         }
+        let qualified_tombstones = if manifest.version >= 3 {
+            Some(qualify_image_tombstones(&restored)?)
+        } else {
+            None
+        };
         let all_live_block_entries = collect_live_block_entries(&restored);
         // The slabs the WHOLE embedded index needs, which is what `block_slab_ids` now carries and
         // what the collector holds back. Taken off the same walk the per-bucket entries below come
@@ -1140,7 +1145,7 @@ impl TemporalEngine {
                 ),
             ));
         }
-        if manifest.version >= 3 {
+        if let Some(qualified_tombstones) = qualified_tombstones.as_ref() {
             let expected_object_lifecycle = storage_object_lifecycle_report_for_buckets(
                 manifest.shard_id,
                 &restored,
@@ -1151,11 +1156,12 @@ impl TemporalEngine {
             // consistent index the two agree; a manifest whose model maps disagree
             // with its bucket index (e.g. a tampered object_id that the bucket-index
             // derivation alone would miss) is rejected.
-            let model_object_lifecycle = storage_object_lifecycle_report_for_buckets_from_model_maps(
+            let model_object_lifecycle = storage_object_lifecycle_report_for_buckets_from_model_maps_and_tombstones(
                 manifest.shard_id,
                 &restored,
                 &manifest_buckets,
                 |key| self.routing_bucket_for_key(manifest.shard_id, key),
+                qualified_tombstones,
             );
             if manifest.object_lifecycle != expected_object_lifecycle
                 || manifest.object_lifecycle != model_object_lifecycle

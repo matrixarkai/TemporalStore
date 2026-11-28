@@ -92,6 +92,87 @@ pub(super) fn storage_object_lifecycle_report_for_buckets_from_model_maps(
     )
 }
 
+pub(super) struct QualifiedTombstoneEntries {
+    entries: Vec<LiveBlockEntry>,
+    filed: HashMap<Arc<str>, u32>,
+}
+
+/// Validate the row identity while the decoded image still holds both sides.
+/// Reuse the model report's filing pass; clone only actual deletion carriers.
+pub(super) fn qualify_image_tombstones(shard: &ShardState) -> Result<QualifiedTombstoneEntries, Status> {
+    let identities = shard.bucket_index.block_identities();
+    let mut qualified = QualifiedTombstoneEntries { entries: Vec::new(), filed: HashMap::new() };
+    for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+        let bad = |reason: &str| Status::error(
+            "slot_dump_tombstone_identity_mismatch",
+            format!("bucket {routing_bucket}: {reason}"),
+        );
+        let mut rows = BTreeMap::new();
+        let mut names = BTreeSet::<(&str, &str, &str)>::new();
+        for row in bucket.tombstone_elements.iter() {
+            if !names.insert((row.model_id.as_str(), row.object_key.as_ref(), row.element_name.as_ref()))
+                || rows.insert(row.block, row).is_some()
+            {
+                return Err(bad("ambiguous named deletion carrier"));
+            }
+        }
+        for (handle, block) in bucket.block_index.iter() {
+            if !block.deleted() {
+                if let Some(named) = identities.identity_of(bucket, *handle, block) {
+                    qualified.filed.insert(Arc::clone(named.object_key), *routing_bucket);
+                }
+                continue;
+            }
+            let key = super::state::tombstone_block_key(&block.address);
+            let row = rows.remove(&key).ok_or_else(|| bad("deleted block has no unique named row"))?;
+            if bucket.routing_bucket != *routing_bucket || row.model_id != block.model_id() {
+                return Err(bad("named row does not match deleted block model or filing"));
+            }
+            qualified.filed.insert(Arc::clone(&row.object_key), *routing_bucket);
+            qualified.entries.push(LiveBlockEntry {
+                object_key: Arc::clone(&row.object_key),
+                kind: block.model_id(),
+                element_name: Some(row.element_name.to_string()),
+                address: block.address.clone(),
+                dirty: block.dirty(),
+                deleted: true,
+                log_backed: block.log_backed(),
+                filed_routing_bucket: *routing_bucket,
+                filing_is_known: true,
+            });
+        }
+        if !rows.is_empty() {
+            return Err(bad("named row has no deleted block in its filed bucket"));
+        }
+    }
+    Ok(qualified)
+}
+
+/// Model maps describe live members; the image also retains named deletion carriers.
+/// Keep those exact indexed rows without substituting indexed live rows for the model check.
+pub(super) fn storage_object_lifecycle_report_for_buckets_from_model_maps_and_tombstones(
+    shard_id: ShardId,
+    shard: &ShardState,
+    selected_buckets: &BTreeSet<u32>,
+    routing_bucket_for_key: impl Fn(&str) -> u32,
+    tombstones: &QualifiedTombstoneEntries,
+) -> StorageObjectLifecycleReport {
+    let mut entries = collect_model_live_block_entries(shard);
+    entries.extend(tombstones.entries.iter().cloned());
+    object_lifecycle_report_from_entries(
+        shard_id,
+        shard,
+        entries,
+        selected_buckets,
+        |key| {
+            tombstones.filed
+                .get(key)
+                .copied()
+                .unwrap_or_else(|| routing_bucket_for_key(key))
+        },
+    )
+}
+
 #[derive(Default)]
 pub(super) struct ObjectLifecycleAccumulator {
     owners: BTreeMap<u64, u64>,
@@ -166,6 +247,145 @@ mod lifecycle_accumulator_tests {
         assert_eq!(report.live_block_refs, terms.len() as u64);
         assert_eq!(report.reused_object_ids, conflicts);
         assert_eq!(report.reused_object_id_conflicts, 2);
+    }
+
+    #[test]
+    fn model_lifecycle_includes_deleted_carriers_without_hiding_missing_live_models() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            1 << 20, dir.path().join("cache"), dir.path().join("blocks"),
+            dir.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        assert!(engine.set_config(SetConfigRequest {
+            shard_id: 1,
+            config: Config { version: 2, async_storage: false, ..Config::default() },
+        }).ok);
+        for command in [
+            Command::SetAdd { key: "install-prefix".into(), member: b"kept".to_vec() },
+            Command::SetAdd { key: "install-removed".into(), member: b"gone".to_vec() },
+            Command::SetRemove { key: "install-removed".into(), member: b"gone".to_vec() },
+            Command::StringSet { key: "install-inline".into(), value: b"kept-inline".to_vec() },
+        ] {
+            assert!(engine.execute(ExecuteRequest { shard_id: 1, command }).status.ok);
+        }
+        let inline_bucket = engine.routing_bucket_for_key(1, "install-inline");
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.unwrap();
+            let release = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(
+                shard, &[inline_bucket],
+            );
+            assert_eq!(release.released_buckets, vec![inline_bucket]);
+        });
+        let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
+        assert_eq!(manifest.object_lifecycle.live_object_ids, 3);
+        assert_eq!(manifest.object_lifecycle.live_block_refs, 3);
+        engine.validate_bucket_dump_manifest(&manifest).unwrap();
+        let mut image = decode_index_bytes(
+            installable_image(&manifest).unwrap(),
+        ).unwrap();
+        rebuild_unserialized_model_maps_from_bucket_index(&mut image);
+        let indexed = collect_live_block_entries(&image);
+        assert_eq!(indexed.iter().filter(|entry| entry.deleted).count(), 1);
+        assert!(indexed.iter().any(|entry| entry.deleted && entry.object_key.as_ref() == "install-removed"));
+        let model = collect_model_live_block_entries(&image);
+        assert_eq!(model.len(), 2);
+        assert!(model.iter().any(|entry| entry.object_key.as_ref() == "install-inline"));
+        assert!(!model.iter().any(|entry| entry.object_key.as_ref() == "install-removed"));
+        let selected = BTreeSet::new();
+        let route = |key: &str| engine.routing_bucket_for_key(1, key);
+        let expected = storage_object_lifecycle_report_for_buckets(1, &image, &selected, route);
+        assert_eq!(expected, manifest.object_lifecycle);
+        let tombstones = qualify_image_tombstones(&image).unwrap();
+        let complete = storage_object_lifecycle_report_for_buckets_from_model_maps_and_tombstones(
+            1, &image, &selected, route, &tombstones,
+        );
+        assert_eq!(complete, expected);
+        let carrier = indexed.iter().find(|entry| entry.deleted).unwrap();
+        let carrier_bucket = carrier.filed_bucket().unwrap();
+        let original_rows = image.bucket_index.bucket_map.get(&carrier_bucket).unwrap()
+            .tombstone_elements.iter().cloned().collect::<Vec<_>>();
+        assert_eq!(original_rows.len(), 1);
+        assert_eq!(original_rows[0].model_id, storage_bucket_internals::stored_model_kind("set"));
+
+        // Change only the already encoded row field, not the block keys the shard encoder derives.
+        // This also permits a missing-row image which the normal writer correctly refuses to emit.
+        fn reseal_rows(
+            manifest: &BucketDumpManifest,
+            original: &[TombstoneElement],
+            replacement: &[TombstoneElement],
+        ) -> BucketDumpManifest {
+            let header = INDEX_CONTAINER_MAGIC.len() + 1 + INDEX_BINARY_VERSION_BYTES;
+            assert_eq!(manifest.index_bytes[INDEX_CONTAINER_MAGIC.len()], INDEX_CODEC_ZSTD_MSGPACK);
+            let payload = zstd::stream::decode_all(&manifest.index_bytes[header..]).unwrap();
+            let field = rmp_serde::to_vec_named(&"tombstone_elements").unwrap();
+            let mut needle = field.clone();
+            needle.extend(rmp_serde::to_vec_named(&original).unwrap());
+            let positions = payload.windows(needle.len()).enumerate()
+                .filter_map(|(index, bytes)| (bytes == needle.as_slice()).then_some(index))
+                .collect::<Vec<_>>();
+            assert_eq!(positions.len(), 1, "the actual image must contain exactly this row field");
+            let at = positions[0];
+            let mut changed = payload[..at].to_vec();
+            changed.extend(field);
+            changed.extend(rmp_serde::to_vec_named(&replacement).unwrap());
+            changed.extend_from_slice(&payload[at + needle.len()..]);
+            let mut bad = manifest.clone();
+            bad.index_bytes = manifest.index_bytes[..header].to_vec();
+            bad.index_bytes.extend(zstd::stream::encode_all(changed.as_slice(), INDEX_ZSTD_LEVEL).unwrap());
+            bad.index_sha256 = sha256_hex_bytes(&bad.index_bytes);
+            bad.dump_generation_id = bucket_dump_generation_id(&bad);
+            bad.checksum = bucket_dump_manifest_checksum(&bad).unwrap();
+            bad
+        }
+
+        let mut wrong_model = original_rows.clone();
+        wrong_model[0].model_id = storage_bucket_internals::stored_model_kind("hash");
+        let bad_model = reseal_rows(&manifest, &original_rows, &wrong_model);
+        let decoded_bad = decode_index_bytes(&bad_model.index_bytes).unwrap();
+        let bad_bucket = decoded_bad.bucket_index.bucket_map.get(&carrier_bucket).unwrap();
+        assert_eq!(bad_bucket.tombstone_elements.iter().next().unwrap().model_id,
+            storage_bucket_internals::stored_model_kind("hash"));
+        assert_eq!(bad_bucket.block_index.values().find(|block| block.deleted()).unwrap().model_id(),
+            storage_bucket_internals::stored_model_kind("set"), "the actual block must not follow the altered row");
+        let mut unqualified = collect_model_live_block_entries(&decoded_bad);
+        unqualified.extend(collect_live_block_entries(&decoded_bad).into_iter().filter(|entry| entry.deleted));
+        assert_eq!(object_lifecycle_report_from_entries(1, &decoded_bad, unqualified, &selected, route),
+            expected, "the old counts-only exception must actually collide for this negative control");
+        assert_eq!(engine.validate_bucket_dump_manifest(&bad_model).unwrap_err().code,
+            "slot_dump_tombstone_identity_mismatch");
+
+        let missing = reseal_rows(&manifest, &original_rows, &[]);
+        let decoded_missing = decode_index_bytes(&missing.index_bytes).unwrap();
+        assert!(decoded_missing.bucket_index.bucket_map.get(&carrier_bucket).unwrap().tombstone_elements.is_empty());
+        assert_eq!(engine.validate_bucket_dump_manifest(&missing).unwrap_err().code,
+            "slot_dump_tombstone_identity_mismatch", "a missing row must be refused before a walk can omit its block");
+        let mut ambiguous = original_rows.clone();
+        let mut competing = original_rows[0].clone();
+        competing.element_name = Arc::from("another-element");
+        ambiguous.push(competing);
+        let bad_ambiguity = reseal_rows(&manifest, &original_rows, &ambiguous);
+        assert_eq!(decode_index_bytes(&bad_ambiguity.index_bytes).unwrap().bucket_index.bucket_map
+            .get(&carrier_bucket).unwrap().tombstone_elements.len(), 2);
+        assert_eq!(engine.validate_bucket_dump_manifest(&bad_ambiguity).unwrap_err().code,
+            "slot_dump_tombstone_identity_mismatch");
+
+        let mut clean = image.clone();
+        let mut bucket = clean.bucket_index.bucket_map.get_mut(&carrier_bucket).unwrap();
+        let handle = *bucket.block_index.iter().find(|(_, block)| block.deleted()).unwrap().0;
+        bucket.block_index.get_mut(&handle).unwrap().set_dirty(false);
+        drop(bucket);
+        let clean_tombstones = qualify_image_tombstones(&clean).unwrap();
+        assert!(clean_tombstones.entries.iter().all(|entry| !entry.dirty));
+        assert_eq!(storage_object_lifecycle_report_for_buckets_from_model_maps_and_tombstones(
+            1, &clean, &selected, route, &clean_tombstones,
+        ), expected, "a clean persisted deletion carrier has the same identity");
+        image.bucket_index.sets = Default::default();
+        let still_qualified = qualify_image_tombstones(&image).unwrap();
+        let missing_live = storage_object_lifecycle_report_for_buckets_from_model_maps_and_tombstones(
+            1, &image, &selected, route, &still_qualified,
+        );
+        assert_ne!(missing_live, expected, "indexed live blocks must not repair a missing model row");
     }
 }
 

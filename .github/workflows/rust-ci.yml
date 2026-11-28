@@ -216,7 +216,7 @@ jobs:
           done
           [ "$passed_tests" -eq 2 ] || { echo '::error::expected both scalar pressure and dirty backlog tests to execute and pass'; exit 1; }
 
-      - name: cargo test (qualified owner retirement and recovery, sixteen named tests, hard gate)
+      - name: cargo test (qualified owner retirement and recovery, seventeen named tests, hard gate)
         timeout-minutes: 40
         run: |
           set -euo pipefail
@@ -238,7 +238,8 @@ jobs:
             engine::bucket_dump_manifest_methods::qualified_empty_owner_tests::legacy32_header_cannot_mint_authority_from_an_added_payload_field \
             engine::bucket_dump_manifest_methods::qualified_reload_source_tests::range_reload_invalidates_before_actual_new_range_writes_and_stays_unknown_on_reopen \
             engine::bucket_dump_manifest_methods::qualified_reload_source_tests::unchanged_range_and_rejected_reload_do_not_wait_for_owner_or_revoke_authority \
-            engine::bucket_dump_manifest_methods::qualified_reload_source_tests::range_reload_while_publication_is_parked_keeps_the_prepared_empty_owner_pending
+            engine::bucket_dump_manifest_methods::qualified_reload_source_tests::range_reload_while_publication_is_parked_keeps_the_prepared_empty_owner_pending \
+            engine::storage_reporting::lifecycle_accumulator_tests::model_lifecycle_includes_deleted_carriers_without_hiding_missing_live_models
           do
             cargo test --locked --release -p temporalstore-rust --lib "$t" \
               -- --exact --include-ignored --test-threads=1 --color never 2>&1 | tee /tmp/qualified-owner-release-gate.log
@@ -255,7 +256,7 @@ jobs:
             fi
             passed_tests=$((passed_tests + 1))
           done
-          [ "$passed_tests" -eq 16 ] || { echo '::error::expected all sixteen retirement and recovery tests to execute and pass'; exit 1; }
+          [ "$passed_tests" -eq 17 ] || { echo '::error::expected all seventeen retirement and recovery tests to execute and pass'; exit 1; }
 
       - name: cargo test (selected owner routing and authority, twelve named tests, hard gate)
         timeout-minutes: 30
