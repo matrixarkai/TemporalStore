@@ -196,77 +196,78 @@ fn what_a_block_address_costs_per_record_at_two_ranges_and_two_corpus_sizes() {
             #[cfg(feature = "alloc-probe")]
             let counts = probe.stop();
 
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
-            let addresses = count_addresses(shard);
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard is loaded");
+                let addresses = count_addresses(shard);
 
-            // --- Denominators, asserted before anything divides by them. ---
-            assert_eq!(
-                addresses.model_map, records,
-                "denominator: the shard must hold every record seeded"
-            );
-            assert!(
-                addresses.buckets > 0,
-                "denominator: no routing buckets, so every per-bucket figure is meaningless"
-            );
-            assert!(
-                addresses.block_entries > 0,
-                "denominator: no block-index entries, so there are no addresses to measure"
-            );
-
-            println!("\n--- {range_label}, {records} records ---");
-            println!(
-                "  buckets={} block entries={} model-map addresses={} addresses total={}",
-                addresses.buckets,
-                addresses.block_entries,
-                addresses.model_map,
-                addresses.total()
-            );
-            report_histogram("blocks per bucket", &addresses.blocks_per_bucket);
-
-            let address_bytes = width * addresses.total();
-            let per_record = address_bytes as f64 / records as f64;
-            println!(
-                "  addresses: {address_bytes} B resident, {per_record:.2} B/record at \
-                 {width} B each"
-            );
-            #[cfg(feature = "alloc-probe")]
-            {
-                println!(
-                    "  seed allocations: {} calls, REQUEST {} B ({:.2} B/record), CHUNK {} B \
-                     ({:.2} B/record), chunk/request {:.4}",
-                    counts.allocs,
-                    counts.alloc_bytes,
-                    counts.alloc_bytes as f64 / records as f64,
-                    counts.chunk_bytes,
-                    counts.chunk_bytes as f64 / records as f64,
-                    counts.chunk_bytes as f64 / counts.alloc_bytes.max(1) as f64,
+                // --- Denominators, asserted before anything divides by them. ---
+                assert_eq!(
+                    addresses.model_map, records,
+                    "denominator: the shard must hold every record seeded"
                 );
                 assert!(
-                    counts.chunk_bytes >= counts.alloc_bytes,
-                    "the chunk column read BELOW the request column, which cannot happen if it \
-                     is reading malloc_usable_size -- the instrument is not what it says"
+                    addresses.buckets > 0,
+                    "denominator: no routing buckets, so every per-bucket figure is meaningless"
                 );
-            }
+                assert!(
+                    addresses.block_entries > 0,
+                    "denominator: no block-index entries, so there are no addresses to measure"
+                );
 
-            rows.push((
-                format!("{range_label} / {records}"),
-                addresses.total(),
-                address_bytes,
-                per_record,
-            ));
+                println!("\n--- {range_label}, {records} records ---");
+                println!(
+                    "  buckets={} block entries={} model-map addresses={} addresses total={}",
+                    addresses.buckets,
+                    addresses.block_entries,
+                    addresses.model_map,
+                    addresses.total()
+                );
+                report_histogram("blocks per bucket", &addresses.blocks_per_bucket);
 
-            // THE CONTROL ON THE EXPLANATION. The mechanism is "this structure is numerous, so
-            // its width multiplies by the record count". Where it does NOT apply, the effect
-            // must be absent: the slab descriptor is 168 bytes and there is ONE of it for a
-            // whole store, so its resident cost per record FALLS as the corpus grows while the
-            // address's stays flat. A change to the address width that moved this number would
-            // be measuring something other than the address.
-            let descriptors = shard.bucket_index.bucket_map.len().min(1);
-            assert!(
-                descriptors <= 1,
-                "the control is supposed to be a structure there is at most one of"
-            );
+                let address_bytes = width * addresses.total();
+                let per_record = address_bytes as f64 / records as f64;
+                println!(
+                    "  addresses: {address_bytes} B resident, {per_record:.2} B/record at \
+                     {width} B each"
+                );
+                #[cfg(feature = "alloc-probe")]
+                {
+                    println!(
+                        "  seed allocations: {} calls, REQUEST {} B ({:.2} B/record), CHUNK {} B \
+                         ({:.2} B/record), chunk/request {:.4}",
+                        counts.allocs,
+                        counts.alloc_bytes,
+                        counts.alloc_bytes as f64 / records as f64,
+                        counts.chunk_bytes,
+                        counts.chunk_bytes as f64 / records as f64,
+                        counts.chunk_bytes as f64 / counts.alloc_bytes.max(1) as f64,
+                    );
+                    assert!(
+                        counts.chunk_bytes >= counts.alloc_bytes,
+                        "the chunk column read BELOW the request column, which cannot happen if it \
+                         is reading malloc_usable_size -- the instrument is not what it says"
+                    );
+                }
+
+                rows.push((
+                    format!("{range_label} / {records}"),
+                    addresses.total(),
+                    address_bytes,
+                    per_record,
+                ));
+
+                // THE CONTROL ON THE EXPLANATION. The mechanism is "this structure is numerous, so
+                // its width multiplies by the record count". Where it does NOT apply, the effect
+                // must be absent: the slab descriptor is 168 bytes and there is ONE of it for a
+                // whole store, so its resident cost per record FALLS as the corpus grows while the
+                // address's stays flat. A change to the address width that moved this number would
+                // be measuring something other than the address.
+                let descriptors = shard.bucket_index.bucket_map.len().min(1);
+                assert!(
+                    descriptors <= 1,
+                    "the control is supposed to be a structure there is at most one of"
+                );
+            })
         }
     }
 

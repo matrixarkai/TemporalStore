@@ -873,29 +873,30 @@ fn base_index_on_disk(dir: &Path) -> u64 {
 /// per-bucket term divides by one object. That is a different index shape and a figure taken there
 /// does not travel.
 fn assert_amortised_regime(engine: &TemporalEngine, objects: usize) -> f64 {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("the shard is loaded");
-    let buckets = shard.bucket_index.bucket_map.len();
-    let held = shard.strings().len();
-    assert_eq!(
-        held, objects,
-        "FIXTURE: the arm acked {objects} object(s) and the index holds {held}, so the \
-         denominator every figure is taken against is not the corpus"
-    );
-    assert!(
-        buckets <= SHIPPED_BUCKETS,
-        "FIXTURE: the index holds {buckets} bucket(s), above the {SHIPPED_BUCKETS} the shipped \
-         range 0..{SHIPPED_END_BUCKET} can hold -- this arm is not on the shipped range"
-    );
-    let per_bucket = held as f64 / buckets as f64;
-    assert!(
-        per_bucket > 1.5,
-        "FIXTURE: {held} object(s) over {buckets} bucket(s) is {per_bucket:.2} per bucket. The \
-         amortised regime this module reports in needs objects to SHARE buckets; at one per bucket \
-         every per-bucket term divides by one object, which is the unbounded range \
-         0..u32::MAX and not what a deployment runs"
-    );
-    per_bucket
+    engine.shards.with_state(SHARD, |shard_state| {
+        let shard = shard_state.expect("the shard is loaded");
+        let buckets = shard.bucket_index.bucket_map.len();
+        let held = shard.strings().len();
+        assert_eq!(
+            held, objects,
+            "FIXTURE: the arm acked {objects} object(s) and the index holds {held}, so the \
+             denominator every figure is taken against is not the corpus"
+        );
+        assert!(
+            buckets <= SHIPPED_BUCKETS,
+            "FIXTURE: the index holds {buckets} bucket(s), above the {SHIPPED_BUCKETS} the shipped \
+             range 0..{SHIPPED_END_BUCKET} can hold -- this arm is not on the shipped range"
+        );
+        let per_bucket = held as f64 / buckets as f64;
+        assert!(
+            per_bucket > 1.5,
+            "FIXTURE: {held} object(s) over {buckets} bucket(s) is {per_bucket:.2} per bucket. The \
+             amortised regime this module reports in needs objects to SHARE buckets; at one per bucket \
+             every per-bucket term divides by one object, which is the unbounded range \
+             0..u32::MAX and not what a deployment runs"
+        );
+        per_bucket
+    })
 }
 
 /// Least-squares slope of `y` against `x`.

@@ -48,7 +48,9 @@ pub struct SequenceFeatureRow {
 
 impl SequenceFeatureRow {
     pub fn encode_feature_proto_value(&self) -> Vec<u8> {
-        let mut out = Vec::new();
+        // THE LARGEST THIS ROW CAN ENCODE TO (four fields, a tag and a varint each: 11 + 6 + 6 + 11
+        // bytes), so the buffer is allocated once. An empty `Vec` grew 8, 16, 32 for a typical row.
+        let mut out = Vec::with_capacity(34);
         encode_varint_field(&mut out, 1, self.gid);
         encode_varint_field(&mut out, 2, self.action_type as u64);
         encode_varint_field(&mut out, 3, self.duration as u64);
@@ -132,6 +134,53 @@ pub enum FeatureWritePolicy {
     /// violation is refused at validation, before anything is written, exactly as `Block` is.
     #[serde(alias = "MERGE_REDUCE", alias = "merge")]
     MergeReduce,
+}
+
+/// A reducer for [`Command::FeatureReduceQuery`], its parameters carried in fields so nothing is
+/// parsed out of a name. Each answer is an integer: a fractional result is multiplied by the
+/// query's `scale` and then rounded by its `rounding`. A window with nothing to reduce answers `0`,
+/// as the name-based aggregate does.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(tag = "reducer", rename_all = "snake_case")]
+pub enum FeatureReducer {
+    /// The mean of the numeric points.
+    Mean,
+    /// Population variance, or the sample variance (n - 1) when `sample` is set.
+    Variance { sample: bool },
+    /// The square root of the variance above.
+    StdDev { sample: bool },
+    /// The sum of `value * 0.5^(age / half_life_ms)`, with `age = as_of_ms - timestamp`.
+    DecayedSum { half_life_ms: u64, as_of_ms: u64 },
+    /// An exponentially weighted moving average over ascending timestamps; `alpha` is in (0, 1].
+    Ewma { alpha: f64 },
+    /// The sum of the window per second of the window.
+    Rate,
+    /// The share of points whose value is at least `at_least`.
+    Ratio { at_least: i64 },
+    /// The lower bound of the Wilson interval at `z` standard deviations for the points whose
+    /// value is at least `at_least`, out of all points.
+    Wilson { at_least: i64, z: f64 },
+    /// The dot product of the newest `weights.len()` points (oldest first) with `weights`; a
+    /// window with fewer points answers `0`. At most `MAX_REDUCER_WEIGHTS` weights.
+    Weighted { weights: Vec<f64> },
+}
+
+/// How a fractional answer becomes an integer.
+#[derive(Debug, Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FeatureRounding {
+    Floor,
+    Ceil,
+    /// Halves round away from zero.
+    #[default]
+    Nearest,
+}
+
+/// The most weights a `Weighted` reducer carries.
+pub const MAX_REDUCER_WEIGHTS: usize = 64;
+
+fn default_reduce_scale() -> u64 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1166,7 +1215,15 @@ pub trait ContextWire: Sized + Serialize + for<'de> Deserialize<'de> {
 
 impl ContextWire for ContextNode {
     fn encode_context_proto_value(&self) -> Vec<u8> {
-        let mut out = Vec::new();
+        // SIZED ONCE, from what the node holds: the fixed fields (at most 11 bytes each, a dozen of
+        // them), the two strings with their length prefixes, and four bytes an element of each
+        // vector, which is the widest either encoding writes. A bound and not a measurement: an
+        // empty `Vec` grew four or five times for an ordinary node, and each step copied.
+        let mut out = Vec::with_capacity(
+            136 + self.canonical_name.len()
+                + self.l0.len()
+                + 4 * (self.vector.len() + self.summary_vector.len()),
+        );
         encode_varint_field(&mut out, 1, self.node_hash);
         encode_varint_field(&mut out, 2, self.parent_hash);
         encode_varint_field(&mut out, 3, u64::from(self.kind));
@@ -1294,7 +1351,9 @@ impl ContextWire for ContextNode {
 
 impl ContextWire for ContextEvent {
     fn encode_context_proto_value(&self) -> Vec<u8> {
-        let mut out = Vec::new();
+        // SIZED ONCE, as the node's is: the fixed fields, the text with its length prefix and four
+        // bytes an element of the vector.
+        let mut out = Vec::with_capacity(96 + self.text.len() + 4 * self.vector.len());
         encode_varint_field(&mut out, 1, self.event_id_hash);
         encode_varint_field(&mut out, 2, self.event_time_ms);
         encode_varint_field(&mut out, 3, u64::from(self.event_type_code()));
@@ -2189,6 +2248,22 @@ pub enum Command {
         start_ms: u64,
         end_ms: u64,
         aggregator: String,
+        #[serde(default)]
+        count: Option<usize>,
+    },
+    /// The window's numeric points under a typed reducer. `count` caps the points read, from the
+    /// oldest, exactly as it does for `FeatureAggQuery`.
+    FeatureReduceQuery {
+        key: String,
+        start_ms: u64,
+        end_ms: u64,
+        reducer: FeatureReducer,
+        #[serde(default)]
+        rounding: FeatureRounding,
+        /// A fractional answer is multiplied by this before rounding, so `1_000_000` reads a
+        /// share as parts per million. At least 1.
+        #[serde(default = "default_reduce_scale")]
+        scale: u64,
         #[serde(default)]
         count: Option<usize>,
     },

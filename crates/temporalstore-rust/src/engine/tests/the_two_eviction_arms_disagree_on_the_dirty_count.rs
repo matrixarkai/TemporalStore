@@ -82,26 +82,27 @@ fn blocks_and_objects(
     std::collections::BTreeMap<u32, u64>,
     std::collections::BTreeMap<u32, u64>,
 ) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
-    let mut blocks: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
-    for (bucket_id, bucket) in shard.bucket_index.bucket_map.iter() {
-        let n = bucket
-            .block_index
-            .values()
-            .filter(|block| !block.deleted() && block.dirty())
-            .count() as u64;
-        if n > 0 {
-            blocks.insert(*bucket_id, n);
+    engine.shards.with_state(SHARD, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut blocks: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+        for (bucket_id, bucket) in shard.bucket_index.bucket_map.iter() {
+            let n = bucket
+                .block_index
+                .values()
+                .filter(|block| !block.deleted() && block.dirty())
+                .count() as u64;
+            if n > 0 {
+                blocks.insert(*bucket_id, n);
+            }
         }
-    }
-    let objects: std::collections::BTreeMap<u32, u64> = shard
-        .dirty_objects
-        .bucket_counts()
-        .into_iter()
-        .map(|(bucket_id, count)| (bucket_id, count as u64))
-        .collect();
-    (blocks, objects)
+        let objects: std::collections::BTreeMap<u32, u64> = shard
+            .dirty_objects
+            .bucket_counts()
+            .into_iter()
+            .map(|(bucket_id, count)| (bucket_id, count as u64))
+            .collect();
+        (blocks, objects)
+    })
 }
 
 #[test]

@@ -52,23 +52,25 @@ fn read(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
 }
 
 fn address_of(engine: &TemporalEngine, key: &str) -> ElementEntry {
-    let shards = engine.shards_write_marked();
-    shards.get(&1).unwrap().string_address(key).expect("the key has a block")
+    engine.shards.with_state(1, |shard| {
+        shard.unwrap().string_address(key).expect("the key has a block")
+    })
 }
 
 /// The index item the write path would log for this string's current block.
 fn string_item(engine: &TemporalEngine, key: &str) -> IndexItem {
-    let shards = engine.shards_write_marked();
-    let shard = shards.get(&1).unwrap();
-    let mut items = crate::engine::collect_upsert_index_items(
-        shard,
-        1,
-        &[("string", key.to_string(), None)],
-        0,
-        u32::MAX,
-    );
-    assert_eq!(items.len(), 1, "the string {key} names one block");
-    items.remove(0)
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.unwrap();
+        let mut items = crate::engine::collect_upsert_index_items(
+            shard,
+            1,
+            &[("string", key.to_string(), None)],
+            0,
+            u32::MAX,
+        );
+        assert_eq!(items.len(), 1, "the string {key} names one block");
+        items.remove(0)
+    })
 }
 
 /// Copy the block `from` names to a new address, as a compaction would, and make it durable. Returns
@@ -106,17 +108,18 @@ fn relocate_element(engine: &TemporalEngine, from: &IndexItem, to: &IndexItem, e
 
 /// The index item the write path would log for one element of a container.
 fn element_item(engine: &TemporalEngine, kind: &'static str, key: &str, element: &str) -> IndexItem {
-    let shards = engine.shards_write_marked();
-    let shard = shards.get(&1).unwrap();
-    let mut items = crate::engine::collect_upsert_index_items(
-        shard,
-        1,
-        &[(kind, key.to_string(), Some(element.to_string()))],
-        0,
-        u32::MAX,
-    );
-    assert_eq!(items.len(), 1, "the {kind} element {element} of {key} names one block");
-    items.remove(0)
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.unwrap();
+        let mut items = crate::engine::collect_upsert_index_items(
+            shard,
+            1,
+            &[(kind, key.to_string(), Some(element.to_string()))],
+            0,
+            u32::MAX,
+        );
+        assert_eq!(items.len(), 1, "the {kind} element {element} of {key} names one block");
+        items.remove(0)
+    })
 }
 
 fn run_with_codec(protobuf: bool, body: impl FnOnce()) {
@@ -386,17 +389,16 @@ fn a_relocated_container_element_survives_the_reload() {
     };
     assert_eq!(field("moved").as_deref(), Some(&b"moved field"[..]), "the relocated field was lost");
     assert_eq!(field("kept").as_deref(), Some(&b"kept field"[..]), "an unrelocated field was lost");
-    let shards = reloaded.shards_write_marked();
-    let address = shards
-        .get(&1)
-        .unwrap()
-        .bucket_index
-        .hashes
-        .get("h")
-        .and_then(|fields| fields.get("moved"))
-        .cloned()
-        .expect("the field is in the map");
-    assert_eq!(address, to.entry.clone().unwrap(), "the field was not repointed");
+    reloaded.shards.with_state(1, |shard| {
+        let address = shard.unwrap()
+            .bucket_index
+            .hashes
+            .get("h")
+            .and_then(|fields| fields.get("moved"))
+            .cloned()
+            .expect("the field is in the map");
+        assert_eq!(address, to.entry.clone().unwrap(), "the field was not repointed");
+    });
 }
 
 /// A relocation whose OLD address appears in no base is applied to nothing: a record written before
@@ -416,13 +418,12 @@ fn a_relocation_of_a_block_no_base_names_creates_nothing() {
 
     let reloaded = open(dir.path());
     let to_address = to.entry.clone().unwrap();
-    let names_the_new_block = {
-        let shards = reloaded.shards_write_marked();
-        crate::engine::collect_live_block_entries(shards.get(&1).unwrap())
+    let names_the_new_block = reloaded.shards.with_state(1, |shard| {
+        crate::engine::collect_live_block_entries(shard.unwrap())
             .into_iter()
             .any(|entry| entry.address.block_slab_id() == to_address.block_slab_id()
                 && entry.address.offset() == to_address.offset())
-    };
+    });
     assert!(!names_the_new_block, "a relocation created a block the base never named");
     assert_eq!(read(&reloaded, "present").as_deref(), Some(&b"present value"[..]));
 }

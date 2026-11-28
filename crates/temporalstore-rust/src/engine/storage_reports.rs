@@ -615,12 +615,33 @@ impl TemporalEngine {
         // of bytes that are still on disk, not a claim that the block is live, and nothing reads
         // the cache to decide what is live. This is a REPORT and a cache fill; it decides no
         // reclaim, so a stale answer costs at most one wasted cache slot.
-        let mut plan: Vec<(CacheKey, ElementEntry)> = Vec::new();
-        let held_across_io = {
-            let shards = self.shards_read_marked();
-            let Some(shard) = shards.get(&shard_id) else {
-                return report;
-            };
+        let warm = |report: &mut StorageCacheWarmupReport, plan: Vec<(CacheKey, ElementEntry)>| {
+            for (key, address) in plan {
+                if self.cache.peek_tier(&key).is_some() {
+                    report.already_cached_block_refs =
+                        report.already_cached_block_refs.saturating_add(1);
+                    report.warmed_block_refs = report.warmed_block_refs.saturating_add(1);
+                } else if let Ok(bytes) = self.read_block_counted(&address) {
+                    report.page_store_reads = report.page_store_reads.saturating_add(1);
+                    report.block_store_reads = report.block_store_reads.saturating_add(1);
+                    let byte_len = bytes.len() as u64;
+                    match self.cache.put(key, bytes) {
+                        Ok(()) => {
+                            report.warmed_block_refs = report.warmed_block_refs.saturating_add(1);
+                            report.warmed_bytes = report.warmed_bytes.saturating_add(byte_len);
+                        }
+                        Err(_) => {
+                            report.failed_block_refs = report.failed_block_refs.saturating_add(1);
+                        }
+                    }
+                } else {
+                    report.failed_block_refs = report.failed_block_refs.saturating_add(1);
+                }
+            }
+        };
+        let plan = self.shards.with_state(shard_id, |shard| {
+            let mut plan = Vec::new();
+            let Some(shard) = shard else { return plan };
             for entry in collect_live_block_entries(shard) {
                 let routing_bucket = self.routing_bucket_for_key(shard_id, &entry.object_key);
                 if !selected_buckets.is_empty() && !selected_buckets.contains(&routing_bucket) {
@@ -637,36 +658,13 @@ impl TemporalEngine {
                 );
                 plan.push((key, entry.address));
             }
-            // The control arm of `the_cache_warmup_reads_blocks_after_the_shard_guard_drops` keeps
-            // the guard held across the reads, so the guard has a positive control to compare
-            // against rather than an assertion that nothing can fail.
-            self.warm_cache_under_shard_guard
-                .load(std::sync::atomic::Ordering::Relaxed)
-                .then_some(shards)
-        };
-        for (key, address) in plan {
-            if self.cache.peek_tier(&key).is_some() {
-                report.already_cached_block_refs =
-                    report.already_cached_block_refs.saturating_add(1);
-                report.warmed_block_refs = report.warmed_block_refs.saturating_add(1);
-            } else if let Ok(bytes) = self.read_block_counted(&address) {
-                report.page_store_reads = report.page_store_reads.saturating_add(1);
-                report.block_store_reads = report.block_store_reads.saturating_add(1);
-                let byte_len = bytes.len() as u64;
-                match self.cache.put(key, bytes) {
-                    Ok(()) => {
-                        report.warmed_block_refs = report.warmed_block_refs.saturating_add(1);
-                        report.warmed_bytes = report.warmed_bytes.saturating_add(byte_len);
-                    }
-                    Err(_) => {
-                        report.failed_block_refs = report.failed_block_refs.saturating_add(1);
-                    }
-                }
-            } else {
-                report.failed_block_refs = report.failed_block_refs.saturating_add(1);
+            // Positive control for the existing guard-scope fixture.
+            if self.warm_cache_under_shard_guard.load(std::sync::atomic::Ordering::Relaxed) {
+                warm(&mut report, std::mem::take(&mut plan));
             }
-        }
-        drop(held_across_io);
+            plan
+        });
+        warm(&mut report, plan);
         report
     }
 
@@ -822,18 +820,12 @@ impl TemporalEngine {
         shard_id: ShardId,
         latest_dump_buckets: &BTreeSet<u32>,
     ) -> Vec<u32> {
-        let shards = self.shards.read().expect("shards lock poisoned");
-        let Some(shard) = shards.get(&shard_id) else {
-            return Vec::new();
-        };
-        // Dirty nodes always receive summaries, including nodes without live blocks.
-        shard
-            .bucket_index
-            .bucket_map
-            .dirty_buckets()
-            .difference(latest_dump_buckets)
-            .copied()
-            .collect()
+        self.shards.with_state(shard_id, |shard| {
+            let Some(shard) = shard else { return Vec::new() };
+            // Dirty nodes always receive summaries, including nodes without live blocks.
+            shard.bucket_index.bucket_map.dirty_buckets()
+                .difference(latest_dump_buckets).copied().collect()
+        })
     }
 }
 

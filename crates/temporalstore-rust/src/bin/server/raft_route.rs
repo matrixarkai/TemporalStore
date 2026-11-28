@@ -410,16 +410,23 @@ fn handle_server_raft_route(
         ("POST", "/raft/propose") => {
             match parse_json::<DistributedRaftProposeRequest>(&request.body) {
                 Ok(req) => {
-                    json_response(200, &command_response(state.runtime.propose(req.command)))
+                    let response = match ProductionRaftRuntime::validate_proposal_command(&req.command) {
+                        Ok(()) => command_response(state.runtime.propose(req.command)),
+                        Err(status) => DistributedRaftCommandResponse { status, response: CommandResponse::Empty },
+                    };
+                    json_response(200, &response)
                 }
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             }
         }
         ("POST", "/raft/read") => match parse_json::<DistributedRaftReadRequest>(&request.body) {
-            Ok(req) => json_response(
-                200,
-                &command_response(state.runtime.read_local(req.node_id, req.command)),
-            ),
+            Ok(req) => {
+                let response = match state.runtime.read_local_with_status(req.node_id, req.command) {
+                    Ok(response) => DistributedRaftCommandResponse { status: response.status, response: response.response },
+                    Err(error) => command_response(Err(error)),
+                };
+                json_response(200, &response)
+            }
             Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
         },
         _ if request.path.starts_with("/raft/") => {
@@ -481,13 +488,12 @@ fn execute_via_server_raft(state: &ServerRaftState, request: ExecuteRequest) -> 
     let result = if is_raft_read_command(&request.command) {
         read_via_server_raft(state, request.command)
     } else {
-        state.runtime.propose(request.command)
+        state.runtime.propose(request.command).map(|response| ExecuteResponse {
+            status: Status::ok(), response,
+        })
     };
     match result {
-        Ok(response) => ExecuteResponse {
-            status: Status::ok(),
-            response,
-        },
+        Ok(response) => response,
         Err(err) => ExecuteResponse {
             status: Status::error("raft_error", err.to_string()),
             response: CommandResponse::Empty,
@@ -498,29 +504,27 @@ fn execute_via_server_raft(state: &ServerRaftState, request: ExecuteRequest) -> 
 fn read_via_server_raft(
     state: &ServerRaftState,
     command: Command,
-) -> Result<CommandResponse, temporalstore_rust::RaftError> {
+) -> Result<ExecuteResponse, temporalstore_rust::RaftError> {
+    let (cluster, target_node_id) = read_target_for_server_raft(state)?;
+    cluster.read_from_replica_with_status(target_node_id, command)
+}
+
+fn read_target_for_server_raft(
+    state: &ServerRaftState,
+) -> Result<(RaftCluster, RaftNodeId), temporalstore_rust::RaftError> {
+    let cluster = state.runtime.cluster();
     let target_node_id = match state.read_policy.mode {
-        DataRaftReadMode::Leader | DataRaftReadMode::Linearizable => {
-            state.runtime.status().leader_id
-        }
+        DataRaftReadMode::Leader | DataRaftReadMode::Linearizable => cluster.leader_id(),
         DataRaftReadMode::BoundedStale | DataRaftReadMode::UnsafeAnyReplica => state.local_node_id,
     };
-    let cluster = state.runtime.cluster();
-    let read_index_response = cluster.check_data_raft_read_policy(target_node_id, state.read_policy)?;
-    // R3: the read-index round returns the frontier this read must observe, but the previous
-    // code discarded it and served immediately — so a replica that had COMMITTED but not yet
-    // APPLIED up to that index could answer with stale/half-applied state. Wait for the target
-    // to apply through the returned read_index before serving. Gated so default behavior is
-    // unchanged.
-    // R3: a replica can hold commit_index == leader_commit while its state machine has applied
-    // only a prefix of that. Wait for apply to reach the read index before serving, so the read
-    // never returns half-applied state as fresh.
+    let read_index = cluster.check_data_raft_read_policy(target_node_id, state.read_policy)?;
+    // A committed entry is not visible until the selected replica has applied it.
     cluster.wait_for_applied_index(
         target_node_id,
-        read_index_response.read_index,
+        read_index.read_index,
         state.read_policy.read_index_timeout_ms,
     )?;
-    cluster.read_from_replica(target_node_id, command)
+    Ok((cluster, target_node_id))
 }
 
 fn command_response(
@@ -569,6 +573,7 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::FeatureQueryFiltered { .. }
             | Command::FeatureAggQuery { .. }
             | Command::FeatureProtoAggQuery { .. }
+            | Command::FeatureReduceQuery { .. }
             | Command::SequenceQuery { .. }
             | Command::SequenceBatchQuery { .. }
             | Command::WindowReduceRank { .. }

@@ -94,14 +94,9 @@ fn sweep(dump_before_evict: bool) -> Vec<(usize, u64, u64, u64, f64)> {
 
         // THE DENOMINATOR, ASSERTED BEFORE THE RATIO. An empty store evicts nothing and divides
         // by nothing.
-        let seeded = engine
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .get(&SHARD)
-            .expect("shard is loaded")
-            .strings()
-            .len();
+        let seeded = engine.shards.with_state(SHARD, |state| {
+            state.expect("shard is loaded").strings().len()
+        });
         assert_eq!(keys, seeded, "the seed must have landed, or nothing below means anything");
 
         crate::engine::shard_write_guard::reset_index_encode_counts();

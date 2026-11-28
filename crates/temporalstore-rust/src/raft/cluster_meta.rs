@@ -104,6 +104,7 @@ impl MetaRaftCluster {
                 forbid_auto_register: true,
                 topology_version: 0,
                 server_state: String::new(),
+                cache_budgets: Vec::new(),
             },
             |meta| meta.server_heartbeat(request),
         )

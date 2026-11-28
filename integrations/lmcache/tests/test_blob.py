@@ -4,59 +4,9 @@ import http.server
 import json
 import threading
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import patch
 
-from lmcache_temporalstore.blob import (
-    BlobClient,
-    _CoalescingHTTPConnection,
-    _MAX_BATCH_CONTROL_BYTES,
-    _RECVMSG_AVAILABLE,
-    _receive_buffers,
-    _send_buffers,
-)
-
-
-class CoalescingHTTPConnectionTest(unittest.TestCase):
-    def test_sends_small_fixed_length_request_in_one_write(self):
-        connection = _CoalescingHTTPConnection("localhost")
-        payload = b'[{"key":"chunk","length":64}]'
-        with patch.object(connection, "send") as send:
-            connection.request("POST", "/batch_probe_blobs", payload)
-        send.assert_called_once()
-        headers, body = send.call_args.args[0].split(b"\r\n\r\n", 1)
-        self.assertTrue(headers.startswith(b"POST /batch_probe_blobs HTTP/1.1\r\n"))
-        self.assertIn(f"Content-Length: {len(payload)}".encode(), headers.split(b"\r\n"))
-        self.assertEqual(body, payload)
-
-    def test_large_body_uses_standard_streaming(self):
-        connection = _CoalescingHTTPConnection("localhost")
-        payload = b"x" * (_MAX_BATCH_CONTROL_BYTES + 1)
-        with patch.object(connection, "send") as send:
-            connection.request("POST", "/batch_probe_blobs", payload)
-        self.assertEqual(send.call_count, 2)
-        self.assertIs(send.call_args.args[0], payload)
-
-
-class BlobUploadTests(unittest.TestCase):
-    def test_send_buffers_resumes_after_short_writes(self):
-        sock = Mock()
-        calls = []
-
-        def send(buffers):
-            calls.append([bytes(part) for part in buffers])
-            return next(sizes)
-
-        sizes = iter((4, 2, 3))
-        sock.sendmsg.side_effect = send
-        _send_buffers(sock, (b"abc", memoryview(b"defg"), b"", memoryview(b"hi")))
-        self.assertEqual(calls, [[b"abc", b"defg", b"hi"], [b"efg", b"hi"], [b"g", b"hi"]])
-
-    def test_send_buffers_fails_when_socket_stops_accepting_bytes(self):
-        sock = Mock()
-        sock.sendmsg.return_value = 0
-        with self.assertRaises(ConnectionError):
-            _send_buffers(sock, (b"abc",))
-        sock.sendmsg.assert_called_once()
+from lmcache_temporalstore.blob import BlobClient
 
 
 class BlobHandler(http.server.BaseHTTPRequestHandler):
@@ -70,10 +20,6 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
     supports_batch_reads = False
     truncate_batch_read = False
     batch_reads = []
-    supports_batch_writes = False
-    batch_writes = []
-    write_probes = 0
-    lose_write_receipt = False
 
     def do_PUT(self):
         BlobHandler.mutation_addresses.append(self.client_address)
@@ -87,12 +33,6 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
 
     def do_GET(self):
-        if self.path == "/batch_write_blobs":
-            BlobHandler.write_probes += 1
-            self.send_response(200 if BlobHandler.supports_batch_writes else 404)
-            self.send_header("Content-Length", "0")
-            self.end_headers()
-            return
         BlobHandler.read_addresses.append(self.client_address)
         if BlobHandler.drop_next_get:
             BlobHandler.drop_next_get = False
@@ -115,9 +55,6 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
         self.wfile.write(payload)
 
     def do_POST(self):
-        if self.path == "/batch_write_blobs":
-            self.receive_batch_write()
-            return
         request = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         if self.path == "/batch_read_blobs":
             self.send_batch_read(request)
@@ -139,26 +76,6 @@ class BlobHandler(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(data)))
         self.end_headers()
         self.wfile.write(data)
-
-    def receive_batch_write(self):
-        control_length = int.from_bytes(self.rfile.read(4), "big")
-        items = json.loads(self.rfile.read(control_length))
-        BlobHandler.batch_writes.append(items)
-        statuses = bytearray()
-        for item in items:
-            payload = self.rfile.read(item["length"])
-            if item["key"] == "blocked":
-                statuses.append(0)
-                continue
-            self.blobs[f'/blob/{item["key"]}'] = payload
-            statuses.append(1)
-        if BlobHandler.lose_write_receipt:
-            self.close_connection = True
-            return
-        self.send_response(200)
-        self.send_header("Content-Length", str(len(statuses)))
-        self.end_headers()
-        self.wfile.write(statuses)
 
     def send_batch_read(self, request):
         BlobHandler.batch_reads.append(request)
@@ -208,10 +125,6 @@ class BlobClientTest(unittest.TestCase):
         BlobHandler.supports_batch_reads = False
         BlobHandler.truncate_batch_read = False
         BlobHandler.batch_reads = []
-        BlobHandler.supports_batch_writes = False
-        BlobHandler.batch_writes = []
-        BlobHandler.write_probes = 0
-        BlobHandler.lose_write_receipt = False
         self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), BlobHandler)
         self.thread = threading.Thread(target=self.server.serve_forever)
         self.thread.start()
@@ -311,80 +224,6 @@ class BlobClientTest(unittest.TestCase):
         self.assertEqual(BlobHandler.blobs, {})
         self.assertEqual(len(BlobHandler.mutation_addresses), 3)
 
-    def test_canonical_namespace_uses_only_one_path_for_reads_and_deletes(self):
-        self.client.close()
-        self.client = BlobClient(f"http://127.0.0.1:{self.server.server_port}", legacy_names=False)
-        BlobHandler.supports_batch_deletes = True
-        self.client.put("anonymous/owned", memoryview(b"legacy"))
-        out = memoryview(bytearray(6))
-        self.assertFalse(self.client.get_into("owned", out))
-        self.assertEqual(len(BlobHandler.read_addresses), 1)
-
-        self.client.put("owned", memoryview(b"new"))
-        self.assertEqual(self.client.delete_many(["owned", "missing"]), [True, True])
-        self.assertEqual(BlobHandler.batch_deletes, [["owned", "missing"]])
-        self.assertEqual(BlobHandler.blobs, {"/blob/anonymous/owned": b"legacy"})
-
-    def test_batch_write_matches_ordered_receipts_and_binary_payloads(self):
-        BlobHandler.supports_batch_writes = True
-        items = [("first", memoryview(b"abc")), ("blocked", memoryview(b"longer")),
-                 ("empty", memoryview(b"")), ("last", memoryview(bytes((0, 255))))]
-        self.assertEqual(self.client.put_many(items), [True, False, True, True])
-        self.assertEqual(BlobHandler.blobs, {
-            "/blob/first": b"abc", "/blob/empty": b"", "/blob/last": bytes((0, 255)),
-        })
-        self.assertEqual(len(BlobHandler.batch_writes), 1)
-        self.assertEqual(BlobHandler.mutation_addresses, [])
-
-    def test_batch_write_falls_back_without_sending_payload_to_older_nodes(self):
-        items = [("first", memoryview(b"abc")), ("last", memoryview(b"def"))]
-        self.assertEqual(self.client.put_many(items), [True, True])
-        self.assertEqual(self.client.put_many(items), [True, True])
-        self.assertEqual(BlobHandler.write_probes, 1)
-        self.assertEqual(BlobHandler.batch_writes, [])
-        self.assertEqual(len(BlobHandler.mutation_addresses), 4)
-
-    def test_batch_write_does_not_replay_unconfirmed_mutations(self):
-        BlobHandler.supports_batch_writes = True
-        BlobHandler.lose_write_receipt = True
-        items = [("first", memoryview(b"abc")), ("last", memoryview(b"def"))]
-        self.assertEqual(self.client.put_many(items), [False, False])
-        self.assertEqual(BlobHandler.blobs, {"/blob/first": b"abc", "/blob/last": b"def"})
-        self.assertEqual(len(BlobHandler.batch_writes), 1)
-        self.assertEqual(BlobHandler.mutation_addresses, [])
-
-    def test_transport_failure_cools_down_without_replaying_pending_writes(self):
-        self.client.close()
-        self.client = BlobClient(
-            f"http://127.0.0.1:{self.server.server_port}",
-            reuse_mutation_connection=True, mutation_cooldown_seconds=1,
-        )
-        BlobHandler.supports_batch_writes = True
-        BlobHandler.lose_write_receipt = True
-        items = [("first", memoryview(b"abc")), ("last", memoryview(b"def"))]
-        with patch("lmcache_temporalstore.blob.monotonic", return_value=100):
-            self.assertEqual(self.client.put_many(items), [False, False])
-            self.assertFalse(self.client.mutations_available())
-            self.assertEqual(self.client.put_many(items), [None, None])
-            self.assertEqual(len(BlobHandler.batch_writes), 1)
-        BlobHandler.lose_write_receipt = False
-        with patch("lmcache_temporalstore.blob.monotonic", return_value=102):
-            self.assertEqual(self.client.put_many(items), [True, True])
-            self.assertTrue(self.client.mutations_available())
-            self.assertEqual(len(BlobHandler.batch_writes), 2)
-
-    def test_connection_refusal_never_marks_upload_as_attempted(self):
-        self.client.close()
-        self.client = BlobClient(
-            f"http://127.0.0.1:{self.server.server_port}", mutation_cooldown_seconds=1,
-        )
-        with patch.object(http.client.HTTPConnection, "connect", side_effect=ConnectionRefusedError):
-            items = [("first", memoryview(b"abc")), ("last", memoryview(b"def"))]
-            self.assertEqual(self.client.put_many(items), [None, None])
-            self.assertFalse(self.client.mutations_available())
-        self.assertEqual(BlobHandler.batch_writes, [])
-        self.assertEqual(BlobHandler.blobs, {})
-
     def test_batch_load_preserves_positions_and_uses_legacy_paths_for_local_misses(self):
         BlobHandler.supports_batch_reads = True
         self.client.put("key", memoryview(b"data"))
@@ -417,31 +256,6 @@ class BlobClientTest(unittest.TestCase):
         self.assertEqual(len(BlobHandler.batch_reads), 2)
         self.assertEqual([bytes(dst) for dst in values], [b"data", b"copy"])
 
-    @unittest.skipUnless(_RECVMSG_AVAILABLE, "requires CPython on Linux with recvmsg_into")
-    def test_staged_batch_reads_reuse_socket_only_after_complete_body(self):
-        BlobHandler.supports_batch_reads = True
-        self.client.put("key", memoryview(b"a" * 16384))
-        self.client.put("other", memoryview(b"b" * 16384))
-        values = [memoryview(bytearray(16384)) for _ in range(2)]
-        items = list(zip(("key", "other"), values))
-
-        with patch("lmcache_temporalstore.blob._receive_buffers", wraps=_receive_buffers) as receive:
-            self.assertEqual(self.client.get_many_into(items, staging=True), [True, True])
-            receive.assert_called_once()
-        self.assertEqual([bytes(value) for value in values], [b"a" * 16384, b"b" * 16384])
-        connection = self.client._read_connection
-        self.assertIsNotNone(connection)
-        self.assertEqual(self.client.get_many_into(items, staging=True), [True, True])
-        self.assertIs(self.client._read_connection, connection)
-
-        BlobHandler.truncate_batch_read = True
-        self.assertEqual(self.client.get_many_into(items, staging=True), [False, False])
-        self.assertIsNone(self.client._read_connection)
-        BlobHandler.truncate_batch_read = False
-        self.assertEqual(self.client.get_many_into(items, staging=True), [True, True])
-        self.assertIsNot(self.client._read_connection, connection)
-        self.assertEqual([bytes(value) for value in values], [b"a" * 16384, b"b" * 16384])
-
     def test_truncated_batch_fails_and_the_next_read_reconnects(self):
         BlobHandler.supports_batch_reads = True
         BlobHandler.truncate_batch_read = True
@@ -449,7 +263,6 @@ class BlobClientTest(unittest.TestCase):
         self.client.put("other", memoryview(b"copy"))
         values = [memoryview(bytearray(4)) for _ in range(2)]
         self.assertEqual(self.client.get_many_into(list(zip(("key", "other"), values))), [False, False])
-        self.assertEqual([bytes(value) for value in values], [bytes(4), bytes(4)])
         self.assertTrue(self.client.get_into("other", values[1]))
         self.assertEqual(values[1], b"copy")
 

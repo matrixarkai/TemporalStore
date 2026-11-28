@@ -7,6 +7,68 @@ use super::*;
 use super::helpers::*;
 
 #[test]
+fn grpc_primary_follows_raft_leadership_and_ignores_stale_topology() {
+    use crate::meta::{DataRaftRoute, MetaEntityState, TableMetaInfo, TableShard};
+
+    let client = TemporalStoreClient::new("127.0.0.1:17003");
+    let table = client.open_table("kvcache", "model", TableOptions::default());
+    let mut topology = TableMetaInfo {
+        table_id: 1,
+        namespace: "kvcache".to_string(),
+        table_name: "model".to_string(),
+        state: MetaEntityState::Normal,
+        topology_version: 3,
+        first_shard_id: 75,
+        shard_count: 1,
+        replica_count: 3,
+        partition_version: 0,
+        serving_options: Default::default(),
+    };
+    let mut shard = TableShard {
+        shard_id: 75,
+        start_bucket: 0,
+        end_bucket: 1,
+        primary: Some("placement-http".to_string()),
+        replicas: Vec::new(),
+        primary_endpoint: Some(ServerEndpoint {
+            server_addr: "placement-http".to_string(),
+            grpc_addr: Some("placement-grpc".to_string()),
+            location: String::new(),
+        }),
+        replica_endpoints: Vec::new(),
+        load_version: 2,
+        raft_route: Some(DataRaftRoute {
+            endpoint: Some(ServerEndpoint {
+                server_addr: "leader-http".to_string(),
+                grpc_addr: Some("leader-grpc".to_string()),
+                location: String::new(),
+            }),
+            load_version: 9,
+        }),
+    };
+    client.update_grpc_routes("kvcache/model", &topology, std::slice::from_ref(&shard), false);
+    assert_eq!(table.resolve_grpc_primary("chunk").unwrap(), GrpcPrimaryRoute {
+        shard_id: 75, address: "leader-grpc".to_string(), load_version: 9,
+    });
+
+    let older = topology.clone();
+    topology.topology_version += 1;
+    let mut election = shard.clone();
+    election.raft_route.as_mut().unwrap().endpoint = None;
+    client.update_grpc_routes("kvcache/model", &topology, &[election], false);
+    client.update_grpc_routes("kvcache/model", &older, std::slice::from_ref(&shard), false);
+    assert!(table.resolve_grpc_primary("chunk").is_err());
+
+    topology.topology_version += 1;
+    shard.raft_route = None;
+    client.update_grpc_routes("kvcache/model", &topology, &[shard], false);
+    client.update_grpc_routes("kvcache/model", &topology, &[], true);
+    assert_eq!(table.resolve_grpc_primary("chunk").unwrap(), GrpcPrimaryRoute {
+        shard_id: 75, address: "placement-grpc".to_string(), load_version: 2,
+    });
+}
+
+#[test]
 fn client_meta_sync_report_tracks_success_and_table_errors() {
     let meta_addr = free_local_addr();
     let meta_addr_for_listener = meta_addr.clone();
@@ -163,6 +225,7 @@ fn client_metasync_backoff_deadline_and_topology_refresh_survive_outage_churn() 
                                 serving_options: crate::meta::TableServingOptions::default(),
                             }),
                             shards: vec![TableShard {
+                                raft_route: None,
                                 load_version: 0,
                                 shard_id: 40,
                                 start_bucket: 0,
@@ -369,6 +432,7 @@ fn a_second_sync_asks_only_for_what_changed_and_keeps_its_routes() {
                             status: Status::ok(),
                             table: Some(table),
                             shards: vec![TableShard {
+                                raft_route: None,
                                 load_version: 0,
                                 shard_id: 1,
                                 start_bucket: 0,
@@ -478,6 +542,7 @@ fn a_topology_missing_a_primary_keeps_the_route_it_cannot_replace() {
                                 serving_options: crate::meta::TableServingOptions::default(),
                             }),
                             shards: vec![TableShard {
+                                raft_route: None,
                                 load_version: 0,
                                 shard_id: 1,
                                 start_bucket: 0,
@@ -665,6 +730,7 @@ fn a_batch_is_split_across_shards_the_table_gained_after_it_was_opened() {
                     let count = count_for_server.load(Ordering::Relaxed);
                     let shards = (0..count)
                         .map(|offset| crate::meta::TableShard {
+                            raft_route: None,
                             load_version: 0,
                             shard_id: 10 + offset,
                             start_bucket: offset * 4096,
@@ -899,7 +965,7 @@ fn client_applies_metaserver_table_serving_options() {
                                 continuous_failed_time_ms: 19,
                                 io_timeout_ms: 321,
                                 connect_timeout_ms: 123,
-                                set_fields: Default::default(),
+                                ..Default::default()
                             },
                         }),
                         shards: Vec::new(),
@@ -1027,6 +1093,7 @@ fn table_read_policy_can_select_secondary_from_metaserver_topology() {
                             serving_options: crate::meta::TableServingOptions::default(),
                         }),
                         shards: vec![TableShard {
+                            raft_route: None,
                             load_version: 0,
                             shard_id: 1,
                             start_bucket: 0,
@@ -1138,6 +1205,7 @@ fn a_read_only_batch_reaches_the_replica_and_a_write_batch_the_primary() {
                             serving_options: crate::meta::TableServingOptions::default(),
                         }),
                         shards: vec![TableShard {
+                            raft_route: None,
                             load_version: 0,
                             shard_id: 1,
                             start_bucket: 0,
@@ -1186,7 +1254,7 @@ fn a_read_only_batch_reaches_the_replica_and_a_write_batch_the_primary() {
     assert_eq!(
         reads.responses[0].response,
         CommandResponse::Bytes { value: Some(b"replica".to_vec()) },
-        "a batch carrying no writes must follow the table's replica policy, as its reads do          one at a time"
+        "a batch carrying no writes must follow the table's replica policy, as its reads do one at a time"
     );
 
     let mixed = table
@@ -1364,10 +1432,12 @@ fn client_router_prefers_same_location_replica_when_available() {
         replica_addrs: vec!["replica-remote".to_string(), "replica-local".to_string()],
         replica_endpoints: vec![
             ServerEndpoint {
+                grpc_addr: None,
                 server_addr: "replica-remote".to_string(),
                 location: "zone-b".to_string(),
             },
             ServerEndpoint {
+                grpc_addr: None,
                 server_addr: "replica-local".to_string(),
                 location: "zone-a".to_string(),
             },
@@ -1530,10 +1600,11 @@ fn client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_pri
                                     continuous_failed_time_ms: 100,
                                     io_timeout_ms: 1_000,
                                     connect_timeout_ms: 1_000,
-                                    set_fields: Default::default(),
+                                    ..Default::default()
                                 },
                             }),
                             shards: vec![TableShard {
+                                raft_route: None,
                                 load_version: 0,
                                 shard_id: 81,
                                 start_bucket: 0,
@@ -1541,15 +1612,18 @@ fn client_deployment_placement_routes_reads_to_local_secondary_and_writes_to_pri
                                 primary: Some(primary_addr.clone()),
                                 replicas: vec![primary_addr.clone(), replica_addr.clone()],
                                 primary_endpoint: Some(ServerEndpoint {
+                                    grpc_addr: None,
                                     server_addr: primary_addr.clone(),
                                     location: "zone-primary".to_string(),
                                 }),
                                 replica_endpoints: vec![
                                     ServerEndpoint {
+                                        grpc_addr: None,
                                         server_addr: primary_addr.clone(),
                                         location: "zone-primary".to_string(),
                                     },
                                     ServerEndpoint {
+                                        grpc_addr: None,
                                         server_addr: replica_addr.clone(),
                                         location: "zone-local".to_string(),
                                     },

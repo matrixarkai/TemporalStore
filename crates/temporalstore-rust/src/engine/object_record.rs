@@ -733,6 +733,32 @@ struct LayoutSlot {
 }
 
 impl BlockLayoutStore {
+    pub(super) fn visit_stored_block_locations(&self, mut visit: impl FnMut(u64, u64, u64)) {
+        for layout in self.slots.iter().filter_map(|slot| slot.layout.as_ref()) {
+            for block in &layout.blocks {
+                visit(
+                    u64::from(extract_block_slab_id(block.address)),
+                    u64::from(extract_block_offset(block.address)),
+                    u64::from(block.length),
+                );
+            }
+        }
+    }
+
+    pub(super) fn translate_stored_block_slabs(
+        &mut self,
+        mut translate: impl FnMut(u64) -> std::io::Result<u32>,
+    ) -> std::io::Result<()> {
+        for layout in self.slots.iter_mut().filter_map(|slot| slot.layout.as_mut()) {
+            for block in &mut layout.blocks {
+                let offset = extract_block_offset(block.address);
+                let slab = translate(u64::from(extract_block_slab_id(block.address)))?;
+                block.address = address_word_from_parts(slab, offset);
+            }
+        }
+        Ok(())
+    }
+
     /// Split a handle into the slot it names and the generation it was issued at.
     ///
     /// `None` for handle zero, which names no slot -- see the type's doc.
@@ -925,7 +951,7 @@ impl From<ObjectSlotWire> for ObjectSlot {
 /// THE ONE-BYTE SIZE CLASS: a four-bit exponent and a four-bit mantissa, rounded to nearest.
 ///
 /// Code 0 means "no class recorded". Otherwise the value is `(16 + m) << e` for `e` in 0..16 and
-/// `m` in 0..16, which spans 16 B to 1,015,808 B in steps of one sixteenth -- a worst-case 3.1%
+/// `m` in 0..16, which spans 16 B to 983,040 B in steps of one sixteenth -- a worst-case 3.1%
 /// per object, and less in a sum because the roundings go both ways. Measured at 1.5% on a corpus
 /// of lengths chosen to fall between classes.
 ///
@@ -937,22 +963,18 @@ impl From<ObjectSlotWire> for ObjectSlot {
 /// Lengths above the top class SATURATE there. Stated rather than hidden: the exponent would widen
 /// if the corpus needed it, and `logical_size_saturates_at_the_top_class` holds the boundary.
 fn classify_logical_size(len: u64) -> u8 {
+    const MAX_SIZE: u64 = 30 << 15;
     if len == 0 {
         return 0;
     }
-    let mut best_code: u8 = 1;
-    let mut best_error = u64::MAX;
-    for code in 1u16..=255 {
-        let exponent = (code - 1) >> 4;
-        let mantissa = (code - 1) & 15;
-        let value = (16u64 + mantissa as u64) << exponent;
-        let error = value.abs_diff(len);
-        if error < best_error {
-            best_error = error;
-            best_code = code as u8;
-        }
-    }
-    best_code
+    let clamped = len.clamp(16, MAX_SIZE);
+    let exponent = clamped.ilog2() - 4;
+    let step = 1_u64 << exponent;
+    let lower = clamped >> exponent;
+    // The lower code wins an exact tie. Rounding 31 up advances to the
+    // first code of the next exponent.
+    let rounded = lower + u64::from((clamped % step) > step / 2);
+    (1 + 16 * u64::from(exponent) + rounded - 16) as u8
 }
 
 /// The inverse of [`classify_logical_size`]. `None` for code 0, which means "no class recorded".
@@ -1992,6 +2014,21 @@ mod what_moving_one_kinds_refs_onto_its_record_would_cost {
 }
 
 #[cfg(test)]
+#[test]
+fn logical_size_classes_keep_midpoints_and_saturation() {
+    assert_eq!(classify_logical_size(0), 0);
+    assert_eq!(classify_logical_size(1), 1);
+    assert_eq!(classify_logical_size(u64::MAX), 255);
+    for code in 1..255_u8 {
+        let lower = declass_logical_size(code).unwrap();
+        let upper = declass_logical_size(code + 1).unwrap();
+        let midpoint = lower + (upper - lower) / 2;
+        assert_eq!(classify_logical_size(midpoint), code);
+        assert_eq!(classify_logical_size(midpoint + 1), code + 1);
+    }
+}
+
+#[cfg(test)]
 mod a_positional_row_is_refused_unless_it_is_canonical {
     use super::{ObjectRecord, ObjectSlotWire};
 
@@ -2041,5 +2078,30 @@ mod a_positional_row_is_refused_unless_it_is_canonical {
         assert!(slot(&format!("[{r},[],0]")).is_err(), "a three-element slot row was read");
         let error = slot(&format!("[{r},[]]")).expect_err("an empty elements array was read");
         assert!(error.to_string().contains("as an empty array"), "unnamed refusal: {error}");
+    }
+}
+
+#[cfg(test)]
+mod checkpoint_layout_slab_tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_layout_inventory_and_rebase_keep_every_offset() {
+        let make_block = |slab, offset, length| StoredBlock {
+            address: address_word_from_parts(slab, offset),
+            length, block_id: 0, has_block_id: true, has_generation: true,
+        };
+        let mut layouts = BlockLayoutStore::default();
+        let handle = layouts.insert(BlockLayout {
+            blocks: vec![make_block(2, 37, 5), make_block(7, 61, 8)],
+        });
+        let mut source = Vec::new();
+        layouts.visit_stored_block_locations(|slab, offset, length| source.push((slab, offset, length)));
+        assert_eq!(source, [(2, 37, 5), (7, 61, 8)]);
+        layouts.translate_stored_block_slabs(|id| Ok(u32::try_from(id + 100).unwrap())).unwrap();
+        let mut destination = Vec::new();
+        layouts.visit_stored_block_locations(|slab, offset, length| destination.push((slab, offset, length)));
+        assert_eq!(destination, [(102, 37, 5), (107, 61, 8)]);
+        assert_eq!(layouts.get(handle).unwrap().len(), 2);
     }
 }

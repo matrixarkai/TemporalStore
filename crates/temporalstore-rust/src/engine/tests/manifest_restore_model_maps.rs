@@ -18,6 +18,101 @@
 #![allow(clippy::all)]
 use super::*;
 
+#[test]
+fn hash_free_restore_reconciliation_does_not_build_block_identities() {
+    use crate::engine::state::{
+        measure_block_identity_builds_for_test, measure_block_identity_visits_for_test,
+    };
+    use crate::engine::storage_bucket_internals::{
+        collect_bucket_index_live_block_entries,
+        rebuild_unserialized_model_maps_from_bucket_index,
+    };
+
+    const KEYS: usize = 1024;
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for start in (0..KEYS).step_by(64) {
+        let response = engine.batch_execute(crate::types::BatchExecuteRequest {
+            shard_id: 1,
+            commands: (start..start + 64)
+                .map(|n| Command::StringSet {
+                    key: format!("restore-string-{n:05}"),
+                    value: vec![n as u8; 32],
+                })
+                .collect(),
+        });
+        assert!(response.status.ok, "{:?}", response.status);
+    }
+    let mut shard = decode_index_bytes(&engine.export_index_bytes(1).unwrap()).unwrap();
+    assert_eq!(shard.strings().len(), KEYS);
+    assert!(shard.bucket_index.hashes.is_empty());
+    let before = serialize_index(&shard);
+
+    let ((entries, control_visits), control_builds) = measure_block_identity_builds_for_test(|| {
+        measure_block_identity_visits_for_test(|| collect_bucket_index_live_block_entries(&shard))
+    });
+    assert!(!entries.is_empty(), "the control must name real blocks");
+    assert!(control_visits >= KEYS);
+    assert_eq!(control_builds, 1);
+    drop(entries);
+
+    let (((), visits), builds) = measure_block_identity_builds_for_test(|| {
+        measure_block_identity_visits_for_test(|| {
+            rebuild_unserialized_model_maps_from_bucket_index(&mut shard)
+        })
+    });
+    assert_eq!(builds, 0, "an empty hash map needs no shard-wide address set");
+    assert_eq!(visits, 0);
+    assert_eq!(serialize_index(&shard), before, "the restored image must stay unchanged");
+    println!("hash-free reconcile: control_visits={control_visits} visits={visits}");
+}
+
+#[test]
+fn nonempty_hash_reconciliation_still_filters_stale_addresses() {
+    use crate::engine::state::measure_block_identity_visits_for_test;
+    use crate::engine::storage_bucket_internals::rebuild_unserialized_model_maps_from_bucket_index;
+
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    let response = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::HashSet {
+            key: "restore-hash".into(),
+            field: "live".into(),
+            value: b"kept".to_vec(),
+        },
+    });
+    assert!(response.status.ok);
+    let mut shard = decode_index_bytes(&engine.export_index_bytes(1).unwrap()).unwrap();
+    let live = shard.bucket_index.hashes.get("restore-hash").unwrap().get("live").unwrap().clone();
+    shard.bucket_index.hashes.insert_element_for_test(
+        "restore-hash",
+        "ghost".into(),
+        crate::block_store::ElementEntry::from_parts(123_456, 0, 32, None, None),
+    );
+    assert_eq!(shard.bucket_index.hashes.get("restore-hash").unwrap().len(), 2);
+    let ((), visits) = measure_block_identity_visits_for_test(|| {
+        rebuild_unserialized_model_maps_from_bucket_index(&mut shard)
+    });
+    assert!(visits > 0, "a nonempty hash map still needs live-address validation");
+    let fields = shard.bucket_index.hashes.get("restore-hash").unwrap();
+    assert_eq!(fields.len(), 1);
+    assert_eq!(fields.get("live"), Some(&live));
+    assert!(fields.get("ghost").is_none());
+}
+
 const SHARD: ShardId = 1;
 const HASH_FIELDS: usize = 6;
 const STRING_KEYS: usize = 6;

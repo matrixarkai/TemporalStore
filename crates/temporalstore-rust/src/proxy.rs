@@ -11,6 +11,8 @@ use serde::{Deserialize, Serialize};
 mod commands;
 #[path = "proxy/proxy_context.rs"]
 mod context;
+#[path = "proxy/grpc.rs"]
+mod grpc;
 mod meta_sync;
 #[path = "proxy/proxy_prometheus.rs"]
 mod prometheus;
@@ -47,13 +49,11 @@ use policy::{
 use response::execute_error;
 
 use crate::client::{
-    ClientStats, ClientTopologyCacheReport, ClientTopologyRefreshReport, ReplicaReadPolicy,
+    get_meta_json, post_meta_json, ClientStats, ClientTopologyCacheReport,
+    ClientTopologyRefreshReport, ReplicaReadPolicy,
     RequestOptions, TableOptions, TemporalStoreClient,
 };
-use crate::http::{
-    get_json_with_options_and_headers, post_json_with_options_and_headers, HttpRequest,
-    HttpRequestOptions,
-};
+use crate::http::{HttpRequest, HttpRequestOptions};
 use crate::meta::GetShardResponse;
 use crate::meta::{
     AckResponse, ProxyHeartbeatRequest, ProxyHeartbeatResponse, RegisterProxyRequest,
@@ -68,6 +68,8 @@ use crate::types::{
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ProxyOptions {
     pub meta_addr: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub meta_grpc_target: Option<String>,
     #[serde(default = "default_proxy_addr")]
     pub proxy_addr: String,
     #[serde(default)]
@@ -278,6 +280,7 @@ impl Default for ProxyOptions {
     fn default() -> Self {
         Self {
             meta_addr: "127.0.0.1:17001".to_string(),
+            meta_grpc_target: None,
             proxy_addr: "127.0.0.1:17000".to_string(),
             config_version: 0,
             namespace: String::new(),
@@ -1475,10 +1478,9 @@ impl ProxyService {
 
     fn get_shard(&self, shard_id: ShardId, count_error: bool) -> Result<GetShardResponse, Status> {
         let options = self.options();
-        get_json_with_options_and_headers::<GetShardResponse>(
+        get_meta_json::<GetShardResponse>(
             &options.meta_addr,
             &format!("/shards/{shard_id}"),
-            &crate::meta::admin_auth_header(),
             options.http_options(),
         )
         .map_err(|err| {
@@ -2024,19 +2026,29 @@ impl ProxyService {
         if options.context_shard_count != 0 {
             return;
         }
-        let Ok(listed) = get_json_with_options_and_headers::<crate::meta::ListShardsResponse>(
-            &options.meta_addr,
-            "/shards",
-            &crate::meta::admin_auth_header(),
-            options.control_http_options(),
-        ) else {
-            return;
+        let deadline = options.control_http_options();
+        let (mut ids, complete) = if let Some(target) = options.meta_grpc_target.as_deref() {
+            let Ok(result) = self.client().metadata_shard_ids_grpc(target, deadline.io_timeout_ms) else {
+                return;
+            };
+            result
+        } else {
+            let Ok(listed) = get_meta_json::<crate::meta::ListShardsResponse>(
+                &options.meta_addr, "/shards", deadline,
+            ) else {
+                return;
+            };
+            if !listed.status.ok {
+                return;
+            }
+            (
+                listed.shards.into_iter().map(|shard| shard.shard_id).collect(),
+                listed.next_after_shard_id.is_none(),
+            )
         };
-        if !listed.status.ok || listed.shards.is_empty() {
+        if ids.is_empty() {
             return;
         }
-        let mut ids: Vec<crate::types::ShardId> =
-            listed.shards.iter().map(|shard| shard.shard_id).collect();
         ids.sort_unstable();
         ids.dedup();
         let contiguous_from_first = ids
@@ -2045,7 +2057,6 @@ impl ProxyService {
             .all(|(offset, id)| *id == options.context_first_shard_id + offset as u64);
         // A short block means there are more shards than were listed; a partial view could look
         // contiguous when the whole set is not, so do not conclude anything from it.
-        let complete = listed.next_after_shard_id.is_none();
         let usable = complete && contiguous_from_first;
         self.inner.cluster_shard_count.store(
             if usable { ids.len() as u64 } else { 0 },
@@ -2222,6 +2233,7 @@ fn proxy_client_error_code(err: &crate::client::ClientError) -> &'static str {
         // free to retry, one that may have applied is not. `a_caller_can_tell_an_unknown_write_
         // from_a_failed_one` covers this.
         crate::client::ClientError::WriteOutcomeUnknown(_) => "write_outcome_unknown",
+        crate::client::ClientError::WriteNotStarted(_) => "raft_write_not_started",
         // The caller's own request is wrong; nothing on this side will make it work, so it is not
         // reported as a server-side failure.
         crate::client::ClientError::InvalidRequest(_) => "invalid_request",
@@ -2674,7 +2686,7 @@ mod tests {
         let elapsed = started.elapsed();
         let total = threads * per_thread;
         println!(
-            "admission: {threads} threads x {per_thread} x batch {batch} = {total} admits in              {elapsed:?} -> {:.1} ns/admit ({:.1} ns per command)",
+            "admission: {threads} threads x {per_thread} x batch {batch} = {total} admits in {elapsed:?} -> {:.1} ns/admit ({:.1} ns per command)",
             elapsed.as_nanos() as f64 / total as f64,
             elapsed.as_nanos() as f64 / (total * batch) as f64
         );
@@ -2722,7 +2734,7 @@ mod tests {
             );
             assert!(
                 answers(&entry.rust_alias),
-                "the report advertises alias {} and marks it covered, but the proxy does not                  serve it",
+                "the report advertises alias {} and marks it covered, but the proxy does not serve it",
                 entry.rust_alias
             );
         }
@@ -2846,7 +2858,7 @@ mod tests {
                 == "proxy_traffic_dropped";
             assert_eq!(
                 refused, expected,
-                "node {node_hash}: the proxy and the client must make the same call on the                  same key"
+                "node {node_hash}: the proxy and the client must make the same call on the same key"
             );
             if expected {
                 shed += 1;
@@ -2898,7 +2910,7 @@ mod tests {
             });
             assert_eq!(
                 response.status.code, "proxy_write_disabled",
-                "a write-disabled proxy must refuse what the engine calls a write, not                  forward it because its own list is short: {command:?}"
+                "a write-disabled proxy must refuse what the engine calls a write, not forward it because its own list is short: {command:?}"
             );
         }
 
@@ -2947,7 +2959,7 @@ mod tests {
             });
             assert_eq!(
                 response.status.code, "proxy_traffic_dropped",
-                "a fully drained proxy must refuse this, not serve it because the command                  carries no key to hash: {command:?}"
+                "a fully drained proxy must refuse this, not serve it because the command carries no key to hash: {command:?}"
             );
         }
 
@@ -3005,7 +3017,7 @@ mod tests {
         });
         assert_eq!(
             response.status.code, "proxy_traffic_dropped",
-            "node {refused_node} is refused when read; writing its embedding names the same              node and has to be refused too"
+            "node {refused_node} is refused when read; writing its embedding names the same node and has to be refused too"
         );
     }
 
@@ -3257,7 +3269,7 @@ mod tests {
         assert!(report.applied, "the second push must be applied: {report:?}");
         assert!(
             !proxy.topology_check_due_now(),
-            "with the interval restored, the check claimed at the top of this test is still              inside it, so nothing is due -- a mirror stuck at the pushed zero would say due              here, which is what makes this the reverse-direction check"
+            "with the interval restored, the check claimed at the top of this test is still inside it, so nothing is due -- a mirror stuck at the pushed zero would say due here, which is what makes this the reverse-direction check"
         );
     }
 
@@ -3300,7 +3312,7 @@ mod tests {
                 }
                 serde_json::Value::String(text) => serde_json::json!(format!("{text}x")),
                 other => panic!(
-                    "`{field}` serializes as {other:?}, a shape this test does not know how to                      change -- teach it that shape rather than skipping the field"
+                    "`{field}` serializes as {other:?}, a shape this test does not know how to change -- teach it that shape rather than skipping the field"
                 ),
             };
             let mut candidate = document.clone();
@@ -3312,7 +3324,7 @@ mod tests {
             assert_ne!(
                 proxy_config_version(&options),
                 baseline,
-                "changing `{field}` left the config version unchanged, so a push that changes                  only this field is answered \"unchanged\" and silently dropped"
+                "changing `{field}` left the config version unchanged, so a push that changes only this field is answered \"unchanged\" and silently dropped"
             );
             checked += 1;
         }
@@ -3321,7 +3333,7 @@ mod tests {
         // pass every assertion above while checking no field at all.
         assert!(
             checked >= 20,
-            "expected to check every option field, but only reached {checked} -- if the document              shrank this test stopped covering what it claims to"
+            "expected to check every option field, but only reached {checked} -- if the document shrank this test stopped covering what it claims to"
         );
     }
 
@@ -3367,7 +3379,7 @@ mod tests {
         });
         assert_ne!(
             shard_addressed.status.code, "proxy_account_denied",
-            "if this now refuses, the shard-addressed paths have been brought under account              enforcement -- update the `ingestion_account` doc, which says they are not"
+            "if this now refuses, the shard-addressed paths have been brought under account enforcement -- update the `ingestion_account` doc, which says they are not"
         );
     }
 
@@ -3420,7 +3432,7 @@ mod tests {
         assert_eq!(
             proxy_stat_failures(&proxy),
             1,
-            "the metaserver is a closed port, so this check cannot have answered -- a zero here              means the failure went back to being discarded"
+            "the metaserver is a closed port, so this check cannot have answered -- a zero here means the failure went back to being discarded"
         );
     }
 
@@ -4035,13 +4047,13 @@ mod tests {
         let exchanges = crate::http::EXCHANGES.load(std::sync::atomic::Ordering::Relaxed) - exchanges_before;
         assert_eq!(
             exchanges, ITERS as u64,
-            "only {exchanges} of {} calls reached the socket, so this row is not measuring a              forward. First answer: {sample}",
+            "only {exchanges} of {} calls reached the socket, so this row is not measuring a forward. First answer: {sample}",
             ITERS
         );
         assert_eq!(non_200, 0, "a call did not answer 200: {sample}");
         assert!(
             sample.contains("\"ok\":true"),
-            "the backend must answer a SUCCESS the client can parse, or this measures the failure              path: {sample}"
+            "the backend must answer a SUCCESS the client can parse, or this measures the failure path: {sample}"
         );
         rows.push((
             "POST /execute, backend allocates NOTHING",
@@ -4083,7 +4095,7 @@ mod tests {
         assert_eq!(
             exchanges,
             ITERS as u64 + 1,
-            "only {exchanges} of {} calls reached the socket, so this row is not measuring a              forward",
+            "only {exchanges} of {} calls reached the socket, so this row is not measuring a forward",
             ITERS + 1
         );
         rows.push((
@@ -4749,6 +4761,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_328),
@@ -4789,6 +4802,7 @@ mod tests {
         assert_eq!(proxy.info().route_cache_size, 1);
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_329),
@@ -4867,6 +4881,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_340),
@@ -4919,6 +4934,7 @@ mod tests {
         }
 
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_341),
@@ -5381,7 +5397,7 @@ mod tests {
         }
         assert!(
             fields.len() >= 3,
-            "read {fields:?} out of the spec's KeyRequest; with fewer than three this test would              be posting an empty body and proving nothing"
+            "read {fields:?} out of the spec's KeyRequest; with fewer than three this test would be posting an empty body and proving nothing"
         );
 
         let body = format!(
@@ -5402,7 +5418,7 @@ mod tests {
         let text = String::from_utf8_lossy(&answered).to_string();
         assert!(
             !text.contains("bad_request"),
-            "a body built from the spec's own KeyRequest fields ({body}) is rejected by the route              the spec documents: {code} {text}"
+            "a body built from the spec's own KeyRequest fields ({body}) is rejected by the route the spec documents: {code} {text}"
         );
     }
 
@@ -5515,7 +5531,7 @@ mod tests {
             assert_eq!(
                 listed,
                 keys_of(body),
-                "the spec's {schema} does not name the fields the route reads, and serde drops a                  name it does not know without saying so"
+                "the spec's {schema} does not name the fields the route reads, and serde drops a name it does not know without saying so"
             );
         }
     }
@@ -5557,7 +5573,7 @@ mod tests {
 
         assert!(
             report.entries.len() >= 5,
-            "the report listed {} entries; with fewer than five this test would be checking              almost nothing",
+            "the report listed {} entries; with fewer than five this test would be checking almost nothing",
             report.entries.len()
         );
 
@@ -5590,7 +5606,7 @@ mod tests {
 
         assert!(
             unserved.is_empty(),
-            "the operational surface reports covered: true for {} route(s) the proxy answers 404              for: {unserved:#?}",
+            "the operational surface reports covered: true for {} route(s) the proxy answers 404 for: {unserved:#?}",
             unserved.len()
         );
     }
@@ -5667,7 +5683,7 @@ mod tests {
 
         assert!(
             missing.is_empty(),
-            "the published proxy spec documents {} route(s) the proxy answers 404 for, so anyone              building against it gets a 404: {missing:?}",
+            "the published proxy spec documents {} route(s) the proxy answers 404 for, so anyone building against it gets a 404: {missing:?}",
             missing.len()
         );
     }
@@ -6013,7 +6029,7 @@ mod tests {
         let (short, short_errors) = send_five(&backend_answering(2));
         assert!(
             !short.status.ok,
-            "a batch answered 2 of 5 came back ok with {} responses; a caller indexing its own              commands reads the wrong answers and is told nothing",
+            "a batch answered 2 of 5 came back ok with {} responses; a caller indexing its own commands reads the wrong answers and is told nothing",
             short.responses.len()
         );
         assert_eq!(short.status.code, "bad_response");
@@ -6272,7 +6288,7 @@ mod tests {
         let refused = proxy.admit_context(&scope, true);
         assert!(
             refused.is_err(),
-            "a context write must be refused after writes are disabled -- admitting here means              the push did not reach the snapshot this thread already held"
+            "a context write must be refused after writes are disabled -- admitting here means the push did not reach the snapshot this thread already held"
         );
 
         // And back, so this cannot pass by the snapshot being stuck on the refusing value.
@@ -6457,7 +6473,7 @@ mod tests {
         assert_eq!(
             registers.load(Ordering::SeqCst),
             1,
-            "six heartbeats against a not_found metaserver should attempt registration once,              not once each"
+            "six heartbeats against a not_found metaserver should attempt registration once, not once each"
         );
         assert_eq!(heartbeats.load(Ordering::SeqCst), 6, "heartbeats themselves continue");
         assert_eq!(
@@ -9007,6 +9023,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_384),
@@ -9115,6 +9132,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_380),
@@ -9180,7 +9198,7 @@ mod tests {
         // written and resolved again. The cache existed and never once returned a hit.
         assert!(
             gets <= 2,
-            "10 requests should resolve at most twice, took {gets} shard lookups              (hits={} misses={} refreshes={})",
+            "10 requests should resolve at most twice, took {gets} shard lookups (hits={} misses={} refreshes={})",
             report.client.route_cache_hits,
             report.client.route_cache_misses,
             report.client.route_refreshes
@@ -9385,6 +9403,7 @@ mod tests {
 
         let meta = crate::meta::SingleNodeMeta::default();
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_374),
@@ -9430,6 +9449,7 @@ mod tests {
 
         // The shard moves to the second datanode.
         meta.register_server(crate::meta::RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: test_addr(18_375),

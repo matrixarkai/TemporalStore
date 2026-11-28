@@ -26,6 +26,7 @@ HARNESS=${HARNESS:?path of data_server_write_latency_harness}
 GATEWAY=${GATEWAY:?host:port of a gateway on the cluster}
 META=${META:?comma separated metadata endpoints}
 OPS=${OPS:-100}
+IO_TIMEOUT_MS=${IO_TIMEOUT_MS:-30000}
 PORT=${PORT:-17102}
 WORK=${WORK:-$(mktemp -d)}
 CLUSTER_ID=${CLUSTER_ID:-e2e-$(date +%s)-$$}
@@ -102,8 +103,8 @@ start_node direct-first TS_MATRIXOBJECT_META="$META" || exit 1
 echo "$(sed 's/\x1b\[[0-9;]*m//g' "$WORK/direct-first/server.log" | grep -o 'networked matrixobject durability active.*uri="[^"]*"' | head -1)"
 apply "$WORK/w1.txt" "$WORK/w1.resp"
 apply "$WORK/r.txt" "$WORK/reads1.txt"
-"$HARNESS" 127.0.0.1:$PORT "$OPS" 16 64 0 --allow-debug --op=featappend > "$WORK/direct-first/featappend.log" 2>&1; echo "$?" > "$WORK/feature-append.status"
-"$HARNESS" 127.0.0.1:$PORT "$OPS" 16 64 0 --allow-debug --op=seqadd > "$WORK/direct-first/seqadd.log" 2>&1; echo "$?" > "$WORK/sequence.status"
+"$HARNESS" 127.0.0.1:$PORT "$OPS" 16 64 0 --allow-debug --io-timeout-ms="$IO_TIMEOUT_MS" --op=featappend > "$WORK/direct-first/featappend.log" 2>&1; echo "$?" > "$WORK/feature-append.status"
+"$HARNESS" 127.0.0.1:$PORT "$OPS" 16 64 0 --allow-debug --io-timeout-ms="$IO_TIMEOUT_MS" --op=seqadd > "$WORK/direct-first/seqadd.log" 2>&1; echo "$?" > "$WORK/sequence.status"
 stop_node
 
 echo "== run 2: gateway, fresh node (must replay run 1)"

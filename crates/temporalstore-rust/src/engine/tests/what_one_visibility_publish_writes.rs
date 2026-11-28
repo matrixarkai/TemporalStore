@@ -73,14 +73,11 @@ fn publish_cost(keys: usize, named: usize) -> PublishCost {
 
     // THE DENOMINATOR, ASSERTED BEFORE THE RATIO. An empty store publishes nothing and divides by
     // nothing.
-    let seeded = engine
-        .shards
-        .read()
-        .expect("engine lock poisoned")
-        .get(&SHARD)
-        .expect("shard is loaded")
-        .strings()
-        .len();
+    let seeded = engine.shards.with_state(SHARD, |state| {
+        state.expect("shard is loaded")
+            .strings()
+            .len()
+    });
     assert_eq!(
         keys, seeded,
         "the seed must have landed, or nothing below means anything"

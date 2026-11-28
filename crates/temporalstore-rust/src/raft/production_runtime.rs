@@ -98,12 +98,29 @@ pub struct ProductionRaftRuntime {
 
 impl ProductionRaftRuntime {
     pub fn start(options: ProductionRaftRuntimeOptions) -> Result<Self, RaftError> {
+        Self::start_with_factory(options, None)
+    }
+
+    /// Build the local replica's empty serving engine at startup and at snapshot replacement.
+    /// Each call must open an isolated, empty engine. Raft restores its state before publication.
+    pub fn start_with_local_engine_factory(
+        options: ProductionRaftRuntimeOptions,
+        factory: impl Fn() -> Result<TemporalEngine, RaftError> + Send + Sync + 'static,
+    ) -> Result<Self, RaftError> {
+        Self::start_with_factory(options, Some(ReplicaEngineFactory(Arc::new(factory))))
+    }
+
+    fn start_with_factory(
+        options: ProductionRaftRuntimeOptions,
+        factory: Option<ReplicaEngineFactory>,
+    ) -> Result<Self, RaftError> {
         options.validate()?;
-        let cluster = RaftCluster::restore_single_shard_from_wal(
+        let cluster = RaftCluster::restore_single_shard_with_factory(
             &options.wal_dir,
             options.shard_id,
             options.voter_ids(),
             options.config.clone(),
+            factory.map(|factory| (options.local_node_id, factory)),
         )?;
         // One node per process here, so the WAL persist and the committed-entry apply can both be
         // scoped to our own node instead of covering every peer's shadow copy.
@@ -235,13 +252,94 @@ impl ProductionRaftRuntime {
     }
 
     pub fn propose(&self, command: Command) -> Result<CommandResponse, RaftError> {
+        self.propose_with_admission(command)
+            .map_err(RaftError::legacy_proposal_error)
+    }
+
+    /// The HTTP proposal endpoint accepts mutations, not query execution.
+    /// Keep its boundary tied to the engine's authoritative write classifier.
+    pub fn validate_proposal_command(command: &Command) -> Result<(), Status> {
+        if !crate::engine::is_write_command(command) {
+            return Err(Status::error(
+                "invalid_argument",
+                "the proposal endpoint accepts write commands only; use a read route",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Distinguish a request rejected before its first append from one that
+    /// may already have executed on the previous leader.
+    pub fn propose_with_admission(&self, command: Command) -> Result<CommandResponse, RaftError> {
+        if matches!(command, Command::LeaderEstablish) {
+            return Err(RaftError::InvalidConfig(
+                "leader establishment is a Raft runtime operation".to_string(),
+            ));
+        }
         if self.cluster.leader_id() != self.options.local_node_id {
             return Err(RaftError::NotLeader {
                 node_id: self.options.local_node_id,
-            });
+            }
+            .before_proposal_append());
         }
         let transport = self.transport();
-        self.cluster.propose_distributed(command, &transport)
+        self.cluster.propose_distributed_with_admission(command, &transport)
+    }
+
+    /// Delete cache strings through the normal replication path. A proposal
+    /// can proceed only while the inspected log tip is still the current tip.
+    pub fn reclaim_cache_budget(
+        &self,
+        budget: crate::meta::ShardCacheBudget,
+        limit: usize,
+        authorized: &dyn Fn() -> bool,
+    ) -> Option<(u64, usize)> {
+        if budget.shard_id != self.options.shard_id || !authorized() {
+            return None;
+        }
+        let (engine, mut fence) = {
+            let state = self.cluster.inner.read().expect("raft cluster lock poisoned");
+            let leader = state.nodes.get(&self.options.local_node_id)?;
+            let fence = CacheReclaimFence {
+                node_id: self.options.local_node_id,
+                term: budget.raft_term,
+                index: leader.commit_index,
+                authorized,
+            };
+            if !leader.replica_role.can_serve_data() || !state.cache_reclaim_fence_is_current(fence) {
+                return None;
+            }
+            (leader.engine.clone(), fence)
+        };
+        let (before, victims) = engine.plan_cache_reclamation(budget.shard_id, limit)?;
+        let mut remaining = before;
+        let mut deleted = 0;
+        if remaining <= budget.bytes {
+            return Some((before, deleted));
+        }
+        let transport = self.transport();
+        for (key, bytes) in victims {
+            if remaining <= budget.bytes || !authorized() {
+                break;
+            }
+            match self.cluster.propose_distributed_one(
+                Command::CommonDelete { key },
+                &transport,
+                Some(fence),
+            ) {
+                Ok(CommandResponse::Empty) => {
+                    fence.index = fence.index.saturating_add(1);
+                    remaining = remaining.saturating_sub(bytes);
+                    deleted += 1;
+                }
+                Ok(_) => break,
+                Err(error) => {
+                    tracing::warn!(shard_id = budget.shard_id, %error, "cache reclamation paused");
+                    break;
+                }
+            }
+        }
+        Some((before, deleted))
     }
 
     pub fn apply_membership_change_safely(
@@ -327,8 +425,18 @@ impl ProductionRaftRuntime {
         node_id: RaftNodeId,
         command: Command,
     ) -> Result<CommandResponse, RaftError> {
+        self.read_local_with_status(node_id, command)
+            .map(|response| response.response)
+    }
+
+    /// Keep semantic engine refusals after the existing distributed read gates.
+    pub fn read_local_with_status(
+        &self,
+        node_id: RaftNodeId,
+        command: Command,
+    ) -> Result<crate::types::ExecuteResponse, RaftError> {
         self.cluster.read_index(node_id)?;
-        self.cluster.read_from_replica(node_id, command)
+        self.cluster.read_from_replica_with_status(node_id, command)
     }
 
     pub fn wait_for_applied_index(
@@ -360,6 +468,9 @@ impl ProductionRaftRuntime {
         };
         let rpc_options = self.options.rpc;
         let snapshot_check_interval = self.options.snapshot_check_interval_ms;
+        // Writers enable the marker only after every replica can decode it.
+        let write_election_marker =
+            std::env::var("TS_RAFT_ELECTION_MARKER").as_deref() == Ok("1");
         let auth_token = self
             .options
             .security
@@ -380,8 +491,11 @@ impl ProductionRaftRuntime {
         // re-drawn after every attempt so two survivors do not stay locked in step.
         // Voters that must acknowledge for this node to keep leading (this node included).
         let majority_size = self.options.nodes.len() / 2 + 1;
+        let commit_timer = cluster.register_data_commit_timer();
         let handle = thread::spawn(move || {
+            let _commit_timer = commit_timer;
             let mut last_heartbeat = InstantCompat::now();
+            let mut first_heartbeat_peer = 0;
             let mut last_tick = InstantCompat::now();
             let mut last_contact_epoch = cluster.leader_contact_epoch();
             let mut silent_ticks = 0u64;
@@ -488,14 +602,20 @@ impl ProductionRaftRuntime {
                             rpc_options,
                             Some(auth_token.clone()),
                         );
-                        let mut sent = 0;
+                        let mut remaining_entries = max_catchup_entries_per_heartbeat;
                         let mut reached = 1usize; // self
-                        for target_id in &peer_ids {
-                            if sent >= max_catchup_entries_per_heartbeat {
-                                break;
-                            }
-                            let request = match cluster.build_append_entries_request(*target_id)
-                            {
+                        // Rotate who spends the catch-up allowance first. Every peer still
+                        // receives a consistency probe when the allowance is exhausted.
+                        let peers = peer_ids
+                            .iter()
+                            .cycle()
+                            .skip(first_heartbeat_peer)
+                            .take(peer_ids.len());
+                        first_heartbeat_peer = (first_heartbeat_peer + 1) % peer_ids.len().max(1);
+                        for target_id in peers {
+                            let request = match cluster.build_capped_append_entries_request(
+                                *target_id, remaining_entries,
+                            ) {
                                 Ok(request) => request,
                                 Err(err) => {
                                     // Skipping here is how a peer silently stops being replicated
@@ -509,19 +629,19 @@ impl ProductionRaftRuntime {
                                     continue;
                                 }
                             };
-                            let entry_count = request.entries.len() as u64;
+                            remaining_entries -= request.entries.len() as u64;
+                            let sent_commit = (request.term, request.leader_commit);
                             match transport.append_entries(request) {
                                 Ok(response) => {
                                     let success = response.success;
                                     let peer_term = response.term;
-                                    let _ = cluster
-                                        .record_append_entries_response(*target_id, &response);
+                                    let _ = cluster.record_append_response_with_commit(
+                                        *target_id, &response, Some(sent_commit),
+                                    );
                                     peer_failures.insert(*target_id, 0);
                                     reached += 1;
                                     let _ = cluster.set_alive(*target_id, true);
-                                    if success {
-                                        sent += entry_count.max(1);
-                                    } else if peer_term > 0 {
+                                    if !success && peer_term > 0 {
                                         // A peer that has moved to a newer term has seen a
                                         // different leader; stand down rather than keep
                                         // appending as a superseded leader.
@@ -530,6 +650,7 @@ impl ProductionRaftRuntime {
                                     }
                                 }
                                 Err(_) => {
+                                    let _ = cluster.record_append_entries_send_failure(*target_id);
                                     let failures =
                                         peer_failures.entry(*target_id).or_insert(0);
                                     *failures = failures.saturating_add(1);
@@ -630,6 +751,9 @@ impl ProductionRaftRuntime {
                                 // timeouts fire and supersede it.
                                 force_heartbeat = true;
                                 last_contact_epoch = cluster.leader_contact_epoch();
+                                if !write_election_marker {
+                                    continue;
+                                }
                                 // Commit one entry of this term, which moves the commit point to
                                 // cover everything before it. Until that happens a leader cannot
                                 // safely treat older entries as committed however many replicas

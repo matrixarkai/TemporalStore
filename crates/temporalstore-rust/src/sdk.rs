@@ -17,6 +17,28 @@ use crate::{ClientError, TableOptions, TemporalStoreClient};
 pub trait TemporalStoreSdkExecutor: Send + Sync + 'static {
     fn execute_sdk(&self, request: types::ExecuteRequest) -> types::ExecuteResponse;
 
+    fn execute_checked_sdk(
+        &self,
+        _request: types::ExecuteRequest,
+        _load_version: u64,
+    ) -> types::ExecuteResponse {
+        types::ExecuteResponse {
+            status: types::Status::error("fencing_unsupported", "executor cannot check load version"),
+            response: types::CommandResponse::Empty,
+        }
+    }
+
+    fn batch_execute_checked_sdk(
+        &self,
+        _request: types::BatchExecuteRequest,
+        _load_version: u64,
+    ) -> types::BatchExecuteResponse {
+        types::BatchExecuteResponse {
+            status: types::Status::error("fencing_unsupported", "executor cannot check load version"),
+            responses: Vec::new(),
+        }
+    }
+
     fn batch_execute_sdk(
         &self,
         request: types::BatchExecuteRequest,
@@ -207,6 +229,38 @@ impl TemporalStoreTonicAdapter {
     pub fn from_arc(executor: Arc<dyn TemporalStoreSdkExecutor>) -> Self {
         Self { executor }
     }
+
+    async fn execute_command(
+        &self,
+        request: v1::ExecuteRequest,
+        load_version: Option<u64>,
+    ) -> Result<Response<v1::ExecuteResponse>, TonicStatus> {
+        let request = sdk_execute_request_to_types(request)?;
+        let executor = Arc::clone(&self.executor);
+        let response = tokio::task::spawn_blocking(move || match load_version {
+            Some(version) => executor.execute_checked_sdk(request, version),
+            None => executor.execute_sdk(request),
+        })
+        .await
+        .map_err(|_| TonicStatus::internal("command execution failed"))?;
+        Ok(Response::new(types_execute_response_to_sdk(response)))
+    }
+
+    async fn execute_batch(
+        &self,
+        request: v1::BatchExecuteRequest,
+        load_version: Option<u64>,
+    ) -> Result<Response<v1::BatchExecuteResponse>, TonicStatus> {
+        let request = sdk_batch_request_to_types(request)?;
+        let executor = Arc::clone(&self.executor);
+        let response = tokio::task::spawn_blocking(move || match load_version {
+            Some(version) => executor.batch_execute_checked_sdk(request, version),
+            None => executor.batch_execute_sdk(request),
+        })
+        .await
+        .map_err(|_| TonicStatus::internal("batch execution failed"))?;
+        Ok(Response::new(types_batch_response_to_sdk(response)))
+    }
 }
 
 #[tonic::async_trait]
@@ -215,18 +269,42 @@ impl v1::temporal_store_service_server::TemporalStoreService for TemporalStoreTo
         &self,
         request: Request<v1::ExecuteRequest>,
     ) -> Result<Response<v1::ExecuteResponse>, TonicStatus> {
-        let request = sdk_execute_request_to_types(request.into_inner())?;
-        let response = self.executor.execute_sdk(request);
-        Ok(Response::new(types_execute_response_to_sdk(response)))
+        let request = request.into_inner();
+        if request.load_version.is_some() {
+            return Err(TonicStatus::invalid_argument("use ExecuteChecked with load_version"));
+        }
+        self.execute_command(request, None).await
     }
 
     async fn batch_execute(
         &self,
         request: Request<v1::BatchExecuteRequest>,
     ) -> Result<Response<v1::BatchExecuteResponse>, TonicStatus> {
-        let request = sdk_batch_request_to_types(request.into_inner())?;
-        let response = self.executor.batch_execute_sdk(request);
-        Ok(Response::new(types_batch_response_to_sdk(response)))
+        let request = request.into_inner();
+        if request.load_version.is_some() {
+            return Err(TonicStatus::invalid_argument("use BatchExecuteChecked with load_version"));
+        }
+        self.execute_batch(request, None).await
+    }
+
+    async fn execute_checked(
+        &self,
+        request: Request<v1::ExecuteRequest>,
+    ) -> Result<Response<v1::ExecuteResponse>, TonicStatus> {
+        let request = request.into_inner();
+        let version = request.load_version
+            .ok_or_else(|| TonicStatus::invalid_argument("load_version is required"))?;
+        self.execute_command(request, Some(version)).await
+    }
+
+    async fn batch_execute_checked(
+        &self,
+        request: Request<v1::BatchExecuteRequest>,
+    ) -> Result<Response<v1::BatchExecuteResponse>, TonicStatus> {
+        let request = request.into_inner();
+        let version = request.load_version
+            .ok_or_else(|| TonicStatus::invalid_argument("load_version is required"))?;
+        self.execute_batch(request, Some(version)).await
     }
 
     async fn open_table(
@@ -302,6 +380,14 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                     value: command.value,
                 }
             }
+        }
+        v1::command::Kind::StringGetRange(command) => types::Command::StringGetRange {
+            key: command.key,
+            start: command.start,
+            end: command.end,
+        },
+        v1::command::Kind::StringLen(command) => {
+            types::Command::StringLen { key: command.key }
         }
         v1::command::Kind::StringGet(command) => types::Command::StringGet { key: command.key },
         v1::command::Kind::HashDelete(command) => types::Command::HashDelete {
@@ -399,6 +485,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             field: command.field,
             value: command.value,
         },
+        v1::command::Kind::HashGetAll(command) => types::Command::HashGetAll { key: command.key },
         v1::command::Kind::HashGet(command) => types::Command::HashGet {
             key: command.key,
             field: command.field,
@@ -533,6 +620,7 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             key: command.key,
             ttl_ms: command.ttl_ms,
         },
+        v1::command::Kind::CommonTtl(command) => types::Command::CommonTtl { key: command.key },
         v1::command::Kind::CommonExists(command) => {
             types::Command::CommonExists { key: command.key }
         }
@@ -606,6 +694,21 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
         v1::command::Kind::CommonPersist(command) => {
             types::Command::CommonPersist { key: command.key }
         }
+        v1::command::Kind::FeatureAggQuery(command) => types::Command::FeatureAggQuery {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            aggregator: command.aggregator,
+            count: command.count.map(|value| platform_usize(value, "count")).transpose()?,
+        },
+        v1::command::Kind::FeatureProtoAggQuery(command) => types::Command::FeatureProtoAggQuery {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            aggregator: command.aggregator,
+            count: command.count.map(|value| platform_usize(value, "count")).transpose()?,
+        },
+        v1::command::Kind::FeatureReduceQuery(command) => feature_reduce_from_proto(command)?,
         v1::command::Kind::FeatureDelete(command) => {
             types::Command::FeatureDelete { key: command.key }
         }
@@ -1487,6 +1590,68 @@ pub(crate) fn window_reduce_remove_from_proto(command: v1::WindowReduceRemove) -
     ))
 }
 
+pub(crate) fn feature_reduce_to_proto(
+    key: &str,
+    start_ms: u64,
+    end_ms: u64,
+    reducer: &types::FeatureReducer,
+    rounding: types::FeatureRounding,
+    scale: u64,
+    count: Option<usize>,
+) -> v1::FeatureReduceQuery {
+    use types::FeatureReducer as R;
+    use v1::feature_reduce_query::Reducer as W;
+    let reducer = match reducer {
+        R::Mean => W::Mean(v1::FeatureReduceUnit {}),
+        R::Variance { sample } => W::Variance(v1::FeatureReduceSample { sample: *sample }),
+        R::StdDev { sample } => W::StdDev(v1::FeatureReduceSample { sample: *sample }),
+        R::DecayedSum { half_life_ms, as_of_ms } => W::DecayedSum(v1::FeatureReduceDecay {
+            half_life_ms: *half_life_ms, as_of_ms: *as_of_ms,
+        }),
+        R::Ewma { alpha } => W::Ewma(*alpha),
+        R::Rate => W::Rate(v1::FeatureReduceUnit {}),
+        R::Ratio { at_least } => W::Ratio(*at_least),
+        R::Wilson { at_least, z } => W::Wilson(v1::FeatureReduceWilson { at_least: *at_least, z: *z }),
+        R::Weighted { weights } => W::Weighted(v1::FeatureReduceWeighted { weights: weights.clone() }),
+    };
+    let rounding = match rounding {
+        types::FeatureRounding::Nearest => v1::FeatureReduceRounding::Nearest,
+        types::FeatureRounding::Floor => v1::FeatureReduceRounding::Floor,
+        types::FeatureRounding::Ceil => v1::FeatureReduceRounding::Ceil,
+    };
+    v1::FeatureReduceQuery {
+        key: key.to_owned(), start_ms, end_ms, count: count.map(|value| value as u64),
+        scale: Some(scale), rounding: rounding as i32, reducer: Some(reducer),
+    }
+}
+
+fn feature_reduce_from_proto(command: v1::FeatureReduceQuery) -> Result<types::Command, TonicStatus> {
+    use types::FeatureReducer as R;
+    use v1::feature_reduce_query::Reducer as W;
+    let reducer = match command.reducer.ok_or_else(|| TonicStatus::invalid_argument("missing reducer"))? {
+        W::Mean(_) => R::Mean,
+        W::Variance(value) => R::Variance { sample: value.sample },
+        W::StdDev(value) => R::StdDev { sample: value.sample },
+        W::DecayedSum(value) => R::DecayedSum { half_life_ms: value.half_life_ms, as_of_ms: value.as_of_ms },
+        W::Ewma(alpha) => R::Ewma { alpha },
+        W::Rate(_) => R::Rate,
+        W::Ratio(at_least) => R::Ratio { at_least },
+        W::Wilson(value) => R::Wilson { at_least: value.at_least, z: value.z },
+        W::Weighted(value) => R::Weighted { weights: value.weights },
+    };
+    let rounding = match v1::FeatureReduceRounding::try_from(command.rounding) {
+        Ok(v1::FeatureReduceRounding::Nearest) => types::FeatureRounding::Nearest,
+        Ok(v1::FeatureReduceRounding::Floor) => types::FeatureRounding::Floor,
+        Ok(v1::FeatureReduceRounding::Ceil) => types::FeatureRounding::Ceil,
+        Err(_) => return Err(TonicStatus::invalid_argument("unknown rounding")),
+    };
+    Ok(types::Command::FeatureReduceQuery {
+        key: command.key, start_ms: command.start_ms, end_ms: command.end_ms,
+        reducer, rounding, scale: command.scale.unwrap_or(1),
+        count: command.count.map(|value| platform_usize(value, "count")).transpose()?,
+    })
+}
+
 /// THE FAMILY TAG, RUST SPELLING TO WIRE NUMBER.
 ///
 /// Infallible in this direction on purpose: every Rust variant has a number, so an encoder cannot
@@ -1612,35 +1777,42 @@ pub fn types_batch_response_to_sdk(
         responses: response
             .responses
             .into_iter()
-            .map(types_execute_response_to_sdk)
-            .filter_map(|response| response.response)
+            .map(|response| {
+                let mut payload = types_command_response_to_sdk(response.response);
+                if !response.status.ok {
+                    payload.status = Some(types_status_to_sdk(response.status));
+                }
+                payload
+            })
             .collect(),
         topology_version: 0,
     }
 }
 
 pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::CommandResponse {
+    use v1::CommandResultKind as Kind;
     match response {
         types::CommandResponse::Empty => v1::CommandResponse {
+            result_kind: Kind::Empty as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             ..Default::default()
         },
         types::CommandResponse::Bytes { value } => v1::CommandResponse {
+            result_kind: Kind::Bytes as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
+            value_present: Some(value.is_some()),
             value: value.unwrap_or_default(),
             ..Default::default()
         },
-        types::CommandResponse::Integer { value } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            count: value.max(0) as u64,
-            ..Default::default()
-        },
+        types::CommandResponse::Integer { value } => sdk_integer_response(value, Kind::Integer),
+        types::CommandResponse::Aggregate { value } => sdk_integer_response(value, Kind::Aggregate),
         types::CommandResponse::CellMergeReceipt {
             samples_written,
             cells_created,
             cells_merged,
             replayed,
         } => v1::CommandResponse {
+            result_kind: Kind::CellMergeReceipt as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             count: samples_written,
             cells_created,
@@ -1657,6 +1829,7 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             buckets_folded,
             buckets_remaining,
         } => v1::CommandResponse {
+            result_kind: Kind::WindowReduceRollupReceipt as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             count: samples_after,
             samples_before,
@@ -1673,6 +1846,7 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             cells_before,
             cells_removed,
         } => v1::CommandResponse {
+            result_kind: Kind::WindowReduceRemoveReceipt as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             count: samples_after,
             samples_before,
@@ -1681,29 +1855,49 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             ..Default::default()
         },
         types::CommandResponse::Members { members } => v1::CommandResponse {
+            result_kind: Kind::Members as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             values: members,
             ..Default::default()
         },
-        types::CommandResponse::Values { values } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            values: values
+        types::CommandResponse::Values { values } => {
+            let mut present = vec![0; values.len().div_ceil(8)];
+            let values = values
                 .into_iter()
-                .map(|value| value.unwrap_or_default())
-                .collect(),
-            ..Default::default()
-        },
-        types::CommandResponse::HashEntries { entries } => v1::CommandResponse {
-            status: Some(types_status_to_sdk(types::Status::ok())),
-            values: entries.into_iter().map(|(_, value)| value).collect(),
-            ..Default::default()
-        },
+                .enumerate()
+                .map(|(index, value)| {
+                    if value.is_some() {
+                        present[index / 8] |= 1 << (index % 8);
+                    }
+                    value.unwrap_or_default()
+                })
+                .collect();
+            v1::CommandResponse {
+                result_kind: Kind::Values as i32,
+                status: Some(types_status_to_sdk(types::Status::ok())),
+                values,
+                values_present: Some(present),
+                ..Default::default()
+            }
+        }
+        types::CommandResponse::HashEntries { entries } => {
+            let (entry_names, values) = entries.into_iter().unzip();
+            v1::CommandResponse {
+                result_kind: Kind::HashEntries as i32,
+                status: Some(types_status_to_sdk(types::Status::ok())),
+                values,
+                entry_names,
+                ..Default::default()
+            }
+        }
         types::CommandResponse::FeaturePoints { points } => v1::CommandResponse {
+            result_kind: Kind::FeaturePoints as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             feature_points: points.into_iter().map(types_feature_point_to_sdk).collect(),
             ..Default::default()
         },
         types::CommandResponse::SequenceRows { rows } => v1::CommandResponse {
+            result_kind: Kind::SequenceRows as i32,
             status: Some(types_status_to_sdk(types::Status::ok())),
             sequence_rows: rows
                 .into_iter()
@@ -1729,6 +1923,16 @@ pub fn types_command_response_to_sdk(response: types::CommandResponse) -> v1::Co
             ))),
             ..Default::default()
         },
+    }
+}
+
+fn sdk_integer_response(value: i64, kind: v1::CommandResultKind) -> v1::CommandResponse {
+    v1::CommandResponse {
+        status: Some(types_status_to_sdk(types::Status::ok())),
+        count: value.max(0) as u64,
+        integer: Some(value),
+        result_kind: kind as i32,
+        ..Default::default()
     }
 }
 
@@ -1812,7 +2016,7 @@ fn client_error_status(err: ClientError) -> types::Status {
     types::Status::error(code, err.to_string())
 }
 
-fn client_error_code(err: &ClientError) -> &'static str {
+pub(crate) fn client_error_code(err: &ClientError) -> &'static str {
     match err {
         ClientError::Http(_) => "http_error",
         ClientError::Status(_) => "status_error",
@@ -1822,6 +2026,7 @@ fn client_error_code(err: &ClientError) -> &'static str {
         // apply from one that may have. Retrying the first is free; retrying the second is how
         // a write gets applied twice.
         ClientError::WriteOutcomeUnknown(_) => "write_outcome_unknown",
+        ClientError::WriteNotStarted(_) => "raft_write_not_started",
     }
 }
 
@@ -1840,10 +2045,49 @@ mod tests {
     use super::*;
 
     #[test]
+    fn binary_responses_preserve_empty_and_missing_values() {
+        for (value, present) in [(None, false), (Some(vec![]), true)] {
+            let response = types_command_response_to_sdk(types::CommandResponse::Bytes { value });
+            assert_eq!(response.value_present, Some(present));
+            assert!(response.value.is_empty());
+        }
+        let mut values = vec![None; 10];
+        values[0] = Some(vec![]);
+        values[2] = Some(vec![0, 255]);
+        values[9] = Some(vec![]);
+        let response = types_command_response_to_sdk(types::CommandResponse::Values { values });
+        assert_eq!(response.values_present, Some(vec![5, 2]));
+        assert!(response.values[0].is_empty());
+        assert_eq!(response.values[2], vec![0, 255]);
+        let empty_projection = types_command_response_to_sdk(types::CommandResponse::Values {
+            values: Vec::new(),
+        });
+        assert_eq!(empty_projection.values_present, Some(vec![]));
+        let response = types_command_response_to_sdk(types::CommandResponse::HashEntries {
+            entries: vec![("empty".into(), vec![]), ("other".into(), vec![255])],
+        });
+        assert_eq!(response.entry_names, ["empty", "other"]);
+        assert_eq!(response.values, [vec![], vec![255]]);
+    }
+
+    #[test]
+    fn integer_responses_preserve_negative_values() {
+        for (input, expected) in [
+            (types::CommandResponse::Integer { value: -2 }, -2),
+            (types::CommandResponse::Aggregate { value: -4 }, -4),
+        ] {
+            let response = types_command_response_to_sdk(input);
+            assert_eq!(response.integer, Some(expected));
+            assert_eq!(response.count, 0);
+        }
+    }
+
+    #[test]
     fn generated_sdk_bindings_cover_required_client_surface() {
         let execute = ExecuteRequest {
             shard_id: 7,
             trace_id: 42,
+            load_version: None,
             command: Some(Command {
                 kind: Some(super::v1::command::Kind::StringGet(super::v1::StringGet {
                     key: "sdk-key".to_string(),
@@ -1856,6 +2100,7 @@ mod tests {
         let batch = BatchExecuteRequest {
             shard_id: 7,
             trace_id: 43,
+            load_version: None,
             commands: vec![execute.command.expect("command")],
         };
         assert_eq!(batch.commands.len(), 1);
@@ -1893,6 +2138,7 @@ mod tests {
         let set = ExecuteRequest {
             shard_id: 1,
             trace_id: 10,
+            load_version: None,
             command: Some(Command {
                 kind: Some(v1::command::Kind::StringSet(v1::StringSet {
                     key: "sdk-adapter-key".to_string(),
@@ -1911,6 +2157,7 @@ mod tests {
         let get = ExecuteRequest {
             shard_id: 1,
             trace_id: 11,
+            load_version: None,
             command: Some(Command {
                 kind: Some(v1::command::Kind::StringGet(v1::StringGet {
                     key: "sdk-adapter-key".to_string(),
@@ -1934,6 +2181,7 @@ mod tests {
             .batch_execute(Request::new(BatchExecuteRequest {
                 shard_id: 1,
                 trace_id: 12,
+                load_version: None,
                 commands: vec![
                     Command {
                         kind: Some(v1::command::Kind::StringSet(v1::StringSet {

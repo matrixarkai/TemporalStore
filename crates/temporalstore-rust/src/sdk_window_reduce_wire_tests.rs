@@ -132,12 +132,28 @@ fn every_golden_command_value_sets_the_fields_it_states_and_together_they_cover_
 #[test]
 fn the_command_proto_field_numbers_wire_types_labels_and_enum_values_are_those_it_had_before() {
     let proto = parse_proto(PROTO);
+    assert_historical_schema_with_exact_typed_extension(&proto, PROTO);
+}
+
+fn assert_historical_schema_with_exact_typed_extension(proto: &Parsed, text: &str) {
     let before = read_table(TABLE, &new_name);
     assert_eq!(before.messages.len(), 14);
     assert_eq!(before.enums.len(), 2);
     for (name, old) in &before.messages {
         let now = proto.messages.get(name).unwrap_or_else(|| panic!("{name} is missing from the proto"));
-        assert_eq!(now.fields, old.fields, "{name}: a field number, wire type or label changed");
+        let mut historical_fields = now.fields.clone();
+        if name == "Command" {
+            // The historical table stays immutable; only this separately tested extension is new.
+            assert!(historical_fields.remove(&(88, 2, false)), "the typed command must be single message field 88");
+            assert_eq!(text.matches("message Command {").count(), 1);
+            let body = text.split_once("message Command {").unwrap().1.split_once("\n}\n").unwrap().0;
+            let declarations: Vec<_> = body.lines()
+                .map(|line| line.split("//").next().unwrap().trim())
+                .filter(|line| line.split_once('=').is_some_and(|(_, tag)| tag.trim() == "88;"))
+                .collect();
+            assert_eq!(declarations, ["FeatureReduceQuery feature_reduce_query = 88;"]);
+        }
+        assert_eq!(historical_fields, old.fields, "{name}: a field number, wire type or label changed");
         assert_eq!(now.reserved, old.reserved, "{name}: a reserved number changed");
     }
     for (name, values) in &before.enums {
@@ -160,4 +176,81 @@ fn the_command_proto_names_no_cell_rollup_or_cell_remove_and_no_snapshot_count_f
     assert!(PROTO.contains("WindowReduceRollup window_reduce_rollup = 69;"));
     assert!(PROTO.contains("WindowReduceRemove window_reduce_remove = 75;"));
     assert!(PROTO.contains("uint64 samples_before = 11;"));
+}
+
+#[test]
+fn typed_reducer_declarations_follow_the_wire_reader_contract_and_keep_exact_field_shapes() {
+    let proto = parse_proto(PROTO);
+    assert!(proto.messages["FeatureReduceUnit"].fields.is_empty());
+    assert_eq!(proto.messages["FeatureReduceSample"].fields, BTreeSet::from([(1, 0, false)]));
+    assert_eq!(proto.messages["FeatureReduceWeighted"].fields, BTreeSet::from([(1, 1, true)]));
+    assert_eq!(proto.messages["FeatureReduceDecay"].fields, BTreeSet::from([(1, 0, false), (2, 0, false)]));
+    assert_eq!(proto.messages["FeatureReduceWilson"].fields, BTreeSet::from([(1, 0, false), (2, 1, false)]));
+    assert_eq!(proto.enums["FeatureReduceRounding"], BTreeSet::from([0, 1, 2]));
+    for name in ["FeatureReduceUnit", "FeatureReduceSample", "FeatureReduceWeighted", "FeatureReduceDecay", "FeatureReduceWilson"] {
+        assert!(proto.messages[name].reserved.is_empty(), "{name}");
+    }
+}
+
+#[test]
+fn the_wire_reader_refuses_unterminated_typed_declarations_instead_of_returning_partial_shapes() {
+    for malformed in [
+        "message FeatureReduceSample {\n  bool sample = 1;\n",
+        "message FeatureReduceWeighted {\n  repeated double weights = 1;\n",
+        "enum FeatureReduceRounding {\n  FEATURE_REDUCE_ROUNDING_NEAREST = 0;\n",
+    ] {
+        assert!(std::panic::catch_unwind(|| parse_proto(malformed)).is_err(), "unterminated declaration accepted: {malformed}");
+    }
+}
+
+#[test]
+fn the_historical_schema_oracle_refuses_every_unapproved_command_extension_or_change() {
+    let declaration = "FeatureReduceQuery feature_reduce_query = 88;";
+    assert_eq!(PROTO.matches(declaration).count(), 1);
+    for replacement in [
+        "",
+        "FeatureReduceQuery feature_reduce_query = 89;",
+        "FeatureReduceQuery renamed_typed_query = 88;",
+        "StringGet feature_reduce_query = 88;",
+        "repeated FeatureReduceQuery feature_reduce_query = 88;",
+        "FeatureReduceQuery feature_reduce_query = 88;\n    StringGet unexpected_extension = 89;",
+        "FeatureReduceQuery feature_reduce_query = 88;\n    StringGet duplicate_tag = 88;",
+    ] {
+        let changed = PROTO.replacen(declaration, replacement, 1);
+        assert!(std::panic::catch_unwind(|| {
+            assert_historical_schema_with_exact_typed_extension(&parse_proto(&changed), &changed);
+        }).is_err(), "unapproved schema accepted: {replacement}");
+    }
+    let changed = PROTO.replacen("WindowReduceRollup window_reduce_rollup = 69;", "WindowReduceRollup window_reduce_rollup = 89;", 1);
+    assert_ne!(changed, PROTO);
+    assert!(std::panic::catch_unwind(|| {
+        assert_historical_schema_with_exact_typed_extension(&parse_proto(&changed), &changed);
+    }).is_err(), "a historical command tag changed");
+}
+
+#[test]
+fn the_typed_command_extension_has_exact_field88_golden_bytes_and_generated_roundtrips() {
+    // A separate additive fixture, not a rewrite of any historical golden/table.
+    const QUERY: &[u8] = &[
+        0x0a, 0x05, b't', b'y', b'p', b'e', b'd',
+        0x10, 0x0b, 0x18, 0x13, 0x20, 0x03, 0x28, 0x07, 0x30, 0x01,
+        0x7a, 0x12, 0x0a, 0x10,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0xf8, 0x3f,
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02, 0xc0,
+    ];
+    let query = v1::FeatureReduceQuery {
+        key: "typed".into(), start_ms: 11, end_ms: 19,
+        count: Some(3), scale: Some(7), rounding: 1,
+        reducer: Some(v1::feature_reduce_query::Reducer::Weighted(v1::FeatureReduceWeighted {
+            weights: vec![1.5, -2.25],
+        })),
+    };
+    assert_eq!(query.encode_to_vec(), QUERY);
+    assert_eq!(v1::FeatureReduceQuery::decode(QUERY).unwrap(), query);
+    let command = v1::Command { kind: Some(v1::command::Kind::FeatureReduceQuery(query)) };
+    let mut expected = vec![0xc2, 0x05, 0x25]; // Field88, length-delimited, 37-byte query.
+    expected.extend_from_slice(QUERY);
+    assert_eq!(command.encode_to_vec(), expected);
+    assert_eq!(field_numbers(&expected), BTreeSet::from([88]));
+    assert_eq!(v1::Command::decode(expected.as_slice()).unwrap(), command);
 }

@@ -79,35 +79,52 @@ fn expiry_keeps_independently_live_records_in_memory_and_wal_recovery() {
                     command: Command::StringSetEx { key: live.clone(), value: live.as_bytes().to_vec(), ttl_ms: 60_000 },
                 }).status.ok);
             }
-            {
-                let shards = engine.shards.read().unwrap();
-                assert!(shards[&1].strings().contains_key(due.as_str()));
-                assert!(shards[&1].strings().contains_key(live.as_str()));
-            }
+            engine.shards.with_state(1, |shard_state| {
+                assert!(shard_state.unwrap().strings().contains_key(due.as_str()));
+                assert!(shard_state.unwrap().strings().contains_key(live.as_str()));
+            });
             if cold {
                 let bucket = engine.routing_bucket_for_key(1, due);
                 assert_ne!(bucket, engine.routing_bucket_for_key(1, live));
-                let mut shards = engine.shards.write().unwrap();
-                let released = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(
-                    shards.get_mut(&1).unwrap(), &[bucket]);
-                assert_eq!(released.released_buckets, vec![bucket]);
+                engine.shards.with_state_mut(1, |shard_state| {
+                    let released = storage_bucket_internals::release_bucket_blocks_preserving_inline_pages(
+                        shard_state.unwrap(), &[bucket]);
+                    assert_eq!(released.released_buckets, vec![bucket]);
+                });
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
             let before = engine.wal_store.cached_last_sequence(1);
             let mirror = Arc::new(OutcomeMirror::default());
             engine.set_maintenance_wal_mirror(mirror.clone());
-            let report = engine.sweep_expired_records_for_maintenance(ShardExpirySweepRequest {
+            let request = ShardExpirySweepRequest {
                 shard_id: 1, max_hot_buckets_per_round: usize::from(!cold),
                 max_cold_buckets_per_round: usize::from(cold), load_cold_buckets: true,
                 ..Default::default()
-            }).unwrap();
+            };
+            let positions = [
+                Some((0, Arc::<str>::from("before-hot"))),
+                Some((0, Arc::<str>::from("before-cold"))),
+            ];
+            engine.shards.with_state_mut(1, |state| {
+                state.unwrap().expiry_scan_positions = positions.clone();
+            });
+            FAIL_APPEND_AFTER.with(|remaining| remaining.set(Some(0)));
+            assert!(engine.sweep_expired_records_for_maintenance(request.clone()).is_err());
+            assert_eq!(engine.wal_store.cached_last_sequence(1), before);
+            assert!(mirror.0.lock().unwrap().is_empty());
+            engine.shards.with_state(1, |state| {
+                let shard = state.unwrap();
+                assert_eq!(shard.expiry_scan_positions, positions);
+                assert!(shard.strings().contains_key(due.as_str()));
+                assert!(shard.strings().contains_key(live.as_str()));
+            });
+            let report = engine.sweep_expired_records_for_maintenance(request).unwrap();
             assert_eq!(report.expired_records_removed, 1);
-            {
-                let shards = engine.shards.read().unwrap();
-                assert!(!shards[&1].strings().contains_key(due.as_str()));
-                assert!(shards[&1].strings().contains_key(live.as_str()),
+            engine.shards.with_state(1, |shard_state| {
+                assert!(!shard_state.unwrap().strings().contains_key(due.as_str()));
+                assert!(shard_state.unwrap().strings().contains_key(live.as_str()),
                     "expiring {due} must preserve independently live {live}");
-            }
+            });
             let (records, truncated) = engine.wal_store.scan_decoded(1, 0, u64::MAX, u64::MAX).unwrap();
             assert!(!truncated);
             let deleted: Vec<_> = records.iter().filter(|(_, record)| record.sequence > before)
@@ -166,11 +183,10 @@ fn expiry_keeps_independently_live_records_in_memory_and_wal_recovery() {
                 dir.path().join("blocks"), dir.path().join("empty-indexes"));
             restored.wal_store = LocalWriteAheadLogStore::new(dir.path().join("indexes/wals"));
             restored.load_shard(1);
-            {
-                let shards = restored.shards.read().unwrap();
-                assert!(!shards[&1].strings().contains_key(due.as_str()));
-                assert!(shards[&1].strings().contains_key(live.as_str()));
-            }
+            restored.shards.with_state(1, |shard_state| {
+                assert!(!shard_state.unwrap().strings().contains_key(due.as_str()));
+                assert!(shard_state.unwrap().strings().contains_key(live.as_str()));
+            });
             assert_eq!(value(&restored, live), Some(live.as_bytes().to_vec()));
         }
     }
@@ -195,13 +211,14 @@ fn expiry_budget_counts_each_due_record_without_expanding_its_family() {
             ..Default::default()
         }).unwrap();
         assert_eq!(report.expired_records_removed, 1);
-        let shards = engine.shards.read().unwrap();
-        assert!(!shards[&1].strings().contains_key(base));
-        if first {
-            assert!(shards[&1].strings().contains_key(retained));
-        } else {
-            assert!(!shards[&1].strings().contains_key(family.as_str()));
-        }
+        engine.shards.with_state(1, |shard_state| {
+            assert!(!shard_state.unwrap().strings().contains_key(base));
+            if first {
+                assert!(shard_state.unwrap().strings().contains_key(retained));
+            } else {
+                assert!(!shard_state.unwrap().strings().contains_key(family.as_str()));
+            }
+        });
     }
 }
 
@@ -214,17 +231,17 @@ fn single_object_bucket_deletions_keep_the_key_projection_fast_path() {
     for key in &keys {
         write(&engine, key, b"remove");
     }
-    let mut shards = engine.shards.write().unwrap();
-    let shard = shards.get_mut(&1).unwrap();
-    assert_eq!(shard.bucket_index.bucket_map.len(), keys.len());
-    let deletions = keys.iter().map(|key| MaintenanceDeletion::capture(shard, key).unwrap()).collect();
-    let (result, builds) = state::measure_block_identity_builds_for_test(|| {
-        engine.append_maintenance_deletions(1, shard, deletions, || {})
+    engine.shards.with_state_mut(1, |shard_state| {
+        let shard = shard_state.unwrap();
+        assert_eq!(shard.bucket_index.bucket_map.len(), keys.len());
+        let deletions = keys.iter().map(|key| MaintenanceDeletion::capture(shard, key).unwrap()).collect();
+        let (result, builds) = state::measure_block_identity_builds_for_test(|| {
+            engine.append_maintenance_deletions(1, shard, deletions, || {})
+        });
+        assert!(result.error.is_none());
+        assert_eq!(result.removed_keys, keys.len());
+        assert_eq!(builds, 0, "unique buckets must keep the key-local projection");
     });
-    assert!(result.error.is_none());
-    assert_eq!(result.removed_keys, keys.len());
-    assert_eq!(builds, 0, "unique buckets must keep the key-local projection");
-    drop(shards);
     for key in &keys {
         assert_eq!(value(&engine, key), None);
     }
@@ -254,22 +271,23 @@ fn dense_bucket_deletions(object_local: bool) -> (usize, usize, usize) {
         write(&engine, key, b"keep");
     }
     engine.flush_shard_index(1);
-    let mut shards = engine.shards.write().unwrap();
-    let shard = shards.get_mut(&1).unwrap();
-    shard.bucket_index.ensure_bucket_owners();
-    assert_eq!(shard.bucket_index.bucket_map.len(), 8);
-    let deletions = keys.iter().map(|key| MaintenanceDeletion::capture(shard, key).unwrap()).collect();
-    let mut appends = 0;
-    crate::engine::disable_object_local_delete_for_test(!object_local);
-    let ((result, visits), builds) = state::measure_block_identity_builds_for_test(|| {
-        state::measure_block_identity_visits_for_test(|| {
-            engine.append_maintenance_deletions(1, shard, deletions, || appends += 1)
-        })
+    let (builds, visits, appends) = engine.shards.with_state_mut(1, |shard_state| {
+        let shard = shard_state.unwrap();
+        shard.bucket_index.ensure_bucket_owners();
+        assert_eq!(shard.bucket_index.bucket_map.len(), 8);
+        let deletions = keys.iter().map(|key| MaintenanceDeletion::capture(shard, key).unwrap()).collect();
+        let mut appends = 0;
+        crate::engine::disable_object_local_delete_for_test(!object_local);
+        let ((result, visits), builds) = state::measure_block_identity_builds_for_test(|| {
+            state::measure_block_identity_visits_for_test(|| {
+                engine.append_maintenance_deletions(1, shard, deletions, || appends += 1)
+            })
+        });
+        crate::engine::disable_object_local_delete_for_test(false);
+        assert!(result.error.is_none());
+        assert_eq!(result.removed_keys, keys.len());
+        (builds, visits, appends)
     });
-    crate::engine::disable_object_local_delete_for_test(false);
-    assert!(result.error.is_none());
-    assert_eq!(result.removed_keys, keys.len());
-    drop(shards);
     for key in &keys {
         assert_eq!(value(&engine, key), None);
     }
@@ -308,6 +326,103 @@ fn dense_bucket_deletions_by_handle_name_no_bucket() {
     println!("dense deletion capture, by handle: buckets=8 builds={builds} visits={visits} frames={appends}");
 }
 
+#[test]
+fn deleting_or_expiring_an_event_series_removes_its_persisted_timeline() {
+    for expire in [false, true] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = engine_at(dir.path(), "indexes");
+        engine.load_shard(1);
+        let event = ContextEvent {
+            event_id_hash: 5,
+            event_time_ms: 1000,
+            ingestion_time_ms: 1000,
+            kind: 9,
+            event_type: 2,
+            actor_hash: 77,
+            status: 1,
+            valid_until_ms: 0,
+            confidence: 0.9,
+            importance: 0.7,
+            text: "event".into(),
+            source_ref: "source".into(),
+            related_node_hashes: vec![42],
+            compact_attrs: vec![1, 2, 3],
+            vector: Vec::new(),
+            embedding_model_hash: 0,
+        };
+        assert!(
+            engine
+                .execute_durable(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ContextWriteEvent {
+                        tenant_hash: 11,
+                        node_hash: 42,
+                        event: Box::new(event),
+                        first_write_only: true,
+                        cold_storage: false
+                    },
+                })
+                .status
+                .ok
+        );
+        let key = "ctx:event:11:42";
+        engine.shards.with_state(1, |state| {
+            let state = state.expect("loaded event owner");
+            assert_eq!(state.context_event_timeline.get(key).unwrap().len(), 1);
+            assert!(state.context_events().contains_key(key));
+        });
+        if expire {
+            engine.shards.with_state_mut(1, |state| {
+                set_expiry(
+                    state.expect("loaded event owner"),
+                    key.into(),
+                    now_ms().saturating_sub(1),
+                );
+            });
+            let report = engine
+                .sweep_expired_records_with_request(ShardExpirySweepRequest {
+                    shard_id: 1,
+                    load_cold_buckets: true,
+                    max_hot_buckets_per_round: 1024,
+                    max_cold_buckets_per_round: 1024,
+                    ..Default::default()
+                })
+                .unwrap();
+            assert_eq!(report.expired_records_removed, 1);
+        } else {
+            assert!(
+                engine
+                    .execute_durable(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::CommonDelete { key: key.into() },
+                    })
+                    .status
+                    .ok
+            );
+        }
+        engine.shards.with_state(1, |state| {
+            let state = state.expect("loaded event owner");
+            assert!(!state.context_events().contains_key(key));
+            assert!(
+                !state.context_event_timeline.contains_key(key),
+                "a removed series must not retain its persisted timeline; expire={expire}"
+            );
+        });
+        let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
+        let image = crate::engine::decode_index_bytes(&manifest.index_bytes).unwrap();
+        assert!(!image.context_event_timeline.contains_key(key));
+        engine.wal_store.flush(1).unwrap();
+        drop(engine);
+        let restored = engine_at(dir.path(), "indexes");
+        restored.load_shard(1);
+        restored.shards.with_state(1, |state| {
+            let state = state.expect("restored event owner");
+            assert!(!state.context_events().contains_key(key));
+            assert!(!state.context_event_timeline.contains_key(key));
+        });
+    }
+}
+
 fn deletion_round_replays(expire: bool) {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_at(dir.path(), "indexes");
@@ -334,11 +449,12 @@ fn deletion_round_replays(expire: bool) {
     write(&engine, &family, b"family");
     if expire {
         write(&engine, "survivor", b"keep");
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&1).unwrap();
-        for key in &keys {
-            set_expiry(shard, key.clone(), now_ms().saturating_sub(1));
-        }
+        engine.shards.with_state_mut(1, |shard_state| {
+            let shard = shard_state.unwrap();
+            for key in &keys {
+                set_expiry(shard, key.clone(), now_ms().saturating_sub(1));
+            }
+        });
     }
     let before = engine.wal_store.stats_without_rescan(1).last_sequence;
     if expire {
@@ -435,14 +551,12 @@ fn maintenance_log_failure_leaves_unlogged_records_live() {
         let base = std::fs::read(engine.index_path(1)).unwrap();
         let blocked = dir.path().join("not-a-directory");
         std::fs::write(&blocked, b"blocked").unwrap();
-        let before = engine.shards.read().unwrap()[&1].checkpoint_wal_sequence();
+        let before = engine.shards.with_state(1, |state| state.unwrap().checkpoint_wal_sequence());
         engine.wal_store = LocalWriteAheadLogStore::new(blocked);
         if expire {
-            set_expiry(
-                engine.shards.write().unwrap().get_mut(&1).unwrap(),
-                "victim".to_string(),
-                now_ms().saturating_sub(1),
-            );
+            engine.shards.with_state_mut(1, |state| {
+                set_expiry(state.unwrap(), "victim".to_string(), now_ms().saturating_sub(1));
+            });
             let error = engine.sweep_expired_records(1).unwrap_err();
             assert_eq!(error.code, "maintenance_log_append_failed");
         } else {
@@ -451,12 +565,10 @@ fn maintenance_log_failure_leaves_unlogged_records_live() {
             assert_eq!(report.dropped_object_count, 0);
         }
         assert_eq!(
-            engine.shards.read().unwrap()[&1].checkpoint_wal_sequence(),
+            engine.shards.with_state(1, |state| state.unwrap().checkpoint_wal_sequence()),
             before
         );
-        assert!(engine.shards.read().unwrap()[&1]
-            .strings()
-            .contains_key("victim"));
+        assert!(engine.shards.with_state(1, |state| state.unwrap().strings().contains_key("victim")));
         let before_image = decode_index_bytes(&base).unwrap();
         let after_image =
             decode_index_bytes(&std::fs::read(engine.index_path(1)).unwrap()).unwrap();
@@ -510,16 +622,16 @@ fn maintenance_log_byte_target_keeps_related_records_together() {
         write(&engine, key, b"family");
     }
     let before = engine.wal_store.stats_without_rescan(1).last_sequence;
-    let mut shards = engine.shards.write().unwrap();
-    let shard = shards.get_mut(&1).unwrap();
-    let deletions = keys
-        .iter()
-        .filter_map(|key| MaintenanceDeletion::capture(shard, key))
-        .collect();
-    let result = engine.append_maintenance_deletions(1, shard, deletions, || {});
-    assert!(result.error.is_none());
-    assert_eq!(result.removed_keys, keys.len());
-    drop(shards);
+    engine.shards.with_state_mut(1, |shard_state| {
+        let shard = shard_state.unwrap();
+        let deletions = keys
+            .iter()
+            .filter_map(|key| MaintenanceDeletion::capture(shard, key))
+            .collect();
+        let result = engine.append_maintenance_deletions(1, shard, deletions, || {});
+        assert!(result.error.is_none());
+        assert_eq!(result.removed_keys, keys.len());
+    });
     let (records, _) = engine
         .wal_store
         .scan_decoded(1, 0, u64::MAX, u64::MAX)
@@ -594,7 +706,7 @@ fn maintenance_log_partial_failure_applies_and_mirrors_only_complete_frames() {
     assert_eq!(report.dropped_object_count, MAX_DELETION_ITEMS);
     assert_eq!(report.skipped_reason, "maintenance_log_append_failed");
     assert_eq!(
-        engine.shards.read().unwrap()[&1].checkpoint_wal_sequence(),
+        engine.shards.with_state(1, |state| state.unwrap().checkpoint_wal_sequence()),
         Some(before + 1)
     );
     assert_eq!(*mirror.0.lock().unwrap(), keys[..MAX_DELETION_ITEMS]);
@@ -626,11 +738,12 @@ fn maintenance_log_replay_counts_overlapping_families_once() {
         write(&engine, "aaa", b"base");
         write(&engine, &family, b"family");
         if expire {
-            let mut shards = engine.shards.write().unwrap();
-            let shard = shards.get_mut(&1).unwrap();
-            let due = now_ms().saturating_sub(20);
-            set_expiry(shard, "aaa".to_string(), due);
-            set_expiry(shard, family.clone(), due + 1);
+            engine.shards.with_state_mut(1, |shard_state| {
+                let shard = shard_state.unwrap();
+                let due = now_ms().saturating_sub(20);
+                set_expiry(shard, "aaa".to_string(), due);
+                set_expiry(shard, family.clone(), due + 1);
+            });
         }
         let before = engine.wal_store.stats_without_rescan(1).last_sequence;
         let _replay = WalReplayGuard::enter();
@@ -657,8 +770,9 @@ fn maintenance_log_replay_counts_overlapping_families_once() {
             engine.wal_store.stats_without_rescan(1).last_sequence,
             before
         );
-        let shards = engine.shards.read().unwrap();
-        assert!(!shards[&1].strings().contains_key("aaa"));
-        assert!(!shards[&1].strings().contains_key(family.as_str()));
+        engine.shards.with_state(1, |shard_state| {
+            assert!(!shard_state.unwrap().strings().contains_key("aaa"));
+            assert!(!shard_state.unwrap().strings().contains_key(family.as_str()));
+        });
     }
 }
