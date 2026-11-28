@@ -159,12 +159,11 @@ fn the_point_commands_answer_what_the_listing_answers() {
     // A key past its deadline is empty, and the lapse is a mutation like any listing's.
     add(&engine, "lapsed", b"x");
     assert_eq!(1, card(&engine, "lapsed"));
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
         let past = crate::engine::resolve_now_ms().saturating_sub(60_000);
         crate::engine::set_expiry(shard, "lapsed".to_string(), past);
-    }
+    });
     assert_eq!(0, is_member(&engine, "lapsed", b"x"));
     assert_eq!(0, card(&engine, "lapsed"));
 

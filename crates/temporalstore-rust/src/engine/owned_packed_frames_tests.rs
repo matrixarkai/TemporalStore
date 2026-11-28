@@ -11,6 +11,93 @@ fn open(root: &std::path::Path) -> TemporalEngine {
 }
 
 #[test]
+fn physical_append_funnels_keep_shard_zero_separate_from_legacy() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let mut written = Vec::new();
+    for (index, (shard_id, owned)) in [(0, false), (9, true), (0, true), (9, false)]
+        .into_iter().enumerate()
+    {
+        block_in_wal::begin_write();
+        let bytes = vec![index as u8 + 1; 64];
+        let address = if owned {
+            append_owned_value_of_object(
+                &engine.cache, &engine.block_store, shard_id, bytes.clone(), 42, 7, false,
+                execute_on_shard::PackedFrameCache::Eager, || 3,
+            )
+        } else {
+            append_value_inner(
+                &engine.cache, &engine.block_store, shard_id, &bytes,
+                Some(42), None, Some(7), false, 8191, || 3,
+            )
+        }.unwrap();
+        assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
+        assert_eq!(address.block_id(), Some(3));
+        let staged = block_in_wal::take_staged();
+        assert_eq!(staged.len(), 1);
+        assert_eq!(staged[0].bytes, bytes);
+        written.push((shard_id, address, bytes));
+    }
+    assert_eq!(written[0].1.block_slab_id(), written[2].1.block_slab_id());
+    assert_eq!(written[1].1.block_slab_id(), written[3].1.block_slab_id());
+    assert_ne!(written[0].1.block_slab_id(), written[1].1.block_slab_id());
+    assert!(written[2].1.offset() > written[0].1.offset());
+    assert!(written[3].1.offset() > written[1].1.offset());
+    let legacy = engine.block_store.append_block_of_object(b"legacy", Some(42), Some(7), 3).unwrap();
+    for (_, address, _) in &written {
+        assert_ne!(legacy.block_slab_id(), address.block_slab_id());
+    }
+    engine.block_store.sync_durable().unwrap();
+    drop(engine);
+    let reopened = open(dir.path());
+    let descriptors = reopened.block_store.slab_descriptors();
+    for (shard_id, address, bytes) in written {
+        let slab = descriptors.iter().find(|slab| slab.block_slab_id == address.block_slab_id()).unwrap();
+        assert_eq!(slab.owner_shard_id, Some(shard_id));
+        assert_eq!(reopened.block_store.read(&address).unwrap(), bytes);
+    }
+    let slab = descriptors.iter().find(|slab| slab.block_slab_id == legacy.block_slab_id()).unwrap();
+    assert_eq!(slab.owner_shard_id, None);
+    assert_eq!(reopened.block_store.read(&legacy).unwrap(), b"legacy");
+}
+
+#[test]
+fn timestamped_batch_append_uses_the_requested_shard_cursor() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = open(dir.path());
+    let mut written = Vec::new();
+    for (index, shard_id) in [0, 9, 0].into_iter().enumerate() {
+        block_in_wal::begin_write();
+        let points: Vec<_> = [10, 20].into_iter().map(|timestamp_ms| crate::types::FeaturePoint {
+            timestamp_ms, value: vec![index as u8 + 1; 64],
+        }).collect();
+        let addresses = packed_blocks::append_timestamped_kv_blocks(
+            &engine.cache, &engine.block_store, shard_id, "feature", "series",
+            points.clone(), 7, false, false, 40,
+        ).unwrap();
+        let _ = block_in_wal::take_staged();
+        assert_eq!(addresses.len(), points.len());
+        for (timestamp, address) in addresses {
+            written.push((shard_id, timestamp, address, points.clone()));
+        }
+    }
+    assert_ne!(written[0].2.block_slab_id(), written[2].2.block_slab_id());
+    assert_eq!(written[0].2.block_slab_id(), written[4].2.block_slab_id());
+    engine.block_store.sync_durable().unwrap();
+    drop(engine);
+    let reopened = open(dir.path());
+    let descriptors = reopened.block_store.slab_descriptors();
+    for (shard_id, timestamp, address, points) in written {
+        let slab = descriptors.iter().find(|slab| slab.block_slab_id == address.block_slab_id()).unwrap();
+        assert_eq!(slab.owner_shard_id, Some(shard_id));
+        let packed = reopened.block_store.read(&address).unwrap();
+        let decoded = packed_blocks::decode_feature_block(&packed).unwrap();
+        assert_eq!(decoded.iter().find(|point| point.timestamp_ms == timestamp),
+                   points.iter().find(|point| point.timestamp_ms == timestamp));
+    }
+}
+
+#[test]
 fn owned_packed_frames_keep_the_original_buffer_and_placement_boundary() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path());

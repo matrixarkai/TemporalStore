@@ -14,6 +14,24 @@ thread_local! {
 }
 
 #[cfg(test)]
+thread_local! {
+    static VACATED_BLOCK_WALKS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// How many times retiring a vacated block had to WALK the object's refs because the block it
+/// computed was not the one filed, on this thread since the last reset.
+#[cfg(test)]
+pub(in crate::engine) fn vacated_block_walks_for_test(reset: bool) -> u64 {
+    VACATED_BLOCK_WALKS.with(|walks| {
+        let now = walks.get();
+        if reset {
+            walks.set(0);
+        }
+        now
+    })
+}
+
+#[cfg(test)]
 pub(super) fn note_set_write_scan(dirty: bool) {
     SET_WRITE_SCANS.with(|counts| {
         let (supersede, propagation) = counts.get();
@@ -195,6 +213,15 @@ pub(super) fn storage_reclaim_candidates_from_slab_reports(
                 .saturating_mul(10_000_u64.saturating_sub(report.live_ref_density_basis_points))
                 .saturating_div(10_000)
                 .saturating_add(stale_block_estimate);
+            // An entirely live owned slab includes a fixed format header in its physical
+            // extent. Those bytes cannot be reclaimed by relocating its live records.
+            if !fully_stale
+                && reclaim_score == 0
+                && report.live_block_refs == report.block_count
+                && report.block_count != 0
+            {
+                return None;
+            }
             Some(StorageReclaimCandidate {
                 block_slab_id: report.block_slab_id,
                 physical_bytes: report.physical_bytes,
@@ -2282,12 +2309,19 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     let hashes = HashMap::<super::state::ModelKey, super::hash_field_map::HashFieldMap>::new();
     // THE SAME LIVE-ADDRESS SET THE RECONCILE BUILDS, and built from the same walk the derived view
     // below is built from, so the filter can only ever remove what the derived view also lacks.
-    let walked = collect_bucket_index_live_block_entries(shard);
-    let live_blocks_by_address: std::collections::HashSet<super::LiveBlockKey> = walked
-        .iter()
-        .filter(|entry| !entry.deleted)
-        .map(|entry| super::live_block_key(&entry.address))
-        .collect();
+    // An empty persisted map has no fields to filter. Reconciliation still runs below to
+    // invalidate its cached ordinals and timestamp hints, without naming unrelated blocks.
+    let live_blocks_by_address: std::collections::HashSet<super::LiveBlockKey> =
+        if shard.bucket_index.hashes.is_empty() {
+            std::collections::HashSet::new()
+        } else {
+            let walked = collect_bucket_index_live_block_entries(shard);
+            walked
+                .iter()
+                .filter(|entry| !entry.deleted)
+                .map(|entry| super::live_block_key(&entry.address))
+                .collect()
+        };
     // MERGED, NOT ASSIGNED, AND THE `is_empty` GATE WENT WITH THE ASSIGNMENT. While `hashes` was
     // `skip_serializing` there was nothing in `shard.bucket_index.hashes` to protect, so overwriting it whenever
     // the index said anything was harmless and the gate only avoided clearing it to empty. It is
@@ -2839,7 +2873,46 @@ pub(super) fn release_bucket_blocks(
     shard: &mut ShardState,
     candidates: &[u32],
 ) -> BucketReleaseOutcome {
-    release_bucket_blocks_inner(shard, candidates, false)
+    release_bucket_blocks_inner(shard, candidates, false, None)
+}
+
+/// Derived bucket indexes removed from serving state. Drop these after releasing the shard owner.
+pub(super) struct RetiredBucketIndexes(Vec<crate::engine::state::BlockIndexMap>);
+
+impl RetiredBucketIndexes {
+    pub(super) fn with_capacity(candidates: usize) -> Self {
+        Self(Vec::with_capacity(candidates))
+    }
+}
+
+#[cfg(test)]
+type BeforeRetiredBucketDrop = Box<dyn FnOnce(usize)>;
+
+#[cfg(test)]
+std::thread_local! {
+    static BEFORE_RETIRED_BUCKET_DROP: std::cell::RefCell<Option<BeforeRetiredBucketDrop>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+impl Drop for RetiredBucketIndexes {
+    fn drop(&mut self) {
+        if !self.0.is_empty() {
+            let hook = BEFORE_RETIRED_BUCKET_DROP.with(|hook| hook.borrow_mut().take());
+            if let Some(hook) = hook {
+                hook(self.0.len());
+            }
+        }
+    }
+}
+
+pub(super) fn detach_bucket_blocks(
+    shard: &mut ShardState,
+    candidates: &[u32],
+    preserve_inline_pages: bool,
+    retired: &mut RetiredBucketIndexes,
+) -> BucketReleaseOutcome {
+    release_bucket_blocks_inner(shard, candidates, preserve_inline_pages, Some(retired))
 }
 
 #[cfg(test)]
@@ -2851,7 +2924,7 @@ pub(super) fn release_bucket_blocks_preserving_inline_pages(
     shard: &mut ShardState,
     candidates: &[u32],
 ) -> BucketReleaseOutcome {
-    release_bucket_blocks_inner(shard, candidates, true)
+    release_bucket_blocks_inner(shard, candidates, true, None)
 }
 
 fn inline_string_pages(bucket: &BucketNode) -> bool {
@@ -2863,6 +2936,7 @@ fn release_bucket_blocks_inner(
     shard: &mut ShardState,
     candidates: &[u32],
     preserve_inline_pages: bool,
+    mut retired: Option<&mut RetiredBucketIndexes>,
 ) -> BucketReleaseOutcome {
     let mut outcome = BucketReleaseOutcome::default();
     if candidates.is_empty() {
@@ -3074,7 +3148,14 @@ fn release_bucket_blocks_inner(
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("bucket read immutably above");
-        bucket.block_index = crate::engine::state::BlockIndexMap::Empty;
+        if let Some(retired) = retired.as_deref_mut() {
+            retired.0.push(std::mem::replace(
+                &mut bucket.block_index,
+                crate::engine::state::BlockIndexMap::Empty,
+            ));
+        } else {
+            bucket.block_index = crate::engine::state::BlockIndexMap::Empty;
+        }
         bucket.set_meta_loaded(true);
         bucket.set_loading(false);
         bucket.set_in_memory(false);
@@ -5185,12 +5266,47 @@ pub(super) fn drop_vacated_live_block(
     address: &ElementEntry,
 ) {
     let target = super::live_block_key(address);
-    let targets: Vec<_> = shard.bucket_index.object_block_refs(kind, object_key).into_iter()
+    // THE BLOCK IS NAMED BY ITS HANDLE, NOT FOUND BY A WALK. A block's handle is derived from its
+    // object key and its address, and every block of an object is filed in the one bucket its key
+    // routes to, so the ref this retires is computed from the vacated address in O(log n). The walk
+    // below asked every ref of the object whether its block sat at that address, which made every
+    // removal from a collection cost a pair of lookups per element it held (the term that grew a
+    // removal from 1.7 ms at 10,000 members to 16.7 ms at 100,000). `retire_object_blocks` names
+    // its block the same way. The walk remains for the case where the computed ref is not the one
+    // filed (a block that moved buckets, or whose address differs in a field the handle hashes), so
+    // a miss costs what it always did and the answer is unchanged.
+    let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
+    let routing_bucket = block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
+    let direct_handle = crate::engine::state::block_index_handle(
+        object_key,
+        &BlockIndex::new(stored_model_kind(kind), address.clone(), false, false),
+    );
+    let direct = crate::engine::state::BlockLookupRef {
+        routing_bucket,
+        block_ref_key: direct_handle,
+    };
+    let direct_is_filed = shard
+        .bucket_index
+        .bucket_map
+        .get(&routing_bucket)
+        .and_then(|bucket| bucket.block_index.get(&direct_handle))
+        .is_some_and(|block| !block.deleted() && super::live_block_key(&block.address) == target)
+        && shard
+            .bucket_index
+            .object_block_refs(kind, object_key)
+            .is_some_and(|refs| refs.as_slice().binary_search(&direct).is_ok());
+    let targets: Vec<_> = if direct_is_filed {
+        vec![direct]
+    } else {
+        #[cfg(test)]
+        VACATED_BLOCK_WALKS.with(|walks| walks.set(walks.get() + 1));
+        shard.bucket_index.object_block_refs(kind, object_key).into_iter()
         .flat_map(|refs| refs.iter())
         .filter(|block_ref| shard.bucket_index.bucket_map.get(&block_ref.routing_bucket)
             .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
             .is_some_and(|block| !block.deleted() && super::live_block_key(&block.address) == target))
-        .cloned().collect();
+        .cloned().collect()
+    };
     for block_ref in targets {
         let removed = if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) {
             let removed = bucket.block_index.remove(&block_ref.block_ref_key,
@@ -10589,4 +10705,76 @@ pub(super) mod model_kind_registry_guards {
             assert_eq!(model_report_code(name), *code);
         }
     }
+}
+
+
+#[cfg(test)]
+#[test]
+fn detached_bucket_index_drops_off_owner_and_preserves_physical_gc_liveness() {
+    use crate::{Command, CommandResponse, ExecuteRequest, TemporalEngine};
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let _physical = crate::engine::value_once_in_test(false);
+    let root = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20, root.path().join("cache"), root.path().join("blocks"), root.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    engine.load_shard(2);
+    let key = "detached-physical-index";
+    assert!(engine.execute(ExecuteRequest {
+        shard_id: 1, command: Command::StringSet { key: key.into(), value: vec![7; 128] },
+    }).status.ok);
+    let bucket = engine.routing_bucket_for_key(1, key);
+    let slab = engine.shards.with_state(1, |state| {
+        let state = state.unwrap();
+        let address = state.strings().get(key).expect("serving address");
+        assert!(!crate::wal_record::is_wal_resident(address.block_slab_id()));
+        address.block_slab_id()
+    });
+
+    BEFORE_RETIRED_BUCKET_DROP.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(|_| panic!("dirty release detached the index")));
+    });
+    assert_eq!(engine.release_bucket_index_blocks(1, vec![bucket]), (0, 0, 1));
+    assert!(BEFORE_RETIRED_BUCKET_DROP.with(|slot| slot.borrow_mut().take().is_some()));
+    engine.create_bucket_dump_manifest(1, [bucket]).expect("durable bucket image");
+    engine.shards.with_state_mut(1, |state| {
+        clear_published_object_dirty_state(state.unwrap(), key);
+    });
+
+    let peer = engine.clone();
+    BEFORE_RETIRED_BUCKET_DROP.with(|slot| {
+        *slot.borrow_mut() = Some(Box::new(move |indexes| {
+            assert_eq!(indexes, 1);
+            let (send, receive) = mpsc::channel();
+            let worker = std::thread::spawn(move || {
+                peer.shards.with_state(1, |state| {
+                    let state = state.unwrap();
+                    assert!(state.bucket_index.released_buckets.contains(&bucket));
+                    let node = state.bucket_index.bucket_map.get(&bucket).unwrap();
+                    assert!(!node.in_memory() && node.block_index.is_empty());
+                });
+                let gc = peer.storage_block_gc_dependency_plan(1, [slab], [], [], None, None, 0);
+                assert!(gc.live_block_slab_ids.contains(&slab));
+                assert!(gc.blocked_block_slab_ids.contains(&slab));
+                assert!(!gc.reclaimable_block_slab_ids.contains(&slab));
+                assert!(peer.execute(ExecuteRequest {
+                    shard_id: 2, command: Command::StringSet { key: "detach-peer".into(), value: vec![3; 64] },
+                }).status.ok);
+                send.send(()).unwrap();
+            });
+            receive.recv_timeout(Duration::from_secs(10)).expect("bucket drop retained the owner");
+            worker.join().unwrap();
+        }));
+    });
+    assert_eq!(engine.release_bucket_index_blocks(1, vec![bucket]), (1, 1, 0));
+    assert!(BEFORE_RETIRED_BUCKET_DROP.with(|slot| slot.borrow().is_none()));
+    engine.cache.invalidate_shard(1).unwrap();
+    assert_eq!(engine.execute(ExecuteRequest {
+        shard_id: 1, command: Command::StringGet { key: key.into() },
+    }).response, CommandResponse::Bytes { value: Some(vec![7; 128]) });
+    assert!(engine.reload_released_bucket_index_blocks(1, bucket));
+    assert!(engine.live_block_slab_ids(1).contains(&slab));
 }

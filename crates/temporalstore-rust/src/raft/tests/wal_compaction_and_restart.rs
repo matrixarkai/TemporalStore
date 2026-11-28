@@ -154,6 +154,127 @@ fn incremental_wal_records_recover_the_whole_log() {
     assert_eq!(record.entries.last().unwrap().index, 200);
 }
 
+fn append_test_log_entry(node: &mut RaftNode, index: u64) {
+    append_entry(
+        node,
+        RaftLogEntry {
+            leader_time_ms: 0,
+            term: 1,
+            index,
+            shard_id: 7,
+            command: Command::StringSet {
+                key: format!("ordered-{index}"),
+                value: vec![index as u8],
+            },
+        },
+    );
+}
+
+#[test]
+fn delayed_entry_before_the_wal_cursor_survives_segment_recovery() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = LocalRaftWal::new(dir.path());
+    let cluster = RaftCluster::new_single_shard(7, [1]);
+    let append = |index| {
+        let mut inner = cluster.inner.write().unwrap();
+        let node = inner.nodes.get_mut(&1).unwrap();
+        append_test_log_entry(node, index);
+    };
+    let persist = || {
+        let record = cluster
+            .wal_records()
+            .into_iter()
+            .find(|(id, _)| *id == 1)
+            .unwrap()
+            .1;
+        wal.persist_node_segmented_with_fsync_threshold(7, 1, &record, 1 << 20, 1, 0)
+            .unwrap();
+        record
+    };
+
+    append(1);
+    append(3);
+    assert_eq!(
+        persist()
+            .entries
+            .iter()
+            .map(|entry| entry.index)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    append(2);
+    assert_eq!(
+        persist()
+            .entries
+            .iter()
+            .map(|entry| entry.index)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+
+    // The next in-order entry should still use an incremental record.
+    append(4);
+    let expected = persist();
+    let segments = wal.segment_report(7, 1).unwrap().segments;
+    assert_eq!(segments.len(), 1);
+    let frame_bytes = std::fs::read(&segments[0].path).unwrap();
+    let (first, base) = wal_proto::next_envelope(&frame_bytes).unwrap();
+    let (second, repaired) = wal_proto::next_envelope(&frame_bytes[first..]).unwrap();
+    let (_, delta) = wal_proto::next_envelope(&frame_bytes[first + second..]).unwrap();
+    assert!(base.delta.is_none());
+    assert!(repaired.delta.is_none());
+    assert_eq!(delta.delta.unwrap().from_index, 3);
+    assert_eq!(delta.record.entries.len(), 1);
+    assert_eq!(delta.record.entries[0].index, 4);
+
+    assert_eq!(
+        wal.recover_node(7, 1).unwrap().record.unwrap().entries,
+        expected.entries
+    );
+}
+
+#[test]
+fn a_missing_committed_entry_does_not_modify_the_log() {
+    let mut node = new_node(1, RaftRole::Follower, 7);
+    append_test_log_entry(&mut node, 1);
+    append_test_log_entry(&mut node, 3);
+    node.commit_index = 3;
+    append_test_log_entry(&mut node, 2);
+    assert_eq!(
+        node.log.iter().map(|entry| entry.index).collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert_eq!(node.pipeline_state.committed_overwrite_rejections, 1);
+}
+
+#[test]
+fn recovery_preserves_a_complete_wal_frame_with_out_of_order_entries() {
+    let dir = tempfile::tempdir().unwrap();
+    let wal = LocalRaftWal::new(dir.path());
+    let cluster = RaftCluster::new_single_shard(7, [1]);
+    let mut record = cluster
+        .wal_records()
+        .into_iter()
+        .find(|(id, _)| *id == 1)
+        .unwrap()
+        .1;
+    let mut node = new_node(1, RaftRole::Follower, 7);
+    append_test_log_entry(&mut node, 1);
+    append_test_log_entry(&mut node, 2);
+    record.entries = node.log;
+    record.entries.swap(0, 1);
+    let report = wal
+        .persist_node_segmented_with_fsync_threshold(7, 1, &record, 1 << 20, 1, 0)
+        .unwrap();
+    let path = &report.segments[0].path;
+    let before = std::fs::read(path).unwrap();
+
+    let error = wal.recover_node(7, 1).unwrap_err();
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(error.to_string().contains("out-of-order Raft WAL entries"));
+    assert_eq!(std::fs::read(path).unwrap(), before);
+}
+
 #[test]
 fn explicit_unsynced_wal_recovers_after_clean_restart() {
     let dir = tempfile::tempdir().unwrap();

@@ -276,3 +276,6 @@ mod the_holders_of_a_key_allocation;
 mod what_a_high_cardinality_distinct_holds;
 #[path = "tests/an_ordered_zset_read_pays_for_its_answer.rs"]
 mod an_ordered_zset_read_pays_for_its_answer;
+
+#[path = "tests/a_detail_read_carries_its_own_bound.rs"]
+mod a_detail_read_carries_its_own_bound;

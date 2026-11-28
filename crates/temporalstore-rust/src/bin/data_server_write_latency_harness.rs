@@ -113,27 +113,12 @@
 //! Throughput is reported beside the percentiles, because a p50 that improves while ops/s falls
 //! is a worse server and the percentiles alone will not say so.
 //!
-//! # THE INSTRUMENT'S OWN CEILING: ONE TCP CONNECTION PER OP
+//! # REQUEST DEADLINES
 //!
-//! `post_json` opens a fresh connection for every request, so a run leaves one socket per op in
-//! `TIME_WAIT` for the kernel's timeout. Back-to-back runs therefore accumulate them, and the
-//! next run dies with **`EAGAIN` -- "Resource temporarily unavailable" (os error 11)** when the
-//! local ephemeral port range is exhausted. Measured here: a 1,200-op read run failed at prefill
-//! index 23 while a 1,200-op WRITE run of the same data volume on the same server passed
-//! 1,200/1,200 moments earlier. The variable was elapsed time since the previous run, not load,
-//! not volume, and not anything the server did.
-//!
-//! **That is a limit of this harness, not of the store, and a figure taken through it is not a
-//! server figure.** Two consequences, both load-bearing:
-//!
-//! - Keep per-run `ops` modest (a few hundred) and leave a few seconds between runs. Raising
-//!   `ops` to beat sampling noise BACKFIRES: it buys per-op samples and spends socket headroom,
-//!   and a 2,000-op sweep here produced p50 spreads of 280-490% where the same cells at 240 ops
-//!   spread 12-55%.
-//! - Average over more REPEATS, not more ops, when a contrast needs resolving.
-//!
-//! `EAGAIN` is called out by name in the failure line rather than being reported as a transport
-//! error like any other, because it reads exactly like a server refusing load and it is not.
+//! The HTTP client reuses connections. Its default I/O deadline is 200 ms. A slow reply can
+//! surface as `EAGAIN`; that errno alone does not establish local port exhaustion. Report the
+//! configured deadline beside the results. Functional recovery runs can use a longer explicit
+//! deadline with `--io-timeout-ms=N`; requests are never automatically retried.
 //!
 //! # LOAD AVERAGE IS NOT A CONTENTION SIGNAL ON THIS CLASS OF BOX
 //!
@@ -147,12 +132,12 @@
 //! Run:
 //!   data_server_write_latency_harness <addr> [ops] [key_bytes] [value_bytes] [sleep_ms]
 //!       [--op=set|get|hset|hget|featappend|featquery|seqadd|seqquery]
-//!       [--points=N] [--rows=N] [--concurrency=N] [--payload=random|identical] [--allow-debug]
+//!       [--points=N] [--rows=N] [--concurrency=N] [--io-timeout-ms=N] [--payload=random|identical] [--allow-debug]
 //!   data_server_write_latency_harness 127.0.0.1:17102 200 16 64 10 --op=get
 //!   data_server_write_latency_harness 127.0.0.1:17102 400 16 32 0 --op=featappend --points=16
 //!   data_server_write_latency_harness 127.0.0.1:17102 400 16 32 0 --op=featquery --concurrency=4
 
-use temporalstore_rust::http::post_json;
+use temporalstore_rust::http::{post_json_with_options, HttpRequestOptions};
 use temporalstore_rust::types::{
     Command, CommandResponse, ExecuteRequest, ExecuteResponse, FeaturePoint, SequenceFeatureRow,
 };
@@ -280,6 +265,7 @@ struct Fixture {
     points: usize,
     rows: usize,
     identical_payload: bool,
+    http_options: HttpRequestOptions,
 }
 
 impl Fixture {
@@ -389,33 +375,25 @@ fn response_carried(family: Family, response: &CommandResponse) -> bool {
 /// feature arms rather than as a hash sweep of their own.
 const FIELD: &str = "f";
 
-/// Name `EAGAIN` for what it is: THIS harness running out of local sockets, not the server
-/// refusing load.
-///
-/// `post_json` opens a connection per op, so successive runs pile up `TIME_WAIT` sockets and the
-/// next run cannot get an ephemeral port. Measured: a 1,200-op read run died at prefill 23 while
-/// a 1,200-op write run of the same volume on the same server passed moments earlier. Reported
-/// as a plain transport error this reads as a server limit and would be quoted as one.
+/// Preserve the I/O error without inferring its cause from the errno alone.
 fn describe_transport_failure(err: &str) -> String {
-    // ANCHOR ON THE CLOSING PAREN. `"os error 11"` is a SUBSTRING of `"os error 111"`, which is
-    // ECONNREFUSED -- so the unanchored form excused a genuine "server is not up" as socket
-    // exhaustion. Caught by this function's own test, which is why that test pairs every
-    // positive with an ordinary error that must NOT pick up the disclaimer.
-    let exhausted = err.contains("(os error 11)")
-        || err.contains("(os error 99)")
-        || err.contains("Resource temporarily unavailable")
-        || err.contains("Cannot assign requested address");
-    if exhausted {
-        format!(
-            "transport: {err}\n\
-             *** THIS IS THE HARNESS, NOT THE SERVER: local socket/ephemeral-port exhaustion \
-             (one TCP connection per op, previous runs' sockets still in TIME_WAIT). Lower `ops`, \
-             leave a few seconds between runs, and average over more REPEATS rather than more \
-             ops. Figures from this run are not server figures."
-        )
+    if err.contains("(os error 11)") || err.contains("Resource temporarily unavailable") {
+        format!("transport: {err}\nI/O may have reached its deadline; a write outcome can be unknown. This error alone does not establish port exhaustion.")
     } else {
         format!("transport: {err}")
     }
+}
+
+fn request_options(args: &[String]) -> Result<HttpRequestOptions, String> {
+    let mut options = HttpRequestOptions::default();
+    if let Some(value) = args.iter().find_map(|arg| arg.strip_prefix("--io-timeout-ms=")) {
+        let millis = value.parse::<u64>().map_err(|_| "--io-timeout-ms must be an integer".to_string())?;
+        if !(1..=120_000).contains(&millis) {
+            return Err("--io-timeout-ms must be between 1 and 120000".to_string());
+        }
+        options.io_timeout_ms = millis;
+    }
+    Ok(options)
 }
 
 /// What one worker thread produced. `failed_first` is kept per thread and merged, so a failure
@@ -445,7 +423,7 @@ fn run_indices(
     for &i in indices {
         let request = ExecuteRequest { shard_id: 1, command: fixture.command_at(i) };
         let at = std::time::Instant::now();
-        let outcome: Result<ExecuteResponse, _> = post_json(addr, "/execute", &request);
+        let outcome: Result<ExecuteResponse, _> = post_json_with_options(addr, "/execute", &request, fixture.http_options);
         let elapsed = at.elapsed().as_secs_f64() * 1000.0;
         match outcome {
             Ok(response) if response.status.ok => {
@@ -485,6 +463,10 @@ fn run_indices(
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    let http_options = request_options(&args).unwrap_or_else(|error| {
+        eprintln!("{error}");
+        std::process::exit(2);
+    });
     let allow_debug = args.iter().any(|a| a == "--allow-debug");
     let positional: Vec<&String> = args[1..].iter().filter(|a| !a.starts_with("--")).collect();
     let addr = positional.first().map(|s| s.as_str()).unwrap_or_else(|| {
@@ -580,6 +562,7 @@ fn main() {
         points,
         rows,
         identical_payload,
+        http_options,
     };
     assert_eq!(
         fixture.key_at(0).len(),
@@ -596,17 +579,16 @@ fn main() {
     // ends up measuring a different shape than the write arm it is compared against.
     if is_read {
         for i in 0..ops {
-            let seeded: Result<ExecuteResponse, _> = post_json(
+            let seeded: Result<ExecuteResponse, _> = post_json_with_options(
                 addr,
                 "/execute",
                 &ExecuteRequest { shard_id: 1, command: fixture.write_command(i) },
+                fixture.http_options,
             );
             match seeded {
                 Ok(r) if r.status.ok => {}
                 Ok(r) => panic!("prefill {i} refused: {:?}", r.status),
-                // The prefill is where socket exhaustion actually bit, so it needs the same
-                // diagnosis as the timed loop -- otherwise the one place it reliably appears is
-                // the one place that reports it as an ordinary transport error.
+                // Prefill uses the same deadline and transport diagnostics as the timed loop.
                 Err(e) => {
                     panic!("prefill {i} {}", describe_transport_failure(&e.to_string()))
                 }
@@ -663,10 +645,11 @@ fn main() {
     // list, the row list. `status.ok` alone is the shape that let a figure measure a no-op once.
     let last = ops.saturating_sub(1);
     let last_key = fixture.key_at(last);
-    let read_back: Result<ExecuteResponse, _> = post_json(
+    let read_back: Result<ExecuteResponse, _> = post_json_with_options(
         addr,
         "/execute",
         &ExecuteRequest { shard_id: 1, command: fixture.read_command(last) },
+        fixture.http_options,
     );
     let arrived = match &read_back {
         Ok(r) if r.status.ok => match (&r.response, family) {
@@ -697,6 +680,7 @@ fn main() {
     println!("addr             {addr}");
     println!("profile          {}{stamp}", if debug_build { "debug" } else { "release" });
     println!("op               {op}");
+    println!("io_timeout_ms    {}", http_options.io_timeout_ms);
     println!("ops              {ops}");
     println!("ops_ok           {ok}");
     println!("key_bytes        {key_bytes}");
@@ -771,6 +755,9 @@ fn main() {
              about stored writes"
         );
     }
+    if ok != ops || !arrived {
+        std::process::exit(1);
+    }
 }
 
 #[cfg(test)]
@@ -788,6 +775,7 @@ mod tests {
             points,
             rows,
             identical_payload: false,
+            http_options: super::HttpRequestOptions::default(),
         }
     }
 
@@ -884,26 +872,55 @@ mod tests {
         assert!(!response_carried(Family::Feature, &CommandResponse::Bytes { value: Some(vec![1]) }));
     }
 
-    /// `EAGAIN` must be named as the HARNESS's limit, because it reads exactly like a server
-    /// refusing load and was in fact local socket exhaustion -- a 1,200-op read run died at
-    /// prefill 23 while a 1,200-op write run of the same volume passed moments earlier. An
-    /// ordinary transport error must NOT pick up the disclaimer, or the disclaimer means nothing.
     #[test]
-    fn socket_exhaustion_is_reported_as_the_harness_not_the_server() {
-        for exhausted in [
-            "io error: Resource temporarily unavailable (os error 11)",
-            "io error: Cannot assign requested address (os error 99)",
-        ] {
-            let msg = describe_transport_failure(exhausted);
-            assert!(msg.contains("THIS IS THE HARNESS, NOT THE SERVER"), "missing for {exhausted}");
-            assert!(msg.contains(exhausted), "the original error must survive");
-        }
+    fn transport_errors_do_not_assign_port_exhaustion_from_errno() {
+        let timeout = describe_transport_failure("io error: Resource temporarily unavailable (os error 11)");
+        assert!(timeout.contains("deadline") && timeout.contains("outcome can be unknown"));
+        assert!(!timeout.contains("THIS IS THE HARNESS"));
         let ordinary = describe_transport_failure("io error: connection refused (os error 111)");
-        assert!(
-            !ordinary.contains("THIS IS THE HARNESS"),
-            "a genuine connection failure must not be excused as socket exhaustion"
-        );
-        assert!(ordinary.contains("connection refused"));
+        assert_eq!(ordinary, "transport: io error: connection refused (os error 111)");
+    }
+
+    #[test]
+    fn explicit_io_deadlines_are_bounded_and_do_not_enable_retries() {
+        let defaults = super::request_options(&[]).unwrap();
+        assert_eq!(defaults, super::HttpRequestOptions::default());
+        let explicit = super::request_options(&["--io-timeout-ms=30000".into()]).unwrap();
+        assert_eq!(explicit.io_timeout_ms, 30000);
+        assert_eq!(explicit.max_retries, 0);
+        assert_eq!(explicit.connect_timeout_ms, defaults.connect_timeout_ms);
+        for invalid in ["0", "120001", "no", "-1"] {
+            assert!(super::request_options(&[format!("--io-timeout-ms={invalid}")]).is_err());
+        }
+    }
+
+    #[test]
+    fn a_peer_holding_its_reply_produces_a_receive_deadline() {
+        use std::net::TcpListener;
+        use std::time::{Duration, Instant};
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let address = listener.local_addr().unwrap().to_string();
+        let client = std::thread::spawn(move || {
+            let options = super::request_options(&["--io-timeout-ms=20".into()]).unwrap();
+            super::post_json_with_options::<_, serde_json::Value>(&address, "/execute", &serde_json::json!({}), options)
+        });
+        let until = Instant::now() + Duration::from_secs(2);
+        let peer = loop {
+            match listener.accept() {
+                Ok((peer, _)) => break peer,
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < until, "client did not connect");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                Err(error) => panic!("accept: {error}"),
+            }
+        };
+        let error = client.join().unwrap().unwrap_err();
+        drop(peer);
+        assert!(matches!(&error, temporalstore_rust::http::HttpError::Io(error) if matches!(error.kind(), std::io::ErrorKind::WouldBlock | std::io::ErrorKind::TimedOut)));
+        let diagnostic = describe_transport_failure(&error.to_string());
+        assert!(diagnostic.contains("deadline") && !diagnostic.contains("THIS IS THE HARNESS"));
     }
 
     /// A read arm must read what the matching write arm stored. The prefill goes through

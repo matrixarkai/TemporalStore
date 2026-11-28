@@ -88,26 +88,27 @@ fn members_of(engine: &TemporalEngine) -> BTreeSet<Vec<u8>> {
 
 /// (live, tombstoned) entries for the set under test.
 fn entry_counts(engine: &TemporalEngine) -> (usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut live = 0usize;
-    let mut tombstoned = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != "set"
-                || &**named.at(bucket.routing_bucket, *handle) != KEY
-            {
-                continue;
-            }
-            if block.deleted() {
-                tombstoned += 1;
-            } else {
-                live += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut live = 0usize;
+        let mut tombstoned = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != "set"
+                    || &**named.at(bucket.routing_bucket, *handle) != KEY
+                {
+                    continue;
+                }
+                if block.deleted() {
+                    tombstoned += 1;
+                } else {
+                    live += 1;
+                }
             }
         }
-    }
-    (live, tombstoned)
+        (live, tombstoned)
+    })
 }
 
 /// Seed the store, remove one member, and unload so the index is materialized.

@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::control::Config;
-use crate::types::{ExecuteRequest, FeaturePoint};
+use crate::types::{CommandResponse, ExecuteRequest, FeaturePoint};
 use crate::SetConfigRequest;
 use std::path::Path;
 
@@ -14,6 +14,202 @@ fn engine(root: &Path, role: &str) -> TemporalEngine {
         root.join(format!("{role}-blocks")),
         root.join(format!("{role}-indexes")),
     )
+}
+
+#[test]
+fn shared_wal_cannot_install_an_unbound_address_that_reads_wrong_local_bytes() {
+    use crate::wal::{StagedBlock, WalOutcomeItem};
+
+    let root = tempfile::tempdir().unwrap();
+    let source = engine(root.path(), "source");
+    let recipient = engine(root.path(), "recipient");
+    recipient.load_shard(1);
+    let append = |engine: &TemporalEngine, bytes: &[u8]| {
+        engine.block_store()
+            .append_block_of_object_for_shard(1, bytes, None, None, 0)
+            .unwrap()
+    };
+    let foreign = append(&source, b"right");
+    let local = append(&recipient, b"wrong");
+    let carried_first = append(&source, b"first");
+    assert_eq!(foreign.address_word(), local.address_word());
+    assert_eq!(foreign.length(), local.length());
+    assert_eq!(recipient.block_store().read(&foreign).unwrap(), b"wrong");
+
+    let outcome = |id, key: &str, address| WalOutcomeItem {
+        kind: "string".into(),
+        object_key: key.to_owned(),
+        element_name: None,
+        object_id: id,
+        routing_bucket: 1,
+        address: Some(address),
+        value: None,
+        ttl: None,
+        deleted: false,
+        meta: false,
+    };
+    let mut entry = SharedStoreWalEntry {
+        shard_id: 1,
+        wal_index: 2,
+        command: None,
+        outcomes: vec![outcome(1, "first", carried_first), outcome(2, "second", foreign)],
+        staged_blocks: vec![StagedBlock {
+            object_id: 1,
+            element_name: None,
+            bytes: b"first".to_vec(),
+        }],
+    };
+    let read = |key: &str| recipient.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet { key: key.to_owned() },
+    }).response;
+    let replay = |entry| SharedStoreReplicator::<FileObjectStore>::apply_replayed_wal_entry(
+        1, 2, entry, &recipient, false,
+    );
+    match replay(entry.clone()).unwrap_err() {
+        SharedStoreReplicationError::ApplyFailed { wal_index: 2, status } => {
+            assert_eq!(status.code, "shared_wal_unbound_address");
+        }
+        error => panic!("wrong replay error: {error}"),
+    }
+    assert_eq!(read("first"), CommandResponse::Bytes { value: None });
+    assert_eq!(read("second"), CommandResponse::Bytes { value: None });
+    assert_eq!(recipient.block_store().read(&local).unwrap(), b"wrong");
+
+    entry.staged_blocks.push(StagedBlock {
+        object_id: 2,
+        element_name: None,
+        bytes: b"right".to_vec(),
+    });
+    replay(entry).unwrap();
+    assert_eq!(read("first"), CommandResponse::Bytes { value: Some(b"first".to_vec()) });
+    assert_eq!(read("second"), CommandResponse::Bytes { value: Some(b"right".to_vec()) });
+    assert_eq!(recipient.block_store().read(&local).unwrap(), b"wrong");
+}
+
+#[tokio::test]
+async fn owned_checkpoints_from_independent_stores_can_share_a_destination() {
+    independent_checkpoint_restore(false).await;
+}
+
+#[tokio::test]
+async fn independent_lazy_checkpoint_sources_survive_restart_before_any_fetch() {
+    independent_checkpoint_restore(true).await;
+}
+
+async fn independent_checkpoint_restore(lazy: bool) {
+    let root = tempfile::tempdir().unwrap();
+    let objects = Arc::new(FileObjectStore::new(root.path().join("objects")));
+    let replicator = SharedStoreReplicator::new("owned-checkpoints", objects);
+    let mut manifests = Vec::new();
+    for (shard, role, bytes) in [(1, "source-a", b"first"), (42, "source-b", b"other")] {
+        let source = engine(root.path(), role);
+        source.load_shard(shard);
+        let response = source.execute(ExecuteRequest {
+            shard_id: shard,
+            command: Command::StringSet { key: "key".into(), value: bytes.to_vec() },
+        });
+        assert!(response.status.ok);
+        let manifest = replicator.publish_checkpoint(shard, 1, &source, &source.block_store())
+            .await.unwrap();
+        assert_eq!(manifest.block_slabs.len(), 1);
+        assert_eq!(slab_owner_from_transfer_key(
+            manifest.block_slabs[0].block_slab_id, &manifest.block_slabs[0].key,
+        ).unwrap(), Some(shard));
+        manifests.push(manifest);
+    }
+    assert_eq!(manifests[0].block_slabs[0].block_slab_id, manifests[1].block_slabs[0].block_slab_id);
+    let follower = engine(root.path(), "follower");
+    let store = follower.block_store();
+    for manifest in &manifests {
+        if lazy {
+            replicator.restore_index_and_block_addresses(manifest.shard_id, &follower, &store)
+                .await.unwrap();
+        } else {
+            replicator.restore_checkpoint(manifest, &follower, &store).await.unwrap();
+        }
+    }
+    let installed = store.slab_ids().unwrap();
+    assert_eq!(installed.len(), if lazy { 0 } else { 2 });
+    drop(store);
+    drop(follower);
+
+    let follower = engine(root.path(), "follower");
+    if lazy {
+        assert!(follower.block_store().has_saved_lazy_checkpoints().unwrap());
+        assert!(!follower.block_store().has_shared_slab_source());
+        replicator.reattach_lazy_checkpoint_sources(&follower.block_store()).unwrap();
+        assert!(follower.block_store().has_shared_slab_source());
+        assert_eq!(follower.block_store().stats().shared_slab_fetches, 0);
+    } else {
+        replicator.restore_checkpoint(&manifests[0], &follower, &follower.block_store()).await.unwrap();
+    }
+    assert_eq!(follower.block_store().slab_ids().unwrap(), installed);
+    for (shard, expected) in [(1, b"first"), (42, b"other")] {
+        follower.load_shard(shard);
+        let response = follower.execute(ExecuteRequest {
+            shard_id: shard,
+            command: Command::StringGet { key: "key".into() },
+        });
+        assert!(response.status.ok);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(expected.to_vec()) });
+    }
+    assert_eq!(follower.block_store().slab_ids().unwrap().len(), 2);
+    if lazy {
+        assert_eq!(follower.block_store().stats().shared_slab_fetches, 2);
+    }
+}
+
+#[tokio::test]
+async fn rejected_eager_checkpoint_preserves_the_previous_served_index_on_reopen() {
+    let root = tempfile::tempdir().unwrap();
+    let objects = Arc::new(FileObjectStore::new(root.path().join("objects")));
+    let replicator = SharedStoreReplicator::new("restore-publication", Arc::clone(&objects));
+    let mut manifests = Vec::new();
+    for (role, bytes) in [("source-a", b"first"), ("source-b", b"other")] {
+        let source = engine(root.path(), role);
+        source.load_shard(1);
+        let response = source.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: "key".into(), value: bytes.to_vec() },
+        });
+        assert!(response.status.ok);
+        let manifest = replicator.publish_checkpoint(1, 1, &source, &source.block_store())
+            .await.unwrap();
+        manifests.push(manifest);
+    }
+    assert_eq!(manifests[0].block_slabs.len(), 1);
+    assert_eq!(manifests[1].block_slabs.len(), 1);
+    assert_eq!(manifests[0].block_slabs[0].block_slab_id, manifests[1].block_slabs[0].block_slab_id);
+
+    let follower = engine(root.path(), "follower");
+    let store = follower.block_store();
+    replicator.restore_checkpoint(&manifests[0], &follower, &store).await.unwrap();
+    let installed = store.slab_ids().unwrap();
+    let remote = &manifests[1].block_slabs[0].key;
+    let good_bytes = objects.get(remote).await.unwrap();
+    objects.put(remote, Bytes::from_static(b"invalid incoming slab")).await.unwrap();
+    assert!(replicator.restore_checkpoint(&manifests[1], &follower, &store).await.is_err());
+    assert_eq!(store.slab_ids().unwrap(), installed);
+    drop(store);
+    drop(follower);
+
+    let follower = engine(root.path(), "follower");
+    follower.load_shard(1);
+    let query = Command::StringGet { key: "key".into() };
+    let old = follower.execute(ExecuteRequest { shard_id: 1, command: query.clone() });
+    assert!(old.status.ok);
+    assert_eq!(old.response, CommandResponse::Bytes { value: Some(b"first".to_vec()) });
+    drop(follower);
+
+    objects.put(remote, good_bytes).await.unwrap();
+    let follower = engine(root.path(), "follower");
+    replicator.restore_checkpoint(&manifests[1], &follower, &follower.block_store()).await.unwrap();
+    follower.load_shard(1);
+    let new = follower.execute(ExecuteRequest { shard_id: 1, command: query });
+    assert!(new.status.ok);
+    assert_eq!(new.response, CommandResponse::Bytes { value: Some(b"other".to_vec()) });
+    assert_eq!(follower.block_store().slab_ids().unwrap().len(), 2);
 }
 
 async fn portable_model(kind: &str) {
@@ -347,7 +543,7 @@ impl ObjectStore for WriteDuringUpload {
     async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
         self.inner.put(key, bytes).await?;
         if key.contains("/block_segments/") && !self.fired.swap(true, Ordering::SeqCst) {
-            self.engine.block_store().roll_slab().unwrap();
+            self.engine.block_store().roll_slab_for_shard(1).unwrap();
             assert!(
                 self.engine
                     .execute(ExecuteRequest {

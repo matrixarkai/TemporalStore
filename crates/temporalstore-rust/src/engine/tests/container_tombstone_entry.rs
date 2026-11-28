@@ -203,48 +203,50 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 
 /// (live entries, tombstone entries) for one object, counted off the block index itself.
 fn entry_counts(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut live = 0usize;
-    let mut tombstoned = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.model_id().as_str() != kind
-                || &**named.at(bucket.routing_bucket, *handle) != key
-            {
-                continue;
-            }
-            if block.deleted() {
-                tombstoned += 1;
-            } else {
-                live += 1;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut live = 0usize;
+        let mut tombstoned = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.model_id().as_str() != kind
+                    || &**named.at(bucket.routing_bucket, *handle) != key
+                {
+                    continue;
+                }
+                if block.deleted() {
+                    tombstoned += 1;
+                } else {
+                    live += 1;
+                }
             }
         }
-    }
-    (live, tombstoned)
+        (live, tombstoned)
+    })
 }
 
 /// The element names the tombstone entries of one object name.
 fn tombstoned_element_names(engine: &TemporalEngine, kind: &str, key: &str) -> BTreeSet<String> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut held = BTreeSet::new();
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.deleted()
-                && block.model_id().as_str() == kind
-                && &**named.at(bucket.routing_bucket, *handle) == key
-            {
-                // AN ENTRY NAMES NO ELEMENT, so this set is always empty. It is restated where
-                // it is read -- the element a tombstone is about is recorded in the bucket's
-                // `tombstone_elements` rows, not on the entry.
-                let _ = block;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut held = BTreeSet::new();
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.deleted()
+                    && block.model_id().as_str() == kind
+                    && &**named.at(bucket.routing_bucket, *handle) == key
+                {
+                    // AN ENTRY NAMES NO ELEMENT, so this set is always empty. It is restated where
+                    // it is read -- the element a tombstone is about is recorded in the bucket's
+                    // `tombstone_elements` rows, not on the entry.
+                    let _ = block;
+                }
             }
         }
-    }
-    held
+        held
+    })
 }
 
 /// rust-internal: drives SetAdd/SetRemove and the readers #2025 enumerated
@@ -295,31 +297,15 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
     );
 
     // READER 1: the block index reader every serving path resolves through.
-    let named: BTreeSet<Vec<u8>> =
-        crate::engine::bucket_store::bucket_index_element_name_block_addresses(
-            &engine
-                .shards
-                .read()
-                .expect("engine lock poisoned")
-                .get(&1)
-                .expect("shard is loaded"),
-            "set",
-            key,
-        )
-        .iter()
-        .filter_map(|(element_name, _)| element_name.as_deref().and_then(|c| hex::decode(c).ok()))
-        .collect();
-    let returned = crate::engine::bucket_store::bucket_index_element_name_block_addresses(
-        &engine
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .get(&1)
-            .expect("shard is loaded"),
-        "set",
-        key,
-    )
-    .len();
+    let (named, returned): (BTreeSet<Vec<u8>>, _) = engine.shards.with_state(1, |shard| {
+        let entries = crate::engine::bucket_store::bucket_index_element_name_block_addresses(
+            shard.expect("shard is loaded"), "set", key,
+        );
+        let named = entries.iter()
+            .filter_map(|(element_name, _)| element_name.as_deref().and_then(|c| hex::decode(c).ok()))
+            .collect();
+        (named, entries.len())
+    });
     println!("  index reader returns {returned} pair(s), naming {} member(s)", named.len());
 
     // THE QUESTION IS SHARPER NOW: NOT "DOES IT NAME THE REMOVED MEMBER" BUT "DOES IT RETURN THE
@@ -517,9 +503,8 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     let (batches, folded) = crate::engine::container_batch_counts();
     let refiled = crate::engine::storage_bucket_internals::tombstones_refiled_count();
     let (live_folded, tombstoned_folded) = entry_counts(&engine, "set", key);
-    let (resident_live, resident_holds_removed) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let (resident_live, resident_holds_removed) = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let set = shard.bucket_index.sets.get(key);
         (
             set.map_or(0, |members| members.len()),
@@ -529,7 +514,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
                 })
             }),
         )
-    };
+    });
     println!(
         "  after a fold round ({batches} batches, {folded} blocks folded): {live_folded} live + \
          {tombstoned_folded} tombstone; {refiled} tombstone(s) carried across the rebuild"
@@ -575,9 +560,8 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     //
     // Pinned against the folded BLOCK count rather than a literal 1, so a fixture that folds
     // differently cannot make this vacuous -- and so that it still reads as "one entry a block".
-    let live_blocks_folded = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
+    let live_blocks_folded = engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
         let named = super::BlockObjects::of(&shard.bucket_index);
         shard
             .bucket_index
@@ -603,7 +587,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
             })
             .collect::<BTreeSet<_>>()
             .len()
-    };
+    });
     assert!(
         live_blocks_folded < MEMBERS - REMOVED,
         "DENOMINATOR: the survivors resolve to {live_blocks_folded} live block(s) for {} members, so \
@@ -663,15 +647,16 @@ fn a_keys_last_element_still_files_its_object_id() {
     // that bucket's blocks -- so an id filed anywhere else answers nothing. Scoped to a bucket that
     // actually holds a block of this object, which is the set the report consults.
     let filed = |engine: &TemporalEngine| -> bool {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let named = super::BlockObjects::of(&shard.bucket_index);
-        shard.bucket_index.bucket_map.values().any(|bucket| {
-            bucket.deleted_object_index.contains(&object_id)
-                && bucket
-                    .block_index
-                    .iter()
-                    .any(|(handle, _)| &**named.at(bucket.routing_bucket, *handle) == key)
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard is loaded");
+            let named = super::BlockObjects::of(&shard.bucket_index);
+            shard.bucket_index.bucket_map.values().any(|bucket| {
+                bucket.deleted_object_index.contains(&object_id)
+                    && bucket
+                        .block_index
+                        .iter()
+                        .any(|(handle, _)| &**named.at(bucket.routing_bucket, *handle) == key)
+            })
         })
     };
 
@@ -907,64 +892,65 @@ fn a_removed_member_does_not_make_its_object_deleted() {
         },
     );
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let report = crate::engine::object_manager::runtime_report(shard);
-    let object = report
-        .objects
-        .iter()
-        .find(|object| object.object_id == object_id)
-        .expect("the object appears in the runtime report");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let report = crate::engine::object_manager::runtime_report(shard);
+        let object = report
+            .objects
+            .iter()
+            .find(|object| object.object_id == object_id)
+            .expect("the object appears in the runtime report");
 
-    println!("=== the runtime report, after removing one of {MEMBERS} ===");
-    println!(
-        "  live_block_ref_count {} | object: block_refs {} hot {} cold {} deleted {} | deleted={} \
+        println!("=== the runtime report, after removing one of {MEMBERS} ===");
+        println!(
+            "  live_block_ref_count {} | object: block_refs {} hot {} cold {} deleted {} | deleted={} \
          residency={}",
-        report.live_block_ref_count,
-        object.block_ref_count,
-        object.hot_block_ref_count,
-        object.cold_block_ref_count,
-        object.deleted_block_ref_count,
-        object.deleted,
-        object.residency
-    );
+            report.live_block_ref_count,
+            object.block_ref_count,
+            object.hot_block_ref_count,
+            object.cold_block_ref_count,
+            object.deleted_block_ref_count,
+            object.deleted,
+            object.residency
+        );
 
-    // DENOMINATOR: the tombstone has to be in the index for this report to be about anything.
-    //
-    // The deleted member's separate frame is retired. Its marker must not make the other
-    // eleven live frames, or the containing object, read as deleted.
-    let (live, tombstoned) = entry_counts(&engine, "set", key);
-    let expected_live = MEMBERS - 1;
-    assert_eq!(
-        (expected_live, 1),
-        (live, tombstoned),
-        "the fixture must retain {expected_live} live frames and one deletion marker"
-    );
+        // DENOMINATOR: the tombstone has to be in the index for this report to be about anything.
+        //
+        // The deleted member's separate frame is retired. Its marker must not make the other
+        // eleven live frames, or the containing object, read as deleted.
+        let (live, tombstoned) = entry_counts(&engine, "set", key);
+        let expected_live = MEMBERS - 1;
+        assert_eq!(
+            (expected_live, 1),
+            (live, tombstoned),
+            "the fixture must retain {expected_live} live frames and one deletion marker"
+        );
 
-    assert!(
-        !object.deleted,
-        "ONE REMOVED MEMBER MADE THE WHOLE OBJECT READ AS DELETED. `object.deleted |= block.deleted` \
+        assert!(
+            !object.deleted,
+            "ONE REMOVED MEMBER MADE THE WHOLE OBJECT READ AS DELETED. `object.deleted |= block.deleted` \
          said it from a single block, which was right while the only writer of that flag deleted an \
          object's blocks together and is wrong the moment one removed member carries it."
-    );
-    assert_eq!(
-        1, object.deleted_block_ref_count,
-        "the tombstone is not counted as a deleted block ref ({} of them), which it is",
-        object.deleted_block_ref_count
-    );
-    // The report counts surviving data frames, not the retired frame or its marker.
-    assert_eq!(
-        expected_live,
-        report.live_block_ref_count,
-        "live_block_ref_count is {} where {expected_live} entries are live -- the field is named \
+        );
+        assert_eq!(
+            1, object.deleted_block_ref_count,
+            "the tombstone is not counted as a deleted block ref ({} of them), which it is",
+            object.deleted_block_ref_count
+        );
+        // The report counts surviving data frames, not the retired frame or its marker.
+        assert_eq!(
+            expected_live,
+            report.live_block_ref_count,
+            "live_block_ref_count is {} where {expected_live} entries are live -- the field is named \
          `live` and a tombstone is not one",
-        report.live_block_ref_count
-    );
-    assert_ne!(
-        "deleted", object.residency,
-        "the object's residency reads deleted while {} of its refs are live",
-        MEMBERS - 1
-    );
+            report.live_block_ref_count
+        );
+        assert_ne!(
+            "deleted", object.residency,
+            "the object's residency reads deleted while {} of its refs are live",
+            MEMBERS - 1
+        );
+    });
 }
 
 /// rust-internal: drives SetAdd/SetRemove/SetAdd on ONE member
@@ -1025,11 +1011,10 @@ fn a_re_add_clears_the_tombstone_entry_so_churn_on_one_element_does_not_accumula
             // rebuild has nothing to read a key from.
             let _ = &engine;
         }
-        let is_established = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
+        let is_established = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard is loaded");
             !shard.bucket_index.object_block_lookup.is_empty()
-        };
+        });
         println!("=== lookup established = {is_established} (wanted {established}) ===");
         if established {
             assert!(

@@ -158,6 +158,7 @@ impl LocalRaftWal {
                     .map(|slab| crate::sdk::v1::WalStateImageSlab {
                         block_slab_id: slab.block_slab_id,
                         slab: slab.bytes.clone(),
+                        owner_shard_id: slab.owner_shard_id,
                     })
                     .collect(),
             };
@@ -247,6 +248,7 @@ impl LocalRaftWal {
                 .map(|slab| RaftSnapshotStateImageSlab {
                     block_slab_id: slab.block_slab_id,
                     bytes: slab.slab,
+                    owner_shard_id: slab.owner_shard_id,
                 })
                 .collect(),
         });
@@ -441,31 +443,21 @@ impl LocalRaftWal {
             .last()
             .map(|entry| entry.term)
             .unwrap_or_default();
-        // A delta is only sound while the log still contains the exact entry we last
-        // wrote, at the same term. A conflict overwrite (raft truncating a divergent
-        // suffix) or a snapshot compaction (dropping a prefix) breaks that.
+        // Check the previously persisted tail at its original position. A filled
+        // hole shifts it, and compaction moves the first index. Either needs a base
+        // record so replay does not lose changes below the old tail.
+        let tail_start = cursor.persisted_entry_count;
         let delta_safe = cursor.has_base
-            && cursor.persisted_last_index > 0
-            && log_last_index >= cursor.persisted_last_index
-            && log_first_index > 0
-            && log_first_index <= cursor.persisted_last_index
-            && {
-                // The log is ordered by index: find the entry last written by position, not by
-                // looking at every entry.
-                let at = entries.partition_point(|entry| entry.index < cursor.persisted_last_index);
-                entries.get(at).map_or(false, |entry| {
-                    entry.index == cursor.persisted_last_index
-                        && entry.term == cursor.persisted_last_term
-                })
-            };
+            && tail_start > 0
+            && cursor.persisted_first_index == log_first_index
+            && entries.get(tail_start - 1).is_some_and(|entry| {
+                entry.index == cursor.persisted_last_index
+                    && entry.term == cursor.persisted_last_term
+            });
 
         let encode = |as_delta: bool| -> io::Result<Vec<u8>> {
             let envelope = if as_delta {
                 let from_index = cursor.persisted_last_index;
-                // Only the entries above `from_index`, taken as a slice. Cloning the record
-                // and filtering afterwards allocated the whole log on every append, which is
-                // the cost incremental records exist to remove.
-                let tail_start = entries.partition_point(|entry| entry.index <= from_index);
                 let delta_record = RaftWalRecord {
                     hard_state: record.hard_state.clone(),
                     membership: record.membership.clone(),
@@ -614,8 +606,10 @@ impl LocalRaftWal {
             cursor.base_bytes = encoded.len() as u64;
             cursor.has_base = true;
         }
+        cursor.persisted_first_index = log_first_index;
         cursor.persisted_last_index = log_last_index;
         cursor.persisted_last_term = log_last_term;
+        cursor.persisted_entry_count = entries.len();
         cursor.persisted_marker_index = record
             .installed_snapshot
             .as_ref()
@@ -739,8 +733,10 @@ impl LocalRaftWal {
             // append re-bases. That keeps recovery independent of whatever the previous
             // process had in memory.
             base_bytes: 0,
+            persisted_first_index: 0,
             persisted_last_index: 0,
             persisted_last_term: 0,
+            persisted_entry_count: 0,
             has_base: false,
         })
     }
@@ -818,6 +814,23 @@ impl LocalRaftWal {
                 if envelope.checksum != raft_wal_checksum(&envelope.record)? {
                     break;
                 }
+                let entries = &envelope.record.entries;
+                let overlaps_base = envelope.delta.is_some_and(|delta| {
+                    entries
+                        .first()
+                        .is_some_and(|entry| entry.index <= delta.from_index)
+                });
+                if overlaps_base || entries.windows(2).any(|pair| pair[0].index >= pair[1].index) {
+                    // A complete frame with a valid checksum is different from a
+                    // torn tail. Leave its bytes intact for recovery from a peer.
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "out-of-order Raft WAL entries at byte {offset} in {}",
+                            segment.path
+                        ),
+                    ));
+                }
                 valid_records += 1;
                 last_record = match envelope.delta {
                     // A base record replaces everything before it outright.
@@ -850,12 +863,6 @@ impl LocalRaftWal {
                         let mut entries = base
                             .map(|base| base.entries)
                             .unwrap_or_default();
-                        // A raft log is in ascending index order, and both trims below depend on
-                        // that: each is a prefix or a suffix, never a scattered subset.
-                        debug_assert!(
-                            entries.windows(2).all(|pair| pair[0].index <= pair[1].index),
-                            "replay assumes the accumulated log is ordered by index"
-                        );
                         // Drop what a conflict superseded. Testing the LAST entry first makes the
                         // ordinary case -- an append that supersedes nothing -- O(1) instead of a
                         // scan of everything accumulated so far. Scanning every time is what made

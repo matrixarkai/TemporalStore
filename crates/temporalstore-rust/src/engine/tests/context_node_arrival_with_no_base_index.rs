@@ -140,16 +140,15 @@ fn build_fixture(dir: &std::path::Path, flush_base: bool) {
     assert!(wrote.status.ok, "the setup write failed: {}", wrote.status.message);
 
     // THE PLANT. A clone of the live string entry, under the same key.
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&7).expect("shard 7 is loaded");
+    engine.shards.with_state_mut(7, |shard_state| {
+        let shard = shard_state.expect("shard 7 is loaded");
         let live = shard
             .strings()
             .get(KEY)
             .expect("the written string is resident")
             .clone();
         shard.context_nodes_mut().insert(KEY.into(), live.address());
-    }
+    });
 
     // ARM A DEADLINE, so the capture fires with the planted entry in place.
     let expired = engine.execute(ExecuteRequest {
@@ -173,10 +172,10 @@ fn build_fixture(dir: &std::path::Path, flush_base: bool) {
 
 /// Is the planted entry in shard 7's `context_nodes` map, as this engine now holds it?
 fn planted_arrived(engine: &TemporalEngine) -> bool {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards
-        .get(&7)
-        .map_or(false, |shard| shard.context_nodes().contains_key(KEY))
+    engine.shards.with_state(7, |shard_state| {
+        shard_state
+            .map_or(false, |shard| shard.context_nodes().contains_key(KEY))
+    })
 }
 
 #[test]
@@ -260,16 +259,15 @@ fn no_context_node_entry_arrives_through_a_load_with_no_base_index() {
     //
     // Printed rather than asserted, for exactly that reason: nothing about this map can be
     // concluded from it.
-    let (deadline_arrived, string_arrived, anchor) = {
-        let shards = reloaded.shards.read().expect("engine lock poisoned");
-        shards.get(&7).map_or((false, false, None), |shard| {
+    let (deadline_arrived, string_arrived, anchor) = reloaded.shards.with_state(7, |shard_state| {
+        shard_state.map_or((false, false, None), |shard| {
             (
                 shard.expires_at_ms().contains_key(KEY),
                 shard.strings().contains_key(KEY),
                 shard.applied_wal_sequence,
             )
         })
-    };
+    });
     println!(
         "  from the same blob: deadline arrived {deadline_arrived}, string arrived          {string_arrived}, anchor {anchor:?}"
     );
@@ -316,9 +314,8 @@ fn with_no_index_log_either_the_deadline_shows_which_source_delivered_it() {
 
     let reloaded = engine_at(dir.path());
     reloaded.load_shard(7);
-    let (deadline, string, planted, anchor) = {
-        let shards = reloaded.shards.read().expect("engine lock poisoned");
-        shards.get(&7).map_or((false, false, false, None), |shard| {
+    let (deadline, string, planted, anchor) = reloaded.shards.with_state(7, |shard_state| {
+        shard_state.map_or((false, false, false, None), |shard| {
             (
                 shard.expires_at_ms().contains_key(KEY),
                 shard.strings().contains_key(KEY),
@@ -326,7 +323,7 @@ fn with_no_index_log_either_the_deadline_shows_which_source_delivered_it() {
                 shard.applied_wal_sequence,
             )
         })
-    };
+    });
     println!(
         "  no base index AND no index log -> deadline {deadline}, string {string}, planted          {planted}, anchor {anchor:?}"
     );

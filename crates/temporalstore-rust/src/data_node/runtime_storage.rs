@@ -4,7 +4,7 @@
 //! DataNodeRuntime storage-manager scheduling/lifecycle methods, extracted from data_node.rs.
 
 use super::round_budget::{
-    options_for_slot, BoundedStage, HeavySlot, PageCursor, ShardRoundState, StageBudget,
+    options_for_slot, BoundedStage, HeavySlot, BlockGcCursor, ShardRoundState, StageBudget,
     StageContext, StageProgress, StageStep,
 };
 use super::*;
@@ -674,6 +674,16 @@ impl DataNodeRuntime {
         options: StorageManagerOptions,
         detailed_report: bool,
     ) -> StorageManagerLoopReport {
+        self.run_storage_manager_round(shard_id, options, detailed_report, true).0
+    }
+
+    fn run_storage_manager_round(
+        &self,
+        shard_id: ShardId,
+        options: StorageManagerOptions,
+        detailed_report: bool,
+        scan_page_slabs: bool,
+    ) -> (StorageManagerLoopReport, StageProgress) {
         // A SHARD STILL REPLAYING ITS LOG GETS NO ROUND. The all-shards scheduler visits every
         // key of `shards`, and a shard is inserted there BEFORE its replay and flagged
         // `recovering` until the replay ends. The plan, the dump, compaction and the index-log
@@ -688,7 +698,7 @@ impl DataNodeRuntime {
                 .lock()
                 .expect("runtime stats lock poisoned")
                 .storage_manager_stage_skips += 1;
-            return StorageManagerLoopReport {
+            return (StorageManagerLoopReport {
                 shard_id,
                 pressure: StorageManagerPressureSnapshot::default(),
                 executed_stages: Vec::new(),
@@ -706,7 +716,7 @@ impl DataNodeRuntime {
                 duration_us: 0,
                 wal_reclaim_round: StorageManagerWalReclaimRound::default(),
                 page_log_reclaim: None,
-            };
+            }, StageProgress::Idle);
         }
         // The stage walk counters are read-and-cleared at each stage boundary, so the first span
         // must not inherit whatever ran before this round.
@@ -748,7 +758,10 @@ impl DataNodeRuntime {
             // on the overwhelming majority of cycles. A failure is recorded and does not stop
             // the cycle: the inline roll in `append` remains the fallback, so the only
             // consequence is that the next append pays for the roll, exactly as it does today.
-            match self.inner.engine.block_store().prepare_next_slab() {
+            match self.inner.engine.block_store().prepare_next_slab_for_shard(
+                shard_id,
+                crate::storage_config::effective_block_slab_target_bytes(),
+            ) {
                 Ok(Some(roll)) => {
                     tracing::debug!(
                         previous_block_slab_id = roll.previous_block_slab_id,
@@ -1229,7 +1242,7 @@ impl DataNodeRuntime {
         ));
 
 
-        if options.enable_block_gc && lifecycle_plan.reasons.iter()
+        if options.enable_block_gc && scan_page_slabs && lifecycle_plan.reasons.iter()
             .any(|reason| reason == "slot_dump_refresh_after_relocation")
         {
             // Publish relocated addresses before deciding which old segments can be retired.
@@ -1259,7 +1272,7 @@ impl DataNodeRuntime {
         } else {
             None
         };
-        if options.enable_block_gc && stale_block_pressure {
+        if options.enable_block_gc && scan_page_slabs && stale_block_pressure {
             // The floor is a MIN over the stale slabs, so a stale slab that can never be deleted
             // freezes it -- and one always can be. `run_gc_inner` treats every slab named by a
             // bucket dump manifest as live, so the moment a dump exists, the slab it names is
@@ -1426,15 +1439,15 @@ impl DataNodeRuntime {
                     });
                 super::task_execution::record_gc_phase(&self.inner, "purge", purge_started);
                 block_purge_report = Some(purge);
-                if !executed_stages.iter().any(|stage| stage == "reclaim_page") {
-                    executed_stages.push("reclaim_page".to_string());
-                    skipped_stages.retain(|stage| stage != "reclaim_page_no_pressure");
-                    self.inner.stats.lock().expect("runtime stats lock poisoned")
-                        .storage_manager_reclaim_block_runs += 1;
-                }
             }
         }
-        if page_log_reclaim.is_some()
+        let purged_or_restored = block_purge_report.as_ref().is_some_and(|purge| purge.processed_block_slabs > 0);
+        let retired_wal = page_log_reclaim.as_ref().is_some_and(|reclaim| {
+            reclaim.wal_records_removed > 0 || reclaim.wal_segments_dropped > 0
+        });
+        // Keep check and deferral evidence in the phase reports. An empty
+        // cleanup check is not a completed collection round.
+        if (purged_or_restored || retired_wal)
             && !executed_stages.iter().any(|stage| stage == "reclaim_page")
         {
             executed_stages.push("reclaim_page".to_string());
@@ -1442,7 +1455,7 @@ impl DataNodeRuntime {
             self.inner.stats.lock().expect("runtime stats lock poisoned")
                 .storage_manager_reclaim_block_runs += 1;
         }
-        let block_gc_work = stale_block_pressure || block_purge_report.is_some()
+        let block_gc_work = (scan_page_slabs && stale_block_pressure) || block_purge_report.is_some()
             || page_log_reclaim.is_some();
         spans.close("reclaim_page", &executed_stages);
         pressure_decisions.push(storage_manager_pressure_decision(
@@ -2006,6 +2019,13 @@ impl DataNodeRuntime {
                 .remove(&shard_id);
         }
         // Later index work may replace its lifecycle report. Attach physical purge work last.
+        let cleanup_progress = if block_purge_report.as_ref().is_some_and(|purge| purge.budget_exhausted) {
+            StageProgress::More
+        } else if purged_or_restored || retired_wal {
+            StageProgress::Done
+        } else {
+            StageProgress::Idle
+        };
         if let Some(purge) = block_purge_report {
             record_purge_work(&mut lifecycle_report, &lifecycle_plan, purge, detailed_report);
         }
@@ -2056,7 +2076,7 @@ impl DataNodeRuntime {
             lifecycle_report = None;
         }
         let duration_us = spans.started.elapsed().as_micros() as u64;
-        StorageManagerLoopReport {
+        (StorageManagerLoopReport {
             shard_id,
             pressure,
             executed_stages,
@@ -2074,7 +2094,7 @@ impl DataNodeRuntime {
             duration_us,
             wal_reclaim_round,
             page_log_reclaim,
-        }
+        }, cleanup_progress)
     }
 
     /// Run a maintenance cycle for EVERY loaded shard, forever, on an interval.
@@ -2180,7 +2200,10 @@ impl DataNodeRuntime {
             return None;
         }
         if options.enable_prepare {
-            if let Err(error) = self.inner.engine.block_store().prepare_next_slab() {
+            if let Err(error) = self.inner.engine.block_store().prepare_next_slab_for_shard(
+                shard_id,
+                crate::storage_config::effective_block_slab_target_bytes(),
+            ) {
                 tracing::warn!(
                     %error,
                     "storage manager could not pre-allocate the next data slab; \
@@ -2216,7 +2239,7 @@ impl DataNodeRuntime {
         let started = std::time::Instant::now();
         let mut resume = false;
         let report = if slot == HeavySlot::PageGc {
-            let stage = PageGcStage { runtime: self };
+            let stage = BlockGcStage { runtime: self };
             let mut budget = StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX);
             let context = StageContext { options, plan: None };
             let (step, report) =
@@ -3175,16 +3198,16 @@ const PAGE_GC_STEP_TIME: Duration = Duration::from_millis(10);
 
 /// Block collection as a bounded, resumable stage: each step examines a window of candidate slabs
 /// starting behind the cursor, and reports whether more remain.
-pub(crate) struct PageGcStage<'a> {
+pub(crate) struct BlockGcStage<'a> {
     runtime: &'a DataNodeRuntime,
 }
 
-impl PageGcStage<'_> {
+impl BlockGcStage<'_> {
     /// One bounded step, with the loop report the legacy tick also returns.
     pub(crate) fn run(
         &self,
         shard: ShardId,
-        cursor: &mut PageCursor,
+        cursor: &mut BlockGcCursor,
         budget: &mut StageBudget,
         context: &StageContext<'_>,
     ) -> (StageStep, StorageManagerLoopReport) {
@@ -3202,7 +3225,8 @@ impl PageGcStage<'_> {
         // A round that starts a fresh pass asks the gate first: refresh the per-slab tally, then ask
         // whether the live fraction over noncurrent slabs is under the threshold. Both are O(slabs)
         // with no file opened. A pass already underway finishes; an unpublished tally reads as due.
-        if cursor.after_slab_id.is_none() {
+        let mut scan_page_slabs = true;
+        if options.enable_block_gc && cursor.after_slab_id.is_none() {
             // TIMED AS ITS OWN ROW. A round the gate declines runs no collection and is charged to no
             // other row, so without this a stage that is asked every tick and always declines leaves
             // no trace in the per-stage timing table. The row says how often the gate was asked and
@@ -3213,27 +3237,26 @@ impl PageGcStage<'_> {
             let gate = engine
                 .block_store()
                 .reclaim_gate(crate::block_store::DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
-            if !gate.due {
-                options.enable_block_gc = false;
-            }
+            scan_page_slabs = gate.due;
             super::task_execution::record_gc_phase(&self.runtime.inner, "gate", gate_started);
         }
-        let report = self
-            .runtime
-            .run_storage_manager_once_with_report_details(shard, options, false);
+        // The picker gate applies only to new slab collection. Eligible log
+        // retirement and delayed destruction keep their own retention checks.
+        let (report, cleanup_progress) = self.runtime
+            .run_storage_manager_round(shard, options, false, scan_page_slabs);
         let (progress, work_done, status) = match report.gc_report.as_ref() {
             None => {
-                *cursor = PageCursor::default();
-                (StageProgress::Idle, 0, Status::ok())
+                *cursor = BlockGcCursor::default();
+                (cleanup_progress, 0, report.status.clone())
             }
             Some(gc) => {
                 let examined = gc.block_gc_scan_examined_slabs as u64;
                 budget.spend(examined);
                 let more = !gc.block_gc_scan_complete && gc.block_gc_scan_last_block_slab_id.is_some();
                 *cursor = if more {
-                    PageCursor { after_slab_id: gc.block_gc_scan_last_block_slab_id }
+                    BlockGcCursor { after_slab_id: gc.block_gc_scan_last_block_slab_id }
                 } else {
-                    PageCursor::default()
+                    BlockGcCursor::default()
                 };
                 (
                     if more { StageProgress::More } else { StageProgress::Done },
@@ -3246,14 +3269,14 @@ impl PageGcStage<'_> {
     }
 }
 
-impl BoundedStage for PageGcStage<'_> {
-    type Cursor = PageCursor;
+impl BoundedStage for BlockGcStage<'_> {
+    type Cursor = BlockGcCursor;
     const NAME: &'static str = "reclaim_page";
 
     fn step(
         &self,
         shard: ShardId,
-        cursor: &mut PageCursor,
+        cursor: &mut BlockGcCursor,
         budget: &mut StageBudget,
         context: &StageContext<'_>,
     ) -> StageStep {
@@ -3326,6 +3349,233 @@ mod maintenance_expiry_budget_routes {
 mod page_gate_is_timed {
     use super::*;
 
+    #[test]
+    fn a_closed_slab_gate_still_purges_mature_quarantine() {
+        use crate::types::{Command, CommandResponse, ExecuteRequest};
+
+        let _physical = crate::engine::value_once_in_test(false);
+        let root = tempfile::tempdir().unwrap();
+        let engine = TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024, root.path().join("cache"),
+            root.path().join("blocks"), root.path().join("indexes"),
+        );
+        engine.load_shard(1);
+        let store = engine.block_store();
+        let victim = store.append_block_of_object_for_shard(1, &[17; 128], None, None, 0)
+            .unwrap().block_slab_id();
+        let roll = store.roll_slab_for_shard(1).unwrap();
+        assert_eq!(roll.previous_block_slab_id, victim);
+        let quarantined = store.gc_slabs_before_with_live_refs_policy_limited(
+            roll.new_block_slab_id, Vec::<u64>::new(),
+            crate::block_store::BlockStoreGcPolicy::max_slabs(1), true,
+            Some(std::collections::BTreeSet::from([victim])),
+        ).unwrap();
+        assert_eq!(quarantined.delayed_destroy_block_slab_ids, vec![victim]);
+
+        // Give the utility gate a real sealed serving slab. Quarantine can
+        // retain a descriptor in the denominator until final destruction.
+        let mut seed = 0x3d6f_819bu32;
+        let value: Vec<u8> = (0..4096).map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as u8
+        }).collect();
+        let written = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: "live".into(), value: value.clone() },
+        });
+        assert!(written.status.ok, "{:?}", written.status);
+        let survivor = store.roll_slab_for_shard(1).unwrap().previous_block_slab_id;
+        assert_ne!(survivor, victim);
+        assert!(engine.live_block_slab_ids(1).contains(&survivor));
+        assert!(!store.active_block_slab_ids().contains(&survivor));
+        engine.publish_block_slab_live_bytes();
+        let gate = store.reclaim_gate(crate::block_store::DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
+        assert!(gate.ready && gate.logical_bytes > 0 && gate.live_bytes > 0 && !gate.due, "{gate:?}");
+
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine.clone(),
+            DataNodeRuntimeOptions { worker_threads: 0, max_queue_depth: 4, max_background_queue_depth: 2 },
+        );
+        let step = |enabled| {
+            let options = StorageManagerOptions { enable_block_gc: enabled, ..Default::default() };
+            let context = StageContext { options: &options, plan: None };
+            let (step, report) = BlockGcStage { runtime: &runtime }.run(
+                1, &mut BlockGcCursor::default(), &mut StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX),
+                &context,
+            );
+            assert!(report.status.ok, "{report:?}");
+            assert!(report.gc_report.is_none(), "the physical picker must remain closed");
+            (step, report)
+        };
+        let _ = step(true);
+        assert_eq!(store.delayed_destroy_slab_ids().unwrap(), vec![victim], "grace must hold");
+        assert_eq!(store.backdate_delayed_destroy_stamps_for_test(
+            crate::engine::reports::DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS.saturating_add(60_000),
+        ).unwrap(), 1);
+        let _ = step(false);
+        assert_eq!(store.delayed_destroy_slab_ids().unwrap(), vec![victim], "explicit disable must hold");
+        let (result, report) = step(true);
+        assert!(matches!(result.progress, StageProgress::Done));
+        assert!(report.executed_stages.iter().any(|name| name == "reclaim_page"));
+        assert!(store.delayed_destroy_slab_ids().unwrap().is_empty());
+        assert!(!store.slab_ids().unwrap().contains(&victim));
+        assert!(store.slab_ids().unwrap().contains(&survivor));
+        engine.cache().invalidate_shard(1).unwrap();
+        let read = engine.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key: "live".into() },
+        });
+        assert!(read.status.ok, "{:?}", read.status);
+        assert_eq!(read.response, CommandResponse::Bytes { value: Some(value) });
+    }
+
+
+    #[test]
+    fn a_closed_slab_gate_retires_rolled_wal_after_follower_release() {
+        use crate::engine::reports::BucketDumpFollowerReplayCursor;
+        use crate::types::{Command, CommandResponse, ExecuteRequest};
+
+        const CHILD_ROOT: &str = "TS_TEST_PAGE_GATE_WAL_REOPEN";
+        let check_values = |engine: &TemporalEngine| {
+            for index in 0..64u8 {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: 1, command: Command::StringGet { key: format!("owner-{index:04}") },
+                });
+                assert!(response.status.ok, "{:?}", response.status);
+                assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![index + 1; 64]) });
+            }
+        };
+        let open = |root: &std::path::Path, cache: &str| {
+            let engine = TemporalEngine::with_local_dirs(
+                64 * 1024 * 1024, root.join(cache), root.join("blocks"), root.join("indexes"),
+            );
+            engine.load_shard(1);
+            engine
+        };
+        if let Some(root) = std::env::var_os(CHILD_ROOT) {
+            let engine = open(std::path::Path::new(&root), "child-cache");
+            check_values(&engine);
+            eprintln!("verified 64 Page GC WAL survivor values after reopen");
+            return;
+        }
+
+        struct RestoreWalRoll;
+        impl Drop for RestoreWalRoll {
+            fn drop(&mut self) {
+                crate::wal::set_wal_segment_bytes_for_test(None);
+            }
+        }
+        let _roll = RestoreWalRoll;
+        crate::wal::set_wal_segment_bytes_for_test(Some(1024));
+        let root = tempfile::tempdir().unwrap();
+        let engine = open(root.path(), "seed-cache");
+        assert!(engine.set_config(crate::control::SetConfigRequest {
+            shard_id: 1,
+            config: crate::control::Config { version: 2, async_storage: true, ..Default::default() },
+        }).ok);
+        for version in 0..2 {
+            for index in 0..64u8 {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("owner-{index:04}"),
+                        value: vec![if version == 0 { 0 } else { index + 1 }; 64],
+                    },
+                });
+                assert!(response.status.ok, "{:?}", response.status);
+            }
+        }
+        let wal = engine.write_ahead_log_store();
+        wal.flush(1).unwrap();
+        let info = wal.info(1).unwrap();
+        let pieces = crate::wal::wal_piece_extents_for_test(info.path.parent().unwrap(), 1);
+        assert!(pieces.iter().filter(|(_, named, _, _)| named.is_some()).count() >= 2);
+
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine.clone(),
+            DataNodeRuntimeOptions { worker_threads: 0, max_queue_depth: 4, max_background_queue_depth: 2 },
+        );
+        let dump_options = StorageManagerOptions {
+            enable_wal_reclaim: true, min_undumped_wal_records: 0, min_undumped_wal_bytes: 0,
+            max_dump_buckets_per_round: 0, ..Default::default()
+        };
+        let dump = runtime.run_storage_manager_once_with_report_details(
+            1, options_for_slot(&dump_options, HeavySlot::WalReclaim), false,
+        );
+        assert!(dump.status.ok && dump.wal_reclaim_round.dumped, "{dump:?}");
+        assert_eq!(engine.storage_dump_wal_sequence(1), Some(128));
+        assert!(pieces.iter().all(|(path, _, _, _)| path.is_file()));
+
+        engine.publish_block_slab_live_bytes();
+        let gate = engine.block_store().reclaim_gate(crate::block_store::DEFAULT_RECLAIM_UTILITY_THRESHOLD_BASIS_POINTS);
+        assert!(gate.ready && !gate.due, "{gate:?}");
+        let step = |options: &StorageManagerOptions| {
+            let context = StageContext { options, plan: None };
+            let (step, report) = BlockGcStage { runtime: &runtime }.run(
+                1, &mut BlockGcCursor::default(), &mut StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX),
+                &context,
+            );
+            assert!(report.status.ok, "{report:?}");
+            assert!(report.gc_report.is_none(), "WAL cleanup must not open the slab picker");
+            (step, report)
+        };
+        let mut options = StorageManagerOptions { enable_block_gc: true, ..Default::default() };
+        options.follower_replay_cursors.push(BucketDumpFollowerReplayCursor {
+            shard_id: 1, follower_id: "page-gate-reader".into(), ..Default::default()
+        });
+        let (_, held) = step(&options);
+        let held = held.page_log_reclaim.unwrap();
+        assert!(held.plan.follower_cursor_block_count > 0);
+        assert_eq!(held.wal_records_removed, 0);
+        assert_eq!(held.wal_segments_dropped, 0);
+        assert!(pieces.iter().all(|(path, _, _, _)| path.is_file()));
+
+        options.follower_replay_cursors.clear();
+        let (progress, released) = step(&options);
+        let reclaimed = released.page_log_reclaim.unwrap();
+        assert!(reclaimed.applied && reclaimed.wal_segments_dropped > 0, "{reclaimed:?}");
+        assert!(matches!(progress.progress, StageProgress::Done));
+        assert!(pieces.iter().any(|(path, named, _, _)| named.is_some() && !path.exists()));
+        drop(wal);
+        drop(runtime);
+        drop(engine);
+
+        let (_, module) = module_path!().split_once("::").unwrap();
+        let selector = format!("{module}::a_closed_slab_gate_retires_rolled_wal_after_follower_release");
+        let stdout_path = root.path().join("child-stdout.log");
+        let stderr_path = root.path().join("child-stderr.log");
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", &selector, "--nocapture"])
+            .env(CHILD_ROOT, root.path())
+            .stdin(std::process::Stdio::null())
+            .stdout(std::fs::File::create(&stdout_path).unwrap())
+            .stderr(std::fs::File::create(&stderr_path).unwrap())
+            .spawn().unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(60);
+        let result = loop {
+            match child.try_wait() {
+                Ok(Some(status)) => break Ok(status),
+                Ok(None) if std::time::Instant::now() < deadline => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                Ok(None) => break Err("child reopen timed out".to_string()),
+                Err(error) => break Err(format!("child reopen wait failed: {error}")),
+            }
+        };
+        if result.is_err() {
+            let _ = child.kill();
+            child.wait().expect("reap the child after a failed reopen wait");
+        }
+        let stdout = std::fs::read_to_string(stdout_path).unwrap();
+        let stderr = std::fs::read_to_string(stderr_path).unwrap();
+        assert!(result.as_ref().is_ok_and(|status| status.success())
+            && stderr.contains("verified 64 Page GC WAL survivor values after reopen"),
+            "reopen result={result:?} stdout={stdout} stderr={stderr}");
+    }
+
+
+
     /// A tick page step on a store with nothing to collect must still be visible: the gate that
     /// declined it is charged to `reclaim_page.gate`, one round per fresh pass, and no collection
     /// row appears (the control: the gate really did decline). Planted fault: drop the
@@ -3344,10 +3594,10 @@ mod page_gate_is_timed {
         );
         let options = StorageManagerOptions::default();
         for round in 1..=3u64 {
-            let mut cursor = PageCursor::default();
+            let mut cursor = BlockGcCursor::default();
             let mut budget = StageBudget::new(PAGE_GC_STEP_TIME, u64::MAX);
             let context = StageContext { options: &options, plan: None };
-            let (_, report) = PageGcStage { runtime: &runtime }.run(1, &mut cursor, &mut budget, &context);
+            let (_, report) = BlockGcStage { runtime: &runtime }.run(1, &mut cursor, &mut budget, &context);
             assert!(report.gc_report.is_none(), "the gate was expected to decline: {report:?}");
             let timing = runtime.stats().storage_manager_stage_timing;
             let gate = timing.get("reclaim_page.gate").expect("a declined step reports its gate");

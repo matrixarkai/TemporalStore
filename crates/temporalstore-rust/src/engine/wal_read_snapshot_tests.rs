@@ -35,8 +35,9 @@ fn write_hash(engine: &TemporalEngine, generation: u8) {
 }
 
 fn hash_address(engine: &TemporalEngine) -> crate::block_store::ElementEntry {
-    engine.shards.read().unwrap().get(&1).unwrap()
-        .bucket_index.hashes.get("row").unwrap().get("a").unwrap().clone()
+    engine.shards.with_state(1, |state| {
+        state.unwrap().bucket_index.hashes.get("row").unwrap().get("a").unwrap().clone()
+    })
 }
 
 fn run(engine: &TemporalEngine, command: Command) -> CommandResponse {
@@ -52,8 +53,9 @@ fn captured_locators_survive_pruning_and_nested_scope_cleanup() {
     write_hash(&engine, 1);
     let object = crate::engine::stable_block_object_id(1, "hash", "row");
     let old = hash_address(&engine);
-    let second = engine.shards.read().unwrap().get(&1).unwrap()
-        .bucket_index.hashes.get("row").unwrap().get("b").unwrap().clone();
+    let second = engine.shards.with_state(1, |state| {
+        state.unwrap().bucket_index.hashes.get("row").unwrap().get("b").unwrap().clone()
+    });
     assert_eq!(crate::engine::live_block_key(&old), crate::engine::live_block_key(&second));
     assert!(old.block_id().is_none(), "the fixture must exercise a WAL-backed address");
     let expected = read_block_at(&engine.block_store, 1, object, Some("a"), &old).unwrap();
@@ -105,7 +107,10 @@ fn fast_wal_reads_keep_complete_snapshots_after_concurrent_overwrite() {
         crate::engine::AFTER_FAST_READ_PLAN.with(|slot| {
             assert!(slot.borrow().is_none());
             *slot.borrow_mut() = Some(Box::new(move || {
-                assert!(writer.shards.try_write().is_ok(), "payload loading must not retain the index guard");
+                assert!(
+                    !crate::engine::shard_write_guard::any_shard_guard_held(),
+                    "payload loading must not retain the index guard"
+                );
                 std::thread::spawn(move || {
                     write_hash(&writer, 7);
                     run(&writer, Command::StringSet { key: "string".into(), value: b"replacement".to_vec() });

@@ -5,6 +5,9 @@ from typing import Iterable, Optional
 
 import grpc
 from temporalstore.v1 import temporalstore_pb2 as pb
+
+from .cache_load_wire import LoadBatch, decode_load_batch
+from .cache_wire import BatchCommand, CacheInsert, encode_cache_batch
 from temporalstore.v1.temporalstore_pb2_grpc import TemporalStoreServiceStub
 
 
@@ -43,6 +46,8 @@ class CommandClient:
         self._channel = command_channel(target, credentials)
         self._service = TemporalStoreServiceStub(self._channel)
         self._timeout = timeout_seconds
+        self._raw_batch = {}
+        self._borrowed_load = {}
 
     def execute(
         self, shard_id: int, command: pb.Command, *, load_version: Optional[int] = None,
@@ -55,7 +60,36 @@ class CommandClient:
             return self._service.ExecuteChecked(request, timeout=timeout)
         return self._service.Execute(request, timeout=timeout)
 
-    def _batch_call(self, shard_id, commands, load_version):
+    def _batch_call(self, shard_id, commands, load_version, *, borrowed_load=False):
+        if borrowed_load:
+            checked = load_version is not None
+            call = self._borrowed_load.get(checked)
+            if call is None:
+                method = "BatchExecuteChecked" if checked else "BatchExecute"
+                service = pb.DESCRIPTOR.services_by_name["TemporalStoreService"]
+                call = self._channel.unary_unary(
+                    f"/{service.full_name}/{method}",
+                    request_serializer=pb.BatchExecuteRequest.SerializeToString,
+                    response_deserializer=decode_load_batch,
+                )
+                self._borrowed_load[checked] = call
+            request = pb.BatchExecuteRequest(shard_id=shard_id, commands=commands)
+            if checked:
+                request.load_version = load_version
+            return call, request
+        commands = list(commands)
+        if any(isinstance(command, CacheInsert) for command in commands):
+            checked = load_version is not None
+            call = self._raw_batch.get(checked)
+            if call is None:
+                method = "BatchExecuteChecked" if checked else "BatchExecute"
+                service = pb.DESCRIPTOR.services_by_name["TemporalStoreService"]
+                call = self._channel.unary_unary(
+                    f"/{service.full_name}/{method}",
+                    response_deserializer=pb.BatchExecuteResponse.FromString,
+                )
+                self._raw_batch[checked] = call
+            return call, encode_cache_batch(shard_id, commands, load_version)
         request = pb.BatchExecuteRequest(shard_id=shard_id, commands=commands)
         if load_version is not None:
             request.load_version = load_version
@@ -63,15 +97,16 @@ class CommandClient:
         return self._service.BatchExecute, request
 
     def batch_execute(
-        self, shard_id: int, commands: Iterable[pb.Command], *,
+        self, shard_id: int, commands: Iterable[BatchCommand], *,
         load_version: Optional[int] = None, timeout_seconds: Optional[float] = None,
-    ) -> pb.BatchExecuteResponse:
-        call, request = self._batch_call(shard_id, commands, load_version)
+        borrowed_load: bool = False,
+    ) -> pb.BatchExecuteResponse | LoadBatch:
+        call, request = self._batch_call(shard_id, commands, load_version, borrowed_load=borrowed_load)
         timeout = self._timeout if timeout_seconds is None else timeout_seconds
         return call(request, timeout=timeout)
 
-    def _start_batch(self, shard_id, commands, *, load_version, timeout_seconds=None):
-        call, request = self._batch_call(shard_id, commands, load_version)
+    def _start_batch(self, shard_id, commands, *, load_version, timeout_seconds=None, borrowed_load=False):
+        call, request = self._batch_call(shard_id, commands, load_version, borrowed_load=borrowed_load)
         timeout = self._timeout if timeout_seconds is None else timeout_seconds
         return call.future(request, timeout=timeout)
 
