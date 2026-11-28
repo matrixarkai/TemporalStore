@@ -734,3 +734,26 @@ async fn a_fenced_stale_owner_cannot_open_a_new_segment() {
     assert!(refused.is_err());
     assert_eq!(firsts(&a.wal_segments(SHARD).await.unwrap()), vec![1]);
 }
+
+#[tokio::test]
+async fn sync_request_batch_reports_its_durable_prefix_on_failure() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = CountingStore::new(dir.path());
+    let limit = encode_wal_proto_frame(&entry(1), WAL_FRAME_FORMAT_DEFAULT).unwrap().len() as u64;
+    let r = replicator(&store, 256)
+        .with_wal_segment_max_bytes(limit)
+        .with_publish_retry(1, Duration::ZERO);
+    *store.refuse_key.lock().unwrap() = Some(log_key(&r, 2));
+    let writer = r.storage_writer(SharedStoreStorageMode::Sync, 1);
+    let commands = (1..=3).map(|index| entry(index).command.unwrap()).collect();
+    let (confirmed, _) = writer.write_sync_batch_counted(SHARD, commands).await.unwrap_err();
+    assert_eq!(confirmed, 1);
+    assert_eq!(writer.unresolved_hole(), Some((2, 3)));
+    assert_eq!(r.latest_persisted_wal_index(SHARD).await.unwrap(), 1);
+
+    let follower = engine(dir.path(), "request-batch-partial");
+    assert_eq!(r.replay_wal(SHARD, 0, &follower).await.unwrap().applied, 1);
+    assert_eq!(value_of(&follower, 1), Some(b"value-0001".to_vec()));
+    assert_eq!(value_of(&follower, 2), None);
+    assert_eq!(value_of(&follower, 3), None);
+}
