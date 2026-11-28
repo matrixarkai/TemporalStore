@@ -521,7 +521,7 @@ fn a_bytes_member_cannot_be_scored_by_member_and_is_otherwise_rolled_like_any_ot
 #[cfg(feature = "alloc-probe")]
 mod probe {
     use super::*;
-    use crate::alloc_probe::Probe;
+    use crate::alloc_probe::{Probe, ThreadAllocationProbe};
 
     /// `samples` samples of `members` cells, every member in every sample, all in one bucket.
     fn dataset(members: u64, samples: u64) -> Vec<Sample> {
@@ -544,26 +544,34 @@ mod probe {
         };
         let header = header();
         let probe = Probe::start();
+        let own_probe = ThreadAllocationProbe::start();
         let got = rollup(&header, snaps, &request).unwrap();
+        let own_calls = own_probe.stop();
         let spent = probe.stop().allocs;
+        assert!(spent >= own_calls, "the process span must include every caller-thread allocation");
         assert_eq!(got.samples.len(), 1);
         assert_eq!(got.samples[0].cells.len(), if capped { 35.min(members as usize) } else { members as usize });
-        spent
+        println!("rollup {members}x{samples}, capped {capped}: caller {own_calls}, process {spent}");
+        own_calls
     }
 
     /// What an obvious implementation does: clone every cell into a table keyed by member.
     fn allocations_of_a_cloning_table(members: u64, samples: u64) -> u64 {
         let snaps = dataset(members, samples);
         let probe = Probe::start();
+        let own_probe = ThreadAllocationProbe::start();
         let mut table: BTreeMap<Member, Vec<Cell>> = BTreeMap::new();
         for s in &snaps {
             for c in &s.cells {
                 table.entry(c.member.clone()).or_default().push(c.clone());
             }
         }
+        let own_calls = own_probe.stop();
         let spent = probe.stop().allocs;
+        assert!(spent >= own_calls, "the process span must include the complete cloning control");
         assert_eq!(table.len(), members as usize);
-        spent
+        println!("cloning table {members}x{samples}: caller {own_calls}, process {spent}");
+        own_calls
     }
 
     /// The allocations of a rollup do not move with the number of samples in a bucket or with
@@ -592,5 +600,106 @@ mod probe {
         println!("table: 50x4 {small}, 4000x4 {wide}, 50x64 {deep}");
         assert!(wide > small + 5000, "CONTROL: the table did not grow with the members ({small} -> {wide})");
         assert!(deep > small, "CONTROL: the table did not grow with the samples ({small} -> {deep})");
+    }
+
+    #[cfg(feature = "alloc-probe")]
+    #[test]
+    fn a_rollup_names_own_calls_while_a_parked_peer_allocates_in_the_process_span() {
+        use crate::alloc_probe::ThreadAllocationProbe;
+        use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+        use std::time::{Duration, Instant};
+
+        const PLANTED: u64 = 64;
+        struct StopOnDrop<'a>(&'a AtomicBool);
+        impl Drop for StopOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::Release);
+            }
+        }
+        fn wait_for(counter: &AtomicU64, target: u64) -> bool {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while counter.load(Ordering::Acquire) != target {
+                if Instant::now() >= deadline {
+                    return false;
+                }
+                std::thread::yield_now();
+            }
+            true
+        }
+
+        let request = AtomicU64::new(0);
+        let completed = AtomicU64::new(0);
+        let peer_calls = AtomicU64::new(0);
+        let ready = AtomicU64::new(0);
+        let stop = AtomicBool::new(false);
+        std::thread::scope(|scope| {
+            let _stop = StopOnDrop(&stop);
+            scope.spawn(|| {
+                ready.store(1, Ordering::Release);
+                let mut seen = 0;
+                while !stop.load(Ordering::Acquire) {
+                    let epoch = request.load(Ordering::Acquire);
+                    if epoch == seen {
+                        std::thread::yield_now();
+                        continue;
+                    }
+                    let own = ThreadAllocationProbe::start();
+                    for _ in 0..PLANTED {
+                        drop(std::hint::black_box(vec![0xa5u8; 128]));
+                    }
+                    peer_calls.store(own.stop(), Ordering::Relaxed);
+                    seen = epoch;
+                    completed.store(epoch, Ordering::Release);
+                }
+            });
+            assert!(wait_for(&ready, 1), "peer did not park before measurement");
+            let mut epoch = 0;
+            for capped in [false, true] {
+                let mut baseline = None;
+                for (members, samples) in [(50, 4), (50, 64), (4000, 4), (4000, 64)] {
+                    // No rollup warmup: the first measured call is the original first input.
+                    let snaps = dataset(members, samples);
+                    let header = header();
+                    let spec = RollupSpec {
+                        older_than_ms: u64::MAX,
+                        bucket_ms: 1 << 40,
+                        cap: capped.then(|| cap(Some("slot"), lane_score("shown"), 5)),
+                        anchor: Default::default(),
+                        coarser_tiers: Vec::new(),
+                        truncate: None,
+                    };
+                    let process = Probe::start();
+                    let own = ThreadAllocationProbe::start();
+                    let got = rollup(&header, snaps, &spec).unwrap();
+                    let own_calls = own.stop();
+
+                    // Inject foreign work after the operation but before the process span closes.
+                    // This isolates span contamination without charging handshake work to rollup.
+                    let handshake = ThreadAllocationProbe::start();
+                    epoch += 1;
+                    request.store(epoch, Ordering::Release);
+                    let acknowledged = wait_for(&completed, epoch);
+                    let handshake_calls = handshake.stop();
+                    let process_calls = process.stop().allocs;
+                    let foreign_calls = peer_calls.load(Ordering::Acquire);
+
+                    assert!(acknowledged, "peer did not acknowledge the requested allocation burst");
+                    assert_eq!(foreign_calls, PLANTED, "the peer counter must see real allocations");
+                    assert_eq!(handshake_calls, 0, "synchronization must not allocate on this thread");
+                    assert!(own_calls > 0, "the allocation lane is not installed");
+                    assert!(process_calls >= own_calls + foreign_calls);
+                    assert_eq!(got.samples.len(), 1);
+                    assert_eq!(got.samples[0].cells.len(), if capped { 35.min(members as usize) } else { members as usize });
+                    println!("capped {capped}, {members}x{samples}: own {own_calls}, peer {foreign_calls}, process {process_calls}");
+                    match baseline {
+                        None => {
+                            assert!(own_calls <= if capped { 6 } else { 4 });
+                            baseline = Some(own_calls);
+                        }
+                        Some(first) => assert_eq!(own_calls, first, "own rollup allocations changed with input size"),
+                    }
+                }
+            }
+        });
     }
 }

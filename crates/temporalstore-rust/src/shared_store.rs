@@ -31,8 +31,6 @@ pub enum SharedStoreReplicationError {
     Io(#[from] std::io::Error),
     #[error("block store error: {0}")]
     BlockStore(#[from] BlockStoreError),
-    #[error("json error: {0}")]
-    Json(#[from] serde_json::Error),
     #[error("protobuf decode error: {0}")]
     ProtobufDecode(#[from] prost::DecodeError),
     #[error(

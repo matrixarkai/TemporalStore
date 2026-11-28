@@ -579,6 +579,7 @@ impl TemporalEngine {
             quotas: Arc::new(RwLock::new(crate::engine::quota::QuotaTable::default())),
             compaction_rounds: Arc::default(),
             compaction_passes: Arc::default(),
+            scrape_bucket_summaries: Arc::default(),
             unpublished_compaction_slabs: Arc::default(),
             recovery_probe_cursors: Arc::default(),
             concurrent_commit: Arc::new(std::sync::atomic::AtomicBool::new(true)),
@@ -3575,6 +3576,7 @@ impl TemporalEngine {
         assert!(self.checkpoint_publications.is_current_close(&drained));
         let retired = self.shards.retire_if_current(&handle)
             .expect("reserved shard changed during close");
+        let scrape_cache = self.detach_scrape_bucket_summaries(&handle);
         let unpublished = self.unpublished_compaction_slabs.write()
             .expect("unpublished compaction lock poisoned").remove(&shard_id);
         self.infos.write().expect("info lock poisoned").remove(&shard_id);
@@ -3582,7 +3584,7 @@ impl TemporalEngine {
         self.admissions.write().expect("admission lock poisoned").remove(&AdmissionScope::Shard(shard_id));
         block_in_wal::clear_shard(&self.block_store, shard_id);
         assert!(self.checkpoint_publications.finish_close(drained));
-        drop((retired, unpublished));
+        drop((retired, unpublished, scrape_cache));
     }
 
     pub fn reload_shard_with(&self, request: LoadShardRequest) -> LoadShardResponse {
@@ -3608,28 +3610,48 @@ impl TemporalEngine {
                 ),
             };
         }
-        self.infos.write().expect("info lock poisoned").insert(
-            request.shard_id,
-            ShardInfo {
-                shard_id: request.shard_id,
-                loaded: true,
-                table_name: request.table_name,
-                shard_uri: request.shard_uri,
-                start_routing_bucket: request.start_routing_bucket,
-                end_routing_bucket: request.end_routing_bucket,
-                readonly: request.readonly,
-                load_version: request.load_version,
-                local_node_id: request.local_node_id,
-                membership_version: existing.membership_version,
-                replica_membership_version: existing.replica_membership_version,
-                membership_valid: existing.membership_valid,
-                replica_node_ids: existing.replica_node_ids,
-                leader_node_id: existing.leader_node_id,
-                // Reload updates metadata only; it does not replay the WAL, so it serves
-                // immediately.
-                recovering: false,
-            },
-        );
+        let Some(owner) = self.shards.handle(request.shard_id) else {
+            return LoadShardResponse {
+                status: Status::error("shard_not_found", "shard owner is not loaded"),
+            };
+        };
+        let replacement = ShardInfo {
+            shard_id: request.shard_id,
+            loaded: true,
+            table_name: request.table_name,
+            shard_uri: request.shard_uri,
+            start_routing_bucket: request.start_routing_bucket,
+            end_routing_bucket: request.end_routing_bucket,
+            readonly: request.readonly,
+            load_version: request.load_version,
+            local_node_id: request.local_node_id,
+            membership_version: existing.membership_version,
+            replica_membership_version: existing.replica_membership_version,
+            membership_valid: existing.membership_valid,
+            replica_node_ids: existing.replica_node_ids,
+            leader_node_id: existing.leader_node_id,
+            // Reload updates metadata only; it does not replay the WAL, so it serves
+            // immediately.
+            recovering: false,
+        };
+        // No refresh mutex is taken here. The owner write fences old refresh
+        // publication while metadata and its cache incarnation change together.
+        let displaced = self.shards.with_handle_state_mut(&owner, |state| {
+            state.map(|_| {
+                let previous = self
+                    .infos
+                    .write()
+                    .expect("info lock poisoned")
+                    .insert(request.shard_id, replacement);
+                (previous, self.detach_scrape_bucket_summaries(&owner))
+            })
+        });
+        if displaced.is_none() {
+            return LoadShardResponse {
+                status: Status::error("shard_not_found", "shard owner was retired"),
+            };
+        }
+        drop(displaced);
         LoadShardResponse {
             status: Status::ok(),
         }

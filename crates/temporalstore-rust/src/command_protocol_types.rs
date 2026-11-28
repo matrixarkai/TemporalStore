@@ -48,7 +48,9 @@ pub struct SequenceFeatureRow {
 
 impl SequenceFeatureRow {
     pub fn encode_feature_proto_value(&self) -> Vec<u8> {
-        let mut out = Vec::new();
+        // THE LARGEST THIS ROW CAN ENCODE TO (four fields, a tag and a varint each: 11 + 6 + 6 + 11
+        // bytes), so the buffer is allocated once. An empty `Vec` grew 8, 16, 32 for a typical row.
+        let mut out = Vec::with_capacity(34);
         encode_varint_field(&mut out, 1, self.gid);
         encode_varint_field(&mut out, 2, self.action_type as u64);
         encode_varint_field(&mut out, 3, self.duration as u64);
@@ -1213,7 +1215,15 @@ pub trait ContextWire: Sized + Serialize + for<'de> Deserialize<'de> {
 
 impl ContextWire for ContextNode {
     fn encode_context_proto_value(&self) -> Vec<u8> {
-        let mut out = Vec::new();
+        // SIZED ONCE, from what the node holds: the fixed fields (at most 11 bytes each, a dozen of
+        // them), the two strings with their length prefixes, and four bytes an element of each
+        // vector, which is the widest either encoding writes. A bound and not a measurement: an
+        // empty `Vec` grew four or five times for an ordinary node, and each step copied.
+        let mut out = Vec::with_capacity(
+            136 + self.canonical_name.len()
+                + self.l0.len()
+                + 4 * (self.vector.len() + self.summary_vector.len()),
+        );
         encode_varint_field(&mut out, 1, self.node_hash);
         encode_varint_field(&mut out, 2, self.parent_hash);
         encode_varint_field(&mut out, 3, u64::from(self.kind));
@@ -1341,7 +1351,9 @@ impl ContextWire for ContextNode {
 
 impl ContextWire for ContextEvent {
     fn encode_context_proto_value(&self) -> Vec<u8> {
-        let mut out = Vec::new();
+        // SIZED ONCE, as the node's is: the fixed fields, the text with its length prefix and four
+        // bytes an element of the vector.
+        let mut out = Vec::with_capacity(96 + self.text.len() + 4 * self.vector.len());
         encode_varint_field(&mut out, 1, self.event_id_hash);
         encode_varint_field(&mut out, 2, self.event_time_ms);
         encode_varint_field(&mut out, 3, u64::from(self.event_type_code()));
