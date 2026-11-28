@@ -877,12 +877,12 @@ class AdapterTest(unittest.TestCase):
                     backend.close()
                     server.stop(0).wait()
 
-    def test_store_reconciles_received_reply_before_propagating_batch_failure(self):
+    def test_interrupted_store_reconciles_only_on_direct_route(self):
+        from contextlib import closing
+
         from lmcache_temporalstore.grpc_kv import TableValueBackend, pb
         from temporalstore_sdk import MetadataError
 
-        backend = TableValueBackend("grpc://example.test", "kvcache", 5, 1, 0)
-        self.addCleanup(backend.close)
         keys = [Key("responded"), Key("interrupted")]
         for key in keys:
             key.model_name, key.kv_rank = "fixture/model", 0
@@ -891,23 +891,29 @@ class AdapterTest(unittest.TestCase):
             yield 0, pb.CommandResponse(status=pb.Status(code="write_outcome_unknown"))
             raise MetadataError("invalid_batch", "incomplete replies")
 
-        client = Mock()
-        client.iter_batch_responses.return_value = replies()
-        client.batch_execute.return_value = [pb.CommandResponse(status=pb.Status(ok=True), value=b"tensor")]
-        chunks = [(key, memoryview(b"tensor")) for key in keys]
-
-        with patch.object(backend, "_table", return_value=client):
-            results = backend.iter_store_results(chunks)
-            self.assertEqual(next(results), (0, False))
-            with self.assertRaisesRegex(MetadataError, "incomplete replies"):
-                next(results)
-
-        self.assertEqual(backend.stores_confirmed_by_read, 1)
-        client.iter_batch_responses.assert_called_once()
-        client.batch_execute.assert_called_once()
-        write = client.iter_batch_responses.call_args.args[0][0]
-        read = client.batch_execute.call_args.args[0][0]
-        self.assertEqual(read.string_get.key, write.string_set_conditional.key)
+        chunks = [(keys[0], memoryview(b"tensor")), (keys[1], memoryview(b"other"))]
+        for proxy_target in (None, "proxy.test:17200"):
+            client = Mock()
+            client.iter_batch_responses.return_value = replies()
+            client.batch_execute.return_value = [pb.CommandResponse(status=pb.Status(ok=True), value=b"tensor")]
+            with self.subTest(proxy_target=proxy_target), closing(TableValueBackend(
+                "grpc://example.test", "kvcache", 5, 1, 0, proxy_grpc_target=proxy_target,
+            )) as backend, patch.object(backend, "_table", return_value=client):
+                results = backend.iter_store_results(chunks)
+                if proxy_target is None:
+                    self.assertEqual(next(results), (0, False))
+                with self.assertRaisesRegex(MetadataError, "incomplete replies"):
+                    next(results)
+                client.iter_batch_responses.assert_called_once()
+                if proxy_target is None:
+                    self.assertEqual(backend.stores_confirmed_by_read, 1)
+                    client.batch_execute.assert_called_once()
+                    write = client.iter_batch_responses.call_args.args[0][0]
+                    read = client.batch_execute.call_args.args[0][0]
+                    self.assertEqual(read.string_get.key, write.string_set_conditional.key)
+                else:
+                    self.assertEqual(backend.stores_confirmed_by_read, 0)
+                    client.batch_execute.assert_not_called()
 
     def test_interrupted_store_preserves_acknowledged_results_and_reports_the_error(self):
         from lmcache_temporalstore.grpc_kv import TableValueBackend, grpc, pb
