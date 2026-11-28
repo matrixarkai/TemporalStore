@@ -518,6 +518,16 @@ mod raft_route_tests {
         report("b", 2, true);
         assert!(topology(&meta, current_version).unchanged);
 
+        // Neither claimant can reclaim cache data while the term has two reported leaders.
+        assert!(report("a", 2, true).is_empty());
+        assert!(report("b", 2, true).is_empty());
+        let conflicted = topology(&meta, current_version);
+        assert!(!conflicted.unchanged);
+        assert!(conflicted.shards[0].raft_route.as_ref().unwrap().endpoint.is_none());
+        assert!(report("a", 2, false).is_empty());
+        let recovered = report("b", 2, true);
+        assert_eq!(recovered, budgets);
+
         let restored = SingleNodeMeta::default();
         assert!(restored.install_snapshot(meta.export_snapshot()).status.ok);
         assert_eq!(topology(&restored, 0).shards, current.shards);
