@@ -528,7 +528,10 @@ class AdapterTest(unittest.TestCase):
         for key in keys:
             key.model_name, key.kv_rank = "fixture/model", 0
 
+        pending = []
+
         def replies(_):
+            pending.append(adapter.report_status())
             yield 0, pb.CommandResponse(status=pb.Status(ok=True), count=1)
             raise MetadataError("raft_error", "leader changed during the batch")
 
@@ -540,6 +543,12 @@ class AdapterTest(unittest.TestCase):
             result = adapter.pop_completed_store_tasks()[task]
 
         self.assertFalse(result.success)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["store_tasks_submitted"], 1)
+        self.assertEqual(pending[0]["store_keys_submitted"], 2)
+        self.assertEqual(pending[0]["store_tasks_pending"], 1)
+        self.assertEqual(pending[0]["stores"], 0)
+        self.assertEqual(pending[0]["store_tasks_failed"], 0)
         status = adapter.report_status()
         self.assertEqual(status["stores"], 1)
         self.assertEqual(status["store_tasks_submitted"], 1)
