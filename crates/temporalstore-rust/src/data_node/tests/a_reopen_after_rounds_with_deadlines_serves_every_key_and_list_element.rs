@@ -56,6 +56,19 @@ fn open(dir: &std::path::Path, first: bool) -> Result<TemporalEngine, String> {
         local_node_id: Some(1),
     });
     if !loaded.status.ok {
+        if !first {
+            let wal = engine.write_ahead_log_store();
+            let full_walk = wal.record_count(SHARD);
+            let head_window = wal
+                .scan_decoded_window(
+                    SHARD,
+                    crate::wal::ReplayPosition::at_start_of_log(),
+                    16 * 1024 * 1024,
+                    true,
+                )
+                .map(|(records, more, _)| (records.len(), more));
+            eprintln!("WAL restart probe: full_walk={full_walk:?}; verified_head_window={head_window:?}");
+        }
         return Err(format!("{:?}", loaded.status));
     }
     if first {

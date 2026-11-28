@@ -29,6 +29,53 @@ service ProxyMetadataService {
   rpc ListShardIds(MetadataListShardIdsRequest) returns (MetadataListShardIdsResponse);
 }
 
+// Registration and topology heartbeat for distributed datanodes.
+service DatanodeMetadataService {
+  rpc RegisterServer(MetadataRegisterServerRequest) returns (Status);
+  rpc RegisterShard(MetadataRegisterShardRequest) returns (Status);
+  rpc Heartbeat(MetadataServerHeartbeatRequest) returns (MetadataServerHeartbeatResponse);
+}
+
+message MetadataRegisterServerRequest {
+  string server_addr = 1;
+  optional string grpc_addr = 2;
+  uint64 node_id = 3;
+  string location = 4;
+  string binary_version = 5;
+  repeated MfNumaNode numa_nodes = 6;
+}
+
+message MetadataRegisterShardRequest {
+  uint64 shard_id = 1;
+  string server_addr = 2;
+}
+
+message MetadataServerHeartbeatRequest {
+  string server_addr = 1;
+  uint64 boot_time_ms = 2;
+  string binary_version = 3;
+  repeated MfShardLoad shard_loads = 4;
+  repeated MfShardStatLoad shard_stat_loads = 5;
+  MfServerRuntimeLoad runtime_load = 6;
+  repeated MfServerShardServingState shard_states = 7;
+}
+
+message MetadataServerHeartbeatResponse {
+  Status status = 1;
+  bool forbid_auto_register = 2;
+  uint64 topology_version = 3;
+  string server_state = 4;
+  repeated MetadataShardCacheBudget cache_budgets = 5;
+}
+
+message MetadataShardCacheBudget {
+  uint64 shard_id = 1;
+  uint64 table_id = 2;
+  uint64 load_version = 3;
+  uint64 raft_term = 4;
+  uint64 bytes = 5;
+}
+
 message MetadataRegisterProxyRequest {
   string proxy_addr = 1;
   string namespace_name = 2;
@@ -769,6 +816,7 @@ message WalEntryDelta {
 message WalStateImageSlab {
   uint64 block_slab_id = 1;
   bytes slab = 2;
+  optional uint64 owner_shard_id = 3;
 }
 
 // An engine state image: what a snapshot carries instead of the entry history, so installing it

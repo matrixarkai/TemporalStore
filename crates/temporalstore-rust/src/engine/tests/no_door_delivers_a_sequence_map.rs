@@ -352,12 +352,11 @@ fn door_two_control_the_same_manifest_at_the_current_stamp_installs() {
                  one is about a manifest that could never have installed at all");
     target.load_shard(SHARD);
     let present = {
-        let shards = target.shards.read().expect("engine lock poisoned");
         // THE INSTALL SUCCEEDED AND THE SHARD IS SERVED, which is what this arm needs: the
         // refusal beside it has to be attributable to the stamp rather than to a manifest that
         // could never have installed. The retired key itself is dropped by the decode, so there
         // is nothing of it to find -- see the door-one arm.
-        shards.contains_key(&SHARD)
+        target.shards.with_state(SHARD, |state| state.is_some())
     };
     println!("\n=== DOOR 2 control, stamp {SHARD_INDEX_FORMAT_VERSION} ===\n  planted rows present after install+load: {present}");
     assert!(

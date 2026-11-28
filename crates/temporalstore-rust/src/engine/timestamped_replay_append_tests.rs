@@ -72,20 +72,21 @@ fn new_timestamp_outcomes_publish_only_the_inserted_block_for_all_series_kinds()
             builds, 0,
             "{kind}: new instants must not invert the shard's identities"
         );
-        let shards = engine.shards.read().unwrap();
-        let shard = &shards[&1];
-        assert_eq!(
-            addresses(shard, kind, &key),
-            vec![first.address.unwrap(), next.address.unwrap()]
-        );
-        assert_eq!(
-            shard
-                .bucket_index
-                .object_block_refs(kind, &key)
-                .unwrap()
-                .len(),
-            2
-        );
+        engine.shards.with_state(1, |state| {
+            let shard = state.unwrap();
+            assert_eq!(
+                addresses(shard, kind, &key),
+                vec![first.address.unwrap(), next.address.unwrap()]
+            );
+            assert_eq!(
+                shard
+                    .bucket_index
+                    .object_block_refs(kind, &key)
+                    .unwrap()
+                    .len(),
+                2
+            );
+        });
     }
 }
 
@@ -110,26 +111,21 @@ fn timestamp_replacements_and_removals_keep_the_full_reconciliation_path() {
             engine.apply_outcome_item(1, &replacement, &[])
         });
         assert!(applied && builds > 0);
-        {
-            let shards = engine.shards.read().unwrap();
-            let held = addresses(&shards[&1], kind, &key);
+        engine.shards.with_state(1, |state| {
+            let held = addresses(state.unwrap(), kind, &key);
             assert_eq!(held.len(), 3);
             assert_eq!(held[1], replacement.address.unwrap());
-        }
+        });
         assert!(engine.apply_outcome_item(1, &item(kind, &key, Some(10), None), &[]));
-        {
-            let shards = engine.shards.read().unwrap();
-            assert_eq!(addresses(&shards[&1], kind, &key).len(), 2);
+        engine.shards.with_state(1, |state| {
+            let shard = state.unwrap();
+            assert_eq!(addresses(shard, kind, &key).len(), 2);
             assert_eq!(
-                shards[&1]
-                    .bucket_index
-                    .object_block_refs(kind, &key)
-                    .unwrap()
-                    .len(),
+                shard.bucket_index.object_block_refs(kind, &key).unwrap().len(),
                 2
             );
-        }
+        });
         assert!(engine.apply_outcome_item(1, &item(kind, &key, None, None), &[]));
-        assert!(addresses(&engine.shards.read().unwrap()[&1], kind, &key).is_empty());
+        assert!(engine.shards.with_state(1, |state| addresses(state.unwrap(), kind, &key).is_empty()));
     }
 }

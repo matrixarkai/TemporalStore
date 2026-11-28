@@ -319,61 +319,62 @@ fn the_five_readers_answer_the_filing_on_a_store_the_current_build_wrote() {
         load_on(&engine, end_routing_bucket);
         let keys = seed(&engine, RECORDS);
 
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
-        let entries = collect_live_block_entries(shard);
+        engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard 1 is loaded");
+            let entries = collect_live_block_entries(shard);
 
-        let filed = entries
-            .iter()
-            .filter(|entry| entry.filed_bucket().is_some())
-            .count();
-        assert_eq!(
-            filed,
-            keys.len(),
-            "0..{end_routing_bucket}: {filed} of {} live blocks report which bucket they are filed \
+            let filed = entries
+                .iter()
+                .filter(|entry| entry.filed_bucket().is_some())
+                .count();
+            assert_eq!(
+                filed,
+                keys.len(),
+                "0..{end_routing_bucket}: {filed} of {} live blocks report which bucket they are filed \
              in. All of them must: the bucket-index arm of the walk has the map key in hand, and an \
              entry that does not report it sends all five readers to a hash over the WHOLE \
              keyspace -- which on this shard names a bucket it does not hold.",
-            keys.len()
-        );
+                keys.len()
+            );
 
-        let (total, now, before) = reader_attribution(shard);
-        assert_eq!(
-            total,
-            keys.len(),
-            "0..{end_routing_bucket}: the fixture wrote {} keys and the index holds {total} blocks",
-            keys.len()
-        );
-        assert_eq!(
-            now, total,
-            "0..{end_routing_bucket}: {now} of {total} blocks are attributed to the bucket they are \
+            let (total, now, before) = reader_attribution(shard);
+            assert_eq!(
+                total,
+                keys.len(),
+                "0..{end_routing_bucket}: the fixture wrote {} keys and the index holds {total} blocks",
+                keys.len()
+            );
+            assert_eq!(
+                now, total,
+                "0..{end_routing_bucket}: {now} of {total} blocks are attributed to the bucket they are \
              filed under. The walk hands every reader the map key it was iterating, so all of them \
              must be."
-        );
-        // AND THE OLD EXPRESSION IS ONLY IDENTICAL AT THE WIDE END. `block_routing_bucket(key, 0,
-        // u32::MAX)` is the same function of the same arguments as the shard's own placement when the
-        // shard IS the whole keyspace, and a different one otherwise -- which is the defect mx#1949
-        // fixed, and the reason this control is run at both widths.
-        if end_routing_bucket == WIDE_END {
-            assert_eq!(
-                before, total,
-                "0..{end_routing_bucket}: on the WIDE shard the whole-range hash and the shard's \
+            );
+            // AND THE OLD EXPRESSION IS ONLY IDENTICAL AT THE WIDE END. `block_routing_bucket(key, 0,
+            // u32::MAX)` is the same function of the same arguments as the shard's own placement when the
+            // shard IS the whole keyspace, and a different one otherwise -- which is the defect mx#1949
+            // fixed, and the reason this control is run at both widths.
+            if end_routing_bucket == WIDE_END {
+                assert_eq!(
+                    before, total,
+                    "0..{end_routing_bucket}: on the WIDE shard the whole-range hash and the shard's \
                  own placement are the same expression, so the old answer has to agree with the \
                  filing on all {total} blocks"
-            );
-        } else {
-            assert_eq!(
-                before, 0,
-                "0..{end_routing_bucket}: the whole-range hash agreed with the filing on {before} \
+                );
+            } else {
+                assert_eq!(
+                    before, 0,
+                    "0..{end_routing_bucket}: the whole-range hash agreed with the filing on {before} \
                  of {total} blocks. It must agree with NONE -- it names a bucket above \
                  {end_routing_bucket} for every key, and the shard holds none of them -- or this \
                  control is not reproducing what mx#1949 fixed."
-            );
-        }
-        println!(
-            "  0..{end_routing_bucket}: {total} blocks, {filed} reporting a filing, attribution \
+                );
+            }
+            println!(
+                "  0..{end_routing_bucket}: {total} blocks, {filed} reporting a filing, attribution \
              agrees {now}/{total} now and {before}/{total} under the pre-mx#1949 expression"
-        );
+            );
+        });
     }
 }
 
@@ -397,9 +398,8 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
     load_on(&engine, NARROW_END);
     let keys = seed(&engine, RECORDS);
 
-    let (round_tripped, contents) = {
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    let (round_tripped, contents) = engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
         // The door is the identity now -- see `round_trip_every_block_through_the_wire`. It is kept
         // in the fixture because it asserts that, per block, and because a block that DID change when
         // its `rs` key came off would make every number below mean something else.
@@ -408,7 +408,7 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
         rebuild_bucket_first_index(1, shard, 0, NARROW_END);
         refresh_bucket_runtime_flags(shard);
         (round_tripped, bucket_contents(shard))
-    };
+    });
     assert_eq!(
         round_tripped,
         keys.len(),
@@ -417,55 +417,56 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
         keys.len()
     );
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
 
-    // Element by element: every block is filed where the SHARD'S range puts it, and none where the
-    // whole range does. Both directions asserted, because only one of them loses a block.
-    let mut filed_narrow = 0usize;
-    let mut filed_wide = 0usize;
-    for (bucket_id, object_keys) in &contents {
-        for key in object_keys {
-            if *bucket_id == block_routing_bucket(key, 0, NARROW_END) {
-                filed_narrow += 1;
-            }
-            if *bucket_id == block_routing_bucket(key, 0, WIDE_END) {
-                filed_wide += 1;
-            }
-            assert!(
-                *bucket_id <= NARROW_END,
-                "block {key} is filed in bucket {bucket_id}, which a shard loaded on 0..{NARROW_END} \
+        // Element by element: every block is filed where the SHARD'S range puts it, and none where the
+        // whole range does. Both directions asserted, because only one of them loses a block.
+        let mut filed_narrow = 0usize;
+        let mut filed_wide = 0usize;
+        for (bucket_id, object_keys) in &contents {
+            for key in object_keys {
+                if *bucket_id == block_routing_bucket(key, 0, NARROW_END) {
+                    filed_narrow += 1;
+                }
+                if *bucket_id == block_routing_bucket(key, 0, WIDE_END) {
+                    filed_wide += 1;
+                }
+                assert!(
+                    *bucket_id <= NARROW_END,
+                    "block {key} is filed in bucket {bucket_id}, which a shard loaded on 0..{NARROW_END} \
                  does not hold"
-            );
+                );
+            }
         }
-    }
-    assert_eq!(
-        filed_narrow,
-        keys.len(),
-        "{filed_narrow} of {} blocks are filed where the shard's own range puts them",
-        keys.len()
-    );
-    assert_eq!(
-        filed_wide, 0,
-        "{filed_wide} blocks are filed where the WHOLE range puts them, on a shard that holds \
+        assert_eq!(
+            filed_narrow,
+            keys.len(),
+            "{filed_narrow} of {} blocks are filed where the shard's own range puts them",
+            keys.len()
+        );
+        assert_eq!(
+            filed_wide, 0,
+            "{filed_wide} blocks are filed where the WHOLE range puts them, on a shard that holds \
          0..{NARROW_END}"
-    );
+        );
 
-    let (total, now, before) = reader_attribution(shard);
-    println!("  {total} reconstructed blocks filed on 0..{NARROW_END}");
-    println!("    readers agree with the filing, NEW expression: {now} of {total}");
-    println!("    readers agree with the filing, OLD expression: {before} of {total}");
-    assert_eq!(
-        now, total,
-        "the five readers must attribute every block to the bucket it is filed under; they agree \
+        let (total, now, before) = reader_attribution(shard);
+        println!("  {total} reconstructed blocks filed on 0..{NARROW_END}");
+        println!("    readers agree with the filing, NEW expression: {now} of {total}");
+        println!("    readers agree with the filing, OLD expression: {before} of {total}");
+        assert_eq!(
+            now, total,
+            "the five readers must attribute every block to the bucket it is filed under; they agree \
          on {now} of {total}"
-    );
-    assert_eq!(
-        before, 0,
-        "THE OLD EXPRESSION MUST AGREE WITH NOTHING HERE, or this fixture is not reproducing the \
+        );
+        assert_eq!(
+            before, 0,
+            "THE OLD EXPRESSION MUST AGREE WITH NOTHING HERE, or this fixture is not reproducing the \
          defect: it agreed on {before} of {total}. `block_routing_bucket(key, 0, u32::MAX)` names \
          a bucket above {NARROW_END} for every key, and the shard holds none of them."
-    );
+        );
+    });
 }
 
 // =============================================================================================
@@ -489,9 +490,8 @@ fn an_eviction_round_over_reconstructed_blocks_drops_the_objects_it_chose() {
     load_on(&engine, NARROW_END);
     let keys = seed(&engine, RECORDS);
 
-    let filed_in_range = {
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    let filed_in_range = engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
         let round_tripped = round_trip_every_block_through_the_wire(shard);
         rebuild_bucket_first_index(1, shard, 0, NARROW_END);
         refresh_bucket_runtime_flags(shard);
@@ -509,7 +509,7 @@ fn an_eviction_round_over_reconstructed_blocks_drops_the_objects_it_chose() {
             .filter(|(routing_bucket, _)| **routing_bucket <= NARROW_END)
             .map(|(_, object_keys)| object_keys.len())
             .sum::<usize>()
-    };
+    });
     assert_eq!(
         filed_in_range,
         keys.len(),
@@ -644,9 +644,8 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
              {status:?}"
         );
         let readable = read_back(&engine, &keys);
-        let (blocks, outside) = {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            let shard = shards.get(&1).expect("shard 1 is loaded");
+        let (blocks, outside) = engine.shards.with_state(1, |shard| {
+            let shard = shard.expect("shard 1 is loaded");
             let contents = bucket_contents(shard);
             let blocks: usize = contents.values().map(Vec::len).sum();
             let outside = contents
@@ -654,7 +653,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
                 .filter(|bucket_id| **bucket_id > wrote_on)
                 .count();
             (blocks, outside)
-        };
+        });
         println!(
             "  reopened on 0..{wrote_on}: {readable}/{} records, {blocks} blocks, {outside} buckets \
              outside the range",
@@ -805,54 +804,55 @@ fn an_entry_from_the_model_map_walk_reports_no_filing_rather_than_bucket_zero() 
     load_on(&engine, NARROW_END);
     let keys = seed(&engine, 32);
 
-    let shards = engine.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard 1 is loaded");
 
-    let from_model_maps = collect_model_live_block_entries(shard);
-    assert_eq!(
-        from_model_maps.len(),
-        keys.len(),
-        "the model-map walk produced {} entries for {} keys; if it produces none this test \
+        let from_model_maps = collect_model_live_block_entries(shard);
+        assert_eq!(
+            from_model_maps.len(),
+            keys.len(),
+            "the model-map walk produced {} entries for {} keys; if it produces none this test \
          measures nothing",
-        from_model_maps.len(),
-        keys.len()
-    );
+            from_model_maps.len(),
+            keys.len()
+        );
 
-    let claiming_a_filing = from_model_maps
-        .iter()
-        .filter(|entry| entry.filed_bucket().is_some())
-        .count();
-    let claiming_bucket_zero = from_model_maps
-        .iter()
-        .filter(|entry| entry.filed_bucket() == Some(0))
-        .count();
-    println!(
-        "  {} model-map entries, {claiming_a_filing} claiming a filing, {claiming_bucket_zero} \
+        let claiming_a_filing = from_model_maps
+            .iter()
+            .filter(|entry| entry.filed_bucket().is_some())
+            .count();
+        let claiming_bucket_zero = from_model_maps
+            .iter()
+            .filter(|entry| entry.filed_bucket() == Some(0))
+            .count();
+        println!(
+            "  {} model-map entries, {claiming_a_filing} claiming a filing, {claiming_bucket_zero} \
          claiming bucket 0",
-        from_model_maps.len()
-    );
-    assert_eq!(
-        claiming_a_filing, 0,
-        "{claiming_a_filing} of {} entries from the MODEL-MAP walk claim to know which bucket \
+            from_model_maps.len()
+        );
+        assert_eq!(
+            claiming_a_filing, 0,
+            "{claiming_a_filing} of {} entries from the MODEL-MAP walk claim to know which bucket \
          they are filed in. That walk reads no index, so it cannot know -- and an entry that \
          claims a filing it does not have sends every reader in this file to bucket 0.",
-        from_model_maps.len()
-    );
+            from_model_maps.len()
+        );
 
-    // The bucket-index arm is the control: the same shard, the other walk, where the filing IS
-    // known -- so "0 claim a filing" above is a property of the walk and not of the fixture.
-    let from_index = collect_live_block_entries(shard);
-    let index_claiming = from_index
-        .iter()
-        .filter(|entry| entry.filed_bucket().is_some())
-        .count();
-    assert_eq!(
-        index_claiming,
-        from_index.len(),
-        "{index_claiming} of {} entries from the BUCKET-INDEX walk report a filing; all of them \
+        // The bucket-index arm is the control: the same shard, the other walk, where the filing IS
+        // known -- so "0 claim a filing" above is a property of the walk and not of the fixture.
+        let from_index = collect_live_block_entries(shard);
+        let index_claiming = from_index
+            .iter()
+            .filter(|entry| entry.filed_bucket().is_some())
+            .count();
+        assert_eq!(
+            index_claiming,
+            from_index.len(),
+            "{index_claiming} of {} entries from the BUCKET-INDEX walk report a filing; all of them \
          must, or the control says nothing about the arm above",
-        from_index.len()
-    );
+            from_index.len()
+        );
+    });
 }
 
 // =============================================================================================

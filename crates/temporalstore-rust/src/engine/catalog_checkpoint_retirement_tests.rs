@@ -69,7 +69,7 @@ fn catalog_publication_retires_only_durable_fallbacks() {
     assert_eq!(engine.registration_count_for_test(1), 0);
     assert_eq!(report.wal_retention_floor, None);
     assert!(report.wal_records_removed + report.wal_segments_dropped > 0);
-    assert!(engine.shards.read().unwrap()[&1].wal_resident_blocks.is_empty());
+    assert!(engine.shards.with_state(1, |state| state.unwrap().wal_resident_blocks.is_empty()));
     check(&engine, false);
     drop(engine);
     check(&open(dir.path(), "restart-cache", false), false);
@@ -91,7 +91,7 @@ fn failed_catalog_publication_keeps_fallback_registrations() {
     std::fs::create_dir(&path).unwrap();
     assert!(!engine.dump_index_catalog(1));
     assert_eq!(engine.registration_count_for_test(1), 8);
-    assert_eq!(engine.shards.read().unwrap()[&1].wal_resident_blocks.len(), 8);
+    assert_eq!(engine.shards.with_state(1, |state| state.unwrap().wal_resident_blocks.len()), 8);
     check(&engine, false);
     std::fs::remove_dir(&path).unwrap();
     if had_index {
@@ -111,7 +111,7 @@ fn catalog_publication_keeps_live_wal_only_values() {
     assert_eq!(report.wal_retention_floor, Some(1));
     assert_eq!(report.wal_records_removed, 0);
     assert_eq!(report.wal_segments_dropped, 0);
-    assert_eq!(engine.shards.read().unwrap()[&1].wal_resident_blocks.len(), 8);
+    assert_eq!(engine.shards.with_state(1, |state| state.unwrap().wal_resident_blocks.len()), 8);
     check(&engine, false);
     drop(engine);
     check(&open(dir.path(), "restart-cache", true), false);

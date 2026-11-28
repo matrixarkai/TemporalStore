@@ -136,13 +136,15 @@ fn lanes(engine: &TemporalEngine, key: &str) -> Vec<i64> {
 
 /// The tokens the SHARD holds for a key, oldest first. Read directly, not through a command.
 fn ring_tokens(engine: &TemporalEngine, key: &str) -> Option<Vec<u64>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards.get(&1).expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.tokens())
+    engine.shards.with_state(1, |owner| {
+        owner.expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.tokens())
+    })
 }
 
 fn ring_bytes(engine: &TemporalEngine, key: &str) -> Option<Vec<u8>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards.get(&1).expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.encode())
+    engine.shards.with_state(1, |owner| {
+        owner.expect("shard 1 is loaded").retry_ring(key).map(|ring| ring.encode())
+    })
 }
 
 #[test]
@@ -292,9 +294,10 @@ fn a_delete_an_expiry_and_a_trim_to_nothing_each_forget_the_ring() {
     let expiring = key_for(8);
     assert!(!receipt(&send(&engine, &expiring, vec![adds(1)], Some(5))).3);
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        crate::engine::set_expiry(shard, expiring.clone(), 1);
+        engine.shards.with_state_mut(1, |owner| {
+            let shard = owner.expect("shard 1 is loaded");
+            crate::engine::set_expiry(shard, expiring.clone(), 1);
+        });
     }
     assert_eq!((1, 1, 0, false), receipt(&send(&engine, &expiring, vec![adds(1)], Some(5))));
     assert_eq!(vec![1, 1], lanes(&engine, &expiring), "the expired key's value came back");
@@ -399,11 +402,12 @@ fn an_append_without_a_token_stores_what_it_always_stored() {
     // The tokenless shard's image names no ring table and the tokened one does: the table costs a
     // key that never uses a token nothing.
     let image = |engine: &TemporalEngine| {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
-        let plain_json = String::from_utf8(crate::engine::encode_index_bytes_as_plain_json(shard)).expect("utf-8");
-        let decoded = crate::engine::decode_index_bytes(&crate::engine::encode_index_bytes(shard)).expect("decodes");
-        (plain_json, decoded.retry_ring(&key).map(|ring| ring.encode()))
+        engine.shards.with_state(1, |owner| {
+            let shard = owner.expect("shard 1 is loaded");
+            let plain_json = String::from_utf8(crate::engine::encode_index_bytes_as_plain_json(shard)).expect("utf-8");
+            let decoded = crate::engine::decode_index_bytes(&crate::engine::encode_index_bytes(shard)).expect("decodes");
+            (plain_json, decoded.retry_ring(&key).map(|ring| ring.encode()))
+        })
     };
     let (plain_image, plain_ring) = image(&plain);
     let (tokened_image, tokened_ring) = image(&tokened);

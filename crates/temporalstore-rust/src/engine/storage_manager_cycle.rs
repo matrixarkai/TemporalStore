@@ -250,20 +250,19 @@ impl TemporalEngine {
             .filter(|candidate| candidate.reason == "delayed_destroy")
             .map(|candidate| candidate.physical_bytes)
             .sum::<u64>();
-        let expired_bucket_object_scan_debt = self
-            .shards
-            .read()
-            .expect("shards lock poisoned")
-            .get(&request.shard_id)
-            .map(|shard| shard.expires_at_ms().len())
-            .unwrap_or_default();
-        let compaction_utility = self
-            .shards
-            .read()
-            .expect("shards lock poisoned")
-            .get(&request.shard_id)
-            .map(|shard| compaction_utility_report(&self.block_store, shard))
-            .unwrap_or_default();
+        let (expired_bucket_object_scan_debt, compaction_utility) =
+            self.shards.handle(request.shard_id).map(|handle| {
+                let counts = super::compaction::slab_block_counts_by_slab(&self.block_store);
+                self.shards.with_handle_state(&handle, |shard| match shard {
+                    Some(shard) => (
+                        shard.expires_at_ms().len(),
+                        super::compaction::compaction_utility_report_from_counts(
+                            shard, &collect_live_block_entries(shard), &counts,
+                        ),
+                    ),
+                    None => (0, ShardCompactionUtilityReport::default()),
+                })
+            }).unwrap_or_default();
         let compaction_debt_model_count = compaction_utility
             .model_policies
             .iter()
@@ -400,7 +399,7 @@ impl TemporalEngine {
             };
             match self
                 .block_store()
-                .prepare_next_slab_with_target(slab_target_bytes)
+                .prepare_next_slab_for_shard(request.shard_id, slab_target_bytes)
             {
                 Ok(Some(roll)) => prepared_block_slab_id = Some(roll.new_block_slab_id),
                 Ok(None) => {}
@@ -753,6 +752,11 @@ impl TemporalEngine {
                         request.follower_replay_cursors.clone(),
                     ),
                 );
+                if let Some(error) = report.manifest_prune_report.as_ref()
+                    .and_then(|prune| prune.error.as_ref())
+                {
+                    errors.push(format!("index_gc: {}: {}", error.code, error.message));
+                }
                 report.refresh_public_lifecycle_metrics();
             }
         }
@@ -1065,7 +1069,12 @@ impl TemporalEngine {
                         .map(|report| report.applied)
                         .unwrap_or(false)),
             skipped: !request.enable_index_gc,
-            reason: if request.enable_index_gc {
+            reason: if let Some(error) = lifecycle_report.as_ref()
+                .and_then(|report| report.manifest_prune_report.as_ref())
+                .and_then(|prune| prune.error.as_ref())
+            {
+                format!("manifest prune failed: {}: {}", error.code, error.message)
+            } else if request.enable_index_gc {
                 "pruned obsolete manifests, rolled forward safe install markers, and applied thresholded index-log GC"
                     .to_string()
             } else {

@@ -64,17 +64,18 @@ fn wal_claims_by_bucket(
     engine: &TemporalEngine,
     shard_id: ShardId,
 ) -> std::collections::BTreeMap<u32, u64> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let Some(shard) = shards.get(&shard_id) else {
-        return std::collections::BTreeMap::new();
-    };
-    shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .filter(|(_, bucket)| bucket.dirty())
-        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.first_dirty_wal_sequence))
-        .collect()
+    engine.shards.with_state(shard_id, |state| {
+        let Some(shard) = state else {
+            return std::collections::BTreeMap::new();
+        };
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .filter(|(_, bucket)| bucket.dirty())
+            .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.first_dirty_wal_sequence))
+            .collect()
+    })
 }
 
 /// The buckets a set of keys routes into, computed the way the write path computes them.

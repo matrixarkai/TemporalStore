@@ -85,47 +85,48 @@ fn a_dirty_buckets_generation_is_the_walks_answer_and_costs_no_walk() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = round_engine(dir.path());
     seed(&engine, 2_000);
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    let (start, end) = shard.routing_range();
+    engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.expect("shard 1");
+        let (start, end) = shard.routing_range();
 
-    let named: Vec<u32> = dirty_bucket_claims(shard).into_keys().take(300).collect();
-    // FLOOR: a handful of buckets cannot show a difference between asking a few and asking all.
-    assert!(named.len() >= 200, "the fixture left only {} dirty buckets", named.len());
+        let named: Vec<u32> = dirty_bucket_claims(shard).into_keys().take(300).collect();
+        // FLOOR: a handful of buckets cannot show a difference between asking a few and asking all.
+        assert!(named.len() >= 200, "the fixture left only {} dirty buckets", named.len());
 
-    // THE WALK'S ANSWER, and the control that the walk is the expensive thing being avoided.
-    crate::engine::reset_live_block_scan_entries();
-    let walked: std::collections::HashMap<u32, u64> = bucket_storage_summaries(shard, start, end)
-        .into_iter()
-        .map(|summary| (summary.routing_bucket, summary.dirty_generation))
-        .collect();
-    let walk_cost = crate::engine::live_block_scan_entries();
-    assert!(
-        walk_cost >= 1_500,
-        "the walk visited only {walk_cost} live blocks, so avoiding it proves nothing"
-    );
-
-    // THE NAMED BUCKETS' ANSWER.
-    crate::engine::reset_live_block_scan_entries();
-    let before = fallbacks();
-    let asked = dirty_generations_of(shard, &named, start, end);
-    let ask_cost = crate::engine::live_block_scan_entries();
-    let fell_back = fallbacks() - before;
-
-    assert_eq!(ask_cost, 0, "asking {} dirty buckets visited {ask_cost} live blocks", named.len());
-    assert_eq!(fell_back, 0, "a dirty node took the whole-shard fallback");
-    assert_eq!(asked.len(), named.len());
-    for routing_bucket in &named {
-        assert_eq!(
-            asked[routing_bucket], walked[routing_bucket],
-            "bucket {routing_bucket}: the named answer differs from the walk's"
+        // THE WALK'S ANSWER, and the control that the walk is the expensive thing being avoided.
+        crate::engine::reset_live_block_scan_entries();
+        let walked: std::collections::HashMap<u32, u64> = bucket_storage_summaries(shard, start, end)
+            .into_iter()
+            .map(|summary| (summary.routing_bucket, summary.dirty_generation))
+            .collect();
+        let walk_cost = crate::engine::live_block_scan_entries();
+        assert!(
+            walk_cost >= 1_500,
+            "the walk visited only {walk_cost} live blocks, so avoiding it proves nothing"
         );
-    }
-    // CONTROL: equality of two maps of zeros would pass. These carry the dirty-object count.
-    assert!(
-        named.iter().any(|routing_bucket| walked[routing_bucket] > 0),
-        "every generation was zero, so the comparison above could not tell a wrong sum from a right one"
-    );
+
+        // THE NAMED BUCKETS' ANSWER.
+        crate::engine::reset_live_block_scan_entries();
+        let before = fallbacks();
+        let asked = dirty_generations_of(shard, &named, start, end);
+        let ask_cost = crate::engine::live_block_scan_entries();
+        let fell_back = fallbacks() - before;
+
+        assert_eq!(ask_cost, 0, "asking {} dirty buckets visited {ask_cost} live blocks", named.len());
+        assert_eq!(fell_back, 0, "a dirty node took the whole-shard fallback");
+        assert_eq!(asked.len(), named.len());
+        for routing_bucket in &named {
+            assert_eq!(
+                asked[routing_bucket], walked[routing_bucket],
+                "bucket {routing_bucket}: the named answer differs from the walk's"
+            );
+        }
+        // CONTROL: equality of two maps of zeros would pass. These carry the dirty-object count.
+        assert!(
+            named.iter().any(|routing_bucket| walked[routing_bucket] > 0),
+            "every generation was zero, so the comparison above could not tell a wrong sum from a right one"
+        );
+    })
 }
 
 #[test]
@@ -146,9 +147,8 @@ fn a_dirty_node_with_no_dirty_object_is_still_the_walks_answer() {
     assert!(settled, "twelve rounds did not dump the store");
 
     // Mark some clean nodes dirty DIRECTLY: dirty node, a live block, and no dirty object.
-    let named: Vec<u32> = {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1");
+    let named: Vec<u32> = engine.shards.with_state_mut(1, |shard_state| {
+        let shard = shard_state.expect("shard 1");
         let ids: Vec<u32> = shard.bucket_index.bucket_map.iter().map(|(id, _)| *id).take(50).collect();
         assert_eq!(ids.len(), 50, "the settled store holds fewer than 50 buckets");
         for id in &ids {
@@ -158,27 +158,28 @@ fn a_dirty_node_with_no_dirty_object_is_still_the_walks_answer() {
             node.dirty_generation = node.dirty_generation.saturating_add(7);
         }
         ids
-    };
+    });
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    let (start, end) = shard.routing_range();
-    let walked: std::collections::HashMap<u32, u64> = bucket_storage_summaries(shard, start, end)
-        .into_iter()
-        .map(|summary| (summary.routing_bucket, summary.dirty_generation))
-        .collect();
-    let before = fallbacks();
-    let asked = dirty_generations_of(shard, &named, start, end);
-    assert_eq!(fallbacks() - before, 0, "a dirty node took the whole-shard fallback");
-    for routing_bucket in &named {
-        assert_eq!(
-            asked[routing_bucket], walked[routing_bucket],
-            "bucket {routing_bucket}: dirty node, no dirty object"
-        );
-        // CONTROL: the generation moved by the 7 added above, so this is the node's own figure
-        // and not a count of dirty objects, of which there are none.
-        assert!(asked[routing_bucket] >= 7);
-    }
+    engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.expect("shard 1");
+        let (start, end) = shard.routing_range();
+        let walked: std::collections::HashMap<u32, u64> = bucket_storage_summaries(shard, start, end)
+            .into_iter()
+            .map(|summary| (summary.routing_bucket, summary.dirty_generation))
+            .collect();
+        let before = fallbacks();
+        let asked = dirty_generations_of(shard, &named, start, end);
+        assert_eq!(fallbacks() - before, 0, "a dirty node took the whole-shard fallback");
+        for routing_bucket in &named {
+            assert_eq!(
+                asked[routing_bucket], walked[routing_bucket],
+                "bucket {routing_bucket}: dirty node, no dirty object"
+            );
+            // CONTROL: the generation moved by the 7 added above, so this is the node's own figure
+            // and not a count of dirty objects, of which there are none.
+            assert!(asked[routing_bucket] >= 7);
+        }
+    })
 }
 
 #[test]
@@ -197,34 +198,35 @@ fn a_bucket_it_cannot_answer_takes_the_walk_and_gets_the_walks_answer() {
     }
     assert!(settled, "twelve rounds did not dump the store");
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    let (start, end) = shard.routing_range();
-    // A clean node, and a bucket with no node at all.
-    let clean = *shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .map(|(id, _)| id)
-        .next()
-        .expect("a bucket");
-    let absent = (0..u32::MAX)
-        .find(|id| shard.bucket_index.bucket_map.get(id).is_none())
-        .expect("an absent bucket id");
+    engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.expect("shard 1");
+        let (start, end) = shard.routing_range();
+        // A clean node, and a bucket with no node at all.
+        let clean = *shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(id, _)| id)
+            .next()
+            .expect("a bucket");
+        let absent = (0..u32::MAX)
+            .find(|id| shard.bucket_index.bucket_map.get(id).is_none())
+            .expect("an absent bucket id");
 
-    for routing_bucket in [clean, absent] {
-        let walked: std::collections::HashMap<u32, u64> =
-            bucket_storage_summaries(shard, start, end)
-                .into_iter()
-                .map(|summary| (summary.routing_bucket, summary.dirty_generation))
-                .collect();
-        let before = fallbacks();
-        let asked = dirty_generations_of(shard, &[routing_bucket], start, end);
-        assert_eq!(
-            fallbacks() - before,
-            1,
-            "bucket {routing_bucket} is not a dirty node, so exactly one fallback walk was due"
-        );
-        assert_eq!(asked, walked, "the fallback is the walk's whole answer");
-    }
+        for routing_bucket in [clean, absent] {
+            let walked: std::collections::HashMap<u32, u64> =
+                bucket_storage_summaries(shard, start, end)
+                    .into_iter()
+                    .map(|summary| (summary.routing_bucket, summary.dirty_generation))
+                    .collect();
+            let before = fallbacks();
+            let asked = dirty_generations_of(shard, &[routing_bucket], start, end);
+            assert_eq!(
+                fallbacks() - before,
+                1,
+                "bucket {routing_bucket} is not a dirty node, so exactly one fallback walk was due"
+            );
+            assert_eq!(asked, walked, "the fallback is the walk's whole answer");
+        }
+    })
 }

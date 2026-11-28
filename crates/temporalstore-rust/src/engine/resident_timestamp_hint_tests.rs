@@ -147,7 +147,7 @@ fn ordinary_writes_deletes_and_recreation_cannot_leave_stale_comparators() {
     execute(&engine, Command::HashDelete { key: "row".into(), field: "ts".into() });
     assert_eq!(conditional(&engine, 1, vec![("ts".into(), stamp(1))]), 1);
     execute(&engine, Command::CommonDelete { key: "row".into() });
-    assert!(engine.shards.read().unwrap().get(&1).unwrap().bucket_index.hashes.timestamp_hints.is_empty());
+    assert!(engine.shards.with_state(1, |owner| owner.unwrap().bucket_index.hashes.timestamp_hints.is_empty()));
     assert_eq!(conditional(&engine, 0, vec![("ts".into(), stamp(0))]), 1);
 }
 
@@ -170,7 +170,7 @@ fn expiry_and_reload_do_not_restore_derived_hints() {
     engine.write_ahead_log_store().flush(1).unwrap();
     drop(engine);
     let engine = open(dir.path());
-    assert!(engine.shards.read().unwrap().get(&1).unwrap().bucket_index.hashes.timestamp_hints.is_empty());
+    assert!(engine.shards.with_state(1, |owner| owner.unwrap().bucket_index.hashes.timestamp_hints.is_empty()));
     assert_eq!(conditional(&engine, 0, vec![("ts".into(), stamp(0))]), 0);
     assert_eq!(conditional(&engine, 2, vec![("ts".into(), stamp(2))]), 1);
 }
@@ -313,9 +313,10 @@ fn inline_limit_keeps_large_timestamp_reads_on_the_exact_storage_path() {
         raw.resize(length, b'x');
         assert_eq!(conditional(&engine, 1000, vec![("ts".into(), raw.clone()), ("v".into(), vec![1; 48])]), 1);
         {
-            let shards = engine.shards.read().unwrap();
-            let hashes = &shards.get(&1).unwrap().bucket_index.hashes;
-            assert_eq!(hashes.cached_timestamp_bytes("row", "ts"), (length <= 24).then_some(raw.as_slice()));
+            engine.shards.with_state(1, |owner| {
+                let hashes = &owner.unwrap().bucket_index.hashes;
+                assert_eq!(hashes.cached_timestamp_bytes("row", "ts"), (length <= 24).then_some(raw.as_slice()));
+            });
         }
         evict_payload_caches(&engine);
         assert_eq!(project(&engine, "row", &["ts"]), vec![Some(raw.clone())]);
@@ -337,8 +338,9 @@ fn raw_hint_reads_follow_ordinary_replacement_deletion_and_stale_fallback_learni
     assert_eq!(conditional(&engine, 50, vec![("ts".into(), stamp(50))]), 0);
     evict_payload_caches(&engine);
     {
-        let shards = engine.shards.read().unwrap();
-        assert_eq!(shards.get(&1).unwrap().bucket_index.hashes.cached_timestamp_bytes("row", "ts"), Some(raw.as_slice()));
+        engine.shards.with_state(1, |owner| {
+            assert_eq!(owner.unwrap().bucket_index.hashes.cached_timestamp_bytes("row", "ts"), Some(raw.as_slice()));
+        });
     }
     assert_eq!(project(&engine, "row", &["ts"]), vec![Some(raw)]);
     execute(&engine, Command::HashDelete { key: "row".into(), field: "ts".into() });
@@ -371,7 +373,7 @@ fn raw_hint_reads_respect_expiry_and_survive_restart_without_persisting_hints() 
     engine.write_ahead_log_store().flush(1).unwrap();
     drop(engine);
     let engine = open(dir.path());
-    assert!(engine.shards.read().unwrap().get(&1).unwrap().bucket_index.hashes.timestamp_hints.is_empty());
+    assert!(engine.shards.with_state(1, |owner| owner.unwrap().bucket_index.hashes.timestamp_hints.is_empty()));
     assert_eq!(project(&engine, "row", &["ts"]), vec![Some(raw)]);
 }
 
