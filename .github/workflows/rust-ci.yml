@@ -449,6 +449,14 @@ jobs:
             -- --test-threads=1 2>&1 | tee /tmp/fold-keeps-feature-blocks.log
           grep -q 'test result: ok\. 2 passed; 0 failed;' /tmp/fold-keeps-feature-blocks.log
 
+      - name: Index-log fold matches the engine after every write
+        timeout-minutes: 30
+        run: |
+          set -o pipefail
+          cargo test -p temporalstore-rust --lib the_index_log_fold_matches_the_engine_after_every_write \
+            -- --test-threads=1 2>&1 | tee /tmp/fold-oracle.log
+          grep -q 'test result: ok\. 2 passed; 0 failed;' /tmp/fold-oracle.log
+
       - name: Bounded memory deletion checks
         timeout-minutes: 30
         run: |
