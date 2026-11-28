@@ -49,17 +49,22 @@ class ProxyTableClient(TableClient):
         super().__init__(metadata, namespace, table, timeout_seconds=timeout_seconds)
         self._proxy = proxy
 
-    def _exchange(self, timeout_seconds: float | None = None, **command) -> pb.ProxyStreamEvent:
+    def _exchange(
+        self, frame: pb.ProxyStreamRequest, timeout_seconds: float | None = None,
+    ) -> pb.ProxyStreamEvent:
         with self._lock:
             if self._closed:
                 raise RuntimeError("table client is closed")
-        frame = pb.ProxyStreamRequest(namespace_name=self._namespace, table_name=self._table, **command)
+        frame.namespace_name = self._namespace
+        frame.table_name = self._table
         return self._proxy.exchange(
             frame, timeout_seconds=self._timeout if timeout_seconds is None else timeout_seconds,
         )
 
     def execute(self, command: pb.Command) -> pb.ExecuteResponse:
-        event = self._exchange(execute=pb.ExecuteRequest(command=command))
+        frame = pb.ProxyStreamRequest()
+        frame.execute.command.CopyFrom(command)
+        event = self._exchange(frame)
         if event.HasField("execute"):
             return event.execute
         if event.HasField("status") and not event.status.ok:
@@ -72,7 +77,9 @@ class ProxyTableClient(TableClient):
         commands = list(commands)
         if not commands:
             return
-        event = self._exchange(timeout_seconds, batch_execute=pb.BatchExecuteRequest(commands=commands))
+        frame = pb.ProxyStreamRequest()
+        frame.batch_execute.commands.extend(commands)
+        event = self._exchange(frame, timeout_seconds)
         results = event.batch_execute.responses
         if len(results) != len(commands):
             if event.HasField("status") and not event.status.ok:

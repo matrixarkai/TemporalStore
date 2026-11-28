@@ -43,13 +43,14 @@ def _command(document: dict) -> pb.Command:
     kind = document["kind"]
     key = document["key"]
     if kind == "string_set_conditional":
-        command = pb.StringSetConditional(
-            key=key, value=bytes(document["value"]),
-            condition=pb.STRING_SET_CONDITION_IF_NOT_EXISTS,
-        )
+        command = pb.Command()
+        set_value = command.string_set_conditional
+        set_value.key = key
+        set_value.value = bytes(document["value"])
+        set_value.condition = pb.STRING_SET_CONDITION_IF_NOT_EXISTS
         if document["ttl_ms"] is not None:
-            command.ttl_ms = document["ttl_ms"]
-        return pb.Command(string_set_conditional=command)
+            set_value.ttl_ms = document["ttl_ms"]
+        return command
     if kind == "string_len":
         return pb.Command(string_len=pb.StringLen(key=key))
     if kind == "string_get":
