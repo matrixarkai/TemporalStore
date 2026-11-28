@@ -203,6 +203,7 @@ class TableValueBackend(ValueBackend):
             stale = [
                 index for index, response in enumerate(responses)
                 if response.status.code in _READ_RETRYABLE_STATUS
+                or response.status.code == "read_peer_cooldown"
             ]
             if not stale:
                 return responses
@@ -231,12 +232,14 @@ class TableValueBackend(ValueBackend):
                     else:
                         for index, response in zip(stale, retry, strict=True):
                             responses[index] = response
-                        stale = [
-                            index for index in stale
-                            if responses[index].status.code in _READ_RETRYABLE_STATUS
-                        ]
-                        if not stale:
-                            return responses
+                    # A cooled route gets one metadata refresh, even if another
+                    # operation cached its old topology. Do not keep polling it.
+                    stale = [
+                        index for index in stale
+                        if responses[index].status.code in _READ_RETRYABLE_STATUS
+                    ]
+                    if not stale:
+                        return responses
                     remaining = deadline - monotonic()
                     if remaining > 0:
                         sleep(min(delay, remaining))

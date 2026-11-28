@@ -452,6 +452,10 @@ class AdapterTest(unittest.TestCase):
                 self.name, self.result = name, result
 
             def BatchExecuteChecked(self, request, context):
+                if request.commands[0].HasField("string_set_conditional"):
+                    return pb.BatchExecuteResponse(status=pb.Status(ok=True), responses=[
+                        pb.CommandResponse(status=pb.Status(ok=True), count=1),
+                    ])
                 calls[self.name].append((
                     request.shard_id, request.load_version,
                     [c.string_len.key for c in request.commands],
@@ -500,6 +504,16 @@ class AdapterTest(unittest.TestCase):
             self.assertEqual(backend.lengths(keys), [0, 7])
             self.assertEqual(backend.lengths(keys), [0, 7])
             self.assertEqual(calls["old"], [(73, 7, ["alpha"])])
+
+            # An operation outside the lookup path can cache the old route.
+            # The next lookup must still notice that metadata moved the shard.
+            from lmcache_temporalstore.grpc_kv import _table_for_key
+
+            client = backend._table(_table_for_key(keys[0]))
+            put = pb.Command(string_set_conditional=pb.StringSetConditional(
+                key="alpha", value=b"value", condition=pb.STRING_SET_CONDITION_IF_NOT_EXISTS,
+            ))
+            self.assertEqual(client.batch_execute([put], timeout_seconds=1)[0].count, 1)
             elected.set()
             self.assertEqual(backend.lengths(keys), [4, 7])
 

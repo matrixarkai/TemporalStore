@@ -80,7 +80,7 @@ class TableClient:
         self._parallel_reads = parallel_reads
         self._preserve_insert_outcomes = preserve_insert_outcomes
         self._lookup_failure_cooldown = lookup_failure_cooldown_seconds
-        self._lookup_cooldowns: dict[tuple[int, int, str], float] = {}
+        self._lookup_cooldowns: dict[tuple[int, int, str | None], float] = {}
         self._route_state_lock = Lock()
         self._topology = None
         self._expires_at = 0.0
@@ -232,7 +232,7 @@ class TableClient:
         channels = {}
         missing = []
         lookup_cooldown = self._lookup_failure_cooldown if allow_partial_reads else 0.0
-        cooling_routes = ()
+        cooling_routes = None
         if lookup_cooldown and self._lookup_cooldowns:
             with self._route_state_lock:
                 now = monotonic()
