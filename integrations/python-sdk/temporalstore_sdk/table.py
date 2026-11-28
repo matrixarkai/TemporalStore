@@ -37,10 +37,10 @@ _MAX_INFLIGHT_READ_SHARDS = 8
 
 
 
-def _remaining_read_timeout(deadline: float) -> float:
+def _remaining_batch_timeout(deadline: float) -> float:
     remaining = deadline - monotonic()
     if remaining <= 0:
-        raise MetadataError("deadline_exceeded", "table read deadline expired")
+        raise MetadataError("deadline_exceeded", "table batch deadline expired")
     return remaining
 
 
@@ -76,6 +76,7 @@ class TableClient:
         self._timeout = timeout_seconds
         self._parallel_reads = parallel_reads
         self._preserve_insert_outcomes = preserve_insert_outcomes
+        self._route_state_lock = Lock()
         self._topology = None
         self._expires_at = 0.0
         self._channels: dict[str, CommandClient] = {}
@@ -84,8 +85,8 @@ class TableClient:
 
     @contextmanager
     def _timed_route_lock(self, deadline: float):
-        if not self._lock.acquire(timeout=_remaining_read_timeout(deadline)):
-            raise MetadataError("deadline_exceeded", "table routing wait exceeded the read deadline")
+        if not self._lock.acquire(timeout=_remaining_batch_timeout(deadline)):
+            raise MetadataError("deadline_exceeded", "table routing wait exceeded the batch deadline")
         try:
             yield
         finally:
@@ -95,14 +96,18 @@ class TableClient:
         with self._lock if deadline is None else self._timed_route_lock(deadline):
             if self._closed:
                 raise RuntimeError("table client is closed")
-            if self._topology is None or monotonic() >= self._expires_at:
-                options = {} if deadline is None else {"timeout_seconds": _remaining_read_timeout(deadline)}
-                self._topology = self._metadata.table_topology(self._namespace, self._table, **options)
-                ttl = self._topology_ttl
-                if any(shard.uses_raft_route and not shard.primary_grpc for shard in self._topology.shards):
-                    ttl = min(ttl, _ELECTION_TOPOLOGY_TTL_SECONDS)
+            with self._route_state_lock:
+                if self._topology is not None and monotonic() < self._expires_at:
+                    return self._topology
+            options = {} if deadline is None else {"timeout_seconds": _remaining_batch_timeout(deadline)}
+            topology = self._metadata.table_topology(self._namespace, self._table, **options)
+            ttl = self._topology_ttl
+            if any(shard.uses_raft_route and not shard.primary_grpc for shard in topology.shards):
+                ttl = min(ttl, _ELECTION_TOPOLOGY_TTL_SECONDS)
+            with self._route_state_lock:
+                self._topology = topology
                 self._expires_at = monotonic() + ttl
-            return self._topology
+            return topology
 
     def table_identity(self) -> tuple[int | None, int | None]:
         """Identify this table across route changes and distinguish a recreated table."""
@@ -137,7 +142,8 @@ class TableClient:
             return channel
 
     def _invalidate_route(self, topology: TableTopology) -> None:
-        with self._lock:
+        # RPC completion need not wait for metadata or channel creation.
+        with self._route_state_lock:
             if self._topology is topology:
                 self._expires_at = 0.0
 
@@ -148,7 +154,7 @@ class TableClient:
             topology = self._current_topology(deadline)
             shard = self._shard_for_command(topology, command)
             channel = self._channel_for(shard, deadline)
-            options = {} if deadline is None else {"timeout_seconds": _remaining_read_timeout(deadline)}
+            options = {} if deadline is None else {"timeout_seconds": _remaining_batch_timeout(deadline)}
             try:
                 response = channel.execute(shard.shard_id, command,
                                            load_version=shard.load_version or None, **options)
@@ -200,10 +206,17 @@ class TableClient:
             raise ValueError("partial results require a read-only batch")
         if borrowed_load and not (read_only and all(c.HasField("string_get") for c in commands)):
             raise ValueError("borrowed load replies require string_get commands")
+        recoverable_inserts = self._preserve_insert_outcomes and all(
+            isinstance(command, CacheInsert) or (
+                command.HasField("string_set_conditional")
+                and command.string_set_conditional.condition == pb.STRING_SET_CONDITION_IF_NOT_EXISTS
+            )
+            for command in commands
+        )
         deadline = None
-        if read_only and timeout_seconds is not None:
+        if (read_only or recoverable_inserts) and timeout_seconds is not None:
             if not isfinite(timeout_seconds) or timeout_seconds <= 0:
-                raise ValueError("read timeout must be finite and positive")
+                raise ValueError("batch timeout must be finite and positive")
             deadline = monotonic() + timeout_seconds
         topology = self._current_topology(deadline)
         groups: dict[Shard, list[tuple[int, pb.Command]]] = {}
@@ -224,19 +237,12 @@ class TableClient:
         if missing:
             groups = {shard: groups[shard] for shard in channels}
             yield from missing
-        recoverable_inserts = self._preserve_insert_outcomes and all(
-            isinstance(command, CacheInsert) or (
-                command.HasField("string_set_conditional")
-                and command.string_set_conditional.condition == pb.STRING_SET_CONDITION_IF_NOT_EXISTS
-            )
-            for command in commands
-        )
         parallel = len(groups) > 1 and self._parallel_reads and read_only
         try:
             response_options = {"borrowed_load": True} if borrowed_load else {}
             responses = self._batch_responses(
                 groups, channels, parallel, timeout_seconds, allow_partial_reads or recoverable_inserts,
-                deadline, **response_options,
+                deadline, recoverable_inserts=recoverable_inserts, **response_options,
             )
             with closing(responses) as batches:
                 for group, response in batches:
@@ -283,7 +289,7 @@ class TableClient:
 
     @staticmethod
     def _batch_responses(groups, channels, parallel, timeout_seconds, preserve_rpc_error, deadline,
-                         *, borrowed_load=False):
+                         *, borrowed_load=False, recoverable_inserts=False):
         options = {} if timeout_seconds is None else {"timeout_seconds": timeout_seconds}
         if borrowed_load:
             options["borrowed_load"] = True
@@ -291,11 +297,20 @@ class TableClient:
             for shard, group in groups.items():
                 if deadline is not None:
                     try:
-                        options["timeout_seconds"] = _remaining_read_timeout(deadline)
+                        options["timeout_seconds"] = _remaining_batch_timeout(deadline)
                     except MetadataError:
                         if not preserve_rpc_error:
                             raise
-                        yield group, _undispatched_reads(group)
+                        if recoverable_inserts:
+                            status = pb.Status(
+                                code="deadline_exceeded",
+                                message="cache insert deadline expired before dispatch",
+                            )
+                            yield group, pb.BatchExecuteResponse(
+                                responses=(pb.CommandResponse(status=status) for _ in group),
+                            )
+                        else:
+                            yield group, _undispatched_reads(group)
                         continue
                 try:
                     response = channels[shard].batch_execute(
@@ -318,7 +333,7 @@ class TableClient:
                 for shard, group in window:
                     if deadline is not None:
                         try:
-                            options["timeout_seconds"] = _remaining_read_timeout(deadline)
+                            options["timeout_seconds"] = _remaining_batch_timeout(deadline)
                         except MetadataError:
                             if not preserve_rpc_error:
                                 raise
