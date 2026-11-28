@@ -4,9 +4,31 @@ import http.server
 import json
 import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
-from lmcache_temporalstore.blob import BlobClient
+from lmcache_temporalstore.blob import BlobClient, _send_buffers
+
+
+class BlobUploadTests(unittest.TestCase):
+    def test_send_buffers_resumes_after_short_writes(self):
+        sock = Mock()
+        calls = []
+
+        def send(buffers):
+            calls.append([bytes(part) for part in buffers])
+            return next(sizes)
+
+        sizes = iter((4, 2, 3))
+        sock.sendmsg.side_effect = send
+        _send_buffers(sock, (b"abc", memoryview(b"defg"), b"", memoryview(b"hi")))
+        self.assertEqual(calls, [[b"abc", b"defg", b"hi"], [b"efg", b"hi"], [b"g", b"hi"]])
+
+    def test_send_buffers_fails_when_socket_stops_accepting_bytes(self):
+        sock = Mock()
+        sock.sendmsg.return_value = 0
+        with self.assertRaises(ConnectionError):
+            _send_buffers(sock, (b"abc",))
+        sock.sendmsg.assert_called_once()
 
 
 class BlobHandler(http.server.BaseHTTPRequestHandler):
