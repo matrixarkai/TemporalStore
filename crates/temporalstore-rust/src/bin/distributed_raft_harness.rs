@@ -449,7 +449,7 @@ fn main() {
 }
 
 #[cfg(test)]
-#[path = "distributed_raft_typed_read_tests.rs"]
+#[path = "distributed_raft_harness/typed_read_tests.rs"]
 mod typed_read_route_tests;
 
 #[allow(clippy::too_many_arguments)]
