@@ -1050,93 +1050,94 @@ fn what_the_per_item_structures_cost_at_two_corpus_sizes() {
         let engine = budget_engine(dir.path());
         budget_seed(&engine, strings_n, series_keys, series_points);
 
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let counts = count_items(shard);
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let counts = count_items(shard);
 
-        // --- Denominators, asserted before anything divides by them. ---
-        assert_eq!(
-            strings_n + series_keys * series_points,
-            counts.records,
-            "denominator: the shard must hold every record seeded"
-        );
-        assert!(
-            counts.bucket_nodes > 0,
-            "denominator: no routing buckets, so every per-bucket figure below is a zero that \
-             means nothing"
-        );
-        assert!(
-            counts.block_index_entries > 0,
-            "denominator: no block-index entries, so the structure this module is about is absent"
-        );
-        assert!(
-            counts.object_block_refs > 0 && counts.block_lookup_refs > 0,
-            "denominator: the object lookup is empty"
-        );
+            // --- Denominators, asserted before anything divides by them. ---
+            assert_eq!(
+                strings_n + series_keys * series_points,
+                counts.records,
+                "denominator: the shard must hold every record seeded"
+            );
+            assert!(
+                counts.bucket_nodes > 0,
+                "denominator: no routing buckets, so every per-bucket figure below is a zero that \
+                 means nothing"
+            );
+            assert!(
+                counts.block_index_entries > 0,
+                "denominator: no block-index entries, so the structure this module is about is absent"
+            );
+            assert!(
+                counts.object_block_refs > 0 && counts.block_lookup_refs > 0,
+                "denominator: the object lookup is empty"
+            );
 
-        let rows: Vec<(&'static str, usize, usize)> = vec![
-            ("ElementEntry", size_of::<ElementEntry>(), counts.block_addresses()),
-            ("BucketNode", size_of::<BucketNode>(), counts.bucket_nodes),
-            ("BlockIndex (inside BucketNode)", size_of::<BlockIndex>(), counts.block_index_entries),
-            ("BlockLookupRef", size_of::<BlockLookupRef>(), counts.block_lookup_refs),
-            ("BlockRefs (one per object in the lookup)", size_of::<BlockRefs>(), counts.object_block_refs),
-            ("DirtyKeySet", size_of::<DirtyKeySet>(), counts.dirty_key_sets),
-            ("WalResidentBlock", size_of::<WalResidentBlock>(), counts.wal_resident_blocks),
-        ];
+            let rows: Vec<(&'static str, usize, usize)> = vec![
+                ("ElementEntry", size_of::<ElementEntry>(), counts.block_addresses()),
+                ("BucketNode", size_of::<BucketNode>(), counts.bucket_nodes),
+                ("BlockIndex (inside BucketNode)", size_of::<BlockIndex>(), counts.block_index_entries),
+                ("BlockLookupRef", size_of::<BlockLookupRef>(), counts.block_lookup_refs),
+                ("BlockRefs (one per object in the lookup)", size_of::<BlockRefs>(), counts.object_block_refs),
+                ("DirtyKeySet", size_of::<DirtyKeySet>(), counts.dirty_key_sets),
+                ("WalResidentBlock", size_of::<WalResidentBlock>(), counts.wal_resident_blocks),
+            ];
 
-        let mut ranked = rows.clone();
-        ranked.sort_by_key(|(_, width, count)| std::cmp::Reverse(width * count));
+            let mut ranked = rows.clone();
+            ranked.sort_by_key(|(_, width, count)| std::cmp::Reverse(width * count));
 
-        println!("\n=== {label}: per-item structures ranked by size_of x count ===");
-        println!("  records={} buckets={} block entries={} model-map addresses={}",
-            counts.records, counts.bucket_nodes, counts.block_index_entries,
-            counts.model_map_addresses);
-        println!(
-            "  {:<32} {:>6} {:>10} {:>12} {:>12}",
-            "structure", "width", "count", "total bytes", "per record"
-        );
-        let mut total = 0usize;
-        for (name, width, count) in &ranked {
-            let bytes = width * count;
-            total += bytes;
+            println!("\n=== {label}: per-item structures ranked by size_of x count ===");
+            println!("  records={} buckets={} block entries={} model-map addresses={}",
+                counts.records, counts.bucket_nodes, counts.block_index_entries,
+                counts.model_map_addresses);
+            println!(
+                "  {:<32} {:>6} {:>10} {:>12} {:>12}",
+                "structure", "width", "count", "total bytes", "per record"
+            );
+            let mut total = 0usize;
+            for (name, width, count) in &ranked {
+                let bytes = width * count;
+                total += bytes;
+                println!(
+                    "  {:<32} {:>6} {:>10} {:>12} {:>12.2}",
+                    name,
+                    width,
+                    count,
+                    bytes,
+                    bytes as f64 / counts.records as f64
+                );
+            }
             println!(
                 "  {:<32} {:>6} {:>10} {:>12} {:>12.2}",
-                name,
-                width,
-                count,
-                bytes,
-                bytes as f64 / counts.records as f64
+                "TOTAL (structure payload only)",
+                "",
+                "",
+                total,
+                total as f64 / counts.records as f64
             );
-        }
-        println!(
-            "  {:<32} {:>6} {:>10} {:>12} {:>12.2}",
-            "TOTAL (structure payload only)",
-            "",
-            "",
-            total,
-            total as f64 / counts.records as f64
-        );
 
-        // BlockIndex is NOT added into the total separately: every block entry lives inside a
-        // BucketNode's own `BlockIndexMap`, so its bytes are already inside the BucketNode row.
-        // Counting it twice would report a win twice.
-        let counted: usize = rows
-            .iter()
-            .filter(|(name, _, _)| *name != "BlockIndex (inside BucketNode)")
-            .map(|(_, width, count)| width * count)
-            .sum();
-        for (name, width, count) in &rows {
-            per_record.push((
-                name,
-                (width * count) as f64 / counts.records as f64,
-                counts.records as f64,
-            ));
-        }
-        println!(
-            "  payload without double-counting the nested block entries: {} B, {:.2} B/record",
-            counted,
-            counted as f64 / counts.records as f64
-        );
+            // BlockIndex is NOT added into the total separately: every block entry lives inside a
+            // BucketNode's own `BlockIndexMap`, so its bytes are already inside the BucketNode row.
+            // Counting it twice would report a win twice.
+            let counted: usize = rows
+                .iter()
+                .filter(|(name, _, _)| *name != "BlockIndex (inside BucketNode)")
+                .map(|(_, width, count)| width * count)
+                .sum();
+            for (name, width, count) in &rows {
+                per_record.push((
+                    name,
+                    (width * count) as f64 / counts.records as f64,
+                    counts.records as f64,
+                ));
+            }
+            println!(
+                "  payload without double-counting the nested block entries: {} B, {:.2} B/record",
+                counted,
+                counted as f64 / counts.records as f64
+            );
+        })
     }
 
     assert_eq!(
@@ -2109,31 +2110,32 @@ fn the_countdown_reaches_both_reports_and_an_empty_expiry_table_clears_it() {
 
     // --- NOTHING EXPIRES. Every bucket must report ABSENT, not a countdown of zero. ---
     {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        assert!(
-            !shard.bucket_index.bucket_map.is_empty(),
-            "denominator: no buckets, so every assertion below is vacuous"
-        );
-        for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-            assert_eq!(
-                None,
-                bucket.ttl_ms.ms(),
-                "bucket {routing_bucket} holds nothing that expires and reports a countdown of \
-                 {:?}; a countdown of zero here means every bucket in the store is due",
-                bucket.ttl_ms.ms()
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            assert!(
+                !shard.bucket_index.bucket_map.is_empty(),
+                "denominator: no buckets, so every assertion below is vacuous"
             );
-            assert!(!bucket.ttl_ms.is_some(), "bucket {routing_bucket} reports a countdown it does not have");
-        }
-        let report = crate::engine::bucket_store::runtime_report(shard);
-        assert_eq!(
-            0, report.ttl_bucket_count,
-            "no key has an expiry, so no bucket should be counted as holding one"
-        );
-        assert!(
-            report.buckets.iter().all(|row| row.ttl_ms.is_none()),
-            "a published row carries a countdown no bucket holds"
-        );
+            for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
+                assert_eq!(
+                    None,
+                    bucket.ttl_ms.ms(),
+                    "bucket {routing_bucket} holds nothing that expires and reports a countdown of \
+                     {:?}; a countdown of zero here means every bucket in the store is due",
+                    bucket.ttl_ms.ms()
+                );
+                assert!(!bucket.ttl_ms.is_some(), "bucket {routing_bucket} reports a countdown it does not have");
+            }
+            let report = crate::engine::bucket_store::runtime_report(shard);
+            assert_eq!(
+                0, report.ttl_bucket_count,
+                "no key has an expiry, so no bucket should be counted as holding one"
+            );
+            assert!(
+                report.buckets.iter().all(|row| row.ttl_ms.is_none()),
+                "a published row carries a countdown no bucket holds"
+            );
+        })
     }
 
     // --- ONE KEY IS ARMED. The VALUE has to arrive, not just the flag. ---
@@ -2148,26 +2150,27 @@ fn the_countdown_reaches_both_reports_and_an_empty_expiry_table_clears_it() {
     assert!(response.status.ok, "arming must ack: {:?}", response.status);
 
     {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let report = crate::engine::bucket_store::runtime_report(shard);
-        assert_eq!(1, report.ttl_bucket_count, "exactly one bucket now holds an expiry");
-        let armed: Vec<u64> = report.buckets.iter().filter_map(|row| row.ttl_ms).collect();
-        assert_eq!(
-            1,
-            armed.len(),
-            "exactly one published row must carry the countdown; {} did",
-            armed.len()
-        );
-        // The BOUNDS are what make this a test of the value rather than of its presence: zero is
-        // what a cleared countdown looks like, and ARMED_MS + 1 is what the stored bias looks
-        // like if it ever escapes the accessor.
-        assert!(
-            armed[0] > 0 && armed[0] <= ARMED_MS,
-            "the published countdown is {}; it must be a real number of milliseconds, neither \
-             zero nor the biased value the node holds internally",
-            armed[0]
-        );
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let report = crate::engine::bucket_store::runtime_report(shard);
+            assert_eq!(1, report.ttl_bucket_count, "exactly one bucket now holds an expiry");
+            let armed: Vec<u64> = report.buckets.iter().filter_map(|row| row.ttl_ms).collect();
+            assert_eq!(
+                1,
+                armed.len(),
+                "exactly one published row must carry the countdown; {} did",
+                armed.len()
+            );
+            // The BOUNDS are what make this a test of the value rather than of its presence: zero is
+            // what a cleared countdown looks like, and ARMED_MS + 1 is what the stored bias looks
+            // like if it ever escapes the accessor.
+            assert!(
+                armed[0] > 0 && armed[0] <= ARMED_MS,
+                "the published countdown is {}; it must be a real number of milliseconds, neither \
+                 zero nor the biased value the node holds internally",
+                armed[0]
+            );
+        })
     }
 
     let physical = engine.storage_physical_index_report(1);
@@ -2272,94 +2275,95 @@ fn what_the_bucket_node_costs_at_two_large_corpus_sizes() {
         let engine = budget_engine(dir.path());
         budget_seed(&engine, strings_n, series_keys, series_points);
 
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        let counts = count_items(shard);
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            let counts = count_items(shard);
 
-        assert_eq!(
-            strings_n + series_keys * series_points,
-            counts.records,
-            "denominator: the shard must hold every record seeded"
-        );
-        assert!(
-            counts.bucket_nodes > 0,
-            "denominator: no routing buckets, so every figure below divides by nothing"
-        );
-
-        let width = size_of::<BucketNode>();
-        let accounted = width * counts.bucket_nodes;
-        // The width this structure carried before the tombstone index stopped spending a
-        // sixteen-byte enum on a case it is in 2.32% of the time. A literal, because the shape it
-        // names no longer exists to be measured; `what_each_declined_shape_of_the_bucket_node_
-        // would_cost` holds a mirror of it to 200, and a mirror of the shape before that to 208,
-        // so neither literal can drift away from what it claims.
-        const WIDTH_BEFORE: usize = 200;
-        let before = WIDTH_BEFORE * counts.bucket_nodes;
-
-        let dirty_buckets = shard
-            .bucket_index
-            .bucket_map
-            .values()
-            .filter(|bucket| bucket.dirty())
-            .count();
-
-        println!("\n=== {label} ===");
-        println!(
-            "  records={} buckets={} block entries={}",
-            counts.records, counts.bucket_nodes, counts.block_index_entries
-        );
-        println!(
-            "  BucketNode: {width} B x {} = {accounted} B ({:.2} MiB), {:.2} B/record",
-            counts.bucket_nodes,
-            accounted as f64 / (1024.0 * 1024.0),
-            accounted as f64 / counts.records as f64
-        );
-        println!(
-            "  before this change: {WIDTH_BEFORE} B x {} = {before} B ({:.2} MiB), {:.2} B/record \
-             -- and 208 B x that before #1958",
-            counts.bucket_nodes,
-            before as f64 / (1024.0 * 1024.0),
-            before as f64 / counts.records as f64
-        );
-        println!(
-            "  SAVED: {} B ({:.2} MiB), {:.2} B/record, {:.1}% of the structure",
-            before - accounted,
-            (before - accounted) as f64 / (1024.0 * 1024.0),
-            (before - accounted) as f64 / counts.records as f64,
-            100.0 * (before - accounted) as f64 / before as f64
-        );
-        println!(
-            "  dirty buckets: {dirty_buckets} of {} ({:.1}%)",
-            counts.bucket_nodes,
-            100.0 * dirty_buckets as f64 / counts.bucket_nodes as f64
-        );
-
-        #[cfg(feature = "alloc-probe")]
-        {
-            let measured = clone_alloc_bytes(&shard.bucket_index.bucket_map);
-            let residual = measured as i64 - accounted as i64;
-            println!(
-                "  the map that holds them, charged by the allocator: {measured} B ({:.2} MiB)",
-                measured as f64 / (1024.0 * 1024.0)
-            );
-            println!(
-                "  RESIDUAL outside the node widths: {residual} B, {:.2} B/bucket -- key arrays, \
-                 node headers, unfilled slots and what each node owns on the heap",
-                residual as f64 / counts.bucket_nodes as f64
+            assert_eq!(
+                strings_n + series_keys * series_points,
+                counts.records,
+                "denominator: the shard must hold every record seeded"
             );
             assert!(
-                residual > 0,
-                "the allocator charged {measured} B for a map of {} nodes whose widths add up to \
-                 {accounted} B; a residual at or below zero means the two instruments are not \
-                 independent and the subtraction is an identity",
-                counts.bucket_nodes
+                counts.bucket_nodes > 0,
+                "denominator: no routing buckets, so every figure below divides by nothing"
             );
-        }
 
-        per_record.push((
-            counts.records,
-            accounted as f64 / counts.records as f64,
-        ));
+            let width = size_of::<BucketNode>();
+            let accounted = width * counts.bucket_nodes;
+            // The width this structure carried before the tombstone index stopped spending a
+            // sixteen-byte enum on a case it is in 2.32% of the time. A literal, because the shape it
+            // names no longer exists to be measured; `what_each_declined_shape_of_the_bucket_node_
+            // would_cost` holds a mirror of it to 200, and a mirror of the shape before that to 208,
+            // so neither literal can drift away from what it claims.
+            const WIDTH_BEFORE: usize = 200;
+            let before = WIDTH_BEFORE * counts.bucket_nodes;
+
+            let dirty_buckets = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .filter(|bucket| bucket.dirty())
+                .count();
+
+            println!("\n=== {label} ===");
+            println!(
+                "  records={} buckets={} block entries={}",
+                counts.records, counts.bucket_nodes, counts.block_index_entries
+            );
+            println!(
+                "  BucketNode: {width} B x {} = {accounted} B ({:.2} MiB), {:.2} B/record",
+                counts.bucket_nodes,
+                accounted as f64 / (1024.0 * 1024.0),
+                accounted as f64 / counts.records as f64
+            );
+            println!(
+                "  before this change: {WIDTH_BEFORE} B x {} = {before} B ({:.2} MiB), {:.2} B/record \
+                 -- and 208 B x that before #1958",
+                counts.bucket_nodes,
+                before as f64 / (1024.0 * 1024.0),
+                before as f64 / counts.records as f64
+            );
+            println!(
+                "  SAVED: {} B ({:.2} MiB), {:.2} B/record, {:.1}% of the structure",
+                before - accounted,
+                (before - accounted) as f64 / (1024.0 * 1024.0),
+                (before - accounted) as f64 / counts.records as f64,
+                100.0 * (before - accounted) as f64 / before as f64
+            );
+            println!(
+                "  dirty buckets: {dirty_buckets} of {} ({:.1}%)",
+                counts.bucket_nodes,
+                100.0 * dirty_buckets as f64 / counts.bucket_nodes as f64
+            );
+
+            #[cfg(feature = "alloc-probe")]
+            {
+                let measured = clone_alloc_bytes(&shard.bucket_index.bucket_map);
+                let residual = measured as i64 - accounted as i64;
+                println!(
+                    "  the map that holds them, charged by the allocator: {measured} B ({:.2} MiB)",
+                    measured as f64 / (1024.0 * 1024.0)
+                );
+                println!(
+                    "  RESIDUAL outside the node widths: {residual} B, {:.2} B/bucket -- key arrays, \
+                     node headers, unfilled slots and what each node owns on the heap",
+                    residual as f64 / counts.bucket_nodes as f64
+                );
+                assert!(
+                    residual > 0,
+                    "the allocator charged {measured} B for a map of {} nodes whose widths add up to \
+                     {accounted} B; a residual at or below zero means the two instruments are not \
+                     independent and the subtraction is an identity",
+                    counts.bucket_nodes
+                );
+            }
+
+            per_record.push((
+                counts.records,
+                accounted as f64 / counts.records as f64,
+            ));
+        })
     }
 
     assert_eq!(2, path_lengths.len(), "both arms must have run");
@@ -2635,73 +2639,74 @@ fn how_many_objects_a_bucket_holds_at_two_corpus_sizes_and_two_shape_mixes() {
             let engine = budget_engine(dir.path());
             objside_seed(&engine, scale, collections);
 
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
-            let (live, tombstones) = occupancy_of(shard);
-            let counts = count_items(shard);
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard is loaded");
+                let (live, tombstones) = occupancy_of(shard);
+                let counts = count_items(shard);
 
-            assert!(
-                live.total_buckets > 0,
-                "denominator: no routing buckets, so every share below divides by nothing"
-            );
-            assert!(
-                live.total_objects > 0,
-                "denominator: the shard holds no objects, so the histogram is a row of zeroes"
-            );
-
-            println!("\n=== {mix}, {size}: objects per bucket ===");
-            println!("  buckets={} records={}", live.total_buckets, counts.records);
-            live.report("object_index (live)");
-            tombstones.report("deleted_object_index (tombstones)");
-
-            let multi = live.at_least(2);
-            // The single case has to be reached in BOTH mixes, or the histogram is a constant.
-            assert!(
-                live.buckets[1] > 0,
-                "{mix}: no bucket holds exactly one object; the inline arm was never built"
-            );
-            if collections {
                 assert!(
-                    multi > 0,
-                    "{mix}: the fixture produced {} buckets and not one of them holds two \
-                     objects; a histogram from a fixture that cannot reach the multi-object case \
-                     cannot tell a correct representation from a constant",
-                    live.total_buckets
+                    live.total_buckets > 0,
+                    "denominator: no routing buckets, so every share below divides by nothing"
                 );
                 assert!(
-                    live.max >= 2,
-                    "{mix}: the widest bucket holds {} object(s); the multi-entry arm was never \
-                     constructed",
-                    live.max
+                    live.total_objects > 0,
+                    "denominator: the shard holds no objects, so the histogram is a row of zeroes"
                 );
-            } else {
-                // The CONTROL on the claim that the mix is what decides this. If a store of
-                // strings and series also produced multi-object buckets, the explanation above
-                // would be wrong and the two mixes would not be measuring different things.
-                assert_eq!(
-                    0, multi,
-                    "{mix}: {multi} buckets hold two or more objects, but a string and a series \
-                     are one object each -- either routing is colliding keys into one bucket or \
-                     the explanation this module gives for the multi-object case is wrong"
-                );
-            }
 
-            let single_share = 100.0 * live.buckets[1] as f64 / live.total_buckets as f64;
-            let multi_share = 100.0 * multi as f64 / live.total_buckets as f64;
-            let carrying = tombstones.total_buckets - tombstones.buckets[0];
-            let tombstone_share = 100.0 * carrying as f64 / tombstones.total_buckets as f64;
-            println!(
-                "  SHARES: exactly one {single_share:.2}%, two or more {multi_share:.2}%, \
-                 buckets carrying any tombstone {tombstone_share:.2}%"
-            );
-            summary.push((
-                mix,
-                counts.records,
-                live.mean(),
-                single_share,
-                multi_share,
-                tombstone_share,
-            ));
+                println!("\n=== {mix}, {size}: objects per bucket ===");
+                println!("  buckets={} records={}", live.total_buckets, counts.records);
+                live.report("object_index (live)");
+                tombstones.report("deleted_object_index (tombstones)");
+
+                let multi = live.at_least(2);
+                // The single case has to be reached in BOTH mixes, or the histogram is a constant.
+                assert!(
+                    live.buckets[1] > 0,
+                    "{mix}: no bucket holds exactly one object; the inline arm was never built"
+                );
+                if collections {
+                    assert!(
+                        multi > 0,
+                        "{mix}: the fixture produced {} buckets and not one of them holds two \
+                         objects; a histogram from a fixture that cannot reach the multi-object case \
+                         cannot tell a correct representation from a constant",
+                        live.total_buckets
+                    );
+                    assert!(
+                        live.max >= 2,
+                        "{mix}: the widest bucket holds {} object(s); the multi-entry arm was never \
+                         constructed",
+                        live.max
+                    );
+                } else {
+                    // The CONTROL on the claim that the mix is what decides this. If a store of
+                    // strings and series also produced multi-object buckets, the explanation above
+                    // would be wrong and the two mixes would not be measuring different things.
+                    assert_eq!(
+                        0, multi,
+                        "{mix}: {multi} buckets hold two or more objects, but a string and a series \
+                         are one object each -- either routing is colliding keys into one bucket or \
+                         the explanation this module gives for the multi-object case is wrong"
+                    );
+                }
+
+                let single_share = 100.0 * live.buckets[1] as f64 / live.total_buckets as f64;
+                let multi_share = 100.0 * multi as f64 / live.total_buckets as f64;
+                let carrying = tombstones.total_buckets - tombstones.buckets[0];
+                let tombstone_share = 100.0 * carrying as f64 / tombstones.total_buckets as f64;
+                println!(
+                    "  SHARES: exactly one {single_share:.2}%, two or more {multi_share:.2}%, \
+                     buckets carrying any tombstone {tombstone_share:.2}%"
+                );
+                summary.push((
+                    mix,
+                    counts.records,
+                    live.mean(),
+                    single_share,
+                    multi_share,
+                    tombstone_share,
+                ));
+            })
         }
     }
 
@@ -2950,26 +2955,27 @@ fn what_the_object_side_of_the_bucket_node_costs() {
         objside_seed(&engine, scale, true);
 
         let (live_rows, tombstone_rows, block_indexes, block_arms) = {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
-            let (live, dead) = object_id_rows(shard);
-            // THE NEXT TERM, carried out of the same shard so it is the same distribution.
-            let blocks: Vec<BlockIndexMap> = shard
-                .bucket_index
-                .bucket_map
-                .values()
-                .map(|bucket| bucket.block_index.clone())
-                .collect();
-            let mut arms = [0usize; 3];
-            for bucket in shard.bucket_index.bucket_map.values() {
-                let at = match bucket.block_index.len() {
-                    0 => 0,
-                    1 => 1,
-                    _ => 2,
-                };
-                arms[at] += 1;
-            }
-            (live, dead, blocks, arms)
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard is loaded");
+                let (live, dead) = object_id_rows(shard);
+                // THE NEXT TERM, carried out of the same shard so it is the same distribution.
+                let blocks: Vec<BlockIndexMap> = shard
+                    .bucket_index
+                    .bucket_map
+                    .values()
+                    .map(|bucket| bucket.block_index.clone())
+                    .collect();
+                let mut arms = [0usize; 3];
+                for bucket in shard.bucket_index.bucket_map.values() {
+                    let at = match bucket.block_index.len() {
+                        0 => 0,
+                        1 => 1,
+                        _ => 2,
+                    };
+                    arms[at] += 1;
+                }
+                (live, dead, blocks, arms)
+            })
         };
         let buckets = live_rows.len();
         assert!(buckets > 0, "denominator: no buckets, so every per-bucket figure is nothing");
@@ -3211,9 +3217,10 @@ fn the_read_path_of_each_object_index_shape_is_priced() {
     objside_seed(&engine, 2_000, true);
 
     let live_rows = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard is loaded");
-        object_id_rows(shard).0
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard is loaded");
+            object_id_rows(shard).0
+        })
     };
     let buckets = live_rows.len();
     assert!(buckets > 0, "denominator: no buckets to sweep");

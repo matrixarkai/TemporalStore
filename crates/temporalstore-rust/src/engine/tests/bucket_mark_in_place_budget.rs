@@ -208,26 +208,28 @@ fn mip_load(engine: &TemporalEngine, end_routing_bucket: u32) {
 
 /// Blocks per bucket, as the shard holds them right now.
 fn blocks_by_bucket(engine: &TemporalEngine) -> std::collections::BTreeMap<u32, usize> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&MIP_SHARD).expect("shard is loaded");
-    shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.block_index.len()))
-        .collect()
+    engine.shards.with_state(MIP_SHARD, |state| {
+        let shard = state.expect("shard is loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.block_index.len()))
+            .collect()
+    })
 }
 
 /// Tombstoned ids per bucket, as the shard holds them right now.
 fn tombstones_by_bucket(engine: &TemporalEngine) -> std::collections::BTreeMap<u32, usize> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&MIP_SHARD).expect("shard is loaded");
-    shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.deleted_object_index.object_count()))
-        .collect()
+    engine.shards.with_state(MIP_SHARD, |state| {
+        let shard = state.expect("shard is loaded");
+        shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .map(|(routing_bucket, bucket)| (*routing_bucket, bucket.deleted_object_index.object_count()))
+            .collect()
+    })
 }
 
 /// Percentile off a sorted slice, nearest-rank. Returns 0 for an empty sample.

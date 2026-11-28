@@ -124,7 +124,7 @@ mod probe {
             // the making; the slack covers only measurement drift.
             if large - small >= 3.0 {
                 problems.push(format!(
-                    "{name} cost {small:.2} allocations at {SMALL} elements and {large:.2} at                      {LARGE}: it pays for the elements the container already had"
+                    "{name} cost {small:.2} allocations at {SMALL} elements and {large:.2} at {LARGE}: it pays for the elements the container already had"
                 ));
             }
             if small > *ceiling || large > *ceiling {

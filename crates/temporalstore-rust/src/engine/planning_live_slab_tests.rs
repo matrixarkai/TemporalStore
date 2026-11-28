@@ -86,8 +86,9 @@ fn unknown_inventory_unready_tallies_and_detailed_requests_always_scan() {
         assert_eq!(engine.planning_live_block_slab_ids(1, inventory, detailed), expected);
         assert!(crate::snapshot_probe::counts().live_slab_scan_addresses > 0);
     }
-    engine.shards.write().unwrap().get_mut(&1).unwrap()
-        .bucket_index.block_slab_live.forget_for_test();
+    engine.shards.with_state_mut(1, |shard| {
+        shard.unwrap().bucket_index.block_slab_live.forget_for_test();
+    });
     crate::snapshot_probe::reset();
     assert_eq!(engine.planning_live_block_slab_ids(1, Some(&ids), false), expected);
     assert!(crate::snapshot_probe::counts().live_slab_scan_addresses > 0);
@@ -119,8 +120,9 @@ fn an_overreporting_tally_only_defers_collection_until_reconciliation() {
     engine.block_store.roll_slab().unwrap();
     let orphan = engine.block_store.append(&[9; 64]).unwrap();
     let orphan_id = orphan.block_slab_id();
-    engine.shards.write().unwrap().get_mut(&1).unwrap()
-        .bucket_index.block_slab_live.add_address(&orphan);
+    engine.shards.with_state_mut(1, |shard| {
+        shard.unwrap().bucket_index.block_slab_live.add_address(&orphan);
+    });
     let request = StorageLifecycleRequest { shard_id: 1, ..Default::default() };
     let conservative = engine.storage_lifecycle_plan_with_report_details(request.clone(), false);
     assert!(!conservative.stale_block_slab_ids.contains(&orphan_id));

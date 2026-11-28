@@ -328,11 +328,7 @@ fn an_idle_round_still_walks_the_live_block_set() {
     seed_in_batches(&engine, 1, RECORDS, 1);
 
     let dirty_before = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        shards
-            .get(&1)
-            .map(|shard| shard.dirty_objects.len())
-            .unwrap_or(0)
+        engine.shards.with_state(1, |shard| shard.map_or(0, |shard| shard.dirty_objects.len()))
     };
     assert_eq!(
         dirty_before, RECORDS,
@@ -346,11 +342,7 @@ fn an_idle_round_still_walks_the_live_block_set() {
     );
 
     let dirty_after = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        shards
-            .get(&1)
-            .map(|shard| shard.dirty_objects.len())
-            .unwrap_or(0)
+        engine.shards.with_state(1, |shard| shard.map_or(0, |shard| shard.dirty_objects.len()))
     };
     assert_eq!(
         dirty_after, 0,
@@ -399,11 +391,7 @@ fn the_dump_threshold_counts_log_records_not_dirty_objects() {
             ..round_request()
         });
         let dirty = {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            shards
-                .get(&1)
-                .map(|shard| shard.dirty_objects.len())
-                .unwrap_or(0)
+            engine.shards.with_state(1, |shard| shard.map_or(0, |shard| shard.dirty_objects.len()))
         };
         println!(
             "  {records} objects in batches of {batch:<5} -> undumped log records {:>5}, \
@@ -460,14 +448,15 @@ fn the_dump_threshold_counts_log_records_not_dirty_objects() {
 /// prepare that never ran: the control asks for a target the active slab is nowhere near and must
 /// produce NO roll, and the treatment asks for one it has passed and must produce exactly one.
 #[test]
-fn the_prepare_stage_can_roll_a_slab_and_take_the_block_store_mutex() {
+fn the_prepare_stage_rolls_the_owner_cursor_at_target() {
     const RECORDS: usize = 500;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = round_engine(dir.path());
     seed_in_batches(&engine, 1, RECORDS, 100);
 
-    let offset = engine.block_store.active_slab_write_offset();
+    let (_, offset) = engine.block_store.owned_slab_position_for_test(1)
+        .expect("the fixture created a shard writer");
     assert!(
         offset > 0,
         "the fixture wrote nothing to the active slab, so neither arm below means anything"
@@ -785,17 +774,18 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     // from the shard below rather than written down, so a fixture that stops releasing anything
     // fails the denominator instead of quietly measuring the easy case.
     let (indexed_blocks, released_buckets) = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
-        (
-            shard
-                .bucket_index
-                .bucket_map
-                .values()
-                .map(|bucket| bucket.block_index.len())
-                .sum::<usize>() as u64,
-            shard.bucket_index.released_buckets.len(),
-        )
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            (
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .values()
+                    .map(|bucket| bucket.block_index.len())
+                    .sum::<usize>() as u64,
+                shard.bucket_index.released_buckets.len(),
+            )
+        })
     };
 
     // THE DENOMINATOR for everything below. With nothing released the supplement walk never

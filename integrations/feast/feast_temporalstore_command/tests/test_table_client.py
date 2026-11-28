@@ -84,3 +84,104 @@ class TableFeastClientTest(unittest.TestCase):
         command = self.table.batch_execute.call_args.args[0][0].feature_proto_agg_query
         self.assertEqual(command.key, "series")
         self.assertFalse(command.HasField("count"))
+
+
+@unittest.skipUnless(temporalstore_sdk is not None, "the TemporalStore Python SDK is required")
+class TableFeastWireTest(unittest.TestCase):
+    def test_routes_projected_reads_and_conditional_writes_to_the_elected_shards(self):
+        from concurrent.futures import ThreadPoolExecutor
+        from contextlib import ExitStack
+
+        import grpc
+        from temporalstore.v1.temporalstore_pb2_grpc import (
+            MetadataServiceServicer, TemporalStoreServiceServicer,
+            add_MetadataServiceServicer_to_server, add_TemporalStoreServiceServicer_to_server,
+        )
+
+        from feast_temporalstore_command.table_client import TableFeastClient
+
+        pb = temporalstore_sdk.commands
+        metadata_requests = []
+        shard_requests = {}
+        keys = ("123456789", "model/0/tp/1/rank/0/chunk/0000000000000000")
+        read_fields = ("value", "empty", "missing")
+
+        class DataShard(TemporalStoreServiceServicer):
+            def __init__(self, shard_id, generation, key, value):
+                self.shard_id, self.generation, self.key, self.value = shard_id, generation, key, value
+
+            def BatchExecuteChecked(self, request, context):
+                self_case.assertEqual((request.shard_id, request.load_version),
+                                      (self.shard_id, self.generation))
+                shard_requests.setdefault(self.shard_id, []).append([
+                    command.WhichOneof("kind") for command in request.commands
+                ])
+                responses = []
+                for command in request.commands:
+                    if command.HasField("hash_multi_get"):
+                        read = command.hash_multi_get
+                        self_case.assertEqual((read.key, tuple(read.fields)), (self.key, read_fields))
+                        responses.append(pb.CommandResponse(
+                            status=pb.Status(ok=True), values=[self.value, b"", b""],
+                            values_present=b"\x03",
+                        ))
+                    else:
+                        self_case.assertTrue(command.HasField("hash_multi_set_if_timestamp_older"))
+                        write = command.hash_multi_set_if_timestamp_older
+                        self_case.assertEqual((write.key, write.ttl_ms), (self.key, 30000))
+                        self_case.assertEqual(write.entries[0].value, self.value)
+                        responses.append(pb.CommandResponse(
+                            status=pb.Status(ok=True), integer=int(self.shard_id == 74),
+                        ))
+                return pb.BatchExecuteResponse(status=pb.Status(ok=True), responses=responses)
+
+        class Metadata(MetadataServiceServicer):
+            def GetTableTopology(self, request, context):
+                metadata_requests.append((request.namespace_name, request.table_name))
+                topology = pb.MetadataTableTopologyResponse(
+                    status=pb.Status(ok=True), table_id=7, topology_version=42,
+                    first_shard_id=73, shard_count=2,
+                )
+                for shard_id, generation, target in routes:
+                    topology.shards.add(shard_id=shard_id, uses_raft_route=True,
+                                        primary_grpc=target, load_version=generation)
+                return topology
+
+        self_case = self
+        with ExitStack() as stack:
+            def start(servicer, register):
+                workers = stack.enter_context(ThreadPoolExecutor(max_workers=2))
+                server = grpc.server(workers)
+                register(servicer, server)
+                port = server.add_insecure_port("127.0.0.1:0")
+                server.start()
+                stack.callback(lambda: server.stop(0).wait(timeout=3))
+                return f"127.0.0.1:{port}"
+
+            values = (b"J\x00\xff", b"I\x00\xff")
+            routes = [
+                (shard, version, start(DataShard(shard, version, key, value),
+                                       add_TemporalStoreServiceServicer_to_server))
+                for shard, version, key, value in zip((74, 73), (11, 7), keys, values)
+            ]
+            metadata = start(Metadata(), add_MetadataServiceServicer_to_server)
+            client = TableFeastClient(
+                f"grpc://{metadata}", "feast", "online", "legacy", 9999, 40, 3, 1,
+                4 * 1024 * 1024, 16, 2,
+            )
+            stack.callback(client.close)
+
+            projection = [[value, b"", None] for value in values]
+            self.assertEqual(client.batch_hash_multi_get(keys, read_fields), projection)
+            self.assertEqual(asyncio.run(client.batch_hash_multi_get_async(keys, read_fields)),
+                             projection)
+            records = [(key, 5, 2, [value]) for key, value in zip(keys, values)]
+            self.assertEqual(client.batch_hash_timestamp_set(
+                ["value"], "_ts", records, ttl_ms=30000,
+            ), (1, 1))
+            self.assertEqual(metadata_requests, [("feast", "online")])
+            self.assertEqual(shard_requests, {
+                shard: [["hash_multi_get"], ["hash_multi_get"],
+                        ["hash_multi_set_if_timestamp_older"]]
+                for shard in (73, 74)
+            })

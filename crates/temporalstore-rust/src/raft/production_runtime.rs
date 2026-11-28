@@ -252,6 +252,13 @@ impl ProductionRaftRuntime {
     }
 
     pub fn propose(&self, command: Command) -> Result<CommandResponse, RaftError> {
+        self.propose_with_admission(command)
+            .map_err(RaftError::legacy_proposal_error)
+    }
+
+    /// Distinguish a request rejected before its first append from one that
+    /// may already have executed on the previous leader.
+    pub fn propose_with_admission(&self, command: Command) -> Result<CommandResponse, RaftError> {
         if matches!(command, Command::LeaderEstablish) {
             return Err(RaftError::InvalidConfig(
                 "leader establishment is a Raft runtime operation".to_string(),
@@ -260,10 +267,11 @@ impl ProductionRaftRuntime {
         if self.cluster.leader_id() != self.options.local_node_id {
             return Err(RaftError::NotLeader {
                 node_id: self.options.local_node_id,
-            });
+            }
+            .before_proposal_append());
         }
         let transport = self.transport();
-        self.cluster.propose_distributed(command, &transport)
+        self.cluster.propose_distributed_with_admission(command, &transport)
     }
 
     /// Delete cache strings through the normal replication path. A proposal

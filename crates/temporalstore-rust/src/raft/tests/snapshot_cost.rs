@@ -79,15 +79,15 @@ pub(super) fn cluster_with(records: usize) -> RaftCluster {
     while index < records {
         if index > 0 && index % roll_every == 0 {
             // Target 1 byte: the production target is a gibibyte and is reachable only through a
-            // process-wide env var, which is exactly what `prepare_next_slab_with_target` exists
-            // to avoid mutating. `Some` is required, so a roll that silently did not happen fails
+            // process-wide env var. Give the fixture's shard an explicit target. `Some` is
+            // required, so a roll that silently did not happen fails
             // here rather than showing up as a one-slab image three assertions later.
             assert!(
                 cluster
                     .node_engine_for_test(1)
                     .expect("the leader serves an engine")
                     .block_store()
-                    .prepare_next_slab_with_target(1)
+                    .prepare_next_slab_for_shard(1, 1)
                     .expect("rolling onto a fresh slab must succeed")
                     .is_some(),
                 "the slab did not roll at record {index}, so the corpus would land in one slab"
@@ -1088,7 +1088,7 @@ pub(super) fn deployed_follower_with(total: u64) -> (tempfile::TempDir, RaftClus
                     .node_engine_for_test(2)
                     .expect("node 2 serves an engine")
                     .block_store()
-                    .prepare_next_slab_with_target(1)
+                    .prepare_next_slab_for_shard(1, 1)
                     .expect("rolling onto a fresh slab must succeed")
                     .is_some(),
                 "the slab did not roll at entry {index}, so the image would land in one slab"

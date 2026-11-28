@@ -250,9 +250,8 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
         "persistent block read should populate block-cache files"
     );
 
-    let target_block_key = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard should exist");
+    let target_block_key = engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard should exist");
         let address = shard.string_address("target").expect("target address should exist");
         let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
@@ -262,7 +261,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
             address.length(),
             Some(crate::engine::hashing::block_routing_bucket("target", start, end)),
         )
-    };
+    });
     assert_eq!(
         cache.get_memory(&target_block_key),
         None,
@@ -365,9 +364,8 @@ fn cache_replacement_policy_soak() {
         "pressure pass should leave a disk-cache tier for cold read refill"
     );
 
-    let target_block_key = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("loaded shard");
+    let target_block_key = engine.shards.with_state(1, |state| {
+        let shard = state.expect("loaded shard");
         let address = shard
             .strings()
             .get("soak-target")
@@ -381,7 +379,7 @@ fn cache_replacement_policy_soak() {
             address.length(),
             Some(crate::engine::hashing::block_routing_bucket("soak-target", start, end)),
         )
-    };
+    });
 
     let cached_pages = engine.cache().entries_for_shard(1);
     let evict_report = engine.apply_storage_eviction(1, 1, 4, true, false);
@@ -619,10 +617,8 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     restarted.load_shard(1);
     let restarted_cache = restarted.cache();
     let restarted_block_store = restarted.block_store();
-    let target_block_key = {
-        let shards = restarted.shards.read().expect("shards lock poisoned");
-        let shard = shards
-            .get(&1)
+    let target_block_key = restarted.shards.with_state(1, |state| {
+        let shard = state
             .expect("shard should exist after index replay");
         let address = shard
             .strings()
@@ -637,7 +633,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
             address.length(),
             Some(crate::engine::hashing::block_routing_bucket("target", start, end)),
         )
-    };
+    });
 
     let first_read = restarted.execute(ExecuteRequest {
         shard_id: 1,
@@ -3962,17 +3958,15 @@ fn feature_append_packs_many_timestamp_values_into_one_block() {
     });
     assert!(response.status.ok);
 
-    let (first_address, second_address) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let series = shards
-            .get(&1)
+    let (first_address, second_address) = engine.shards.with_state(1, |state| {
+        let series = state
             .and_then(|shard| shard.features().get("packed-feature"))
             .expect("feature series should exist");
         (
             series.get(10).expect("first point").clone(),
             series.get(20).expect("second point").clone(),
         )
-    };
+    });
     assert_eq!(first_address, second_address);
     // The address carries no object id; the entry derives one from its terms.
     let packed_bytes = engine.block_store().read(&first_address).unwrap();
@@ -4181,14 +4175,12 @@ fn feature_append_chunks_and_persists_timestamped_kv_blocks() {
     });
     assert!(response.status.ok);
 
-    let addresses = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let series = shards
-            .get(&1)
+    let addresses = engine.shards.with_state(1, |state| {
+        let series = state
             .and_then(|shard| shard.features().get("chunked-feature"))
             .expect("feature series should exist");
         unique_timestamped_kv_block_addresses(series)
-    };
+    });
     assert!(
         addresses.len() > 1,
         "large timestamped KV batch should be split into block chunks"
@@ -4240,14 +4232,12 @@ fn feature_append_keeps_oversized_single_timestamped_value_readable() {
     });
     assert!(response.status.ok);
 
-    let addresses = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let series = shards
-            .get(&1)
+    let addresses = engine.shards.with_state(1, |state| {
+        let series = state
             .and_then(|shard| shard.features().get("oversized-single-feature"))
             .expect("feature series should exist");
         unique_timestamped_kv_block_addresses(series)
-    };
+    });
     assert_eq!(addresses.len(), 1);
     let bytes = engine.block_store().read(&addresses[0]).unwrap();
     assert!(bytes.len() > TIMESTAMPED_KV_BLOCK_TARGET_BYTES);
@@ -4333,15 +4323,13 @@ fn feature_recovery_reports_index_timestamp_missing_from_packed_block() {
     });
     assert!(response.status.ok);
 
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let series = shards
-            .get_mut(&1)
+    engine.shards.with_state_mut(1, |state| {
+        let series = state
             .and_then(|shard| shard.features_mut().get_mut("layout-feature"))
             .expect("feature series should exist");
         let address = series.get(10).expect("packed block").clone();
         series.set(30, address);
-    }
+    });
 
     let report = engine.storage_recovery_report(1);
     assert_eq!(
@@ -4382,16 +4370,14 @@ fn feature_recovery_reports_packed_timestamp_orphaned_from_index() {
     });
     assert!(response.status.ok);
 
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let series = shards
-            .get_mut(&1)
+    engine.shards.with_state_mut(1, |state| {
+        let series = state
             .and_then(|shard| shard.features_mut().get_mut("layout-feature"))
             .expect("feature series should exist");
         // `clear` is the trait's spelling, and it returns nothing where `remove` returned
         // the removed value -- which this site discarded anyway.
         series.clear(20);
-    }
+    });
 
     let report = engine.storage_recovery_report(1);
     assert_eq!(
@@ -4437,16 +4423,15 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_block() {
         )
         .expect("duplicate packed block append");
 
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("loaded shard");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("loaded shard");
         let series = shard
             .features_mut()
             .entry("layout-feature".into())
             .or_default();
         series.set(10, address.clone());
         series.set(20, address);
-    }
+    });
 
     let report = engine.storage_recovery_report(1);
     assert_eq!(
@@ -4488,15 +4473,14 @@ fn feature_recovery_reports_corrupt_packed_timestamped_block() {
         )
         .expect("corrupt packed block append");
 
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("loaded shard");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("loaded shard");
         shard
             .features_mut()
             .entry("corrupt-feature".into())
             .or_default()
             .set(10, address);
-    }
+    });
 
     let query = engine.execute(ExecuteRequest {
         shard_id: 1,
@@ -4544,15 +4528,14 @@ fn feature_recovery_reports_a_packed_timestamped_block_in_the_retired_json_shape
         )
         .expect("unsupported packed block append");
 
-    {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&1).expect("loaded shard");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("loaded shard");
         shard
             .features_mut()
             .entry("versioned-feature".into())
             .or_default()
             .set(10, address);
-    }
+    });
 
     let readiness = engine.storage_production_readiness_report(1);
     assert!(!readiness.production_ready);
@@ -4592,17 +4575,15 @@ fn feature_compaction_rewrites_shared_packed_block_once() {
     assert_eq!(report.rewritten_block_refs, 1);
     assert_eq!(report.after.live_block_refs, 1);
 
-    let (first_address, second_address) = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let series = shards
-            .get(&1)
+    let (first_address, second_address) = engine.shards.with_state(1, |state| {
+        let series = state
             .and_then(|shard| shard.features().get("compact-packed-feature"))
             .expect("feature series should exist");
         (
             series.get(10).expect("first point").clone(),
             series.get(20).expect("second point").clone(),
         )
-    };
+    });
     assert_eq!(first_address, second_address);
 
     let query = engine.execute(ExecuteRequest {

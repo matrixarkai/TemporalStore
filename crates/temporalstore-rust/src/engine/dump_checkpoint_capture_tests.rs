@@ -334,21 +334,22 @@ fn owned_dump_capture_keeps_released_buckets_and_installs_without_source_logs() 
     assert_eq!(engine.materialize_synthetic_blocks(1), 32);
     let first = engine.create_bucket_dump_manifest(1, []).unwrap();
     engine.clear_dumped_bucket_dirty_state(1, &first);
-    let released = {
-        let mut shards = engine.shards.write().unwrap();
-        let shard = shards.get_mut(&1).unwrap();
+    let released = engine.shards.with_state_mut(1, |state| {
+        let shard = state.unwrap();
         let buckets = shard.bucket_index.bucket_map.keys().copied().take(8).collect::<Vec<_>>();
         let outcome = storage_bucket_internals::release_bucket_blocks(shard, &buckets);
         assert_eq!(outcome.released_buckets, buckets);
         buckets
-    };
+    });
     let selected = engine.routing_bucket_for_key(1, "released-0031");
     let (snapshot, _) = engine.capture_shard_checkpoint(1).unwrap();
     let expected = serialize_index(&snapshot);
     let manifest = dump_without_round_trip(&engine, vec![selected]);
     assert_eq!(manifest.index_bytes, expected);
     assert_eq!(manifest.bucket_ids, vec![selected]);
-    assert_eq!(engine.shards.read().unwrap()[&1].bucket_index.released_buckets.len(), released.len());
+    engine.shards.with_state(1, |state| {
+        assert_eq!(state.unwrap().bucket_index.released_buckets.len(), released.len());
+    });
     engine.validate_bucket_dump_manifest(&manifest).unwrap();
     drop(engine);
     let restored = TemporalEngine::with_local_dirs(
@@ -376,30 +377,31 @@ fn live_entry_stream_does_not_hold_one_owned_row_per_hash_field() {
             key: "wide-hash".into(), field: format!("field-{index:04}"), value: vec![7; 32],
         });
     }
-    let shards = engine.shards.read().unwrap();
-    let shard = &shards[&1];
-    let entries = collect_live_block_entries(shard);
-    assert_eq!(entries.len(), 128);
-    let key = Arc::clone(&entries[0].object_key);
-    drop(entries);
-    let base_handles = Arc::strong_count(&key);
-    let control = collect_live_block_entries(shard);
-    assert_eq!(Arc::strong_count(&key), base_handles + 128,
-        "the collected control must retain one key handle per block");
-    let expected = control.iter().map(|entry| (
-        entry.kind, entry.object_key.to_string(), entry.address.clone(), entry.filed_bucket(),
-        entry.dirty, entry.deleted, entry.log_backed,
-    )).collect::<Vec<_>>();
-    drop(control);
-    let mut index = 0;
-    visit_live_block_entries(shard, |entry| {
-        assert_eq!(Arc::strong_count(&key), base_handles + 1);
-        assert_eq!((entry.kind, entry.object_key.to_string(), entry.address.clone(), entry.filed_bucket(),
-                    entry.dirty, entry.deleted, entry.log_backed), expected[index]);
-        index += 1;
+    engine.shards.with_state(1, |state| {
+        let shard = state.unwrap();
+        let entries = collect_live_block_entries(shard);
+        assert_eq!(entries.len(), 128);
+        let key = Arc::clone(&entries[0].object_key);
+        drop(entries);
+        let base_handles = Arc::strong_count(&key);
+        let control = collect_live_block_entries(shard);
+        assert_eq!(Arc::strong_count(&key), base_handles + 128,
+            "the collected control must retain one key handle per block");
+        let expected = control.iter().map(|entry| (
+            entry.kind, entry.object_key.to_string(), entry.address.clone(), entry.filed_bucket(),
+            entry.dirty, entry.deleted, entry.log_backed,
+        )).collect::<Vec<_>>();
+        drop(control);
+        let mut index = 0;
+        visit_live_block_entries(shard, |entry| {
+            assert_eq!(Arc::strong_count(&key), base_handles + 1);
+            assert_eq!((entry.kind, entry.object_key.to_string(), entry.address.clone(), entry.filed_bucket(),
+                        entry.dirty, entry.deleted, entry.log_backed), expected[index]);
+            index += 1;
+        });
+        assert_eq!(index, 128);
+        assert_eq!(Arc::strong_count(&key), base_handles);
     });
-    assert_eq!(index, 128);
-    assert_eq!(Arc::strong_count(&key), base_handles);
 }
 
 #[test]
@@ -424,40 +426,154 @@ fn streamed_bucket_facts_match_collected_facts_with_deletes_and_released_buckets
         if release {
             let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
             engine.clear_dumped_bucket_dirty_state(1, &manifest);
-            let mut shards = engine.shards.write().unwrap();
-            let shard = shards.get_mut(&1).unwrap();
-            // Release supports addressable scalar blocks, not hash fields.
-            let buckets = shard.bucket_index.bucket_map.iter()
-                .filter(|(_, bucket)| !bucket.block_index.is_empty()
-                    && bucket.block_index.values().all(|block| block.model_id().as_str() == "string"))
-                .map(|(id, _)| *id).take(8).collect::<Vec<_>>();
-            assert!(!buckets.is_empty());
-            let released = storage_bucket_internals::release_bucket_blocks(shard, &buckets);
-            assert!(!released.released_buckets.is_empty(), "{released:?}");
+            engine.shards.with_state_mut(1, |state| {
+                let shard = state.unwrap();
+                // Release supports addressable scalar blocks, not hash fields.
+                let buckets = shard.bucket_index.bucket_map.iter()
+                    .filter(|(_, bucket)| !bucket.block_index.is_empty()
+                        && bucket.block_index.values().all(|block| block.model_id().as_str() == "string"))
+                    .map(|(id, _)| *id).take(8).collect::<Vec<_>>();
+                assert!(!buckets.is_empty());
+                let released = storage_bucket_internals::release_bucket_blocks(shard, &buckets);
+                assert!(!released.released_buckets.is_empty(), "{released:?}");
+            });
         }
-        let shards = engine.shards.read().unwrap();
-        let shard = &shards[&1];
-        let (start, end) = shard.routing_range();
-        let entries = collect_live_block_entries(shard);
-        assert_eq!(bucket_storage_summaries(shard, start, end),
-            bucket_storage_summaries_from_entries(shard, start, end, &entries));
-        let selected = entries.iter().take(8).map(|entry| entry.filed_bucket().unwrap()).collect::<BTreeSet<_>>();
-        for selected in [BTreeSet::new(), selected] {
-            let report = storage_object_lifecycle_report_for_buckets(1, shard, &selected,
-                |key| engine.routing_bucket_for_key(1, key));
-            let mut owners = BTreeMap::<u64, BTreeSet<u64>>::new();
-            let mut refs = 0u64;
-            for entry in &entries {
-                if selected.is_empty() || selected.contains(&entry.filed_bucket().unwrap()) {
-                    refs += 1;
-                    owners.entry(expected_live_block_object_id(1, entry)).or_default()
-                        .insert(stable_object_hash(&format!("{}:{}", entry.kind.as_str(), entry.object_key)));
+        let resolve_bucket = engine.routing_bucket_resolver(1);
+        engine.shards.with_state(1, |state| {
+            let shard = state.unwrap();
+            let (start, end) = shard.routing_range();
+            let entries = collect_live_block_entries(shard);
+            assert_eq!(bucket_storage_summaries(shard, start, end),
+                bucket_storage_summaries_from_entries(shard, start, end, &entries));
+            let selected = entries.iter().take(8).map(|entry| entry.filed_bucket().unwrap()).collect::<BTreeSet<_>>();
+            for selected in [BTreeSet::new(), selected] {
+                let report = storage_object_lifecycle_report_for_buckets(1, shard, &selected,
+                    &resolve_bucket);
+                let mut owners = BTreeMap::<u64, BTreeSet<u64>>::new();
+                let mut refs = 0u64;
+                for entry in &entries {
+                    if selected.is_empty() || selected.contains(&entry.filed_bucket().unwrap()) {
+                        refs += 1;
+                        owners.entry(expected_live_block_object_id(1, entry)).or_default()
+                            .insert(stable_object_hash(&format!("{}:{}", entry.kind.as_str(), entry.object_key)));
+                    }
                 }
+                assert_eq!(report.live_object_ids, owners.len() as u64);
+                assert_eq!(report.live_block_refs, refs);
+                assert_eq!(report.reused_object_ids, owners.into_iter()
+                    .filter_map(|(id, terms)| (terms.len() > 1).then_some(id)).collect::<Vec<_>>());
             }
-            assert_eq!(report.live_object_ids, owners.len() as u64);
-            assert_eq!(report.live_block_refs, refs);
-            assert_eq!(report.reused_object_ids, owners.into_iter()
-                .filter_map(|(id, terms)| (terms.len() > 1).then_some(id)).collect::<Vec<_>>());
-        }
+        });
     }
+}
+
+#[test]
+fn loaded_manifest_install_failure_after_rename_keeps_tail_recoverable() {
+    use std::sync::mpsc::channel;
+    use std::time::{Duration, Instant};
+
+    let timeout = Duration::from_secs(10);
+    let root = tempfile::tempdir().unwrap();
+    let engine = engine_at(root.path());
+    engine.load_shard(2);
+    let set = |shard_id, key: &str, bytes: &[u8]| ExecuteRequest {
+        shard_id,
+        command: Command::StringSet { key: key.into(), value: bytes.to_vec() },
+    };
+    let get = |shard_id, key: &str| ExecuteRequest {
+        shard_id, command: Command::StringGet { key: key.into() },
+    };
+    let exact = |engine: &TemporalEngine, request, bytes: &[u8]| {
+        let response = engine.execute(request);
+        assert!(response.status.ok, "{:?}", response.status);
+        assert_eq!(response.response, CommandResponse::Bytes { value: Some(bytes.to_vec()) });
+    };
+    assert!(engine.execute_durable(set(1, "base", b"manifest")).status.ok);
+    engine.materialize_synthetic_blocks(1);
+    engine.flush_shard_index(1);
+    let manifest = engine.create_bucket_dump_manifest(1, []).unwrap();
+    assert!(manifest.wal_sequence > 0);
+    assert!(!manifest.block_slab_ids.is_empty());
+    assert!(manifest.block_slab_ids.iter().all(|id| !crate::wal_record::is_wal_resident(*id)));
+    assert!(engine.bucket_dump_install_preflight_report(&manifest).install_safe);
+    engine.clear_dumped_bucket_dirty_state(1, &manifest);
+
+    let previous_owner = engine.shards.handle(1).unwrap();
+    let before = engine.checkpoint_publications.capture(1);
+    std::thread::scope(|scope| {
+        let (entered_tx, entered_rx) = channel();
+        let (release_tx, release_rx) = channel();
+        let publisher = scope.spawn(|| {
+            engine.checkpoint_publications.publish(&before, move || {
+                entered_tx.send(()).unwrap();
+                release_rx.recv_timeout(timeout).unwrap();
+                Ok(())
+            })
+        });
+        entered_rx.recv_timeout(timeout).unwrap();
+        assert!(engine.checkpoint_publications.is_current_after_publish(&before));
+
+        let installer = scope.spawn(|| {
+            super::super::persistence::fail_closed_install_after_rename_for_test();
+            engine.install_bucket_dump_manifest(&manifest)
+        });
+        // While this publisher remains admitted, only closing invalidates its revision.
+        let limit = Instant::now() + timeout;
+        while engine.checkpoint_publications.is_current_after_publish(&before) {
+            assert!(Instant::now() < limit, "install never reached publication drain");
+            std::thread::sleep(Duration::from_millis(1));
+        }
+        assert!(engine.pass_slot(1).try_lock().is_err());
+
+        let (wrote_tx, wrote_rx) = channel();
+        let writer_engine = &engine;
+        let writer = scope.spawn(move || {
+            let peer = writer_engine.execute_durable(set(2, "peer", b"peer committed"));
+            let tail = writer_engine.execute_durable(set(1, "tail", b"drain committed"));
+            wrote_tx.send((peer, tail)).unwrap();
+        });
+        let writes = wrote_rx.recv_timeout(timeout);
+        release_tx.send(()).unwrap();
+        assert_eq!(publisher.join().unwrap().unwrap(), Some(()));
+        writer.join().unwrap();
+        let failure = installer.join().unwrap().unwrap_err();
+        assert_eq!(failure.code, "slot_dump_install_failed");
+        assert!(failure.message.contains("injected failure after served index rename"), "{failure:?}");
+        let (peer, tail) = writes.expect("writes waited for the publication drain");
+        assert!(peer.status.ok && tail.status.ok, "{peer:?}, {tail:?}");
+    });
+
+    assert!(previous_owner.same_incarnation(&engine.shards.handle(1).unwrap()));
+    assert!(!engine.get_info(1).info.unwrap().recovering);
+    assert!(engine.pass_slot(1).try_lock().is_ok());
+    exact(&engine, get(1, "base"), b"manifest");
+    exact(&engine, get(1, "tail"), b"drain committed");
+    exact(&engine, get(2, "peer"), b"peer committed");
+    let on_disk = std::fs::read(engine.index_path(1)).unwrap();
+    assert_eq!(decode_index_bytes(&on_disk).unwrap().applied_wal_sequence, Some(manifest.wal_sequence));
+    assert!(engine.shards.with_state(1, |state| {
+        state.unwrap().applied_wal_sequence.is_some_and(|sequence| sequence > manifest.wal_sequence)
+    }));
+    assert!(engine.interrupted_bucket_dump_installs(1).iter().any(|marker| {
+        marker.manifest_id == manifest.manifest_id && marker.phase == "prepare"
+    }));
+
+    // Use live collection entry points. The reopened engine must replay from the
+    // installed base even though the old, still-serving owner has a higher anchor.
+    let plan = engine.storage_wal_reclaim_plan(1, [], []);
+    assert!(plan.retain_from_wal_sequence <= manifest.wal_sequence + 1, "{plan:?}");
+    engine.apply_storage_wal_reclaim(plan);
+    engine.apply_periodic_index_gc(StorageLifecycleRequest { shard_id: 1, ..Default::default() }, None, 1024);
+    assert_eq!(std::fs::read(engine.index_path(1)).unwrap(), on_disk);
+    // Drop without an unload or checkpoint, so the old live state cannot repair the base.
+    drop((previous_owner, before, engine));
+
+    let reopened = TemporalEngine::with_local_dirs(
+        16 << 20, root.path().join("reopen-cache"), root.path().join("blocks"), root.path().join("indexes"),
+    );
+    reopened.load_shard(1);
+    reopened.load_shard(2);
+    exact(&reopened, get(1, "base"), b"manifest");
+    exact(&reopened, get(1, "tail"), b"drain committed");
+    exact(&reopened, get(2, "peer"), b"peer committed");
 }
