@@ -343,25 +343,26 @@ impl ArmHistogram {
 /// The arm histogram, read off the engine's OWN classifier rather than recomputed here. A
 /// separate copy of the rule would be measuring this module instead of the engine.
 fn arm_histogram(engine: &TemporalEngine) -> ArmHistogram {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let mut hist = ArmHistogram::default();
-    for arm in EVERY_ARM {
-        hist.arms.insert(arm, 0);
-    }
-    for node in shard.bucket_index.bucket_map.values() {
-        let blocks = node.block_index.len();
-        let objects = node.object_index.object_count();
-        *hist
-            .arms
-            .entry(arm_name(classify_bucket_layout(objects, blocks)))
-            .or_default() += 1;
-        if blocks > 0 {
-            hist.blocks.push(blocks);
-            hist.objects.push(objects);
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard is loaded");
+        let mut hist = ArmHistogram::default();
+        for arm in EVERY_ARM {
+            hist.arms.insert(arm, 0);
         }
-    }
-    hist
+        for node in shard.bucket_index.bucket_map.values() {
+            let blocks = node.block_index.len();
+            let objects = node.object_index.object_count();
+            *hist
+                .arms
+                .entry(arm_name(classify_bucket_layout(objects, blocks)))
+                .or_default() += 1;
+            if blocks > 0 {
+                hist.blocks.push(blocks);
+                hist.objects.push(objects);
+            }
+        }
+        hist
+    })
 }
 
 /// Refuses a run in which an arm this module quotes has no samples at all.
@@ -1257,122 +1258,123 @@ fn what_the_tagged_node_actually_costs_the_allocator() {
             let keys = seed_routed(&engine, records);
             let hist = arm_histogram(&engine);
 
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard 1");
-            let live_map = &shard.bucket_index.bucket_map;
-            let buckets = live_map.len();
-            assert!(buckets > 0, "no buckets to divide by");
-            assert_eq!(
-                hist.total_blocks(),
-                keys.len(),
-                "the map holds {} blocks for {} keys, so the per-record divisor is not the \
-                 fixture's",
-                hist.total_blocks(),
-                keys.len()
-            );
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard 1");
+                let live_map = &shard.bucket_index.bucket_map;
+                let buckets = live_map.len();
+                assert!(buckets > 0, "no buckets to divide by");
+                assert_eq!(
+                    hist.total_blocks(),
+                    keys.len(),
+                    "the map holds {} blocks for {} keys, so the per-record divisor is not the \
+                     fixture's",
+                    hist.total_blocks(),
+                    keys.len()
+                );
 
-            // Built OUTSIDE the measured span on both sides: only the clone is charged.
-            let tagged_map: BTreeMap<u32, TaggedNode> = live_map
-                .iter()
-                .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
-                .collect();
-            assert_eq!(
-                live_map.len(),
-                tagged_map.len(),
-                "the tagged map holds {} buckets against the live map's {}; it is not the same \
-                 population",
-                tagged_map.len(),
-                live_map.len()
-            );
+                // Built OUTSIDE the measured span on both sides: only the clone is charged.
+                let tagged_map: BTreeMap<u32, TaggedNode> = live_map
+                    .iter()
+                    .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
+                    .collect();
+                assert_eq!(
+                    live_map.len(),
+                    tagged_map.len(),
+                    "the tagged map holds {} buckets against the live map's {}; it is not the same \
+                     population",
+                    tagged_map.len(),
+                    live_map.len()
+                );
 
-            let (live_bytes, live_allocs) = clone_counts(live_map);
-            let (tagged_bytes, tagged_allocs) = clone_counts(&tagged_map);
-            let live = Side { bytes: live_bytes, allocs: live_allocs };
-            let tagged = Side { bytes: tagged_bytes, allocs: tagged_allocs };
-            assert!(
-                live.bytes > 0 && live.allocs > 0 && tagged.bytes > 0 && tagged.allocs > 0,
-                "an instrument reading zero is the instrument failing, not the map being free: \
-                 live {live:?}, tagged {tagged:?}"
-            );
+                let (live_bytes, live_allocs) = clone_counts(live_map);
+                let (tagged_bytes, tagged_allocs) = clone_counts(&tagged_map);
+                let live = Side { bytes: live_bytes, allocs: live_allocs };
+                let tagged = Side { bytes: tagged_bytes, allocs: tagged_allocs };
+                assert!(
+                    live.bytes > 0 && live.allocs > 0 && tagged.bytes > 0 && tagged.allocs > 0,
+                    "an instrument reading zero is the instrument failing, not the map being free: \
+                     live {live:?}, tagged {tagged:?}"
+                );
 
-            let width = if end_routing_bucket == WIDE_END {
-                "the whole keyspace".to_string()
-            } else {
-                format!("0..{end_routing_bucket}")
-            };
-            let (live_b, live_a) = live.per(records);
-            let (tagged_b, tagged_a) = tagged.per(records);
-            println!(
-                "\n{records} routed keys on {width}: {buckets} buckets, {:.3}% simple",
-                100.0 * hist.simple_fraction()
-            );
-            println!(
-                "    live    {:>10.3} B/record  {:>8.4} allocs/record   ({live_bytes} B, \
-                 {live_allocs} calls)",
-                live_b, live_a
-            );
-            println!(
-                "    tagged  {:>10.3} B/record  {:>8.4} allocs/record   ({tagged_bytes} B, \
-                 {tagged_allocs} calls)",
-                tagged_b, tagged_a
-            );
-            println!(
-                "    delta   {:>+10.3} B/record  {:>+8.4} allocs/record  ({:.3}x bytes, {:.3}x \
-                 allocations)",
-                tagged_b - live_b,
-                tagged_a - live_a,
-                tagged_b / live_b,
-                tagged_a / live_a
-            );
+                let width = if end_routing_bucket == WIDE_END {
+                    "the whole keyspace".to_string()
+                } else {
+                    format!("0..{end_routing_bucket}")
+                };
+                let (live_b, live_a) = live.per(records);
+                let (tagged_b, tagged_a) = tagged.per(records);
+                println!(
+                    "\n{records} routed keys on {width}: {buckets} buckets, {:.3}% simple",
+                    100.0 * hist.simple_fraction()
+                );
+                println!(
+                    "    live    {:>10.3} B/record  {:>8.4} allocs/record   ({live_bytes} B, \
+                     {live_allocs} calls)",
+                    live_b, live_a
+                );
+                println!(
+                    "    tagged  {:>10.3} B/record  {:>8.4} allocs/record   ({tagged_bytes} B, \
+                     {tagged_allocs} calls)",
+                    tagged_b, tagged_a
+                );
+                println!(
+                    "    delta   {:>+10.3} B/record  {:>+8.4} allocs/record  ({:.3}x bytes, {:.3}x \
+                     allocations)",
+                    tagged_b - live_b,
+                    tagged_a - live_a,
+                    tagged_b / live_b,
+                    tagged_a / live_a
+                );
 
-            // THE ALLOCATION COUNT IS THE HALF THAT CANNOT BE ROUNDED AWAY, and it moves the
-            // wrong way at every arm: one box per occupied bucket that the live shape does not
-            // take.
-            assert!(
-                tagged.allocs > live.allocs,
-                "{records}/{end_routing_bucket}: the tagged shape took {} allocations against \
-                 the live shape's {}; it is meant to buy an allocation per occupied bucket and \
-                 if it does not, `retag` is not building the arms it claims to",
-                tagged.allocs,
-                live.allocs
-            );
-            // THE DECOMPOSITION, because the total hides two effects pulling opposite ways.
-            // The tagged side takes one box per OCCUPIED bucket, which the live side does not
-            // take at all; and its map nodes are cheaper, because a B-tree node holds eleven
-            // value slots whether they are filled or not and a narrower value fits more of them
-            // into one node. Subtracting the boxes leaves the tagged map's OWN node
-            // allocations, which must be FEWER than the live map's or the second effect is not
-            // happening and the byte column below has no mechanism.
-            assert!(
-                tagged.allocs >= hist.occupied() as u64,
-                "{records}/{end_routing_bucket}: the tagged shape took {} allocations over {} \
-                 occupied buckets; it owes one box to each and cannot take fewer",
-                tagged.allocs,
-                hist.occupied()
-            );
-            let tagged_nodes = tagged.allocs - hist.occupied() as u64;
-            println!(
-                "    boxes   {:>10} (one per occupied bucket)   map nodes: live {} vs tagged \
-                 {tagged_nodes}",
-                hist.occupied(),
-                live.allocs
-            );
-            assert!(
-                tagged_nodes < live.allocs,
-                "{records}/{end_routing_bucket}: the tagged map took {tagged_nodes} node \
-                 allocations against the live map's {}; a narrower value is meant to fit more \
-                 slots into one node, and if it does not then the byte column above has no \
-                 mechanism behind it",
-                live.allocs
-            );
-            cells.push((
-                records,
-                end_routing_bucket,
-                hist.simple_fraction(),
-                live_b,
-                tagged_b / live_b,
-                tagged_a / live_a,
-            ));
+                // THE ALLOCATION COUNT IS THE HALF THAT CANNOT BE ROUNDED AWAY, and it moves the
+                // wrong way at every arm: one box per occupied bucket that the live shape does not
+                // take.
+                assert!(
+                    tagged.allocs > live.allocs,
+                    "{records}/{end_routing_bucket}: the tagged shape took {} allocations against \
+                     the live shape's {}; it is meant to buy an allocation per occupied bucket and \
+                     if it does not, `retag` is not building the arms it claims to",
+                    tagged.allocs,
+                    live.allocs
+                );
+                // THE DECOMPOSITION, because the total hides two effects pulling opposite ways.
+                // The tagged side takes one box per OCCUPIED bucket, which the live side does not
+                // take at all; and its map nodes are cheaper, because a B-tree node holds eleven
+                // value slots whether they are filled or not and a narrower value fits more of them
+                // into one node. Subtracting the boxes leaves the tagged map's OWN node
+                // allocations, which must be FEWER than the live map's or the second effect is not
+                // happening and the byte column below has no mechanism.
+                assert!(
+                    tagged.allocs >= hist.occupied() as u64,
+                    "{records}/{end_routing_bucket}: the tagged shape took {} allocations over {} \
+                     occupied buckets; it owes one box to each and cannot take fewer",
+                    tagged.allocs,
+                    hist.occupied()
+                );
+                let tagged_nodes = tagged.allocs - hist.occupied() as u64;
+                println!(
+                    "    boxes   {:>10} (one per occupied bucket)   map nodes: live {} vs tagged \
+                     {tagged_nodes}",
+                    hist.occupied(),
+                    live.allocs
+                );
+                assert!(
+                    tagged_nodes < live.allocs,
+                    "{records}/{end_routing_bucket}: the tagged map took {tagged_nodes} node \
+                     allocations against the live map's {}; a narrower value is meant to fit more \
+                     slots into one node, and if it does not then the byte column above has no \
+                     mechanism behind it",
+                    live.allocs
+                );
+                cells.push((
+                    records,
+                    end_routing_bucket,
+                    hist.simple_fraction(),
+                    live_b,
+                    tagged_b / live_b,
+                    tagged_a / live_a,
+                ));
+            })
         }
     }
 
@@ -1571,227 +1573,228 @@ fn a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows
     load_on(&engine, WIDE_END);
     let keys = seed_routed(&engine, SMALL);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    let live_map = &shard.bucket_index.bucket_map;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
+        let live_map = &shard.bucket_index.bucket_map;
 
-    // THE TAGGED NODES LIVE IN A MAP, so both sides are measured in the same kind of home.
-    let tagged_map: BTreeMap<u32, TaggedNode> = live_map
-        .iter()
-        .filter(|(_, node)| node.block_index.len() == 1)
-        .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
-        .collect();
+        // THE TAGGED NODES LIVE IN A MAP, so both sides are measured in the same kind of home.
+        let tagged_map: BTreeMap<u32, TaggedNode> = live_map
+            .iter()
+            .filter(|(_, node)| node.block_index.len() == 1)
+            .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
+            .collect();
 
-    let mut live_lines = 0usize;
-    let mut tagged_lines = 0usize;
-    let mut simple_buckets = 0usize;
-    // THE OFFSET IS THE MECHANISM, so it is collected rather than reasoned about.
-    let mut offsets: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-    let mut node_starts: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
-    for (routing_bucket, node) in live_map.iter() {
-        if node.block_index.len() != 1 {
-            continue;
+        let mut live_lines = 0usize;
+        let mut tagged_lines = 0usize;
+        let mut simple_buckets = 0usize;
+        // THE OFFSET IS THE MECHANISM, so it is collected rather than reasoned about.
+        let mut offsets: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        let mut node_starts: std::collections::BTreeSet<usize> = std::collections::BTreeSet::new();
+        for (routing_bucket, node) in live_map.iter() {
+            if node.block_index.len() != 1 {
+                continue;
+            }
+            simple_buckets += 1;
+            let (handle, block) = node.block_index.iter().next().expect("the inline arm holds one block");
+            let node_at = node as *const BucketNode as usize;
+            let address_at = &block.address as *const _ as usize;
+            offsets.insert(address_at - node_at);
+            node_starts.insert(node_at % 64);
+            live_lines += lines_touched(node_at, address_at);
+
+            let tagged = tagged_map.get(routing_bucket).expect("every simple bucket was retagged");
+            let reached = tagged
+                .payload
+                .block(*handle)
+                .expect("the tagged simple arm must answer its own handle");
+            tagged_lines += lines_touched(
+                tagged as *const TaggedNode as usize,
+                &reached.address as *const _ as usize,
+            );
         }
-        simple_buckets += 1;
-        let (handle, block) = node.block_index.iter().next().expect("the inline arm holds one block");
-        let node_at = node as *const BucketNode as usize;
-        let address_at = &block.address as *const _ as usize;
-        offsets.insert(address_at - node_at);
-        node_starts.insert(node_at % 64);
-        live_lines += lines_touched(node_at, address_at);
 
-        let tagged = tagged_map.get(routing_bucket).expect("every simple bucket was retagged");
-        let reached = tagged
-            .payload
-            .block(*handle)
-            .expect("the tagged simple arm must answer its own handle");
-        tagged_lines += lines_touched(
-            tagged as *const TaggedNode as usize,
-            &reached.address as *const _ as usize,
+        assert!(
+            simple_buckets > 0,
+            "the fixture reached no bucket in the inline arm, so the count below is over nothing"
         );
-    }
+        assert_eq!(
+            simple_buckets,
+            keys.len(),
+            "the fixture wrote {} keys and reached {simple_buckets} inline-arm buckets",
+            keys.len()
+        );
+        assert_eq!(
+            simple_buckets,
+            tagged_map.len(),
+            "the tagged map holds {} of the {simple_buckets} simple buckets; it is not the same \
+             population",
+            tagged_map.len()
+        );
 
-    assert!(
-        simple_buckets > 0,
-        "the fixture reached no bucket in the inline arm, so the count below is over nothing"
-    );
-    assert_eq!(
-        simple_buckets,
-        keys.len(),
-        "the fixture wrote {} keys and reached {simple_buckets} inline-arm buckets",
-        keys.len()
-    );
-    assert_eq!(
-        simple_buckets,
-        tagged_map.len(),
-        "the tagged map holds {} of the {simple_buckets} simple buckets; it is not the same \
-         population",
-        tagged_map.len()
-    );
+        // --- THE MECHANISM, PRINTED WITH ITS DENOMINATOR. ---
+        assert_eq!(
+            1,
+            offsets.len(),
+            "the address sits at {offsets:?} different offsets inside the node across \
+             {simple_buckets} buckets; one declaration has one field offset, so more than one answer \
+             means this is not reading the field it thinks it is"
+        );
+        let offset = *offsets.iter().next().expect("one offset");
+        println!(
+            "\n  THE MECHANISM: the inline arm's address sits {offset} B into the node, and a node \
+             starts at {} distinct positions within a 64 B line",
+            node_starts.len()
+        );
+        // THE OFFSET DECIDES WHICH CLAIM THIS TEST CAN MAKE, AND IT HAS MOVED BACK UNDER A LINE.
+        //
+        // This assertion used to be `offset >= 64` with the note "re-measure rather than retarget".
+        // That is what happened. When the address sat 72 B into the node, the node and the address it
+        // resolves through could not share a 64 B line at any alignment, so the live arm touched
+        // 2.0000 lines and the indirection cost nothing. Merging the address's two slab coordinates
+        // took `BlockIndexMap` from 104 to 96 and the packed flags took four bytes off the tail ahead
+        // of it, and the field now sits UNDER a line into the node -- so a node that starts early
+        // enough in its line keeps both in one line, and the live arm reads below 2.0000 again.
+        //
+        // So the two arms are re-measured here rather than asserted equal, and the tagged arm's 2.0000
+        // is the only figure that is fixed by construction: a payload in its own allocation is a
+        // second line on every read, without exception.
+        assert!(
+            offset < 64,
+            "the address sits {offset} B into the node, PAST a line. At that offset the node and the \
+             address cannot share a line at any alignment and both arms read 2.0000 -- which is what \
+             this test asserted before the address narrowed. Re-measure rather than retarget: the \
+             difference below would be zero and the module's read-cost ground would be gone again"
+        );
 
-    // --- THE MECHANISM, PRINTED WITH ITS DENOMINATOR. ---
-    assert_eq!(
-        1,
-        offsets.len(),
-        "the address sits at {offsets:?} different offsets inside the node across \
-         {simple_buckets} buckets; one declaration has one field offset, so more than one answer \
-         means this is not reading the field it thinks it is"
-    );
-    let offset = *offsets.iter().next().expect("one offset");
-    println!(
-        "\n  THE MECHANISM: the inline arm's address sits {offset} B into the node, and a node \
-         starts at {} distinct positions within a 64 B line",
-        node_starts.len()
-    );
-    // THE OFFSET DECIDES WHICH CLAIM THIS TEST CAN MAKE, AND IT HAS MOVED BACK UNDER A LINE.
-    //
-    // This assertion used to be `offset >= 64` with the note "re-measure rather than retarget".
-    // That is what happened. When the address sat 72 B into the node, the node and the address it
-    // resolves through could not share a 64 B line at any alignment, so the live arm touched
-    // 2.0000 lines and the indirection cost nothing. Merging the address's two slab coordinates
-    // took `BlockIndexMap` from 104 to 96 and the packed flags took four bytes off the tail ahead
-    // of it, and the field now sits UNDER a line into the node -- so a node that starts early
-    // enough in its line keeps both in one line, and the live arm reads below 2.0000 again.
-    //
-    // So the two arms are re-measured here rather than asserted equal, and the tagged arm's 2.0000
-    // is the only figure that is fixed by construction: a payload in its own allocation is a
-    // second line on every read, without exception.
-    assert!(
-        offset < 64,
-        "the address sits {offset} B into the node, PAST a line. At that offset the node and the \
-         address cannot share a line at any alignment and both arms read 2.0000 -- which is what \
-         this test asserted before the address narrowed. Re-measure rather than retarget: the \
-         difference below would be zero and the module's read-cost ground would be gone again"
-    );
+        let live_per = live_lines as f64 / simple_buckets as f64;
+        let tagged_per = tagged_lines as f64 / simple_buckets as f64;
+        println!(
+            "SIMPLE ARM over {simple_buckets} buckets: live {live_per:.4} lines a read, tagged \
+             {tagged_per:.4} -- {:+.4}",
+            tagged_per - live_per
+        );
 
-    let live_per = live_lines as f64 / simple_buckets as f64;
-    let tagged_per = tagged_lines as f64 / simple_buckets as f64;
-    println!(
-        "SIMPLE ARM over {simple_buckets} buckets: live {live_per:.4} lines a read, tagged \
-         {tagged_per:.4} -- {:+.4}",
-        tagged_per - live_per
-    );
+        // THE LIVE ARM SOMETIMES SHARES A LINE, WHICH IS THE WHOLE OF THE DIFFERENCE.
+        assert!(
+            live_lines < 2 * simple_buckets,
+            "the live inline arm touched {live_lines} lines over {simple_buckets} buckets, which is \
+             two a read. With its address {offset} B into the node -- under a line -- a node that \
+             starts early enough in its line must keep both in ONE, so a flat two a read means the \
+             offset above is not the one the read actually walks"
+        );
+        assert!(
+            live_lines > simple_buckets,
+            "the live inline arm touched {live_lines} lines over {simple_buckets} buckets, which is \
+             one a read. Not every node can start early enough in its line to keep both, so a flat \
+             one a read means the node-start distribution below is not being sampled"
+        );
+        assert_eq!(
+            2 * simple_buckets,
+            tagged_lines,
+            "the tagged simple arm touched {tagged_lines} lines over {simple_buckets} buckets; a \
+             payload in its own allocation is a second line on every block read, without exception"
+        );
+        assert!(
+            tagged_lines > live_lines,
+            "the tagged arm read {tagged_per:.4} lines against the live arm's {live_per:.4}, which is \
+             not MORE. The indirection is supposed to cost a line wherever the live arm shares one"
+        );
+        println!(
+            "  SO THE INDIRECTION COSTS {:+.4} LINES A READ, AND THE THIRD GROUND FOR THE DECLINE IS \
+             LIVE AGAIN. It was +0.0000 while the address sat past a line into the node; the address \
+             merge brought it back under one, so the live arm shares a line for {} of \
+             {simple_buckets} buckets and the tagged arm shares one for none.\n  \
+             WHAT THE COUNT STILL CANNOT SEE is unchanged: a line count is not a cost, and the \
+             unmeasured remainder can only run against the tagged shape.",
+            tagged_per - live_per,
+            2 * simple_buckets - live_lines,
+        );
+        println!(
+            "  (SUPERSEDED) While the address sat past a line into the node the block entry was a line \
+             away whether it was held inline or behind a pointer, so moving it out of line added no \
+             line. That is no longer the case, and the figures above are what replaced it."
+        );
 
-    // THE LIVE ARM SOMETIMES SHARES A LINE, WHICH IS THE WHOLE OF THE DIFFERENCE.
-    assert!(
-        live_lines < 2 * simple_buckets,
-        "the live inline arm touched {live_lines} lines over {simple_buckets} buckets, which is \
-         two a read. With its address {offset} B into the node -- under a line -- a node that \
-         starts early enough in its line must keep both in ONE, so a flat two a read means the \
-         offset above is not the one the read actually walks"
-    );
-    assert!(
-        live_lines > simple_buckets,
-        "the live inline arm touched {live_lines} lines over {simple_buckets} buckets, which is \
-         one a read. Not every node can start early enough in its line to keep both, so a flat \
-         one a read means the node-start distribution below is not being sampled"
-    );
-    assert_eq!(
-        2 * simple_buckets,
-        tagged_lines,
-        "the tagged simple arm touched {tagged_lines} lines over {simple_buckets} buckets; a \
-         payload in its own allocation is a second line on every block read, without exception"
-    );
-    assert!(
-        tagged_lines > live_lines,
-        "the tagged arm read {tagged_per:.4} lines against the live arm's {live_per:.4}, which is \
-         not MORE. The indirection is supposed to cost a line wherever the live arm shares one"
-    );
-    println!(
-        "  SO THE INDIRECTION COSTS {:+.4} LINES A READ, AND THE THIRD GROUND FOR THE DECLINE IS \
-         LIVE AGAIN. It was +0.0000 while the address sat past a line into the node; the address \
-         merge brought it back under one, so the live arm shares a line for {} of \
-         {simple_buckets} buckets and the tagged arm shares one for none.\n  \
-         WHAT THE COUNT STILL CANNOT SEE is unchanged: a line count is not a cost, and the \
-         unmeasured remainder can only run against the tagged shape.",
-        tagged_per - live_per,
-        2 * simple_buckets - live_lines,
-    );
-    println!(
-        "  (SUPERSEDED) While the address sat past a line into the node the block entry was a line \
-         away whether it was held inline or behind a pointer, so moving it out of line added no \
-         line. That is no longer the case, and the figures above are what replaced it."
-    );
+        // WHAT THIS COUNT CANNOT SEE, SAID PLAINLY, BECAUSE A DECLINE RESTS ON IT.
+        //
+        // An equal COUNT would not be a proof of equal cost, and an unequal one is not a measure of
+        // the difference either. Inline, the second line -- when there is one -- is inside the SAME
+        // allocation as the first: adjacent, on the same block, and very likely already fetched.
+        // Behind a pointer it is wherever the allocator put it, which
+        // is a different line, possibly a different block, and a separate entry in the translation
+        // buffer. This instrument counts distinct 64-byte lines and is blind to that difference.
+        //
+        // IT IS REPORTED RATHER THAN ASSERTED because the honest form of it is a measurement this
+        // module does not have: separating the two needs a hardware counter or a timing harness, and
+        // a timing ratio in this campaign read 485x idle against 11x busy off identical code. So the
+        // claim made here is the narrow one the instrument supports -- the tagged arm adds no LINE --
+        // and the wider claim, that it adds no COST, is NOT made.
+        //
+        // It does not change the conclusion, and it changes which way the uncertainty points: the
+        // unmeasured part of the read cost can only make the tagged shape worse, never better.
+        let live_spread = simple_buckets; // one measured pair per bucket, stated as the denominator
+        println!(
+            "  AND WHAT THIS COUNT CANNOT SEE: over {live_spread} buckets both shapes touch two \
+             lines, but the live arm's second line is INSIDE the node's own allocation and the \
+             tagged arm's is in a separate one. Counting lines cannot tell an adjacent line from a \
+             distant one, so +0.0000 is 'adds no line', not 'adds no cost' -- and the part that is \
+             unmeasured can only run against the tagged shape."
+        );
 
-    // WHAT THIS COUNT CANNOT SEE, SAID PLAINLY, BECAUSE A DECLINE RESTS ON IT.
-    //
-    // An equal COUNT would not be a proof of equal cost, and an unequal one is not a measure of
-    // the difference either. Inline, the second line -- when there is one -- is inside the SAME
-    // allocation as the first: adjacent, on the same block, and very likely already fetched.
-    // Behind a pointer it is wherever the allocator put it, which
-    // is a different line, possibly a different block, and a separate entry in the translation
-    // buffer. This instrument counts distinct 64-byte lines and is blind to that difference.
-    //
-    // IT IS REPORTED RATHER THAN ASSERTED because the honest form of it is a measurement this
-    // module does not have: separating the two needs a hardware counter or a timing harness, and
-    // a timing ratio in this campaign read 485x idle against 11x busy off identical code. So the
-    // claim made here is the narrow one the instrument supports -- the tagged arm adds no LINE --
-    // and the wider claim, that it adds no COST, is NOT made.
-    //
-    // It does not change the conclusion, and it changes which way the uncertainty points: the
-    // unmeasured part of the read cost can only make the tagged shape worse, never better.
-    let live_spread = simple_buckets; // one measured pair per bucket, stated as the denominator
-    println!(
-        "  AND WHAT THIS COUNT CANNOT SEE: over {live_spread} buckets both shapes touch two \
-         lines, but the live arm's second line is INSIDE the node's own allocation and the \
-         tagged arm's is in a separate one. Counting lines cannot tell an adjacent line from a \
-         distant one, so +0.0000 is 'adds no line', not 'adds no cost' -- and the part that is \
-         unmeasured can only run against the tagged shape."
-    );
-
-    // --- THE CONTROL: a workload where the mechanism predicts NO difference. ---
-    drop(shards);
+        // --- THE CONTROL: a workload where the mechanism predicts NO difference. ---
+    });
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, WIDE_END);
     seed_container(&engine, SMALL / 100, 100);
 
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    let general_map: BTreeMap<u32, TaggedNode> = shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .filter(|(_, node)| matches!(node.block_index, BlockIndexMap::Many(_)))
-        .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
-        .collect();
-    let mut control_live = 0usize;
-    let mut control_tagged = 0usize;
-    let mut general_buckets = 0usize;
-    for (routing_bucket, node) in shard.bucket_index.bucket_map.iter() {
-        if !matches!(node.block_index, BlockIndexMap::Many(_)) {
-            continue;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
+        let general_map: BTreeMap<u32, TaggedNode> = shard
+            .bucket_index
+            .bucket_map
+            .iter()
+            .filter(|(_, node)| matches!(node.block_index, BlockIndexMap::Many(_)))
+            .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
+            .collect();
+        let mut control_live = 0usize;
+        let mut control_tagged = 0usize;
+        let mut general_buckets = 0usize;
+        for (routing_bucket, node) in shard.bucket_index.bucket_map.iter() {
+            if !matches!(node.block_index, BlockIndexMap::Many(_)) {
+                continue;
+            }
+            general_buckets += 1;
+            let (handle, block) = node.block_index.iter().next().expect("a general arm holds blocks");
+            control_live += lines_touched(
+                node as *const BucketNode as usize,
+                &block.address as *const _ as usize,
+            );
+            let tagged = general_map.get(routing_bucket).expect("every general bucket was retagged");
+            let reached = tagged.payload.block(*handle).expect("the tagged general arm must answer");
+            control_tagged += lines_touched(
+                tagged as *const TaggedNode as usize,
+                &reached.address as *const _ as usize,
+            );
         }
-        general_buckets += 1;
-        let (handle, block) = node.block_index.iter().next().expect("a general arm holds blocks");
-        control_live += lines_touched(
-            node as *const BucketNode as usize,
-            &block.address as *const _ as usize,
-        );
-        let tagged = general_map.get(routing_bucket).expect("every general bucket was retagged");
-        let reached = tagged.payload.block(*handle).expect("the tagged general arm must answer");
-        control_tagged += lines_touched(
-            tagged as *const TaggedNode as usize,
-            &reached.address as *const _ as usize,
-        );
-    }
 
-    assert!(
-        general_buckets > 0,
-        "the control reached no bucket in the general arm, so it controls nothing"
-    );
-    println!(
-        "CONTROL, general arm over {general_buckets} buckets: live {:.4} lines a read, tagged \
-         {:.4} -- {:+.4}, and the mechanism predicts 0",
-        control_live as f64 / general_buckets as f64,
-        control_tagged as f64 / general_buckets as f64,
-        (control_tagged as f64 - control_live as f64) / general_buckets as f64
-    );
-    assert_eq!(
-        control_live, control_tagged,
-        "the control moved from {control_live} lines to {control_tagged} over {general_buckets} \
-         buckets; where the live arm is ALREADY out of line the tagged shape must cost nothing"
-    );
+        assert!(
+            general_buckets > 0,
+            "the control reached no bucket in the general arm, so it controls nothing"
+        );
+        println!(
+            "CONTROL, general arm over {general_buckets} buckets: live {:.4} lines a read, tagged \
+             {:.4} -- {:+.4}, and the mechanism predicts 0",
+            control_live as f64 / general_buckets as f64,
+            control_tagged as f64 / general_buckets as f64,
+            (control_tagged as f64 - control_live as f64) / general_buckets as f64
+        );
+        assert_eq!(
+            control_live, control_tagged,
+            "the control moved from {control_live} lines to {control_tagged} over {general_buckets} \
+             buckets; where the live arm is ALREADY out of line the tagged shape must cost nothing"
+        );
+    })
 }
 
 // =============================================================================================
@@ -1981,91 +1984,92 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
             let keys = seed_routed(&engine, records);
             let hist = arm_histogram(&engine);
 
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard 1");
-            let live_map = &shard.bucket_index.bucket_map;
-            assert_eq!(
-                hist.total_blocks(),
-                keys.len(),
-                "the map holds {} blocks for {} keys, so the per-record divisor is not the \
-                 fixture's",
-                hist.total_blocks(),
-                keys.len()
-            );
+            engine.shards.with_state(1, |state| {
+                let shard = state.expect("shard 1");
+                let live_map = &shard.bucket_index.bucket_map;
+                assert_eq!(
+                    hist.total_blocks(),
+                    keys.len(),
+                    "the map holds {} blocks for {} keys, so the per-record divisor is not the \
+                     fixture's",
+                    hist.total_blocks(),
+                    keys.len()
+                );
 
-            let tagged_map: BTreeMap<u32, TaggedNode> = live_map
-                .iter()
-                .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
-                .collect();
-            assert_eq!(
-                live_map.len(),
-                tagged_map.len(),
-                "the tagged map is not the same population as the live one"
-            );
+                let tagged_map: BTreeMap<u32, TaggedNode> = live_map
+                    .iter()
+                    .map(|(routing_bucket, node)| (*routing_bucket, retag(node)))
+                    .collect();
+                assert_eq!(
+                    live_map.len(),
+                    tagged_map.len(),
+                    "the tagged map is not the same population as the live one"
+                );
 
-            let (live_req, live_chunk, live_allocs) = clone_counts_chunked(live_map);
-            let (tag_req, tag_chunk, tag_allocs) = clone_counts_chunked(&tagged_map);
-            assert!(
-                live_req > 0 && tag_req > 0 && live_allocs > 0 && tag_allocs > 0,
-                "an instrument reading zero is the instrument failing, not the map being free"
-            );
+                let (live_req, live_chunk, live_allocs) = clone_counts_chunked(live_map);
+                let (tag_req, tag_chunk, tag_allocs) = clone_counts_chunked(&tagged_map);
+                assert!(
+                    live_req > 0 && tag_req > 0 && live_allocs > 0 && tag_allocs > 0,
+                    "an instrument reading zero is the instrument failing, not the map being free"
+                );
 
-            // THE CHUNK COLUMN IS NEVER BELOW THE REQUEST COLUMN. If it is, the reading has
-            // degraded to echoing the request and every ratio below is the old figure wearing a
-            // new name.
-            assert!(
-                live_chunk > live_req && tag_chunk > tag_req,
-                "chunk bytes must exceed request bytes on both sides and read live {live_chunk} \
-                 vs {live_req}, tagged {tag_chunk} vs {tag_req}; an equal reading is the \
-                 degraded path and this whole test would then be a copy of \
-                 `what_the_tagged_node_actually_costs_the_allocator`"
-            );
+                // THE CHUNK COLUMN IS NEVER BELOW THE REQUEST COLUMN. If it is, the reading has
+                // degraded to echoing the request and every ratio below is the old figure wearing a
+                // new name.
+                assert!(
+                    live_chunk > live_req && tag_chunk > tag_req,
+                    "chunk bytes must exceed request bytes on both sides and read live {live_chunk} \
+                     vs {live_req}, tagged {tag_chunk} vs {tag_req}; an equal reading is the \
+                     degraded path and this whole test would then be a copy of \
+                     `what_the_tagged_node_actually_costs_the_allocator`"
+                );
 
-            let width = if end_routing_bucket == WIDE_END {
-                "the whole keyspace".to_string()
-            } else {
-                format!("0..{end_routing_bucket}")
-            };
-            let per = |v: u64| v as f64 / records as f64;
-            println!(
-                "\n{records} routed keys on {width}: {} buckets, {:.3}% simple",
-                live_map.len(),
-                100.0 * hist.simple_fraction()
-            );
-            println!(
-                "    live    request {:>9.3} B/rec   CHUNK {:>9.3} B/rec   {:>8.4} allocs/rec",
-                per(live_req),
-                per(live_chunk),
-                per(live_allocs)
-            );
-            println!(
-                "    tagged  request {:>9.3} B/rec   CHUNK {:>9.3} B/rec   {:>8.4} allocs/rec",
-                per(tag_req),
-                per(tag_chunk),
-                per(tag_allocs)
-            );
-            println!(
-                "    ratio           {:>9.3}x           {:>9.3}x           {:>8.3}x",
-                tag_req as f64 / live_req as f64,
-                tag_chunk as f64 / live_chunk as f64,
-                tag_allocs as f64 / live_allocs as f64
-            );
-            println!(
-                "    the chunk column moves the tagged side {:+.3}x against the request column \
-                 -- rounding the request column cannot see",
-                (tag_chunk as f64 / live_chunk as f64) - (tag_req as f64 / live_req as f64)
-            );
+                let width = if end_routing_bucket == WIDE_END {
+                    "the whole keyspace".to_string()
+                } else {
+                    format!("0..{end_routing_bucket}")
+                };
+                let per = |v: u64| v as f64 / records as f64;
+                println!(
+                    "\n{records} routed keys on {width}: {} buckets, {:.3}% simple",
+                    live_map.len(),
+                    100.0 * hist.simple_fraction()
+                );
+                println!(
+                    "    live    request {:>9.3} B/rec   CHUNK {:>9.3} B/rec   {:>8.4} allocs/rec",
+                    per(live_req),
+                    per(live_chunk),
+                    per(live_allocs)
+                );
+                println!(
+                    "    tagged  request {:>9.3} B/rec   CHUNK {:>9.3} B/rec   {:>8.4} allocs/rec",
+                    per(tag_req),
+                    per(tag_chunk),
+                    per(tag_allocs)
+                );
+                println!(
+                    "    ratio           {:>9.3}x           {:>9.3}x           {:>8.3}x",
+                    tag_req as f64 / live_req as f64,
+                    tag_chunk as f64 / live_chunk as f64,
+                    tag_allocs as f64 / live_allocs as f64
+                );
+                println!(
+                    "    the chunk column moves the tagged side {:+.3}x against the request column \
+                     -- rounding the request column cannot see",
+                    (tag_chunk as f64 / live_chunk as f64) - (tag_req as f64 / live_req as f64)
+                );
 
-            cells.push((
-                records,
-                end_routing_bucket,
-                hist.simple_fraction(),
-                tag_req as f64 / live_req as f64,
-                tag_chunk as f64 / live_chunk as f64,
-                tag_allocs as f64 / live_allocs as f64,
-                per(live_chunk),
-                per(tag_chunk),
-            ));
+                cells.push((
+                    records,
+                    end_routing_bucket,
+                    hist.simple_fraction(),
+                    tag_req as f64 / live_req as f64,
+                    tag_chunk as f64 / live_chunk as f64,
+                    tag_allocs as f64 / live_allocs as f64,
+                    per(live_chunk),
+                    per(tag_chunk),
+                ));
+            })
         }
     }
 
@@ -2168,41 +2172,42 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
     let engine = engine_on(dir.path());
     load_on(&engine, WIDE_END);
     let keys = seed_routed(&engine, SMALL);
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1");
-    let node = shard
-        .bucket_index
-        .bucket_map
-        .values()
-        .find(|node| node.block_index.len() == 1)
-        .expect("a simple bucket");
-    let tagged = retag(node);
-    let (handle, _) = node.block_index.iter().next().expect("one block");
-    let handle = *handle;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1");
+        let node = shard
+            .bucket_index
+            .bucket_map
+            .values()
+            .find(|node| node.block_index.len() == 1)
+            .expect("a simple bucket");
+        let tagged = retag(node);
+        let (handle, _) = node.block_index.iter().next().expect("one block");
+        let handle = *handle;
 
-    let probe = Probe::start();
-    let reached = tagged.payload.block(handle).expect("the tagged arm answers");
-    let counts = probe.stop();
-    std::hint::black_box(&reached.address);
-    println!(
-        "\n  READING one block through the tagged word charged {} allocations and {} chunk bytes \
-         over {} keys",
-        counts.allocs,
-        counts.chunk_bytes,
-        keys.len()
-    );
-    assert_eq!(
-        0, counts.allocs,
-        "resolving a handle through the tagged word charged {} allocations; it is meant to be a \
-         mask and a load",
-        counts.allocs
-    );
-    println!(
-        "  SO THE READ COST IS NOT IN ANY COLUMN ABOVE. The counting allocator reads it as 0.000 \
-         because nothing is allocated, exactly as a resident-only change predicts. The whole of \
-         the read cost is the +0.4800 cache lines a block read measured in \
-         `a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows_it_does_not`."
-    );
+        let probe = Probe::start();
+        let reached = tagged.payload.block(handle).expect("the tagged arm answers");
+        let counts = probe.stop();
+        std::hint::black_box(&reached.address);
+        println!(
+            "\n  READING one block through the tagged word charged {} allocations and {} chunk bytes \
+             over {} keys",
+            counts.allocs,
+            counts.chunk_bytes,
+            keys.len()
+        );
+        assert_eq!(
+            0, counts.allocs,
+            "resolving a handle through the tagged word charged {} allocations; it is meant to be a \
+             mask and a load",
+            counts.allocs
+        );
+        println!(
+            "  SO THE READ COST IS NOT IN ANY COLUMN ABOVE. The counting allocator reads it as 0.000 \
+             because nothing is allocated, exactly as a resident-only change predicts. The whole of \
+             the read cost is the +0.4800 cache lines a block read measured in \
+             `a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows_it_does_not`."
+        );
+    })
 }
 
 // =============================================================================================

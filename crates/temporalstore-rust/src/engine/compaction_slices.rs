@@ -61,24 +61,42 @@ fn phase_timing(phase: &str, shard_id: ShardId, started: std::time::Instant) {
     }
 }
 
-/// One line per pass, to stderr, under the same switch: how many slices it ran and how many block
-/// references it moved. A pass that moved none ran only to find nothing to do, and the line is what
-/// tells the two apart from the outside.
-fn pass_summary(shard_id: ShardId, pass: &SlicedPass) {
+/// Report the durable outcome after the terminal attempt.
+fn pass_summary(shard_id: ShardId, pass: &SlicedPass, succeeded: bool) {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     let on = *ON.get_or_init(|| {
         matches!(std::env::var("TS_COMPACTION_PHASE_TIMING").as_deref(), Ok("1") | Ok("true"))
     });
-    if on {
-        eprintln!(
-            "COMPACTION_PASS shard={shard_id} slices={} moved_refs={} drain_slabs={} records={} records_complete={}",
+    if on || cfg!(test) {
+        let pending = pass.pending_relocations.len();
+        let complete = pass.records_failed == 0 && pending == 0
+            && pass.records_written == pass.rewritten_block_refs;
+        let summary = format!(
+            "COMPACTION_PASS shard={shard_id} slices={} moved_refs={} drain_slabs={} records={} records_complete={complete} records_failed={} records_pending={pending} image_published={} status={}",
             pass.slices,
             pass.rewritten_block_refs,
             pass.drain_block_slab_ids.len(),
             pass.records_written,
-            pass.records_complete
+            pass.records_failed,
+            pass.image_published,
+            if succeeded { "ok" } else { "error" },
         );
+        if on {
+            eprintln!("{summary}");
+        }
+        #[cfg(test)]
+        PASS_SUMMARY.with(|receipt| receipt.replace(Some(summary)));
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static PASS_SUMMARY: std::cell::RefCell<Option<String>> = const {
+        std::cell::RefCell::new(None)
+    };
+    pub(super) static FAIL_FINAL_RELOCATION_APPEND: std::cell::Cell<bool> = const {
+        std::cell::Cell::new(false)
+    };
 }
 
 /// Keys a slice moves when the caller does not say.
@@ -154,11 +172,10 @@ pub(crate) struct SlicedPass {
     /// Relocation records (old item, new item, element name) for the blocks moved since the last
     /// flush. Made durable, blocks first, by [`TemporalEngine::flush_relocation_records`].
     pending_relocations: Vec<(crate::index_log::IndexItem, crate::index_log::IndexItem, String)>,
-    /// Blocks whose relocation record is durable, and whether every moved block's record is (false
-    /// once a block sync or a record append failed). Read by the summary line today; the finish that
-    /// publishes no whole image is the reader of the flag.
+    /// Counts of relocation pairs whose batch committed or failed.
     records_written: usize,
-    records_complete: bool,
+    records_failed: usize,
+    image_published: bool,
     bytes_written_before_relocation: u64,
 }
 
@@ -178,7 +195,7 @@ pub(crate) fn set_slice_boundary_for_test(hook: Option<Box<dyn FnMut(&TemporalEn
 }
 
 impl TemporalEngine {
-    fn pass_slot(&self, shard_id: ShardId) -> PassSlot {
+    pub(in crate::engine) fn pass_slot(&self, shard_id: ShardId) -> PassSlot {
         Arc::clone(
             self.compaction_passes
                 .lock()
@@ -262,73 +279,75 @@ impl TemporalEngine {
                 self.flush_relocation_records(shard_id, pass, true);
             }
         }
-        let mut shards = self.shards_write_marked();
-        let Some(shard) = shards.get_mut(&shard_id) else {
-            *slot = None;
-            return Err(Status::error("shard_not_loaded", "shard is not loaded"));
-        };
-        if slot.is_none() {
-            let started = std::time::Instant::now();
-            let begun = self.begin_pass(
+        self.shards.with_state_mut(shard_id, |shard| {
+            let Some(shard) = shard else {
+                *slot = None;
+                return Err(Status::error("shard_not_loaded", "shard is not loaded"));
+            };
+            if slot.is_none() {
+                let started = std::time::Instant::now();
+                let begun = self.begin_pass(
+                    shard_id,
+                    shard,
+                    start_routing_bucket,
+                    end_routing_bucket,
+                    drain_block_slab_ids,
+                )?;
+                phase_timing("setup", shard_id, started);
+                match begun {
+                    Some(pass) => *slot = Some(pass),
+                    None => return Ok(SliceProgress::Done),
+                }
+            }
+            let slice_started = std::time::Instant::now();
+            let pass = slot.as_mut().expect("a pass was just begun");
+            let mut stats = CompactionRewriteStats::for_drain_round(
+                pass.target_block_slab_id,
+                u64::MAX,
+                usize::MAX,
+                pass.drain_block_slab_ids.clone(),
+            );
+            let moved = self.run_slice(
                 shard_id,
                 shard,
                 start_routing_bucket,
                 end_routing_bucket,
-                drain_block_slab_ids,
-            )?;
-            phase_timing("setup", shard_id, started);
-            match begun {
-                Some(pass) => *slot = Some(pass),
-                None => return Ok(SliceProgress::Done),
+                pass,
+                keys_per_slice,
+                &mut stats,
+            );
+            // The index is brought up to date for what the slice moved even when it failed part way:
+            // the blocks it did move are where the maps say, and the index must say the same.
+            update_compacted_bucket_views(
+                shard_id, shard, start_routing_bucket, end_routing_bucket, &stats.moved,
+                CompactionIndexRefresh::ChangedBuckets,
+            );
+            pass.note_slice(shard_id, shard, stats, start_routing_bucket, end_routing_bucket);
+            phase_timing("slice", shard_id, slice_started);
+            let pass_ended = moved.is_err()
+                || if pass.by_bucket {
+                    pass.buckets_exhausted
+                } else {
+                    pass.remaining_keys.is_empty()
+                };
+            if !pass_ended {
+                return Ok(SliceProgress::More);
             }
-        }
-        let slice_started = std::time::Instant::now();
-        let pass = slot.as_mut().expect("a pass was just begun");
-        let mut stats = CompactionRewriteStats::for_drain_round(
-            pass.target_block_slab_id,
-            u64::MAX,
-            usize::MAX,
-            pass.drain_block_slab_ids.clone(),
-        );
-        let moved = self.run_slice(
-            shard_id,
-            shard,
-            start_routing_bucket,
-            end_routing_bucket,
-            pass,
-            keys_per_slice,
-            &mut stats,
-        );
-        // The index is brought up to date for what the slice moved even when it failed part way:
-        // the blocks it did move are where the maps say, and the index must say the same.
-        update_compacted_bucket_views(
-            shard_id, shard, start_routing_bucket, end_routing_bucket, &stats.moved,
-            CompactionIndexRefresh::ChangedBuckets,
-        );
-        pass.note_slice(shard_id, shard, stats, start_routing_bucket, end_routing_bucket);
-        phase_timing("slice", shard_id, slice_started);
-        let pass_ended = moved.is_err()
-            || if pass.by_bucket {
-                pass.buckets_exhausted
-            } else {
-                pass.remaining_keys.is_empty()
+            let mut pass = slot.take().expect("the pass is in flight");
+            let result = match moved {
+                Err(err) => Err(self.fail_pass(shard_id, shard, &mut pass, err)),
+                Ok(()) => {
+                    let started = std::time::Instant::now();
+                    let finished = self
+                        .finish_pass(shard_id, shard, &mut pass, start_routing_bucket, end_routing_bucket)
+                        .map(|()| SliceProgress::Done);
+                    phase_timing("finish", shard_id, started);
+                    finished
+                }
             };
-        if !pass_ended {
-            return Ok(SliceProgress::More);
-        }
-        let pass = slot.take().expect("the pass is in flight");
-        pass_summary(shard_id, &pass);
-        match moved {
-            Err(err) => Err(self.fail_pass(shard_id, shard, pass, err)),
-            Ok(()) => {
-                let started = std::time::Instant::now();
-                let finished = self
-                    .finish_pass(shard_id, shard, pass, start_routing_bucket, end_routing_bucket)
-                    .map(|()| SliceProgress::Done);
-                phase_timing("finish", shard_id, started);
-                finished
-            }
-        }
+            pass_summary(shard_id, &pass, result.is_ok());
+            result
+        })
     }
 
     /// Validate, name the keys, roll or resume the slab, pin. `None` when no block sits on a drain
@@ -442,7 +461,8 @@ impl TemporalEngine {
             slices: 0,
             pending_relocations: Vec::new(),
             records_written: 0,
-            records_complete: true,
+            records_failed: 0,
+            image_published: false,
             bytes_written_before_relocation,
         }))
     }
@@ -554,7 +574,7 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         shard: &mut ShardState,
-        pass: SlicedPass,
+        pass: &mut SlicedPass,
         err: Status,
     ) -> Status {
         if let Err(barrier) = self.compaction_barrier() {
@@ -566,7 +586,7 @@ impl TemporalEngine {
                 ),
             );
         }
-        match self.publish_pass(shard_id, shard, &pass) {
+        match self.publish_pass(shard_id, shard, pass) {
             Ok(()) => err,
             Err(publish) => {
                 self.pin_unpublished_compaction(shard_id, &pass.pre_round_slabs);
@@ -587,6 +607,7 @@ impl TemporalEngine {
         let batch = std::mem::take(&mut pass.pending_relocations);
         // The block store's own sync, not `compaction_barrier`: that one carries the injected-failure
         // seam the barrier tests arm for the finish.
+        let blocks = batch.len();
         // Only the new addresses are published by this delta. Old addresses stay pinned;
         // full-base publication below still needs the complete durability barrier.
         if sync_block_store && (batch.iter().any(|(_, new, _)| new.entry.is_none())
@@ -594,10 +615,9 @@ impl TemporalEngine {
                 shard_id,
                 batch.iter().filter_map(|(_, new, _)| new.entry.as_ref()),
             ).is_err()) {
-            pass.records_complete = false;
+            pass.records_failed += blocks;
             return;
         }
-        let blocks = batch.len();
         let mut from = Vec::with_capacity(blocks);
         let mut to = Vec::with_capacity(blocks);
         let mut elements = Vec::with_capacity(blocks);
@@ -606,9 +626,14 @@ impl TemporalEngine {
             to.push(new);
             elements.push(element);
         }
+        #[cfg(test)]
+        if !sync_block_store && FAIL_FINAL_RELOCATION_APPEND.with(|fail| fail.replace(false)) {
+            pass.records_failed += blocks;
+            return;
+        }
         match self.index_log_store.append_relocation(shard_id, from, to, elements) {
             Ok(sequence) if sequence > 0 => pass.records_written += blocks,
-            _ => pass.records_complete = false,
+            _ => pass.records_failed += blocks,
         }
     }
 
@@ -617,7 +642,7 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         shard: &mut ShardState,
-        pass: SlicedPass,
+        pass: &mut SlicedPass,
         start_routing_bucket: u32,
         end_routing_bucket: u32,
     ) -> Result<(), Status> {
@@ -641,9 +666,8 @@ impl TemporalEngine {
         }
         phase_timing("finish_barrier", shard_id, barrier_started);
         // The barrier just synced every block, so the last records follow it with no second sync.
-        let mut pass = pass;
-        self.flush_relocation_records(shard_id, &mut pass, false);
-        if let Err(publish) = self.publish_pass(shard_id, shard, &pass) {
+        self.flush_relocation_records(shard_id, pass, false);
+        if let Err(publish) = self.publish_pass(shard_id, shard, pass) {
             self.pin_unpublished_compaction(shard_id, &pass.pre_round_slabs);
             return Err(publish);
         }
@@ -664,7 +688,7 @@ impl TemporalEngine {
         &self,
         shard_id: ShardId,
         shard: &mut ShardState,
-        pass: &SlicedPass,
+        pass: &mut SlicedPass,
     ) -> Result<(), Status> {
         // Slices maintain object membership, including the ownership-rebuild fallback.
         // Publication still owes current flags and TTLs, but not another object-list rebuild.
@@ -712,6 +736,7 @@ impl TemporalEngine {
         let index_bytes = self.publish_compacted_container_index(
             shard_id, shard, &stats, pass.target_block_slab_id,
         )?;
+        pass.image_published = true;
         phase_timing("finish_publish", shard_id, publish_started);
         self.clear_unpublished_compaction(shard_id);
         let anchor_started = std::time::Instant::now();
@@ -779,7 +804,7 @@ mod relocation_barrier_tests {
             retired_container_wal_blocks: Vec::new(), wal_placements_seen: HashMap::new(),
             relocated_wal_blocks: Vec::new(), rewritten_block_refs: 1, slices: 1,
             pending_relocations: vec![relocation_pair(0, 0, u32::MAX, &moved)],
-            records_written: 0, records_complete: true, bytes_written_before_relocation: 0,
+            records_written: 0, records_failed: 0, image_published: false, bytes_written_before_relocation: 0,
         }
     }
 
@@ -802,7 +827,7 @@ mod relocation_barrier_tests {
             let before = engine.index_log_store.record_count(0).unwrap();
             engine.flush_relocation_records(0, &mut pass, true);
             let valid = owner == 0 && !missing;
-            assert_eq!(pass.records_complete, valid);
+            assert_eq!(pass.records_failed, usize::from(!valid));
             assert_eq!(pass.records_written, usize::from(valid));
             assert_eq!(engine.index_log_store.record_count(0).unwrap(), before + usize::from(valid));
             assert_eq!(pass.pre_round_slabs.len(), 1);

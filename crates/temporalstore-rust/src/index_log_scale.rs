@@ -221,7 +221,7 @@ fn what_one_index_log_append_costs_at_two_corpus_sizes() {
     );
     assert_eq!(
         residual, 0,
-        "10x the records cost {} bytes against 10 x {} plus the {} bytes the wider sequence          numbers are worth -- {} bytes unaccounted for, so the append is writing something that          grows with the log",
+        "10x the records cost {} bytes against 10 x {} plus the {} bytes the wider sequence numbers are worth -- {} bytes unaccounted for, so the append is writing something that grows with the log",
         large.bytes_written,
         small.bytes_written,
         expected_sequence_width_residual(1_000, 10_000),

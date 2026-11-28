@@ -77,6 +77,91 @@ fn durable_restore_selects_the_newer_manifest_before_its_only_pass() {
 }
 
 #[test]
+fn default_recovery_copies_no_manifest_and_repacks_only_the_selected_image() {
+    let _placement = crate::engine::value_once_in_test(false);
+    assert!(crate::engine::wal_single_barrier());
+
+    // The old and new images are both real checkpoints. Restore one as the served
+    // file after the writer exits to exercise each relationship to the manifest.
+    for case in ["tie", "older manifest", "newer manifest", "rejected manifest"] {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = seed(dir.path());
+        let old_bytes = fs::read(engine.index_path(1)).unwrap();
+        let old_anchor = decode_index_bytes(&old_bytes).unwrap().applied_wal_sequence.unwrap();
+
+        let manifest = if case == "older manifest" {
+            engine.create_bucket_dump_manifest(1, []).unwrap()
+        } else {
+            put(&engine, "base", b"new value");
+            engine.create_bucket_dump_manifest(1, []).unwrap()
+        };
+        if case == "older manifest" {
+            put(&engine, "base", b"new value");
+        }
+        engine.flush_shard_index(1);
+        let new_bytes = fs::read(engine.index_path(1)).unwrap();
+        let new_anchor = decode_index_bytes(&new_bytes).unwrap().applied_wal_sequence.unwrap();
+        assert!(new_anchor > old_anchor, "{case}");
+        assert_eq!(
+            manifest.wal_sequence,
+            if case == "older manifest" { old_anchor } else { new_anchor },
+            "{case}"
+        );
+
+        if case == "rejected manifest" {
+            // The envelope and its digests validate, but the codec rejects the image.
+            let mut rejected = manifest.clone();
+            rejected.index_bytes[crate::engine::INDEX_CONTAINER_MAGIC.len()] = u8::MAX;
+            rejected.index_sha256 = crate::engine::sha256_hex_bytes(&rejected.index_bytes);
+            rejected.dump_generation_id = crate::engine::bucket_dump_generation_id(&rejected);
+            rejected.checksum = crate::engine::bucket_dump_codec::bucket_dump_protobuf_digest(&rejected).0;
+            let path = crate::engine::bucket_dump_manifest_path(
+                &engine.index_dir, 1, &rejected.manifest_id,
+            );
+            fs::write(path, crate::engine::bucket_dump_codec::encode_bucket_dump_manifest(&rejected))
+                .unwrap();
+        }
+
+        drop(engine);
+        let reader = open(dir.path(), "fresh-reader-cache");
+        let served_bytes = if matches!(case, "newer manifest" | "rejected manifest") {
+            &old_bytes
+        } else {
+            &new_bytes
+        };
+        fs::write(reader.index_path(1), served_bytes).unwrap();
+
+        reset_bucket_dump_manifest_io_counts();
+        let picked = durable_recovery_bucket_dump_manifest_shared_at(&reader.index_dir, 1).unwrap();
+        assert_eq!(picked.manifest_id, manifest.manifest_id, "{case}");
+        let counts_before = bucket_dump_manifest_io_counts();
+        let repacks_before = state::thread_repack_calls();
+        let (selected, anchor, _, _proof) =
+            reader.load_durable_index_with_catalog(1, false).unwrap();
+        let counts_after = bucket_dump_manifest_io_counts();
+        assert!(counts_after.parse_hits > counts_before.parse_hits, "{case}");
+        assert_eq!(counts_after.owned_copies, counts_before.owned_copies, "{case}");
+        assert_eq!(counts_after.owned_copy_bytes, counts_before.owned_copy_bytes, "{case}");
+        assert_eq!(state::thread_repack_calls() - repacks_before, 1, "{case}");
+        let expected_anchor = if case == "rejected manifest" { old_anchor } else { new_anchor };
+        assert_eq!(anchor, expected_anchor, "{case}");
+        assert_eq!(selected.unwrap().applied_wal_sequence, Some(expected_anchor), "{case}");
+
+        reader.load_shard(1);
+        let result = reader.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: "base".into() },
+        });
+        assert!(result.status.ok, "{case}");
+        assert_eq!(
+            result.response,
+            crate::types::CommandResponse::Bytes { value: Some(b"new value".to_vec()) },
+            "{case}"
+        );
+    }
+}
+
+#[test]
 fn durable_restore_leaves_an_append_for_exactly_one_wal_replay() {
     let _placement = crate::engine::value_once_in_test(false);
     let dir = tempfile::tempdir().unwrap();

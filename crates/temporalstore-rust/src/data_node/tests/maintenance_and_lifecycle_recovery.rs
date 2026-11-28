@@ -1373,6 +1373,7 @@ fn runtime_builds_style_server_load_report() {
         forbid_auto_register: true,
         topology_version: 99,
         server_state: "frozen".to_string(),
+        cache_budgets: Vec::new(),
     });
     let preflight = runtime.preflight_report();
     assert_eq!(preflight.metaserver.last_topology_version, 99);
@@ -1393,10 +1394,26 @@ fn runtime_builds_style_server_load_report() {
         forbid_auto_register: false,
         topology_version: 100,
         server_state: "normal".to_string(),
+        cache_budgets: vec![ShardCacheBudget {
+            shard_id: 7,
+            table_id: 4,
+            load_version: 2,
+            raft_term: 3,
+            bytes: 1_024,
+        }],
     });
     let recovered = runtime.preflight_report();
     assert_eq!(recovered.metaserver.consecutive_failures, 0);
     assert_eq!(recovered.metaserver.last_topology_version, 100);
+    assert_eq!(recovered.metaserver.cache_budgets[0].bytes, 1_024);
+    runtime.record_metaserver_heartbeat(&ServerHeartbeatResponse {
+        status: Status::error("heartbeat_failed", "lost metaserver"),
+        forbid_auto_register: false,
+        topology_version: 0,
+        server_state: String::new(),
+        cache_budgets: Vec::new(),
+    });
+    assert!(runtime.metaserver_heartbeat_report().cache_budgets.is_empty());
     assert_eq!(
         recovered.topology_validation.last_meta_topology_version,
         100
@@ -1418,6 +1435,7 @@ fn runtime_builds_style_server_load_report() {
             serving_options: crate::meta::TableServingOptions::default(),
         }),
         shards: vec![crate::meta::TableShard {
+            raft_route: None,
             load_version: 0,
             shard_id: 7,
             start_bucket: 10,
@@ -1438,6 +1456,7 @@ fn runtime_builds_style_server_load_report() {
         status: Status::ok(),
         table: None,
         shards: vec![crate::meta::TableShard {
+            raft_route: None,
             load_version: 0,
             shard_id: 7,
             start_bucket: 0,
@@ -2125,7 +2144,9 @@ fn runtime_compaction_rewrites_live_blocks_and_reports_stale_slabs() {
         });
         assert!(response.status.ok);
     }
-    assert_eq!(engine.live_block_slab_ids(1), vec![0]);
+    let original_slabs = engine.live_block_slab_ids(1);
+    assert_eq!(original_slabs.len(), 1);
+    let source_slab = original_slabs[0];
 
     let runtime = DataNodeRuntime::new(
         engine.clone(),
@@ -2146,9 +2167,9 @@ fn runtime_compaction_rewrites_live_blocks_and_reports_stale_slabs() {
     };
     assert!(output.status.ok);
     assert_eq!(output.compacted_objects, 2);
-    assert_eq!(output.previous_block_slab_id, 0);
-    assert_eq!(output.compacted_block_slab_id, 1);
-    assert_eq!(output.stale_block_slab_ids, vec![0]);
+    assert_eq!(output.previous_block_slab_id, source_slab);
+    assert!(output.compacted_block_slab_id > source_slab);
+    assert_eq!(output.stale_block_slab_ids, vec![source_slab]);
     assert_eq!(output.before.total_block_count, 3);
     assert_eq!(output.before.live_block_refs, 2);
     assert_eq!(output.before.stale_block_estimate, 1);
@@ -2157,7 +2178,11 @@ fn runtime_compaction_rewrites_live_blocks_and_reports_stale_slabs() {
     assert_eq!(output.after.live_block_refs, 2);
     assert_eq!(output.after.stale_block_estimate, 0);
     assert_eq!(output.after.live_ref_density_basis_points, 10_000);
-    assert_eq!(engine.live_block_slab_ids(1), vec![1]);
+    assert_eq!(engine.live_block_slab_ids(1), vec![output.compacted_block_slab_id]);
+    let destination = engine.block_store().slab_descriptors().into_iter()
+        .find(|slab| slab.block_slab_id == output.compacted_block_slab_id)
+        .expect("compaction destination must be catalogued");
+    assert_eq!(destination.owner_shard_id, Some(1));
     assert_eq!(
         engine
             .execute(ExecuteRequest {
@@ -2200,8 +2225,18 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             value: Some(b"a".to_vec())
         }
     );
-    engine.block_store().install_slab(1, b"old").unwrap();
-    engine.block_store().install_slab(2, b"new").unwrap();
+    let serving_slabs = engine.live_block_slab_ids(1);
+    assert_eq!(serving_slabs.len(), 1);
+    let blocks = engine.block_store();
+    let stale = blocks.append_block_of_object_for_shard(99, b"old", None, None, 0).unwrap();
+    let roll = blocks.roll_slab_for_shard(99).unwrap();
+    assert_eq!(roll.previous_block_slab_id, stale.block_slab_id());
+    let retained = blocks.append_block_of_object_for_shard(99, b"new", None, None, 1).unwrap();
+    assert_eq!(retained.block_slab_id(), roll.new_block_slab_id);
+    assert!(!serving_slabs.contains(&stale.block_slab_id()));
+    let mut expected_slabs = blocks.slab_ids().unwrap();
+    assert!(expected_slabs.contains(&stale.block_slab_id()));
+    expected_slabs.retain(|id| *id != stale.block_slab_id());
 
     let runtime = DataNodeRuntime::new(
         engine.clone(),
@@ -2216,7 +2251,7 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             shard_id: 1,
             retain_wal_from_sequence: Some(3),
             retain_index_log_from_sequence: Some(2),
-            retain_block_slabs_from_id: Some(2),
+            retain_block_slabs_from_id: Some(roll.new_block_slab_id),
             block_gc_delayed_destroy: false,
             block_gc_invalidate_removed_slabs_only: false,
             block_gc_max_destroy_slabs_per_round: 0,
@@ -2262,7 +2297,13 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
     assert!(output.block_slabs_retained_live_physical_bytes > 0);
     assert_eq!(engine.write_ahead_log_store().stats(1).last_sequence, 3);
     assert_eq!(engine.index_log_store().stats(1).last_sequence, 3);
-    assert_eq!(engine.block_store().slab_ids().unwrap(), vec![0, 2]);
+    assert_eq!(blocks.slab_ids().unwrap(), expected_slabs);
+    assert_eq!(blocks.read(&retained).unwrap(), b"new");
+    assert_eq!(engine.live_block_slab_ids(1), serving_slabs);
+    assert_eq!(engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet { key: "a".to_string() },
+    }).response, CommandResponse::Bytes { value: Some(b"a".to_vec()) });
 }
 
 #[test]
@@ -3105,6 +3146,7 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     // The predicate SELECTS a cycle; it does not stand in for the assertions. It looks at two
     // fields, and the block below verifies the whole snapshot.
     let mut churn = 0u64;
+    let mut selected_round = None;
     wait_until(Duration::from_secs(15), || {
         churn += 1;
         runtime.execute(ExecuteRequest {
@@ -3115,15 +3157,19 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
             },
         });
         let report = manager.report();
-        report.rounds_submitted >= 2
+        let ready = report.rounds_submitted >= 2
             && runtime.stats().storage_manager_runs >= 2
             && report.last_completed_cycle.is_some()
             && report.last_pressure_snapshot.as_ref().is_some_and(|pressure| {
                 pressure.dirty_bucket_count >= 1
                     && pressure.follower_cursor_retention_blockers >= 1
-            })
+            });
+        if ready {
+            selected_round = Some(report);
+        }
+        ready
     });
-    let running = manager.report();
+    let running = selected_round.expect("selected completed cycle");
     assert!(running.running);
     assert!(!running.paused);
     assert!(!running.stopped);
@@ -3161,7 +3207,18 @@ fn storage_manager_runtime_supports_stop_pause_resume_jitter_backoff_and_phase_f
     assert!(pressure.total_pressure_score >= pressure.wal_bytes);
     assert!(running.last_pressure_before >= running.last_pressure_after);
     assert!(!running.last_selected_buckets.is_empty());
-    assert!(running.last_bytes_reclaimed >= pressure.cache_disk_bytes);
+    let cycle = running.last_completed_cycle.as_ref().expect("selected cycle");
+    assert_eq!(pressure.cache_disk_bytes, cycle.pressure_snapshot.disk_cache_bytes);
+    let charged_bytes = cycle.stages.iter().fold(0u64, |bytes, stage| {
+        bytes
+            .saturating_add(stage.bytes_reclaimed)
+            .saturating_add(stage.block_bytes_reclaimed)
+            .saturating_add(stage.cache_disk_bytes_removed)
+            .saturating_add(stage.before_bytes.saturating_sub(stage.after_bytes))
+    });
+    assert_eq!(running.last_bytes_reclaimed, charged_bytes);
+    let evict = cycle.stages.iter().find(|stage| stage.stage == "evict").expect("evict stage");
+    assert_eq!(evict.cache_disk_bytes_removed, 0, "index eviction keeps cached pages");
     // This scenario configures a follower pinned at sequence 1 and a raft snapshot at sequence 1.
     // What a retention cursor imposes is a BOUND on how far reclaim may go, not a refusal; the
     // note below the binding says why, and what is asserted instead.
@@ -3389,6 +3446,7 @@ fn the_slot_index_metric_counts_resident_buckets_not_the_routing_range() {
     // the metric exported 4,294,967,295 per shard whatever the index held -- and these are SUMMED
     // across shards. Nothing asserted it, which is why it stayed that way.
     let shard = crate::meta::ServerShardServingState {
+        raft_role: None,
         shard_id: 1,
         dirty_bucket_count: 3,
         storage: crate::control::ShardCanonicalStorageStats {
@@ -10561,6 +10619,7 @@ cap {max_rounds}"
     let mut cumulative_purged = 0u64;
 
     for round in 0..max_rounds {
+        let quarantined_before = engine.block_store().delayed_destroy_slab_ids().unwrap();
         let report = runtime.run_storage_manager_once(1, options.clone());
         if report
             .executed_stages
@@ -10591,21 +10650,19 @@ cap {max_rounds}"
             .filter(|summary| summary.dirty_object_count > 0)
             .count() as u64;
         let manifests = engine.list_bucket_dump_manifests(1).len() as u64;
-        let quarantined = engine
+        let quarantined_ids = engine
             .block_store()
             .delayed_destroy_slab_ids()
-            .unwrap_or_default()
-            .len() as u64;
+            .unwrap();
+        let quarantined = quarantined_ids.len() as u64;
         cumulative_removed += report
             .gc_report
             .as_ref()
             .map(|gc| gc.block_slabs_removed as u64)
             .unwrap_or(0);
-        cumulative_purged += report
-            .lifecycle_report
-            .as_ref()
-            .map(|lifecycle| lifecycle.delayed_destroy_purged_slabs.len() as u64)
-            .unwrap_or(0);
+        cumulative_purged += quarantined_before.iter()
+            .filter(|id| !slab_ids.contains(id) && !quarantined_ids.contains(id))
+            .count() as u64;
 
         eprintln!(
             "  [longrun] {round:>5} {:>11} {:>8} {index_log_bytes:>9} {:>6} {slab_bytes:>11} \
@@ -10631,28 +10688,45 @@ cap {max_rounds}"
         purged_series.push(cumulative_purged);
     }
 
-    // THE HOUR. Quarantine enforces a one-hour minimum age, so every measurement shorter than an
-    // hour reports "purged 0" BY CONSTRUCTION and says nothing about the mechanism. Backdating the
-    // arrival stamp does NOT shorten the gate -- the purge below still demands the shipped hour --
-    // it makes the slab genuinely old by its own clock. That proves the MECHANISM. Proving the
-    // SCHEDULE is a different claim and needs a different run; see
-    // `a_quarantined_slab_is_purged_after_a_real_hour_of_wall_clock`.
+    // Cross the shipped one-day grace without changing its policy. Count actual file removal:
+    // a purge-only round does not build the optional full lifecycle report.
     let injected_age_purge = inject_age.then(|| {
+        let before = engine.block_store().delayed_destroy_slab_ids().unwrap()
+            .into_iter().collect::<std::collections::BTreeSet<_>>();
+        let live = engine.live_block_slab_ids(1);
+        assert!(before.iter().all(|id| !live.contains(id)),
+            "the purge fixture must not require a live slab to be destroyed");
+        assert!(engine.list_bucket_dump_manifests(1).iter()
+            .all(|manifest| manifest.block_slab_ids.iter().all(|id| !before.contains(id))),
+            "the purge fixture must not require a retained manifest's slab to be destroyed");
         let backdated = engine
             .block_store()
             .backdate_delayed_destroy_stamps_for_test(25 * 60 * 60 * 1_000)
             .expect("backdating the quarantine stamps");
-        let by_round = runtime
-            .run_storage_manager_once(1, options.clone())
-            .lifecycle_report
-            .as_ref()
-            .map(|lifecycle| lifecycle.delayed_destroy_purged_slabs.len())
-            .unwrap_or(0);
+        assert_eq!(backdated, before.len());
+        let aged_round = runtime.run_storage_manager_once(1, options.clone());
+        assert!(aged_round.status.ok);
+        let active_after = engine.block_store().slab_ids().unwrap();
+        let quarantined_after = engine.block_store().delayed_destroy_slab_ids().unwrap();
+        let by_round = before.iter()
+            .filter(|id| !active_after.contains(id) && !quarantined_after.contains(id))
+            .count();
         let directly = engine
             .block_store()
             .purge_delayed_destroy_slabs_with_report()
             .map(|report| report.purged_block_slab_ids.len())
             .unwrap_or(0);
+        engine.cache().invalidate_shard(1).unwrap();
+        for index in 0..records {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: format!("longrun-{index:07}") },
+            });
+            assert!(response.status.ok, "post-purge read {index}: {:?}", response.status);
+            let expected = if index < records / 3 { vec![b'w'; 192] } else { vec![b'v'; 128] };
+            assert_eq!(response.response, CommandResponse::Bytes { value: Some(expected) },
+                "post-purge value {index}");
+        }
         (backdated, by_round, directly)
     });
 
@@ -10779,8 +10853,8 @@ fn report_long_run_verdicts(run: &LongFootprintRun) {
     );
     if let Some((backdated, by_round, directly)) = run.injected_age_purge {
         eprintln!(
-            "  [longrun] INJECTED AGE: {backdated} quarantined slabs backdated two hours, then the \
-             shipped one-hour purge removed {by_round} in a scheduled round and {directly} on a \
+            "  [longrun] INJECTED AGE: {backdated} quarantined slabs backdated 25 hours, then the \
+             shipped one-day purge removed {by_round} in a scheduled round and {directly} on a \
              direct call",
         );
     }
@@ -10845,7 +10919,7 @@ fn the_footprint_stays_bounded_over_a_long_run() {
         );
         assert!(
             by_round + directly > 0,
-            "{backdated} slabs were two hours old and the shipped one-hour purge removed none of \
+            "{backdated} slabs were 25 hours old and the shipped one-day purge removed none of \
              them, by the scheduled round or directly",
         );
     }
@@ -11084,12 +11158,12 @@ fn the_footprint_columns_stay_bounded_on_an_idle_shard() {
     );
     assert_eq!(
         run.cumulative_purged_by_schedule, 0,
-        "slabs quarantined moments ago were purged over {} scheduled rounds: the one-hour minimum \
+        "slabs quarantined moments ago were purged over {} scheduled rounds: the one-day grace \
          age is not being enforced, and a reader holding a stale address dangles at a deleted slab",
         run.rounds_run,
     );
 
-    // DIRECTION TWO: the same slab, aged past the shipped hour, IS purged.
+    // DIRECTION TWO: the same slab, aged past the shipped day, IS purged by the round itself.
     let (backdated, by_round, directly) = run
         .injected_age_purge
         .expect("the injected-age arm ran, since it was requested");
@@ -11099,14 +11173,27 @@ fn the_footprint_columns_stay_bounded_on_an_idle_shard() {
         run.cumulative_removed,
     );
     assert!(
-        by_round + directly > 0,
-        "{backdated} slabs were two hours old and the shipped one-hour purge removed none",
+        by_round > 0,
+        "{backdated} slabs were 25 hours old and the scheduled one-day purge removed none \
+         (the direct fallback removed {directly})",
     );
     assert_eq!(
         run.quarantined_at_end, 0,
         "quarantine still holds slabs after the aged purge: {backdated} backdated, {by_round} \
          purged by the round, {directly} purged directly",
     );
+}
+
+#[test]
+#[ignore]
+fn aged_quarantine_purges_and_preserves_twenty_thousand_values() {
+    let run = drive_long_footprint_run(20_000, 4, true);
+    assert_long_run_denominators(&run);
+    let (backdated, by_round, directly) = run.injected_age_purge.unwrap();
+    assert!(backdated > 0);
+    assert!(by_round > 0, "the scheduled purge removed none; direct fallback removed {directly}");
+    assert_eq!(run.cumulative_purged_by_schedule, 0, "young slabs must remain quarantined");
+    assert_eq!(run.quarantined_at_end, 0);
 }
 
 /// The fixture the two rounds above and below are measured on: a shard spanning several slabs

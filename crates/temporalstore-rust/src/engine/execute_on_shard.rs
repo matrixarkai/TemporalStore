@@ -90,6 +90,16 @@ pub(super) mod hash_read_divergence {
     static DIVERGENCES_LOGGED: AtomicU64 = AtomicU64::new(0);
     static LAST: std::sync::Mutex<Option<(String, String)>> = std::sync::Mutex::new(None);
 
+    #[cfg(test)]
+    thread_local! {
+        static LOCAL_SAMPLED_READS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+
+    #[cfg(test)]
+    pub(crate) fn sampled_reads_on_this_thread_for_test() -> u64 {
+        LOCAL_SAMPLED_READS.with(std::cell::Cell::get)
+    }
+
     /// Log every one of the first this many, so a divergence that happens once is still named.
     const LOG_BURST: u64 = 8;
     /// After the burst, log one in this many.
@@ -102,6 +112,8 @@ pub(super) mod hash_read_divergence {
     /// have diverged.
     pub(crate) fn note_read() {
         READS_SERVED.fetch_add(1, Ordering::Relaxed);
+        #[cfg(test)]
+        LOCAL_SAMPLED_READS.with(|count| count.set(count.get().saturating_add(1)));
     }
 
     /// One field the block index named and the container did not hold.
@@ -2003,19 +2015,10 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            // THE LENGTH IS TAKEN FROM THE CACHE'S SHARED BYTES, NOT FROM A COPY OF THEM. A string
-            // block is the whole value, so its length is the value's.
             CommandResponse::Integer {
-                value: read_bucket_index_value_shared(
-                    cache,
-                    block_store,
-                    shard_id,
-                    shard,
-                    "string",
-                    &key,
-                    None,
-                )
-                .map_or(0, |bytes| bytes.len() as i64),
+                value: bucket_store::read_bucket_index_string_length(
+                    cache, block_store, shard_id, shard, &key,
+                ),
             }
         }
         Command::StringGetRange { key, start, end } => {
@@ -2875,21 +2878,7 @@ pub(crate) fn execute_on_shard(
             rev,
         } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);
-            let length = shard.bucket_index.zsets.get(&key).map_or(0, BTreeMap::len) as i64;
-            let resolve = |index: i64| if index < 0 { length + index } else { index };
-            let from = resolve(start).max(0);
-            let to = resolve(stop).min(length - 1);
-            let members = if from > to || length == 0 {
-                Vec::new()
-            } else {
-                zset_first_refs(shard, &key, to as usize + 1, rev)[from as usize..=to as usize]
-                    .iter()
-                    .flat_map(|(member, biased)| {
-                        [member.to_vec(), zset_score_string(*biased).into_bytes()]
-                    })
-                    .collect()
-            };
-            CommandResponse::Members { members }
+            zset_range_answer(shard, &key, start, stop, rev)
         }
         Command::ZSetRangeByScore {
             key,
@@ -3025,38 +3014,6 @@ pub(crate) fn execute_on_shard(
             let current = shard.buckets.get(&key[..]).copied();
             let (allowed, remaining, retry_after_ms, next) =
                 bucket_take(current, now, tokens, capacity, refill_per_sec);
-            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
-            // not the take itself. Re-running a take would recompute against a different clock;
-            // installing the resulting bucket cannot.
-            let mut bucket_state = Vec::with_capacity(16);
-            bucket_state.extend_from_slice(&next.0.to_le_bytes());
-            bucket_state.extend_from_slice(&next.1.to_le_bytes());
-            stage_meta_outcome(
-                shard_id,
-                "bucket",
-                &key,
-                start_routing_bucket,
-                end_routing_bucket,
-                Some(bucket_state),
-                None,
-                false,
-            );
-            // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
-            // not the take itself. Re-running a take would recompute against a different clock;
-            // installing the resulting bucket cannot.
-            let mut bucket_state = Vec::with_capacity(16);
-            bucket_state.extend_from_slice(&next.0.to_le_bytes());
-            bucket_state.extend_from_slice(&next.1.to_le_bytes());
-            stage_meta_outcome(
-                shard_id,
-                "bucket",
-                &key,
-                start_routing_bucket,
-                end_routing_bucket,
-                Some(bucket_state),
-                None,
-                false,
-            );
             // The outcome is the bucket the take LEFT BEHIND -- tokens and the refill moment --
             // not the take itself. Re-running a take would recompute against a different clock;
             // installing the resulting bucket cannot.
@@ -3429,6 +3386,8 @@ pub(crate) fn execute_on_shard(
                 async_storage,
                 block_ordinal,
             ) {
+                // THE INSTALL BELOW FILES THIS BLOCK, and records its outcome once. Filing it here as
+                // well wrote the same outcome into the log record twice.
                 super::recorded_map::install_appended_element::<super::recorded_map::ListKind>(
                     shard,
                     shard_id,
@@ -3576,15 +3535,8 @@ pub(crate) fn execute_on_shard(
                         async_storage,
                         block_ordinal,
                     ) {
-                        upsert_bucket_index_block(
-                            shard,
-                            shard_id,
-                            "list",
-                            &key,
-                            Some(element_name.clone()),
-                            address.clone(),
-                            true,
-                        );
+                        // THE INSTALL BELOW FILES THIS BLOCK, and records its outcome once. Filing it here
+                        // as well wrote the same outcome into the log record twice.
                         super::recorded_map::install_element::<super::recorded_map::ListKind>(
                             shard,
                             shard_id,
@@ -3716,65 +3668,15 @@ pub(crate) fn execute_on_shard(
             // The length comes from the map itself -- `ListLen` below takes the same number the
             // same way. Copying every address to obtain it, and to index a slice of it, meant a
             // ten-entry block of a four-thousand-entry list copied four thousand addresses.
-            let list = shard.bucket_index.lists.get(&key);
-            let length = list.map_or(0, |list| list.len()) as i64;
-            let resolve = |index: i64| -> i64 {
-                if index < 0 {
-                    length + index
-                } else {
-                    index
-                }
-            };
-            let from = resolve(start).max(0);
-            let to = resolve(stop).min(length - 1);
-            let members = if from > to || length == 0 {
-                Vec::new()
-            } else {
-                // A BTreeMap iterates in key order, which is the list's order -- the same order the
-                // materialised Vec had. Only the requested span is READ: `read_block_bytes` runs
-                // `wanted` times, not `length` times, which is what stopped a ten-entry block of a
-                // four-thousand-entry list from touching four thousand blocks.
-                //
-                // `skip(from)` still ADVANCES the iterator `from` times, so reaching a late offset
-                // walks the nodes before it -- cheap per step and allocating nothing, but not
-                // free. A read near the head is O(wanted); one near the tail is O(from + wanted).
-                // An allocation probe cannot see that difference, so it is stated here rather
-                // than left for a flat byte measurement to imply otherwise.
-                let wanted = (to - from + 1) as usize;
-                // One routing bucket for the whole range, and one page-key builder: the entries of
-                // a list sit in few slabs, so their keys share a record key rather than each
-                // spelling it again, and the element name is rendered in place rather than in a
-                // `String` per entry.
-                let routing_bucket =
-                    block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
-                let mut block_keys = crate::engine::BlockKeys::new();
-                list.map(|list| {
-                    // From the element's own sequence word, so reaching a late offset costs two
-                    // ordered-map lookups and not a walk over every node before it.
-                    list_seq_at(list, from as usize)
-                        .into_iter()
-                        .flat_map(|start| list.range(start..).take(wanted))
-                        .filter_map(|(seq, address)| {
-                            // The same rendering ListPop uses, which is what the index rows
-                            // for this list were filed under.
-                            let mut name = [0_u8; 16];
-                            let element_name = list_element_name(*seq, &mut name);
-                            let cache_key = block_keys.key(shard_id, address, Some(routing_bucket));
-                            read_block_value_keyed(
-                                cache,
-                                block_store,
-                                shard_id,
-                                address,
-                                // Re-derived from the sequence the same way ListPop renders it. `.values()` used to
-                                // drop that sequence, which is why the iteration above is now `.iter()`.
-                                BlockIdentity::of(shard_id, "list", &key, Some(element_name)),
-                                cache_key,
-                            )
-                        })
-                        .collect()
-                })
-                .unwrap_or_default()
-            };
+            // The window of addresses is taken from the map and the blocks are read from it, as the
+            // fast path does under the shared lock; a block that cannot be read is left out.
+            let window = list_range_window(shard, &key, start, stop);
+            let routing_bucket = block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            let members: Vec<Vec<u8>> =
+                read_list_window(cache, block_store, shard_id, &key, &window, routing_bucket)
+                    .into_iter()
+                    .flatten()
+                    .collect();
             CommandResponse::Members { members }
         }
         Command::ListLen { key } => {
@@ -3826,13 +3728,8 @@ pub(crate) fn execute_on_shard(
                 // matters twice: `derive_membership` does not become a zero-caller function,
                 // and a listing can never answer EMPTY for a key whose blocks say otherwise
                 // -- which is exactly the `listed=0` against 40 that killed the entries walk.
-                if shard.set_listing_from_map {
-                    if let Some(members) = shard.bucket_index.sets.get(&key) {
-                        SET_LISTING_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return CommandResponse::Members {
-                            members: members.iter().map(|(member, _)| member.clone()).collect(),
-                        };
-                    }
+                if let Some(answer) = set_members_from_map(shard, &key) {
+                    return answer;
                 }
                 // IDENTITY IS IN THE PAYLOAD, AND THERE IS NO LONGER ANOTHER WAY.
                 //
@@ -5292,13 +5189,20 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
+            // BOUNDED THE WAY ITS SIBLING IS. `FeatureDetail` beside this computes
+            // `count.unwrap_or(feature_max_size).min(feature_max_size)`, so a caller that names no
+            // count gets the configured cap and one that names a larger number still gets the cap.
+            // This arm took `usize::MAX`, so a detail read with no count returned EVERY bucket in
+            // the window -- on a key that has been counting for a week at minute precision that is
+            // ten thousand points materialized into one response when the caller omitted a count.
+            let limit = count.unwrap_or(feature_max_size).min(feature_max_size);
             let points = shard
                 .control_state()
                 .get(&key[..])
                 .map(|series| {
                     series
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                        .take(count.unwrap_or(usize::MAX))
+                        .take(limit)
                         .map(|(timestamp_ms, amount)| FeaturePoint {
                             timestamp_ms: *timestamp_ms,
                             value: amount.to_string().into_bytes(),
@@ -7593,6 +7497,104 @@ pub(super) fn set_is_member_answer(
     })
 }
 
+/// The members of a sorted set at positions `start..=stop` (Redis index rules, negatives from the
+/// end; descending when `rev`), each followed by its score. One function for the ordinary arm and
+/// the shared-lock path, so the two cannot answer differently.
+pub(super) fn zset_range_answer(
+    shard: &ShardState,
+    key: &str,
+    start: i64,
+    stop: i64,
+    rev: bool,
+) -> CommandResponse {
+    let length = shard.bucket_index.zsets.get(key).map_or(0, BTreeMap::len) as i64;
+    let resolve = |index: i64| if index < 0 { length + index } else { index };
+    let from = resolve(start).max(0);
+    let to = resolve(stop).min(length - 1);
+    let members = if from > to || length == 0 {
+        Vec::new()
+    } else {
+        zset_first_refs(shard, key, to as usize + 1, rev)[from as usize..=to as usize]
+            .iter()
+            .flat_map(|(member, biased)| [member.to_vec(), zset_score_string(*biased).into_bytes()])
+            .collect()
+    };
+    CommandResponse::Members { members }
+}
+
+/// The members of a set from its member map, when the shard may serve listings from it and the map
+/// holds the key; `None` leaves the read to the fold over the blocks.
+pub(super) fn set_members_from_map(shard: &ShardState, key: &str) -> Option<CommandResponse> {
+    if !shard.set_listing_from_map {
+        return None;
+    }
+    let members = shard.bucket_index.sets.get(key)?;
+    SET_LISTING_FROM_MAP.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    Some(CommandResponse::Members {
+        members: members.iter().map(|(member, _)| member.clone()).collect(),
+    })
+}
+
+/// The sequence words and addresses of the list elements at positions `start..=stop` (Redis index
+/// rules), in list order. Only the span is copied.
+pub(super) fn list_range_window(
+    shard: &ShardState,
+    key: &str,
+    start: i64,
+    stop: i64,
+) -> Vec<(i64, ElementEntry)> {
+    let list = shard.bucket_index.lists.get(key);
+    let length = list.map_or(0, |list| list.len()) as i64;
+    let resolve = |index: i64| if index < 0 { length + index } else { index };
+    let from = resolve(start).max(0);
+    let to = resolve(stop).min(length - 1);
+    if from > to || length == 0 {
+        return Vec::new();
+    }
+    let wanted = (to - from + 1) as usize;
+    list.map(|list| {
+        // From the element's own sequence word, so a late offset costs two ordered-map lookups and
+        // not a walk over every node before it.
+        list_seq_at(list, from as usize)
+            .into_iter()
+            .flat_map(|first| list.range(first..).take(wanted))
+            .map(|(seq, address)| (*seq, address.clone()))
+            .collect()
+    })
+    .unwrap_or_default()
+}
+
+/// The element of each address of a list window, read from its block, `None` where a block could not
+/// be read. One page-key builder for the whole span: the elements of a list sit in few slabs.
+pub(super) fn read_list_window(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    key: &str,
+    window: &[(i64, ElementEntry)],
+    routing_bucket: u32,
+) -> Vec<Option<Vec<u8>>> {
+    let mut page_keys = crate::engine::BlockKeys::new();
+    window
+        .iter()
+        .map(|(seq, address)| {
+            // The same rendering ListPop uses, which is what the index rows for this list were
+            // filed under.
+            let mut name = [0_u8; 16];
+            let element_name = list_element_name(*seq, &mut name);
+            let cache_key = page_keys.key(shard_id, address, Some(routing_bucket));
+            read_block_value_keyed(
+                cache,
+                block_store,
+                shard_id,
+                address,
+                BlockIdentity::of(shard_id, "list", key, Some(element_name)),
+                cache_key,
+            )
+        })
+        .collect()
+}
+
 pub(super) fn zset_scan_answer(
     shard: &ShardState,
     key: &str,
@@ -7877,3 +7879,7 @@ pub(crate) fn list_element_name(seq: i64, buf: &mut [u8; 16]) -> &str {
     }
     std::str::from_utf8(buf).expect("hex digits are ascii")
 }
+
+#[cfg(test)]
+#[path = "token_bucket_outcome_tests.rs"]
+mod token_bucket_outcome_tests;

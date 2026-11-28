@@ -111,6 +111,15 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     shard_id: int = 1
     """Shard the commands are addressed to."""
 
+    meta_url: Optional[StrictStr] = None
+    """Metaserver URL for the shared gRPC table client."""
+
+    namespace: StrictStr = "feast"
+    """TemporalStore namespace for the online store's table."""
+
+    table_name: Optional[StrictStr] = None
+    """Existing TemporalStore table to use when meta_url is set."""
+
     timeout_seconds: float = 10.0
     """Per-request socket timeout."""
 
@@ -279,14 +288,24 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             online_config.max_write_batch_commands,
             online_config.max_async_read_batches,
         )
+        routing = (online_config.meta_url, online_config.namespace, online_config.table_name)
+        connection_signature = signature + routing if online_config.meta_url else signature
         # Rebuild on a config change rather than handing back a client pointed
         # at the previous node: a cached client that outlives its config reads
         # the wrong store and still answers.
-        if self._client is None or self._client_signature != signature:
+        if self._client is None or self._client_signature != connection_signature:
+            if online_config.meta_url:
+                if not online_config.table_name:
+                    raise ValueError("table_name is required with meta_url")
+                from .table_client import TableFeastClient
+
+                client = TableFeastClient(*routing, *signature)
+            else:
+                client = TemporalStoreClient(*signature)
             if self._client is not None:
                 self._client.close()
-            self._client = TemporalStoreClient(*signature)
-            self._client_signature = signature
+            self._client = client
+            self._client_signature = connection_signature
         return self._client
 
     @staticmethod

@@ -277,18 +277,19 @@ fn a_loaded_shard_carries_the_routing_range_it_was_loaded_on() {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());
         load_on(&engine, end);
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
-        println!("  loaded on 0..{end}, shard carries {:?}", shard.routing_range());
-        assert!(
-            shard.routing_range_known,
-            "a shard loaded on 0..{end} entered the served map without its range stamped"
-        );
-        assert_eq!(
-            (0, end),
-            shard.routing_range(),
-            "a shard loaded on 0..{end} carries the wrong range"
-        );
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            println!("  loaded on 0..{end}, shard carries {:?}", shard.routing_range());
+            assert!(
+                shard.routing_range_known,
+                "a shard loaded on 0..{end} entered the served map without its range stamped"
+            );
+            assert_eq!(
+                (0, end),
+                shard.routing_range(),
+                "a shard loaded on 0..{end} carries the wrong range"
+            );
+        })
     }
 }
 
@@ -322,71 +323,72 @@ fn the_two_sites_that_file_a_block_now_file_it_under_the_shards_own_range() {
             "the fixture's first key is no longer the key the measurement names"
         );
 
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        assert_eq!(
-            (0, NARROW_END),
-            shard.routing_range(),
-            "the shard under test is not carrying 0..{NARROW_END}, so what follows would measure \
-             the fallback rather than the fix"
-        );
-        let before = shard.string_address(key.as_str()).expect("key present").clone();
-        let address = as_an_older_build_wrote_it(&before);
-        assert_eq!(
-            address, before,
-            "the wire round trip changed the address. `rs` is inert -- the address holds no routing \
-             bucket -- so this has to be the identity."
-        );
-        shard.set_string_address(key.as_str().into(), &address.clone());
-
-        if sync_path {
-            crate::engine::storage_bucket_internals::sync_bucket_index_object_blocks(
-                shard,
-                1,
-                "string",
-                &key,
-                vec![address],
-                true,
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            assert_eq!(
+                (0, NARROW_END),
+                shard.routing_range(),
+                "the shard under test is not carrying 0..{NARROW_END}, so what follows would measure \
+                 the fallback rather than the fix"
             );
-        } else {
-            crate::engine::storage_bucket_internals::upsert_bucket_index_block(
-                shard, 1, "string", &key, None, address, true,
+            let before = shard.string_address(key.as_str()).expect("key present").clone();
+            let address = as_an_older_build_wrote_it(&before);
+            assert_eq!(
+                address, before,
+                "the wire round trip changed the address. `rs` is inert -- the address holds no routing \
+                 bucket -- so this has to be the identity."
             );
-        }
+            shard.set_string_address(key.as_str().into(), &address.clone());
 
-        let contents = bucket_contents(shard);
-        let in_narrow = contents
-            .get(&MEASURED_NARROW_BUCKET)
-            .is_some_and(|object_keys| object_keys.contains(&key));
-        let in_wide = contents
-            .get(&MEASURED_WIDE_BUCKET)
-            .is_some_and(|object_keys| object_keys.contains(&key));
-        println!(
-            "  {label}: {key} -- in {MEASURED_NARROW_BUCKET} {in_narrow}, in \
-             {MEASURED_WIDE_BUCKET} {in_wide}"
-        );
-        assert!(
-            in_narrow,
-            "`{label}` did not file {key} in bucket {MEASURED_NARROW_BUCKET}, the bucket the \
-             shard's own range puts it in. Buckets holding it: {:?}",
-            contents
-                .iter()
-                .filter(|(_, object_keys)| object_keys.contains(&key))
-                .map(|(bucket, _)| *bucket)
-                .collect::<Vec<_>>()
-        );
-        assert!(
-            !in_wide,
-            "`{label}` filed {key} in bucket {MEASURED_WIDE_BUCKET} -- the whole-range bucket, on \
-             a shard that holds 0..{NARROW_END}. This is the defect mx#1949 measured and declined; \
-             it has come back."
-        );
-        assert_eq!(
-            0,
-            buckets_outside(&contents, 0, NARROW_END),
-            "the shard holds 0..{NARROW_END} and some block is filed outside it: {:?}",
-            contents.keys().collect::<Vec<_>>()
-        );
+            if sync_path {
+                crate::engine::storage_bucket_internals::sync_bucket_index_object_blocks(
+                    shard,
+                    1,
+                    "string",
+                    &key,
+                    vec![address],
+                    true,
+                );
+            } else {
+                crate::engine::storage_bucket_internals::upsert_bucket_index_block(
+                    shard, 1, "string", &key, None, address, true,
+                );
+            }
+
+            let contents = bucket_contents(shard);
+            let in_narrow = contents
+                .get(&MEASURED_NARROW_BUCKET)
+                .is_some_and(|object_keys| object_keys.contains(&key));
+            let in_wide = contents
+                .get(&MEASURED_WIDE_BUCKET)
+                .is_some_and(|object_keys| object_keys.contains(&key));
+            println!(
+                "  {label}: {key} -- in {MEASURED_NARROW_BUCKET} {in_narrow}, in \
+                 {MEASURED_WIDE_BUCKET} {in_wide}"
+            );
+            assert!(
+                in_narrow,
+                "`{label}` did not file {key} in bucket {MEASURED_NARROW_BUCKET}, the bucket the \
+                 shard's own range puts it in. Buckets holding it: {:?}",
+                contents
+                    .iter()
+                    .filter(|(_, object_keys)| object_keys.contains(&key))
+                    .map(|(bucket, _)| *bucket)
+                    .collect::<Vec<_>>()
+            );
+            assert!(
+                !in_wide,
+                "`{label}` filed {key} in bucket {MEASURED_WIDE_BUCKET} -- the whole-range bucket, on \
+                 a shard that holds 0..{NARROW_END}. This is the defect mx#1949 measured and declined; \
+                 it has come back."
+            );
+            assert_eq!(
+                0,
+                buckets_outside(&contents, 0, NARROW_END),
+                "the shard holds 0..{NARROW_END} and some block is filed outside it: {:?}",
+                contents.keys().collect::<Vec<_>>()
+            );
+        })
     }
 }
 
@@ -416,32 +418,33 @@ fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
         load_on(&engine, NARROW_END);
         let keys = seed(&engine, 32);
 
-        let mut shards = engine.shards.write().expect("shards lock poisoned");
-        let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        // Re-stamp under the test's own hand. The engine loaded this shard on 0..1023 either way;
-        // what is varied here is the ONE input this change added.
-        shard.set_routing_range(0, stamp);
+        engine.shards.with_state_mut(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            // Re-stamp under the test's own hand. The engine loaded this shard on 0..1023 either way;
+            // what is varied here is the ONE input this change added.
+            shard.set_routing_range(0, stamp);
 
-        // DENOMINATOR: the stamp took, which is the one input this change varies.
-        assert_eq!(
-            (0, stamp),
-            shard.routing_range(),
-            "the shard is not carrying 0..{stamp}, so the arm below files by something else"
-        );
-        for key in &keys {
-            let address = shard.string_address(key.as_str()).expect("key present").clone();
-            crate::engine::storage_bucket_internals::upsert_bucket_index_block(
-                shard, 1, "string", key, None, address, true,
+            // DENOMINATOR: the stamp took, which is the one input this change varies.
+            assert_eq!(
+                (0, stamp),
+                shard.routing_range(),
+                "the shard is not carrying 0..{stamp}, so the arm below files by something else"
             );
-        }
-        let contents = bucket_contents(shard);
-        println!(
-            "  stamped 0..{stamp}: {} blocks over {} buckets",
-            block_total(&contents),
-            contents.len()
-        );
-        assert!(block_total(&contents) >= keys.len(), "the fixture filed nothing");
-        filings.push(contents);
+            for key in &keys {
+                let address = shard.string_address(key.as_str()).expect("key present").clone();
+                crate::engine::storage_bucket_internals::upsert_bucket_index_block(
+                    shard, 1, "string", key, None, address, true,
+                );
+            }
+            let contents = bucket_contents(shard);
+            println!(
+                "  stamped 0..{stamp}: {} blocks over {} buckets",
+                block_total(&contents),
+                contents.len()
+            );
+            assert!(block_total(&contents) >= keys.len(), "the fixture filed nothing");
+            filings.push(contents);
+        })
     }
     // INVERTED. While an address carried its own routing bucket, that bucket won and the stamp was
     // consulted only where a fallback would otherwise have fired -- so the two stamps had to file
@@ -486,84 +489,85 @@ fn narrowing_the_writers_removes_no_block_that_was_already_filed() {
     load_on(&engine, NARROW_END);
     let keys = seed(&engine, RECORDS);
 
-    let mut shards = engine.shards.write().expect("shards lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-    let round_tripped = round_trip_every_block_through_the_wire(shard);
-    assert_eq!(
-        RECORDS, round_tripped,
-        "the fixture round-tripped {round_tripped} of {RECORDS} addresses"
-    );
-    crate::engine::storage_bucket_internals::rebuild_bucket_block_ownership(
-        1,
-        shard,
-        0,
-        NARROW_END,
-    );
-    let before = bucket_contents(shard);
-    assert_eq!(
-        RECORDS,
-        block_total(&before),
-        "the fixture starts with {} blocks, not {RECORDS}",
-        block_total(&before)
-    );
-    assert_eq!(
-        0,
-        buckets_outside(&before, 0, NARROW_END),
-        "the fixture starts with blocks outside the shard's range, so this measures the rebuild \
-         rather than the writers"
-    );
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let round_tripped = round_trip_every_block_through_the_wire(shard);
+        assert_eq!(
+            RECORDS, round_tripped,
+            "the fixture round-tripped {round_tripped} of {RECORDS} addresses"
+        );
+        crate::engine::storage_bucket_internals::rebuild_bucket_block_ownership(
+            1,
+            shard,
+            0,
+            NARROW_END,
+        );
+        let before = bucket_contents(shard);
+        assert_eq!(
+            RECORDS,
+            block_total(&before),
+            "the fixture starts with {} blocks, not {RECORDS}",
+            block_total(&before)
+        );
+        assert_eq!(
+            0,
+            buckets_outside(&before, 0, NARROW_END),
+            "the fixture starts with blocks outside the shard's range, so this measures the rebuild \
+             rather than the writers"
+        );
 
-    let key = keys[0].clone();
-    let address = shard.string_address(key.as_str()).expect("key present").clone();
-    crate::engine::storage_bucket_internals::upsert_bucket_index_block(
-        shard, 1, "string", &key, None, address, true,
-    );
-    let after = bucket_contents(shard);
+        let key = keys[0].clone();
+        let address = shard.string_address(key.as_str()).expect("key present").clone();
+        crate::engine::storage_bucket_internals::upsert_bucket_index_block(
+            shard, 1, "string", &key, None, address, true,
+        );
+        let after = bucket_contents(shard);
 
-    println!(
-        "  before: {} blocks / {} buckets     after: {} blocks / {} buckets",
-        block_total(&before),
-        before.len(),
-        block_total(&after),
-        after.len()
-    );
-    assert_eq!(
-        block_total(&before),
-        block_total(&after),
-        "a block was lost or duplicated by an upsert that only re-files one key"
-    );
-    assert_eq!(
-        0,
-        buckets_outside(&after, 0, NARROW_END),
-        "the upsert filed something outside 0..{NARROW_END}"
-    );
-    // ELEMENT BY ELEMENT: every key present before is present after, and in the same bucket
-    // unless it is the one key that was re-published.
-    let placement = |contents: &BTreeMap<u32, Vec<String>>| -> BTreeMap<String, u32> {
-        let mut out = BTreeMap::new();
-        for (bucket, object_keys) in contents {
-            for object_key in object_keys {
-                out.insert(object_key.clone(), *bucket);
+        println!(
+            "  before: {} blocks / {} buckets     after: {} blocks / {} buckets",
+            block_total(&before),
+            before.len(),
+            block_total(&after),
+            after.len()
+        );
+        assert_eq!(
+            block_total(&before),
+            block_total(&after),
+            "a block was lost or duplicated by an upsert that only re-files one key"
+        );
+        assert_eq!(
+            0,
+            buckets_outside(&after, 0, NARROW_END),
+            "the upsert filed something outside 0..{NARROW_END}"
+        );
+        // ELEMENT BY ELEMENT: every key present before is present after, and in the same bucket
+        // unless it is the one key that was re-published.
+        let placement = |contents: &BTreeMap<u32, Vec<String>>| -> BTreeMap<String, u32> {
+            let mut out = BTreeMap::new();
+            for (bucket, object_keys) in contents {
+                for object_key in object_keys {
+                    out.insert(object_key.clone(), *bucket);
+                }
             }
-        }
-        out
-    };
-    let before_placement = placement(&before);
-    let after_placement = placement(&after);
-    assert_eq!(
-        before_placement.keys().collect::<Vec<_>>(),
-        after_placement.keys().collect::<Vec<_>>(),
-        "the set of object keys in the index moved"
-    );
-    let moved: Vec<&String> = before_placement
-        .iter()
-        .filter(|(object_key, bucket)| after_placement.get(*object_key) != Some(bucket))
-        .map(|(object_key, _)| object_key)
-        .collect();
-    assert!(
-        moved.is_empty(),
-        "these keys changed bucket when only {key} was re-published: {moved:?}"
-    );
+            out
+        };
+        let before_placement = placement(&before);
+        let after_placement = placement(&after);
+        assert_eq!(
+            before_placement.keys().collect::<Vec<_>>(),
+            after_placement.keys().collect::<Vec<_>>(),
+            "the set of object keys in the index moved"
+        );
+        let moved: Vec<&String> = before_placement
+            .iter()
+            .filter(|(object_key, bucket)| after_placement.get(*object_key) != Some(bucket))
+            .map(|(object_key, _)| object_key)
+            .collect();
+        assert!(
+            moved.is_empty(),
+            "these keys changed bucket when only {key} was re-published: {moved:?}"
+        );
+    })
 }
 
 // =============================================================================================
@@ -588,72 +592,73 @@ fn the_routing_range_field_changes_no_serialized_byte() {
     load_on(&engine, NARROW_END);
     seed(&engine, 16);
 
-    let mut shards = engine.shards.write().expect("shards lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 is loaded");
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
 
-    let mut stamped = shard.clone();
-    // The PRODUCTION codec, not the legacy one: `serialize_index` picks its payload encoding off
-    // this field, and a byte comparison taken on the fallback path would not be a comparison of
-    // what the engine actually writes.
-    stamped.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
-    stamped.set_routing_range(0, NARROW_END);
-    let mut unstamped = shard.clone();
-    unstamped.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
-    unstamped.routing_range_start = 0;
-    unstamped.routing_range_end = 0;
-    unstamped.routing_range_known = false;
-    assert_ne!(
-        stamped.routing_range(),
-        unstamped.routing_range(),
-        "the two states under test answer the same range, so byte-equality below would prove \
-         nothing about the field"
-    );
+        let mut stamped = shard.clone();
+        // The PRODUCTION codec, not the legacy one: `serialize_index` picks its payload encoding off
+        // this field, and a byte comparison taken on the fallback path would not be a comparison of
+        // what the engine actually writes.
+        stamped.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
+        stamped.set_routing_range(0, NARROW_END);
+        let mut unstamped = shard.clone();
+        unstamped.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
+        unstamped.routing_range_start = 0;
+        unstamped.routing_range_end = 0;
+        unstamped.routing_range_known = false;
+        assert_ne!(
+            stamped.routing_range(),
+            unstamped.routing_range(),
+            "the two states under test answer the same range, so byte-equality below would prove \
+             nothing about the field"
+        );
 
-    let stamped_bytes = crate::engine::serialize_index(&stamped);
-    let unstamped_bytes = crate::engine::serialize_index(&unstamped);
-    println!(
-        "  stamped {} bytes, unstamped {} bytes",
-        stamped_bytes.len(),
-        unstamped_bytes.len()
-    );
-    assert!(
-        stamped_bytes.len() > 256,
-        "the fixture serialized {} bytes; that is not a populated index and byte-equality over \
-         two empty buffers says nothing",
-        stamped_bytes.len()
-    );
-    assert_eq!(
-        stamped_bytes, unstamped_bytes,
-        "stamping the routing range changed the serialized index. The field is supposed to be \
-         `#[serde(skip)]`; if it is now written, an index written by an older build no longer \
-         reads the same and this is a stored-format change."
-    );
+        let stamped_bytes = crate::engine::serialize_index(&stamped);
+        let unstamped_bytes = crate::engine::serialize_index(&unstamped);
+        println!(
+            "  stamped {} bytes, unstamped {} bytes",
+            stamped_bytes.len(),
+            unstamped_bytes.len()
+        );
+        assert!(
+            stamped_bytes.len() > 256,
+            "the fixture serialized {} bytes; that is not a populated index and byte-equality over \
+             two empty buffers says nothing",
+            stamped_bytes.len()
+        );
+        assert_eq!(
+            stamped_bytes, unstamped_bytes,
+            "stamping the routing range changed the serialized index. The field is supposed to be \
+             `#[serde(skip)]`; if it is now written, an index written by an older build no longer \
+             reads the same and this is a stored-format change."
+        );
 
-    let decoded = crate::engine::decode_index_bytes(&stamped_bytes)
-        .expect("the index this test just serialized decodes");
-    assert!(
-        !decoded.routing_range_known,
-        "a decoded index came back claiming to know a routing range; the field cannot have been \
-         skipped on the way out"
-    );
-    assert_eq!(
-        (0, WIDE_END),
-        decoded.routing_range(),
-        "a decoded index must answer the WHOLE range until the engine stamps it, which is what \
-         an index written before this change already did"
-    );
-    assert_eq!(
-        crate::engine::SHARD_INDEX_FORMAT_VERSION,
-        decoded.index_format_version,
-        "the on-disk format version this index decodes as is not the one this build writes, which \
-         says this change is a format change after all"
-    );
-    let decoded_unstamped = crate::engine::decode_index_bytes(&unstamped_bytes)
-        .expect("the unstamped index decodes too");
-    assert_eq!(
-        decoded.index_format_version, decoded_unstamped.index_format_version,
-        "the two arms decode as different on-disk versions"
-    );
+        let decoded = crate::engine::decode_index_bytes(&stamped_bytes)
+            .expect("the index this test just serialized decodes");
+        assert!(
+            !decoded.routing_range_known,
+            "a decoded index came back claiming to know a routing range; the field cannot have been \
+             skipped on the way out"
+        );
+        assert_eq!(
+            (0, WIDE_END),
+            decoded.routing_range(),
+            "a decoded index must answer the WHOLE range until the engine stamps it, which is what \
+             an index written before this change already did"
+        );
+        assert_eq!(
+            crate::engine::SHARD_INDEX_FORMAT_VERSION,
+            decoded.index_format_version,
+            "the on-disk format version this index decodes as is not the one this build writes, which \
+             says this change is a format change after all"
+        );
+        let decoded_unstamped = crate::engine::decode_index_bytes(&unstamped_bytes)
+            .expect("the unstamped index decodes too");
+        assert_eq!(
+            decoded.index_format_version, decoded_unstamped.index_format_version,
+            "the two arms decode as different on-disk versions"
+        );
+    })
 }
 
 // =============================================================================================
@@ -730,35 +735,36 @@ fn a_store_written_on_one_range_is_refused_on_the_other() {
         // THE ARM WHERE THE LOAD IS ALLOWED, carrying every assertion that is still reachable.
         load_on(&engine, write_end);
         let recovered = read_back(&engine, &keys);
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
-        let contents = bucket_contents(shard);
-        let outside = buckets_outside(&contents, 0, write_end);
-        println!(
-            "  reopened on 0..{write_end}: {recovered}/{RECORDS} records, {} blocks, {outside} \
-             buckets outside the range, stamp {:?}",
-            block_total(&contents),
-            shard.routing_range()
-        );
-        assert_eq!(
-            RECORDS, recovered,
-            "reopened on 0..{write_end}: {recovered} of {RECORDS} records came back"
-        );
-        assert!(
-            block_total(&contents) >= RECORDS,
-            "reopened on 0..{write_end}: {} blocks for {RECORDS} records",
-            block_total(&contents)
-        );
-        assert_eq!(
-            0, outside,
-            "reopened on the range it was written on, {outside} buckets sit above the shard's end"
-        );
-        assert_eq!(
-            (0, write_end),
-            shard.routing_range(),
-            "the reloaded shard carries {:?} rather than the range it was loaded with",
-            shard.routing_range()
-        );
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            let contents = bucket_contents(shard);
+            let outside = buckets_outside(&contents, 0, write_end);
+            println!(
+                "  reopened on 0..{write_end}: {recovered}/{RECORDS} records, {} blocks, {outside} \
+                 buckets outside the range, stamp {:?}",
+                block_total(&contents),
+                shard.routing_range()
+            );
+            assert_eq!(
+                RECORDS, recovered,
+                "reopened on 0..{write_end}: {recovered} of {RECORDS} records came back"
+            );
+            assert!(
+                block_total(&contents) >= RECORDS,
+                "reopened on 0..{write_end}: {} blocks for {RECORDS} records",
+                block_total(&contents)
+            );
+            assert_eq!(
+                0, outside,
+                "reopened on the range it was written on, {outside} buckets sit above the shard's end"
+            );
+            assert_eq!(
+                (0, write_end),
+                shard.routing_range(),
+                "the reloaded shard carries {:?} rather than the range it was loaded with",
+                shard.routing_range()
+            );
+        })
     }
 }
 
@@ -788,14 +794,15 @@ fn a_manifest_installed_across_ranges_leaves_the_target_carrying_its_own_range()
     let keys = seed(&source, RECORDS);
 
     let buckets: Vec<u32> = {
-        let shards = source.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
-        assert_eq!(
-            (0, WIDE_END),
-            shard.routing_range(),
-            "the SOURCE is not on the whole range, so this is not a cross-range install"
-        );
-        shard.bucket_index.bucket_map.keys().copied().collect()
+        source.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1");
+            assert_eq!(
+                (0, WIDE_END),
+                shard.routing_range(),
+                "the SOURCE is not on the whole range, so this is not a cross-range install"
+            );
+            shard.bucket_index.bucket_map.keys().copied().collect()
+        })
     };
     assert!(!buckets.is_empty(), "the source holds no bucket to dump");
     let manifest = source
@@ -816,31 +823,32 @@ fn a_manifest_installed_across_ranges_leaves_the_target_carrying_its_own_range()
         .expect("the manifest installs on the narrower shard");
 
     let readable = read_back(&target, &keys);
-    let shards = target.shards.read().expect("shards lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let contents = bucket_contents(shard);
-    println!(
-        "  installed a 0..{WIDE_END} image on a 0..{NARROW_END} shard: {readable}/{RECORDS} \
-         records, {} blocks, stamp {:?}",
-        block_total(&contents),
-        shard.routing_range()
-    );
-    assert_eq!(
-        RECORDS, readable,
-        "{readable} of {RECORDS} records were readable after a cross-range manifest install -- \
-         the failure mx#1945 caught when it first narrowed this install's range"
-    );
-    assert!(
-        block_total(&contents) >= RECORDS,
-        "{} blocks for {RECORDS} records after the install",
-        block_total(&contents)
-    );
-    assert_eq!(
-        (0, NARROW_END),
-        shard.routing_range(),
-        "the target came out of a manifest install carrying the IMAGE's range rather than its \
-         own, so the next unrouted block it files goes into a bucket it does not hold"
-    );
+    target.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let contents = bucket_contents(shard);
+        println!(
+            "  installed a 0..{WIDE_END} image on a 0..{NARROW_END} shard: {readable}/{RECORDS} \
+             records, {} blocks, stamp {:?}",
+            block_total(&contents),
+            shard.routing_range()
+        );
+        assert_eq!(
+            RECORDS, readable,
+            "{readable} of {RECORDS} records were readable after a cross-range manifest install -- \
+             the failure mx#1945 caught when it first narrowed this install's range"
+        );
+        assert!(
+            block_total(&contents) >= RECORDS,
+            "{} blocks for {RECORDS} records after the install",
+            block_total(&contents)
+        );
+        assert_eq!(
+            (0, NARROW_END),
+            shard.routing_range(),
+            "the target came out of a manifest install carrying the IMAGE's range rather than its \
+             own, so the next unrouted block it files goes into a bucket it does not hold"
+        );
+    })
 }
 
 // =============================================================================================
@@ -877,6 +885,9 @@ fn every_shard_the_engine_installs_carries_its_routing_range() {
         "    let mut shards = self.shards.write().expect(\"engine lock poisoned\");",
         "    shards.insert(shard_id, state);",
         "}",
+        "fn owner_form(&self) {",
+        "    drop(self.shards.install(shard_id, state));",
+        "}",
         "fn not_an_install(&self) {",
         "    let mut shards = self.shards.write().expect(\"engine lock poisoned\");",
         "    let shard = shards.get_mut(&shard_id).expect(\"shard\");",
@@ -886,7 +897,7 @@ fn every_shard_the_engine_installs_carries_its_routing_range() {
     ];
     let control_hits = shard_map_insert_sites(&control_lines);
     assert_eq!(
-        vec!["chain_form".to_string(), "bound_form".to_string()],
+        vec!["chain_form".to_string(), "bound_form".to_string(), "owner_form".to_string()],
         control_hits,
         "the matcher does not report what it is supposed to report on a planted input, so its \
          verdict over the tree below means nothing"
@@ -1015,12 +1026,12 @@ fn shard_map_insert_sites(lines: &[&str]) -> Vec<String> {
         }
         // Shape one: a method chain. Every following line that continues it starts with `.`.
         let mut cursor = index;
-        if line.contains(".insert(") {
+        if line.contains(".insert(") || line.contains(".install(") {
             found.push((index, enclosing(index)));
         }
         while cursor + 1 < lines.len() && lines[cursor + 1].trim_start().starts_with('.') {
             cursor += 1;
-            if lines[cursor].contains(".insert(") {
+            if lines[cursor].contains(".insert(") || lines[cursor].contains(".install(") {
                 found.push((cursor, enclosing(cursor)));
             }
         }
@@ -1163,9 +1174,10 @@ fn a_manifest_install_records_the_range_it_filed_under() {
     load_on(&source, WIDE_END);
     let keys = seed(&source, RECORDS);
     let buckets: Vec<u32> = {
-        let shards = source.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1");
-        shard.bucket_index.bucket_map.keys().copied().collect()
+        source.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1");
+            shard.bucket_index.bucket_map.keys().copied().collect()
+        })
     };
     assert!(!buckets.is_empty(), "the source holds no bucket to dump");
     let manifest = source

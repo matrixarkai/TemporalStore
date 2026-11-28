@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 use super::ModelKey;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Mutex;
 
 const MAX_CACHED_OBJECTS: usize = 64;
@@ -76,8 +76,22 @@ impl OrdinalSummary {
     }
 }
 
+/// THE SUMMARIES, AND BESIDE THEM THE OBJECTS KNOWN TO HOLD ONE ELEMENT PER BLOCK.
+///
+/// The second field answers "does any block of this object hold two elements" without looking, for
+/// the objects it names. It is kept by the same events as the summaries -- every place the map
+/// invalidates or clears a summary forgets the flag too, because those are exactly the places the
+/// elements or their addresses can change in a way that could make two share a block (a compaction
+/// fold, a decode, a reconcile, a delta fold, a replay). A write that appends one block for one
+/// element keeps it; every other install forgets it.
 #[derive(Debug, Default)]
-pub(super) struct OrdinalCache(Mutex<HashMap<ModelKey, OrdinalSummary>>);
+pub(super) struct OrdinalCache(
+    Mutex<HashMap<ModelKey, OrdinalSummary>>,
+    Mutex<HashSet<ModelKey>>,
+);
+
+/// How many objects may be named at once. An object that is evicted is asked again and re-learned.
+const MAX_UNSHARED_OBJECTS: usize = 4096;
 
 impl OrdinalCache {
     pub(super) fn highest(
@@ -132,10 +146,12 @@ impl OrdinalCache {
             .get_mut()
             .expect("ordinal cache poisoned")
             .remove(key);
+        self.1.get_mut().expect("ordinal cache poisoned").remove(key);
     }
 
     pub(super) fn clear(&mut self) {
         self.0.get_mut().expect("ordinal cache poisoned").clear();
+        self.1.get_mut().expect("ordinal cache poisoned").clear();
     }
 
     pub(super) fn adopt_key(&mut self, key: &ModelKey) {
@@ -143,6 +159,30 @@ impl OrdinalCache {
         if let Some(summary) = entries.remove(key.as_ref()) {
             entries.insert(key.clone(), summary);
         }
+        let unshared = self.1.get_mut().expect("ordinal cache poisoned");
+        if unshared.remove(key.as_ref()) {
+            unshared.insert(key.clone());
+        }
+    }
+
+    /// Whether this object is known to have no block that holds two of its elements.
+    pub(super) fn is_unshared(&self, key: &str) -> bool {
+        self.1.lock().expect("ordinal cache poisoned").contains(key)
+    }
+
+    /// Record that a pass over the object found every element on a block of its own.
+    pub(super) fn mark_unshared(&self, key: &ModelKey) {
+        let mut unshared = self.1.lock().expect("ordinal cache poisoned");
+        if unshared.len() >= MAX_UNSHARED_OBJECTS && !unshared.contains(key.as_ref()) {
+            let victim = unshared.iter().next().cloned().expect("set at capacity");
+            unshared.remove(&victim);
+        }
+        unshared.insert(key.clone());
+    }
+
+    /// An install that did not append a block of its own may have put two elements on one.
+    pub(super) fn forget_unshared(&mut self, key: &str) {
+        self.1.get_mut().expect("ordinal cache poisoned").remove(key);
     }
 }
 
@@ -198,18 +238,32 @@ mod tests {
     #[test]
     fn cache_is_bounded_and_cold_evictions_recompute_exactly() {
         let mut cache = OrdinalCache::default();
-        for round in 0..3 {
+        for _ in 0..3 {
             for index in 0..256 {
                 let key: ModelKey = std::sync::Arc::from(format!("object-{index}"));
                 assert_eq!(cache.highest(&key, || summarize(&[index])), Some(index));
                 assert!(cache.0.lock().unwrap().len() <= MAX_CACHED_OBJECTS);
             }
-            cache.invalidate("object-255");
+
+            let (index, key) = (0..256)
+                .map(|index| {
+                    let key: ModelKey = std::sync::Arc::from(format!("object-{index}"));
+                    (index, key)
+                })
+                .find(|(_, key)| !cache.contains(key))
+                .expect("the bounded cache must have evicted a scanned object");
+            assert_eq!(cache.highest(&key, || summarize(&[index])), Some(index));
             assert_eq!(
-                cache.highest(&std::sync::Arc::from("object-255"), || summarize(&[round])),
-                Some(round)
+                cache.highest(&key, || panic!("a cached ordinal must be reused")),
+                Some(index)
             );
         }
+
+        let key: ModelKey = std::sync::Arc::from("object-255");
+        cache.invalidate(&key);
+        assert!(!cache.contains(&key));
+        assert_eq!(cache.highest(&key, || summarize(&[0])), Some(0));
+
         cache.clear();
         assert!(cache.0.lock().unwrap().is_empty());
     }

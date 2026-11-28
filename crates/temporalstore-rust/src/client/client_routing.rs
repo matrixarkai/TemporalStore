@@ -374,7 +374,8 @@ impl TemporalStoreClient {
         )?)
     }
 
-    pub(super) fn resolve_route(
+    /// Resolve a shard's primary endpoint, refreshing cached placement when requested.
+    pub fn resolve_route(
         &self,
         shard_id: ShardId,
         force_refresh: bool,
@@ -389,7 +390,8 @@ impl TemporalStoreClient {
         )
     }
 
-    pub(super) fn resolve_route_with_policy(
+    /// Resolve a shard endpoint using the requested replica and location policy.
+    pub fn resolve_route_with_policy(
         &self,
         shard_id: ShardId,
         force_refresh: bool,
@@ -433,17 +435,12 @@ impl TemporalStoreClient {
             .expect("client stats lock poisoned")
             .route_cache_misses += 1;
 
-        let meta_addr = self
-            .inner
-            .options
-            .meta_addr
-            .as_ref()
-            .unwrap_or(&self.inner.options.proxy_addr);
-        let response: GetShardResponse = get_json_with_options(
-            meta_addr,
-            &format!("/shards/{shard_id}"),
-            self.inner.options.http_options(),
-        )?;
+        let path = format!("/shards/{shard_id}");
+        let options = self.inner.options.http_options();
+        let response: GetShardResponse = match &self.inner.options.meta_addr {
+            Some(addr) => get_meta_json(addr, &path, options)?,
+            None => get_json_with_options(&self.inner.options.proxy_addr, &path, options)?,
+        };
         if !response.status.ok {
             return Err(ClientError::Status(response.status.message));
         }
@@ -502,7 +499,8 @@ impl TemporalStoreClient {
         out
     }
 
-    pub(super) fn record_backend_failure(&self, server_addr: &str, continuous_failed_time_ms: u64) -> bool {
+    /// Record a failed backend attempt and return whether the failure window has elapsed.
+    pub fn record_backend_failure(&self, server_addr: &str, continuous_failed_time_ms: u64) -> bool {
         let now = Instant::now();
         self.with_backend_failures(|failures| {
             let state = failures
@@ -518,13 +516,15 @@ impl TemporalStoreClient {
         })
     }
 
-    pub(super) fn record_backend_success(&self, server_addr: &str) {
+    /// Clear the failure history for a backend that responded successfully.
+    pub fn record_backend_success(&self, server_addr: &str) {
         self.with_backend_failures(|failures| {
             failures.remove(server_addr);
         });
     }
 
-    pub(super) fn backend_failure_is_continuous(
+    /// Report whether this backend has failed continuously for at least the given duration.
+    pub fn backend_failure_is_continuous(
         &self,
         server_addr: &str,
         continuous_failed_time_ms: u64,
@@ -558,7 +558,7 @@ impl TemporalStoreClient {
 /// to a batch that carries none -- the same distinction `force_primary` draws on the single
 /// command path, drawn from the same two inputs. `pin_primary` still wins, and a table that has
 /// configured nothing reads `PinPrimary`, so a default table's batches do not move.
-pub(super) fn batch_read_policy(
+pub fn batch_read_policy(
     write: bool,
     table_options: &TableOptions,
 ) -> (ReplicaReadPolicy, Option<&str>) {
@@ -621,7 +621,7 @@ mod batch_routing_tests {
 
         assert_ne!(
             single, batch,
-            "the two paths disagree by construction -- if they ever agree, one of them changed              and the comment above needs to change with it"
+            "the two paths disagree by construction -- if they ever agree, one of them changed and the comment above needs to change with it"
         );
     }
 

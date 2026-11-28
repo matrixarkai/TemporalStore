@@ -13,6 +13,74 @@ const OPEN_FILE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_DIRECTORIES: usize = 8;
 const DIRECTORY_BYTES: usize = 1024 * 1024;
 
+// Idle descriptors, reader bookkeeping, represented extents, directory entries,
+// directory metadata. Payload I/O never runs under this accounting mutex.
+const LIMITS: [u64; 5] = [MAX_READERS as u64, READER_BYTES as u64, OPEN_FILE_BYTES,
+    MAX_DIRECTORIES as u64, DIRECTORY_BYTES as u64];
+
+#[derive(Debug, Default)]
+pub(super) struct Budget {
+    used: Mutex<[u64; 5]>,
+}
+
+impl Budget {
+    #[cfg(test)]
+    pub(super) fn snapshot(&self) -> [u64; 5] {
+        *self.used.lock().unwrap()
+    }
+
+    fn lease(self: &Arc<Self>) -> Reservation {
+        Reservation { budget: self.clone(), held: [0; 5] }
+    }
+
+    fn reserve(self: &Arc<Self>, amounts: [u64; 5]) -> Option<Reservation> {
+        let mut lease = self.lease();
+        lease.resize(amounts).then_some(lease)
+    }
+}
+
+#[derive(Debug)]
+struct Reservation {
+    budget: Arc<Budget>,
+    held: [u64; 5],
+}
+
+impl Reservation {
+    fn resize(&mut self, wanted: [u64; 5]) -> bool {
+        let mut used = self.budget.used.lock().expect("WAL reader budget poisoned");
+        let mut next = [0; 5];
+        for index in 0..5 {
+            let Some(value) = (used[index] - self.held[index]).checked_add(wanted[index]) else {
+                return false;
+            };
+            if value > LIMITS[index] {
+                return false;
+            }
+            next[index] = value;
+        }
+        *used = next;
+        self.held = wanted;
+        true
+    }
+}
+
+impl Drop for Reservation {
+    fn drop(&mut self) {
+        let mut used = self.budget.used.lock().expect("WAL reader budget poisoned");
+        for index in 0..5 {
+            used[index] -= self.held[index];
+        }
+    }
+}
+
+pub(super) fn descriptor_pressure(error: &WriteAheadLogError) -> bool {
+    let WriteAheadLogError::Io(error) = error else { return false; };
+    #[cfg(unix)]
+    { matches!(error.raw_os_error(), Some(23 | 24)) }
+    #[cfg(not(unix))]
+    { error.raw_os_error() == Some(4) }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(super) struct Stamp {
     #[cfg(unix)]
@@ -57,6 +125,8 @@ pub(super) struct Reader {
     pub(super) stamp: Option<Stamp>,
     pub(super) file: File,
     pub(super) physical: u64,
+    // Present only while idle. The descriptor closes before its reservation drops.
+    reservation: Option<Reservation>,
 }
 
 const CURRENT_SPELLING: usize = 0;
@@ -85,6 +155,8 @@ struct Directory {
     names: SealedNameParts,
     active: PathBuf,
     weight: usize,
+    // Follows the last Arc, not merely membership in the cache's queue.
+    reservation: Option<Reservation>,
 }
 
 fn canonical_spelling(name: &OsStr, parts: &SealedNameParts) -> Option<usize> {
@@ -147,6 +219,7 @@ impl Directory {
             names,
             active,
             weight,
+            reservation: None,
         }
     }
 
@@ -194,16 +267,40 @@ impl std::fmt::Debug for Directory {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(super) struct Cache {
     readers: VecDeque<Reader>,
     reader_bytes: usize,
     open_file_bytes: u64,
     directories: VecDeque<Arc<Directory>>,
     directory_bytes: usize,
+    reader_queue: Reservation,
+    directory_queue: Reservation,
+    budget: Arc<Budget>,
+}
+
+impl Default for Cache {
+    fn default() -> Self { Self::with_budget(Arc::default()) }
 }
 
 impl Cache {
+    pub(super) fn with_budget(budget: Arc<Budget>) -> Self {
+        Self { readers: VecDeque::new(), reader_bytes: 0, open_file_bytes: 0,
+            directories: VecDeque::new(), directory_bytes: 0,
+            reader_queue: budget.lease(), directory_queue: budget.lease(), budget }
+    }
+
+    fn reset_empty_queues(&mut self) {
+        if self.readers.is_empty() {
+            self.readers = VecDeque::new();
+            assert!(self.reader_queue.resize([0; 5]));
+        }
+        if self.directories.is_empty() {
+            self.directories = VecDeque::new();
+            assert!(self.directory_queue.resize([0; 5]));
+        }
+    }
+
     pub(super) fn take(
         &mut self,
         root: &Path,
@@ -218,6 +315,7 @@ impl Cache {
             let mut reader = self.readers.remove(index).unwrap();
             self.reader_bytes -= reader.path.capacity();
             self.open_file_bytes -= reader.length;
+            reader.reservation.take();
             match fs::metadata(&reader.path) {
                 Ok(metadata) if reader.stamp.is_some() && stamp(&metadata) == reader.stamp => {
                     reader.physical = reader.header + (log_id - reader.base);
@@ -264,6 +362,7 @@ impl Cache {
                         stamp: stamp(&metadata),
                         file,
                         physical: header + (log_id - base),
+                        reservation: None,
                     }));
                 }
             }
@@ -271,7 +370,7 @@ impl Cache {
         Ok(None)
     }
 
-    pub(super) fn put(&mut self, reader: Reader) {
+    pub(super) fn put(&mut self, mut reader: Reader) {
         if let Some(index) = self
             .readers
             .iter()
@@ -296,10 +395,29 @@ impl Cache {
         }
         self.readers.reserve(1);
         let queue_bytes = self.readers.capacity() * std::mem::size_of::<Reader>();
+        if !self.reader_queue.resize([0, queue_bytes as u64, 0, 0, 0]) {
+            self.readers = VecDeque::new();
+            self.reader_bytes = 0;
+            self.open_file_bytes = 0;
+            self.reset_empty_queues();
+            return;
+        }
         while self.reader_bytes + reader.path.capacity() + queue_bytes > READER_BYTES
             || self.open_file_bytes + reader.length > OPEN_FILE_BYTES
         {
             if !self.retire_oldest() {
+                self.reset_empty_queues();
+                return;
+            }
+        }
+        loop {
+            if let Some(reservation) = self.budget.reserve(
+                [1, reader.path.capacity() as u64, reader.length, 0, 0]) {
+                reader.reservation = Some(reservation);
+                break;
+            }
+            if !self.retire_oldest() {
+                self.reset_empty_queues();
                 return;
             }
         }
@@ -323,6 +441,7 @@ impl Cache {
             .iter()
             .map(|directory| directory.weight)
             .sum();
+        self.reset_empty_queues();
     }
 
     pub(super) fn clear_directory(&mut self, shard: ShardId) {
@@ -333,9 +452,10 @@ impl Cache {
             .iter()
             .map(|directory| directory.weight)
             .sum();
+        self.reset_empty_queues();
     }
 
-    fn retire_oldest(&mut self) -> bool {
+    pub(super) fn retire_oldest(&mut self) -> bool {
         let Some(old) = self.readers.pop_front() else {
             return false;
         };
@@ -345,6 +465,10 @@ impl Cache {
     }
 
     fn open(&mut self, path: &Path) -> std::io::Result<File> {
+        #[cfg(test)]
+        if let Some(code) = FAIL_NEXT_OPEN.with(|slot| slot.take()) {
+            return Err(std::io::Error::from_raw_os_error(code));
+        }
         match File::open(path) {
             Err(error) if error.kind() != std::io::ErrorKind::NotFound && self.retire_oldest() => {
                 File::open(path)
@@ -383,12 +507,13 @@ impl Cache {
             Err(_) if self.retire_oldest() => Some(fs::read_dir(root)?),
             Err(error) => return Err(error.into()),
         };
-        let directory = Arc::new(Directory::from_entries(
+        let mut directory = Directory::from_entries(
             root, shard, current, entries.into_iter().flatten().flatten(),
-        ));
+        );
         let weight = directory.weight;
         if current.is_none() || weight > DIRECTORY_BYTES {
-            return Ok(directory);
+            self.reset_empty_queues();
+            return Ok(Arc::new(directory));
         }
         if self.directories.len() >= MAX_DIRECTORIES {
             if let Some(old) = self.directories.pop_front() {
@@ -397,12 +522,31 @@ impl Cache {
         }
         self.directories.reserve(1);
         let queue_bytes = self.directories.capacity() * std::mem::size_of::<Arc<Directory>>();
+        if !self.directory_queue.resize([0, 0, 0, 0, queue_bytes as u64]) {
+            self.directories = VecDeque::new();
+            self.directory_bytes = 0;
+            self.reset_empty_queues();
+            return Ok(Arc::new(directory));
+        }
         while self.directory_bytes + weight + queue_bytes > DIRECTORY_BYTES {
             let Some(old) = self.directories.pop_front() else {
-                return Ok(directory);
+                self.reset_empty_queues();
+                return Ok(Arc::new(directory));
             };
             self.directory_bytes -= old.weight;
         }
+        loop {
+            if let Some(reservation) = self.budget.reserve([0, 0, 0, 1, weight as u64]) {
+                directory.reservation = Some(reservation);
+                break;
+            }
+            let Some(old) = self.directories.pop_front() else {
+                self.reset_empty_queues();
+                return Ok(Arc::new(directory));
+            };
+            self.directory_bytes -= old.weight;
+        }
+        let directory = Arc::new(directory);
         self.directory_bytes += weight;
         self.directories.push_back(Arc::clone(&directory));
         Ok(directory)
@@ -412,8 +556,13 @@ impl Cache {
 #[cfg(test)]
 thread_local! {
     static FILE_OPENS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    pub(super) static FAIL_NEXT_OPEN: std::cell::Cell<Option<i32>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
 #[path = "point_reader_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "reader_budget_tests.rs"]
+mod budget_tests;

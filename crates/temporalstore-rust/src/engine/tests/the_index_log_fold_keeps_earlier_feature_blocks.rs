@@ -49,12 +49,12 @@ fn append(engine: &TemporalEngine, stamps: &[u64]) {
 }
 
 fn live(engine: &TemporalEngine) -> Vec<u64> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards
-        .get(&1)
-        .and_then(|shard| shard.features().get(KEY))
-        .map(|series| series.points().map(|(at, _)| at).collect())
-        .unwrap_or_default()
+    engine.shards.with_state(1, |shard_state| {
+        shard_state
+            .and_then(|shard| shard.features().get(KEY))
+            .map(|series| series.points().map(|(at, _)| at).collect())
+            .unwrap_or_default()
+    })
 }
 
 fn folded(engine: &TemporalEngine) -> Vec<u64> {
@@ -67,12 +67,12 @@ fn folded(engine: &TemporalEngine) -> Vec<u64> {
 }
 
 fn live_blocks(engine: &TemporalEngine) -> BTreeMap<u64, String> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards
-        .get(&1)
-        .and_then(|shard| shard.features().get(KEY))
-        .map(|series| series.points().map(|(at, address)| (at, format!("{:?}", block_physical_identity_key(address)))).collect())
-        .unwrap_or_default()
+    engine.shards.with_state(1, |shard_state| {
+        shard_state
+            .and_then(|shard| shard.features().get(KEY))
+            .map(|series| series.points().map(|(at, address)| (at, format!("{:?}", block_physical_identity_key(address)))).collect())
+            .unwrap_or_default()
+    })
 }
 
 fn folded_blocks(engine: &TemporalEngine) -> BTreeMap<u64, String> {

@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""LMCache multiprocess L2 adapter using TemporalStore's raw blob route."""
+"""LMCache multiprocess L2 adapter backed by TemporalStore."""
 
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ from lmcache.v1.memory_management import MemoryObj
 from lmcache.v1.platform import create_event_notifier
 
 from .blob import BlobClient
+from .kv import ValueBackend
 
 logger = logging.getLogger(__name__)
 _DELETE_BATCH_SIZE = 128
@@ -55,6 +56,14 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     namespace: str = ""
     remote_storage: bool = False
     lookup_timeout_seconds: float | None = None
+    storage_backend: str | None = None
+    meta_url: str = ""
+    proxy_grpc_target: str = ""
+    store_retry_timeout_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        if self.storage_backend is None:
+            self.storage_backend = "kv" if self.meta_url else "blob"
 
     @classmethod
     def from_dict(cls, values: dict) -> "TemporalStoreL2AdapterConfig":
@@ -63,12 +72,18 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
             raise ValueError("remote_storage must be a boolean")
         lookup_timeout = values.get("lookup_timeout_seconds")
         config = cls(
+            storage_backend=str(values["storage_backend"]) if "storage_backend" in values else None,
+            meta_url=str(values.get("meta_url", cls.meta_url)),
+            proxy_grpc_target=str(values.get("proxy_grpc_target", cls.proxy_grpc_target)),
             blob_url=str(values.get("blob_url", cls.blob_url)),
             data_url=str(values.get("data_url", cls.data_url)),
             shard_id=int(values.get("shard_id", cls.shard_id)),
             max_capacity_gb=float(values.get("max_capacity_gb", cls.max_capacity_gb)),
             ttl_seconds=int(values.get("ttl_seconds", cls.ttl_seconds)),
             timeout_seconds=float(values.get("timeout_seconds", cls.timeout_seconds)),
+            store_retry_timeout_seconds=float(values.get(
+                "store_retry_timeout_seconds", cls.store_retry_timeout_seconds,
+            )),
             namespace=str(values.get("namespace", cls.namespace)),
             remote_storage=remote_storage,
             lookup_timeout_seconds=float(lookup_timeout) if lookup_timeout is not None else None,
@@ -80,9 +95,12 @@ class TemporalStoreL2AdapterConfig(L2AdapterConfigBase):
     @classmethod
     def help(cls) -> str:
         return (
+            "meta_url (host:port, grpc:// or grpcs://) selects distributed KV storage; storage_backend can select blob or kv; "
+            "proxy_grpc_target routes table commands through a gRPC proxy; "
             "blob_url and data_url are datanode HTTP URLs; shard_id selects the "
             "command shard; max_capacity_gb bounds local adapter writes; "
             "ttl_seconds expires metadata; timeout_seconds bounds each request; "
+            "store_retry_timeout_seconds bounds retries for rejected cache inserts; "
             "namespace isolates one LMCache server's keys and eviction budget; "
             "remote_storage marks a datanode on another host; "
             "lookup_timeout_seconds bounds metadata lookup "
@@ -97,6 +115,14 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         if isinstance(config, dict):
             config = TemporalStoreL2AdapterConfig.from_dict(config)
         self._config = config
+        if config.storage_backend not in {"blob", "kv"}:
+            raise ValueError("storage_backend must be blob or kv")
+        if config.proxy_grpc_target and not config.meta_url:
+            raise ValueError("proxy_grpc_target requires meta_url")
+        if config.meta_url and config.storage_backend != "kv":
+            raise ValueError("meta_url requires the kv backend")
+        if config.storage_backend == "kv" and config.namespace and not config.meta_url:
+            raise ValueError("a KV namespace requires meta_url")
         capacity = int(config.max_capacity_gb * 1024**3)
         if capacity < 1 or config.shard_id < 1 or not (
             isfinite(config.timeout_seconds) and config.timeout_seconds > 0
@@ -104,6 +130,8 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             raise ValueError("capacity, shard_id and timeout_seconds must be positive")
         if config.ttl_seconds < 0:
             raise ValueError("ttl_seconds must be nonnegative")
+        if not isfinite(config.store_retry_timeout_seconds) or config.store_retry_timeout_seconds <= 0:
+            raise ValueError("store_retry_timeout_seconds must be finite and positive")
         lookup_timeout = config.lookup_timeout_seconds
         if lookup_timeout is None:
             lookup_timeout = (
@@ -116,22 +144,37 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         self._blob = BlobClient(
             config.blob_url, config.timeout_seconds,
             reuse_read_connection=True, reuse_mutation_connection=True,
-        )
-        from urllib.parse import urlsplit
-        data = urlsplit(config.data_url)
-        if data.scheme != "http" or not data.hostname:
-            raise ValueError("data_url must be a datanode HTTP URL")
-        self._data = TemporalStoreClient(
-            host=data.hostname, port=data.port or 80,
-            shard_id=config.shard_id, timeout_seconds=config.timeout_seconds,
-        )
-        self._lookup_data = self._data
+        ) if config.storage_backend == "blob" else None
         self._lookup_retry_at = 0.0  # Owned by the single lookup worker.
-        if lookup_timeout != config.timeout_seconds:
-            self._lookup_data = TemporalStoreClient(
-                host=data.hostname, port=data.port or 80,
-                shard_id=config.shard_id, timeout_seconds=lookup_timeout,
+        self._data = self._lookup_data = self._values = None
+        if config.meta_url:
+            from .grpc_kv import TableValueBackend
+
+            self._values = TableValueBackend(
+                config.meta_url, config.namespace or "kvcache", config.timeout_seconds,
+                lookup_timeout, config.ttl_seconds, proxy_grpc_target=config.proxy_grpc_target,
+                store_retry_timeout_seconds=config.store_retry_timeout_seconds,
             )
+        else:
+            from urllib.parse import urlsplit
+
+            data = urlsplit(config.data_url)
+            if data.scheme != "http" or not data.hostname:
+                raise ValueError("data_url must be a datanode HTTP URL")
+            self._data = TemporalStoreClient(
+                host=data.hostname, port=data.port or 80,
+                shard_id=config.shard_id, timeout_seconds=config.timeout_seconds,
+                require_binary_batch=config.storage_backend == "kv",
+            )
+            self._lookup_data = self._data
+            if lookup_timeout != config.timeout_seconds:
+                self._lookup_data = TemporalStoreClient(
+                    host=data.hostname, port=data.port or 80,
+                    shard_id=config.shard_id, timeout_seconds=lookup_timeout,
+                    require_binary_batch=config.storage_backend == "kv",
+                )
+            if config.storage_backend == "kv":
+                self._values = ValueBackend(self._data, self._lookup_data, config.ttl_seconds)
         self._store_event = create_event_notifier()
         self._lookup_event = create_event_notifier()
         self._load_event = create_event_notifier()
@@ -147,6 +190,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
         self._publishing: set[ObjectKey] = set()
         self._used = 0
         self._stores = 0
+        self._submitted_store_tasks = 0
+        self._submitted_store_keys = 0
+        self._completed_store_tasks = 0
+        self._failed_store_tasks = 0
         self._loads = 0
         self._lookups = 0
         self._done_store: dict[L2TaskId, L2StoreResult] = {}
@@ -176,7 +223,10 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             if self._closed:
                 self._done_store[task_id] = L2StoreResult(False, 0)
             else:
-                self._store_pool.submit(self._store, task_id, list(keys), list(objects))
+                store = self._store_values if self._values is not None else self._store
+                self._store_pool.submit(store, task_id, list(keys), list(objects))
+                self._submitted_store_tasks += 1
+                self._submitted_store_keys += len(keys)
         return task_id
 
     def pop_completed_store_tasks(self) -> dict[L2TaskId, L2StoreResult]:
@@ -232,7 +282,15 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             return {
                 "is_healthy": not self._closed,
                 "adapter": "temporalstore",
+                "storage_backend": self._config.storage_backend,
                 "stores": self._stores,
+                "stores_confirmed_by_read": (
+                    self._values.stores_confirmed_by_read if self._values is not None else 0
+                ),
+                "store_tasks_submitted": self._submitted_store_tasks,
+                "store_keys_submitted": self._submitted_store_keys,
+                "store_tasks_pending": self._submitted_store_tasks - self._completed_store_tasks,
+                "store_tasks_failed": self._failed_store_tasks,
                 "loads": self._loads,
                 "lookups": self._lookups,
                 "bytes_used": self._used,
@@ -251,28 +309,20 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             return False
         while True:
             with self._lock:
-                if self._used + needed <= self._max_capacity_bytes:
+                shortage = self._used + needed - self._max_capacity_bytes
+                if shortage <= 0:
                     return True
-                victim = next(
-                    (key for key in self._entries
-                     if key not in self._locked and key not in self._evicting),
-                    None,
-                )
-                if victim is None:
-                    return False
-                self._evicting.add(victim)
-            try:
-                self._delete_key(victim)
-            except Exception:
-                logger.exception("TemporalStore L2 eviction failed")
-                with self._lock:
-                    self._evicting.discard(victim)
+                victims = []
+                for key, size in self._entries.items():
+                    if key in self._locked or key in self._evicting:
+                        continue
+                    victims.append(key)
+                    shortage -= size
+                    if shortage <= 0 or len(victims) == _DELETE_BATCH_SIZE:
+                        break
+                self._evicting.update(victims)
+            if not victims or not self._delete_reserved(victims):
                 return False
-            with self._lock:
-                size = self._entries.pop(victim)
-                self._used -= size
-                self._evicting.discard(victim)
-            self._notify_keys_deleted([victim], [size])
 
     def delete(self, keys: list[ObjectKey]) -> None:
         with self._lock:
@@ -285,26 +335,34 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
 
     def _delete_batch(self, keys: list[ObjectKey]) -> None:
         reserved = []
+        with self._lock:
+            for key in keys:
+                if key in self._locked or key in self._evicting:
+                    continue
+                self._evicting.add(key)
+                reserved.append(key)
+        if reserved:
+            self._delete_reserved(reserved)
+
+    def _delete_reserved(self, reserved: list[ObjectKey]) -> int:
         try:
-            with self._lock:
-                for key in keys:
-                    if key in self._locked or key in self._evicting:
-                        continue
-                    self._evicting.add(key)
-                    reserved.append(key)
+            if self._values is not None:
+                self._values.delete_batch(reserved)
+                self._account_deleted(reserved)
+                return len(reserved)
             names = [self._key_names(key) for key in reserved]
             try:
                 removed = self._blob.delete_many([blob for blob, _ in names])
             except Exception:
                 logger.exception("TemporalStore L2 blob delete batch failed")
-                return
+                return 0
             commands = {
                 key: {"kind": "common_delete", "key": metadata}
                 for key, (_, metadata), deleted in zip(reserved, names, removed)
                 if deleted
             }
             if not commands:
-                return
+                return 0
 
             deleted = list(commands)
             try:
@@ -322,16 +380,75 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                     else:
                         deleted.append(key)
 
-            with self._lock:
-                sizes = {key: self._entries.pop(key, 0) for key in deleted}
-                self._used -= sum(sizes.values())
-            accounted = [(key, size) for key, size in sizes.items() if size]
-            if accounted:
-                removed, amounts = zip(*accounted)
-                self._notify_keys_deleted(list(removed), list(amounts))
+            self._account_deleted(deleted)
+            return len(deleted)
+        except Exception:
+            logger.exception("TemporalStore L2 delete failed")
+            return 0
         finally:
             with self._lock:
                 self._evicting.difference_update(reserved)
+
+    def _account_deleted(self, keys: list[ObjectKey]) -> None:
+        with self._lock:
+            sizes = {key: self._entries.pop(key, 0) for key in keys}
+            self._used -= sum(sizes.values())
+        accounted = [(key, size) for key, size in sizes.items() if size]
+        if accounted:
+            removed, amounts = zip(*accounted)
+            self._notify_keys_deleted(list(removed), list(amounts))
+
+    def _complete_store_task(self, task_id: L2TaskId, success: bool, transferred: int) -> None:
+        with self._lock:
+            self._done_store[task_id] = L2StoreResult(success, transferred)
+            self._completed_store_tasks += 1
+            self._failed_store_tasks += not success
+        self._store_event.notify()
+
+    def _store_values(
+        self, task_id: int, keys: list[ObjectKey], objects: list[MemoryObj]
+    ) -> None:
+        transferred = 0
+        success = len(keys) == len(objects)
+        try:
+            entries = {}
+            layouts = {}
+            for key, obj in zip(keys, objects):
+                size = obj.get_size()
+                payload = memoryview(obj.byte_array).cast("B")[:size]
+                if not 0 < size <= self._max_capacity_bytes or len(payload) != size:
+                    success = False
+                    continue
+                entries.setdefault(key, payload)
+                if self._config.meta_url and key not in layouts:
+                    layouts[key] = obj.metadata
+            if layouts:
+                self._values.register_layouts(layouts)
+            batch = list(entries.items())
+            written = {}
+            try:
+                for index, created in self._values.iter_store_results(batch):
+                    if created:
+                        key, payload = batch[index]
+                        written[key] = len(payload)
+            except Exception:
+                success = False
+                logger.exception("TemporalStore L2 value write failed after %d confirmations", len(written))
+            transferred = sum(written.values())
+            with self._lock:
+                previous = {key: self._entries[key] for key in written if key in self._entries}
+                self._entries.update(written)
+                self._used += transferred - sum(previous.values())
+                self._stores += len(written)
+            if previous:
+                self._notify_keys_deleted(list(previous), list(previous.values()))
+            if written:
+                self._notify_keys_stored(list(written), list(written.values()))
+        except Exception:
+            success = False
+            logger.exception("TemporalStore L2 value write failed")
+        finally:
+            self._complete_store_task(task_id, success, transferred)
 
     def _publish_stores(self, pending: dict[ObjectKey, tuple[int, bool]]) -> int:
         commands = []
@@ -433,9 +550,7 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             logger.exception("TemporalStore L2 store task failed")
         finally:
             publish()
-            with self._lock:
-                self._done_store[task_id] = L2StoreResult(success, transferred)
-            self._store_event.notify()
+            self._complete_store_task(task_id, success, transferred)
 
     def _lookup(self, task_id: int, keys: list[ObjectKey]) -> None:
         bitmap = Bitmap(len(keys))
@@ -447,17 +562,28 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
                 self._lookup_retry_at = 0.0
             # Reserve before the metadata read so eviction cannot invalidate a hit.
             with self._lock:
+                if self._closed:
+                    return
                 for index, key in enumerate(keys):
                     if key not in self._evicting and key not in self._publishing:
                         self._locked[key] = self._locked.get(key, 0) + 1
                         reserved.append((index, key))
-            commands = [
-                {"kind": "common_exists", "key": self._key_names(key)[1]}
-                for _, key in reserved
-            ]
-            answers = self._lookup_data.batch_execute(commands) if commands else []
-            for (index, _), answer in zip(reserved, answers):
-                if answer.get("kind") == "integer" and answer.get("value") == 1:
+            if self._values is not None:
+                hits = [size > 0 for size in self._values.lengths([
+                    key for _, key in reserved
+                ])]
+            else:
+                commands = [
+                    {"kind": "common_exists", "key": self._key_names(key)[1]}
+                    for _, key in reserved
+                ]
+                answers = self._lookup_data.batch_execute(commands) if commands else []
+                hits = [
+                    answer.get("kind") == "integer" and answer.get("value") == 1
+                    for answer in answers
+                ]
+            for (index, _), found in zip(reserved, hits, strict=True):
+                if found:
                     bitmap.set(index)
         except Exception as error:
             if self._config.remote_storage and isinstance(error, (OSError, HTTPException)):
@@ -484,13 +610,22 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             items = []
             for index, (key, obj) in enumerate(zip(keys, objects)):
                 try:
-                    destination = memoryview(obj.byte_array).cast("B")[:obj.get_size()]
-                    if not destination.readonly:
-                        items.append((self._key_names(key)[0], destination))
+                    size = obj.get_size()
+                    destination = memoryview(obj.byte_array).cast("B")[:size]
+                    if not destination.readonly and len(destination) == size:
+                        name = (
+                            key if self._values is not None
+                            else self._key_names(key)[0]
+                        )
+                        items.append((name, destination))
                         positions.append(index)
                 except Exception:
                     logger.exception("TemporalStore L2 load destination failed")
-            for index, found in zip(positions, self._blob.get_many_into(items)):
+            hits = (
+                self._values.load_into(items) if self._values is not None
+                else self._blob.get_many_into(items)
+            )
+            for index, found in zip(positions, hits):
                 if found:
                     bitmap.set(index)
                     loaded += 1
@@ -509,10 +644,14 @@ class TemporalStoreL2Adapter(L2AdapterInterface):
             self._closed = True
         for pool in (self._store_pool, self._lookup_pool, self._load_pool):
             pool.shutdown(wait=True)
-        if self._lookup_data is not self._data:
-            self._lookup_data.close()
-        self._data.close()
-        self._blob.close()
+        if self._values is not None:
+            self._values.close()
+        elif self._data is not None:
+            if self._lookup_data is not self._data:
+                self._lookup_data.close()
+            self._data.close()
+        if self._blob is not None:
+            self._blob.close()
         self._store_event.close()
         self._lookup_event.close()
         self._load_event.close()

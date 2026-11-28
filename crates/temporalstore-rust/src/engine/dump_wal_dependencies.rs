@@ -38,7 +38,7 @@ impl Drop for VerifiedDumpWal {
 }
 
 // Used by the Dump verifier after taking a read lease covering the group.
-fn verify_hot_tombstone(
+pub(super) fn verify_hot_tombstone(
     state: &ShardState,
     row: &super::state::TombstoneElement,
     kind: &str,
@@ -766,13 +766,13 @@ mod tests {
             }).status.ok);
         };
         append(vec![point(5, 1), point(9, 2), point(15, 3)]);
-        {
-            let shards = engine.shards.read().unwrap();
-            let series = &shards[&1].features()["series"];
+        engine.shards.with_state(1, |state| {
+            let shard = state.unwrap();
+            let series = &shard.features()["series"];
             assert_eq!(series.get(5), series.get(9));
             assert_eq!(series.get(9), series.get(15));
             assert_eq!(series.get(5).unwrap().block_slab_id(), super::super::HOT_BLOCK_SLAB_ID);
-        }
+        });
         append(vec![point(9, 4)]);
         let (mut invalid, _) = engine.capture_shard_checkpoint(1).unwrap();
         let series = invalid.features_mut().get_mut("series").unwrap();
@@ -1018,7 +1018,9 @@ mod tests {
         assert!(source.execute(ExecuteRequest {
             shard_id: 1, command: Command::StringSet { key: "selected".into(), value: vec![7; 64] },
         }).status.ok);
-        let resident = source.shards.read().unwrap().get(&1).unwrap().string_address("selected").unwrap();
+        let resident = source.shards.with_state(1, |state| {
+            state.unwrap().string_address("selected").unwrap()
+        });
         assert!(crate::wal_record::is_wal_resident(resident.block_slab_id()));
         let runtime = DataNodeRuntime::new(source.clone(), DataNodeRuntimeOptions {
             worker_threads: 1, max_queue_depth: 4, max_background_queue_depth: 2,
@@ -1034,7 +1036,9 @@ mod tests {
         assert!(result.status.ok && result.wal_reclaim_round.dumped);
         assert_eq!(result.wal_reclaim_round.moved_blocks, 0);
         assert_eq!((before.writes, before.bytes_written), (after.writes, after.bytes_written));
-        assert_eq!(source.shards.read().unwrap().get(&1).unwrap().string_address("selected"), Some(resident));
+        source.shards.with_state(1, |state| {
+            assert_eq!(state.unwrap().string_address("selected"), Some(resident));
+        });
         let manifests = source.list_bucket_dump_manifests(1);
         assert_eq!(manifests.len(), 1);
         assert_eq!(manifests[0].bucket_ids, [source.routing_bucket_for_key(1, "selected")]);
@@ -1088,14 +1092,13 @@ mod tests {
         put("pending", 2);
         let object = stable_block_object_id(1, "hash", "selected");
         let folded = block_in_wal::wal_resident_key(object, Some("pending"));
-        let before_dirty = {
-            let mut shards = source.shards.write().unwrap();
-            let shard = shards.get_mut(&1).unwrap();
+        let before_dirty = source.shards.with_state_mut(1, |state| {
+            let shard = state.unwrap();
             let placement = shard.wal_resident_blocks.get_mut(&folded)
                 .expect("test must corrupt a real resident placement");
             placement.log_id = base.wal_frames[0].log_id;
             shard.dirty_objects.bucket_counts().collect::<Vec<_>>()
-        };
+        });
         assert!(!before_dirty.is_empty());
         let bytes = source.wal_store.undumped_len_since_dump(1);
         let objects = source.wal_store.undumped_objects_since_dump(1);
@@ -1109,10 +1112,10 @@ mod tests {
         assert_eq!(source.wal_store.undumped_objects_since_dump(1), objects);
         assert_eq!(source.list_bucket_dump_manifests(1), before);
         assert_eq!(std::fs::read(source.index_path(1)).ok(), served_index);
-        assert_eq!(
-            source.shards.read().unwrap().get(&1).unwrap()
-                .dirty_objects.bucket_counts().collect::<Vec<_>>(), before_dirty,
-        );
+        source.shards.with_state(1, |state| {
+            let after_dirty = state.unwrap().dirty_objects.bucket_counts().collect::<Vec<_>>();
+            assert_eq!(after_dirty, before_dirty);
+        });
         source.validate_bucket_dump_manifest(&base).unwrap();
         let read = source.execute(ExecuteRequest {
             shard_id: 1, command: Command::HashGet {
@@ -1228,11 +1231,11 @@ mod tests {
             assert!(response.status.ok);
             assert_eq!(response.response, CommandResponse::Bytes { value: Some(vec![value; 64]) });
         }
-        {
-            let shards = reopened.shards.read().unwrap();
-            assert!(shards[&1].seen.contains_key("window"));
-            assert!(shards[&1].expires_at_ms().contains_key("selected"));
-        }
+        reopened.shards.with_state(1, |state| {
+            let shard = state.unwrap();
+            assert!(shard.seen.contains_key("window"));
+            assert!(shard.expires_at_ms().contains_key("selected"));
+        });
         let base = reopened.index_path(1);
         let original = std::fs::read(&base).unwrap();
         drop(reopened);
@@ -1248,7 +1251,7 @@ mod tests {
             local_node_id: None, shard_uri: String::new(),
         });
         assert_eq!(result.status.code, "slot_dump_invalid_wal_binding");
-        assert!(!torn.shards.read().unwrap().contains_key(&1));
+        torn.shards.with_state(1, |state| assert!(state.is_none()));
         assert_eq!(std::fs::read(base).unwrap(), original);
     }
 
@@ -1270,9 +1273,8 @@ mod tests {
         assert!(response.status.ok);
         assert_eq!(completed, ["packed"]);
         let owner = source.routing_bucket_for_key(1, "packed");
-        {
-            let shards = source.shards.read().unwrap();
-            let shard = &shards[&1];
+        source.shards.with_state(1, |state| {
+            let shard = state.unwrap();
             let fields = shard.bucket_index.hashes.get("packed").unwrap();
             let a = super::super::live_block_key(fields.get("a").unwrap());
             let b = super::super::live_block_key(fields.get("b").unwrap());
@@ -1281,7 +1283,7 @@ mod tests {
             let address_key = super::super::block_in_wal::wal_resident_address_key(object, a);
             assert!(shard.wal_resident_blocks.contains_key(&address_key),
                     "the shared Hash writer must persist the address-folded placement");
-        }
+        });
         let manifest = source.create_bucket_dump_manifest(1, [owner]).unwrap();
         assert_eq!(manifest.version, 4, "packed positive control must prove every field");
         assert_eq!(manifest.wal_frames.len(), 1);
@@ -1330,17 +1332,15 @@ mod tests {
         // owner whose separate generation will be installed below.
         let clean = source.create_bucket_dump_manifest(1, [released]).unwrap();
         source.clear_dumped_bucket_dirty_state(1, &clean);
-        {
-            let mut shards = source.shards.write().unwrap();
+        source.shards.with_state_mut(1, |state| {
             let outcome = super::super::storage_bucket_internals::release_bucket_blocks(
-                shards.get_mut(&1).unwrap(), &[released],
+                state.unwrap(), &[released],
             );
             assert_eq!(outcome.released_buckets, [released]);
-        }
+        });
         assert_ne!(owner, released);
-        {
-            let shards = source.shards.read().unwrap();
-            let shard = &shards[&1];
+        source.shards.with_state(1, |state| {
+            let shard = state.unwrap();
             let fields = shard.bucket_index.hashes.get("packed").unwrap();
             let a = super::super::live_block_key(fields.get("a").unwrap());
             let b = super::super::live_block_key(fields.get("b").unwrap());
@@ -1349,10 +1349,14 @@ mod tests {
             let address_key = super::super::block_in_wal::wal_resident_address_key(object, a);
             assert!(shard.wal_resident_blocks.contains_key(&address_key),
                     "the shared Hash writer must persist the address-folded placement");
-        }
-        assert!(source.shards.read().unwrap()[&1].bucket_index.released_buckets.contains(&released));
+        });
+        source.shards.with_state(1, |state| {
+            assert!(state.unwrap().bucket_index.released_buckets.contains(&released));
+        });
         let (capture, _) = source.capture_shard_checkpoint(1).unwrap();
-        assert!(source.shards.read().unwrap()[&1].bucket_index.released_buckets.contains(&released));
+        source.shards.with_state(1, |state| {
+            assert!(state.unwrap().bucket_index.released_buckets.contains(&released));
+        });
         assert!(!capture.bucket_index.released_buckets.contains(&released));
         let captured_rows = super::super::storage_bucket_internals::collect_live_block_entries(&capture);
         assert!(captured_rows.iter().any(|row| row.object_key.as_ref() == "released-scalar"
@@ -1360,19 +1364,22 @@ mod tests {
         let bytes = super::super::serialize_index(&capture);
         // A historical unreachable registration may survive in serving state.
         // The durable image must exclude it without mutating the live registry.
-        let unused = {
-            let mut shards = source.shards.write().unwrap();
-            let placements = &mut shards.get_mut(&1).unwrap().wal_resident_blocks;
+        let unused = source.shards.with_state_mut(1, |state| {
+            let placements = &mut state.unwrap().wal_resident_blocks;
             let unused = (0..).find(|key| !placements.contains_key(key)).unwrap();
             placements.insert(unused, super::super::state::WalResidentBlock {
                 log_id: u64::MAX, sequence: 1,
             });
             unused
-        };
+        });
         let manifest = source.create_bucket_dump_manifest(1, [owner]).unwrap();
         assert_eq!(crate::engine::installable_image(&manifest).unwrap(), bytes.as_slice(), "completed release image must encode identically");
-        assert!(source.shards.read().unwrap()[&1].bucket_index.released_buckets.contains(&released));
-        assert!(source.shards.read().unwrap()[&1].wal_resident_blocks.contains_key(&unused));
+        source.shards.with_state(1, |state| {
+            assert!(state.unwrap().bucket_index.released_buckets.contains(&released));
+        });
+        source.shards.with_state(1, |state| {
+            assert!(state.unwrap().wal_resident_blocks.contains_key(&unused));
+        });
         let decoded = super::super::decode_index_bytes(crate::engine::installable_image(&manifest).unwrap()).unwrap();
         assert!(!decoded.wal_resident_blocks.contains_key(&unused));
         let entries = super::super::storage_bucket_internals::collect_live_block_entries(&decoded);
@@ -1400,7 +1407,9 @@ mod tests {
         drop(source);
         let reopened = engine_at(root.path());
         reopened.load_shard(1);
-        assert!(reopened.shards.read().unwrap()[&1].expires_at_ms().contains_key("packed"));
+        reopened.shards.with_state(1, |state| {
+            assert!(state.unwrap().expires_at_ms().contains_key("packed"));
+        });
         for (key, value) in [("released-scalar", Some(vec![8; 64])), ("deleted-scalar", None)] {
             let read = reopened.execute(ExecuteRequest {
                 shard_id: 1, command: Command::StringGet { key: key.into() },

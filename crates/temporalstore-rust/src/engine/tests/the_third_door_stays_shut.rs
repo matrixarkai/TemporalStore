@@ -145,14 +145,15 @@ fn build_fixture(dir: &std::path::Path, flush_base: bool) {
     assert!(wrote.status.ok, "the setup write failed: {}", wrote.status.message);
 
     {
-        let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let shard = shards.get_mut(&SHARD).expect("the shard is loaded");
-        let live = shard
-            .strings()
-            .get(KEY)
-            .expect("the written string is resident")
-            .clone();
-        shard.context_nodes_mut().insert(KEY.into(), live.address());
+        engine.shards.with_state_mut(SHARD, |state| {
+            let shard = state.expect("the shard is loaded");
+            let live = shard
+                .strings()
+                .get(KEY)
+                .expect("the written string is resident")
+                .clone();
+            shard.context_nodes_mut().insert(KEY.into(), live.address());
+        })
     }
 
     let expired = engine.execute(ExecuteRequest {
@@ -175,10 +176,9 @@ fn build_fixture(dir: &std::path::Path, flush_base: bool) {
 }
 
 fn planted_arrived(engine: &TemporalEngine) -> bool {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    shards
-        .get(&SHARD)
-        .map_or(false, |shard| shard.context_nodes().contains_key(KEY))
+    engine.shards.with_state(SHARD, |state| {
+        state.is_some_and(|shard| shard.context_nodes().contains_key(KEY))
+    })
 }
 
 fn decisions_for_this_shard() -> Vec<(ShardId, u64, bool)> {

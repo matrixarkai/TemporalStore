@@ -1144,8 +1144,7 @@ pub struct BlockStoreOptions {
 /// which block of that object it is.
 ///
 /// The last of those used to be the block store's to invent, from a counter running across the
-/// whole store. A block id is now an index INSIDE an object -- block 0, block 1 -- the way the
-/// comparison design numbers a block within a slot rather than within a partition. Two objects
+/// whole store. A block id is now an index INSIDE an object: block 0, block 1. Two objects
 /// both having a block 0 is expected: a block is identified by its object and its index, and
 /// every key that names one already carries the object key.
 ///
@@ -1469,10 +1468,9 @@ pub struct BlockStoreDelayedDestroySlabReport {
 /// reclaim that quarantines and purges a slab, followed by a reload of an index that still names
 /// it, dangles at a deleted slab. An age is what makes a delayed destroy delay anything.
 ///
-/// One hour rather than the twenty-four the comparison design waits. The window this has to cover
-/// is a reader holding a stale address, a replica catching up, or an index persist that failed and
-/// is retried next cycle -- minutes, not a day -- and quarantine holds real bytes on a box with a
-/// measured capacity wall. Long enough for all three, short enough not to hoard a day of garbage.
+/// The one-hour window covers a reader holding a stale address, a replica catching up, or an
+/// index persist that failed and is retried next cycle. Quarantine holds real bytes on a box
+/// with a measured capacity wall. The window balances delayed readers and retained bytes.
 pub(crate) const DELAYED_DESTROY_MIN_AGE_MS: u64 = 60 * 60 * 1000;
 
 /// How many quarantined slabs one purge round may act on before it stops and leaves the rest for
@@ -2019,7 +2017,7 @@ struct BlockStoreInner {
     /// computed fresh at the call. So a stale tally that overstates live bytes costs a round of
     /// collection, and one that understates them cannot reach anything the live-set test would
     /// have retained.
-    live_block_bytes: Option<BTreeMap<u64, BlockStoreSlabLive>>,
+    live_block_bytes: Option<Arc<BTreeMap<u64, BlockStoreSlabLive>>>,
     stats: BlockStoreStats,
     /// The earliest moment any slab now in quarantine was set aside -- when this process KNOWS it.
     ///
@@ -2438,11 +2436,9 @@ impl BlockStore {
     /// lets a later read fetch a missing old slab on demand from shared storage,
     /// cache it locally, and serve it — instead of installing every slab up front.
     pub fn attach_shared_slab_source(&self, source: Arc<dyn SharedSlabSource>) {
-        self
-            .read_view
-            .sources
-            .write()
-            .expect("shared slab source lock poisoned").default = Some(source);
+        let previous = self.read_view.sources.write()
+            .expect("shared slab source lock poisoned").default.replace(source);
+        drop(previous);
     }
 
     pub(crate) fn attach_checkpoint_slab_source(
@@ -4009,7 +4005,7 @@ mod address_size_tests {
         assert_eq!(word_covered, 8, "one 64-bit word: the slab in the high half, the offset in the low");
         assert_eq!(
             word_padding, 0,
-            "a single eight-byte field in an eight-aligned struct leaves no slack to reclaim,              which is why there is no narrowing left to try here"
+            "a single eight-byte field in an eight-aligned struct leaves no slack to reclaim, which is why there is no narrowing left to try here"
         );
         assert_eq!(word_total, 8);
 
@@ -4050,7 +4046,7 @@ mod address_size_tests {
         );
         assert_eq!(
             total, 16,
-            "and sixteen is what the address cost on its own before the three moved out, so this              is a relocation and not a saving -- see              `engine::tests::address_footprint::the_priced_shapes_for_an_address_and_its_siblings`              for the same zero measured at every holder in the engine"
+            "and sixteen is what the address cost on its own before the three moved out, so this is a relocation and not a saving -- see `engine::tests::address_footprint::the_priced_shapes_for_an_address_and_its_siblings` for the same zero measured at every holder in the engine"
         );
 
         let mut sorted = fields.clone();
@@ -5897,7 +5893,7 @@ const RETIRED_NAMES: &[&str] = &[
         assert_ne!(
             hex::encode(field),
             record::sha256_hex(payload),
-            "if this ever matches, the envelope holds a full digest and the index copy could              genuinely be relocated rather than dropped"
+            "if this ever matches, the envelope holds a full digest and the index copy could genuinely be relocated rather than dropped"
         );
         assert_eq!(
             field,

@@ -598,52 +598,55 @@ fn write(engine: &TemporalEngine, command: Command) {
 
 /// The slot array of one bucket, as `(slot, id)` for the slots that hold an id.
 fn slots_of(engine: &TemporalEngine, routing_bucket: u32) -> BTreeMap<usize, u64> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
-    let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
-        return BTreeMap::new();
-    };
-    (0..bucket.object_index.slot_count())
-        .filter_map(|slot| bucket.object_index.id_at(slot).map(|id| (slot, id)))
-        .collect()
+    engine.shards.with_state(SHARD, |state| {
+        let shard = state.expect("shard is loaded");
+        let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
+            return BTreeMap::new();
+        };
+        (0..bucket.object_index.slot_count())
+            .filter_map(|slot| bucket.object_index.id_at(slot).map(|id| (slot, id)))
+            .collect()
+    })
 }
 
 /// The object list of one bucket AS IT SERIALIZES, which is the stored positions.
 fn stored_object_index(engine: &TemporalEngine, routing_bucket: u32) -> Vec<Option<u64>> {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
-    let bucket = shard
-        .bucket_index
-        .bucket_map
-        .get(&routing_bucket)
-        .expect("APPARATUS: the bucket under test is not resident");
-    serde_json::from_value(
-        serde_json::to_value(&bucket.object_index).expect("an object list serializes"),
-    )
-    .expect("an object list's stored form is a sequence of ids and placeholders")
+    engine.shards.with_state(SHARD, |state| {
+        let shard = state.expect("shard is loaded");
+        let bucket = shard
+            .bucket_index
+            .bucket_map
+            .get(&routing_bucket)
+            .expect("APPARATUS: the bucket under test is not resident");
+        serde_json::from_value(
+            serde_json::to_value(&bucket.object_index).expect("an object list serializes"),
+        )
+        .expect("an object list's stored form is a sequence of ids and placeholders")
+    })
 }
 
 /// How many entries in one bucket name this object, split by whether each is a tombstone.
 fn entries_naming(engine: &TemporalEngine, routing_bucket: u32, object_id: u64) -> (usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
-    let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
-        return (0, 0);
-    };
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut live = 0usize;
-    let mut tombstoned = 0usize;
-    for (handle, block) in &bucket.block_index {
-        if block.object_id(SHARD, named.at(routing_bucket, *handle)) != object_id {
-            continue;
+    engine.shards.with_state(SHARD, |state| {
+        let shard = state.expect("shard is loaded");
+        let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
+            return (0, 0);
+        };
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut live = 0usize;
+        let mut tombstoned = 0usize;
+        for (handle, block) in &bucket.block_index {
+            if block.object_id(SHARD, named.at(routing_bucket, *handle)) != object_id {
+                continue;
+            }
+            if block.deleted() {
+                tombstoned += 1;
+            } else {
+                live += 1;
+            }
         }
-        if block.deleted() {
-            tombstoned += 1;
-        } else {
-            live += 1;
-        }
-    }
-    (live, tombstoned)
+        (live, tombstoned)
+    })
 }
 
 /// The object id of a `(kind, key)` under the shard this module loads.
@@ -995,48 +998,49 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
     // ---------------------------------------------------------------------------------------------
     let routing_bucket = routing_bucket_of(PRESENT_KEY);
     let node_wire = {
-        let shards = engine.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&SHARD).expect("shard is loaded");
-        let bucket = shard
-            .bucket_index
-            .bucket_map
-            .get(&routing_bucket)
-            .expect("APPARATUS: the bucket holding the key under test is not resident");
-        // EVERY OBJECT THIS BUCKET HOLDS, TAKEN FROM BOTH HOMES OF THE INDEX'S REFS.
-        //
-        // Naming only the key under test was wrong and the encoder said so on the first run: the
-        // forty filler keys route over the same slot space and at least one of them lands here,
-        // so a list of one left a block unaccounted for. That is the hole `NodeNamedBy` exists to
-        // refuse -- the keyless encode used to write a key naming nothing, once per block, and
-        // return `Ok` -- and it is also why this list is DERIVED rather than written out: a
-        // hand-written one goes stale the next time the fixture's key count or slot range moves.
-        //
-        // THE KEY UNDER TEST IS STILL ASSERTED TO BE AMONG THEM, because the arm below reads the
-        // serialized node for that key's characters and a bucket that did not hold it would make
-        // every row of that search vacuous.
-        //
-        // AND IT ASKS `every_object_with_refs`, NOT THE LOOKUP. This read the lookup alone, which
-        // is why this arm was red on `main` for several merges: refs have two homes since the
-        // fold -- an object's own slot row for the kinds that have one, `object_block_lookup` for
-        // the rest -- and this fixture writes `StringSet`, whose refs moved to the slot. The
-        // lookup answered with the container objects only, the key under test was not among them,
-        // and the APPARATUS assertion below is what caught it. A reader that means EVERY object
-        // must say so.
-        let objects: Vec<&str> = shard
-            .bucket_index
-            .every_object_with_refs()
-            .filter(|(_, _, refs)| {
-                refs.iter().any(|block_ref| block_ref.routing_bucket == routing_bucket)
-            })
-            .map(|(_, object, _)| object)
-            .collect();
-        assert!(
-            objects.iter().any(|object| *object == PRESENT_KEY),
-            "APPARATUS: the bucket this test reads does not hold {PRESENT_KEY}, so the search \
-             below is over a node that never carried it"
-        );
-        serde_json::to_value(crate::engine::state::NodeNamedBy(bucket, &objects))
-            .expect("a bucket node serializes to its stored shape")
+        engine.shards.with_state(SHARD, |state| {
+            let shard = state.expect("shard is loaded");
+            let bucket = shard
+                .bucket_index
+                .bucket_map
+                .get(&routing_bucket)
+                .expect("APPARATUS: the bucket holding the key under test is not resident");
+            // EVERY OBJECT THIS BUCKET HOLDS, TAKEN FROM BOTH HOMES OF THE INDEX'S REFS.
+            //
+            // Naming only the key under test was wrong and the encoder said so on the first run: the
+            // forty filler keys route over the same slot space and at least one of them lands here,
+            // so a list of one left a block unaccounted for. That is the hole `NodeNamedBy` exists to
+            // refuse -- the keyless encode used to write a key naming nothing, once per block, and
+            // return `Ok` -- and it is also why this list is DERIVED rather than written out: a
+            // hand-written one goes stale the next time the fixture's key count or slot range moves.
+            //
+            // THE KEY UNDER TEST IS STILL ASSERTED TO BE AMONG THEM, because the arm below reads the
+            // serialized node for that key's characters and a bucket that did not hold it would make
+            // every row of that search vacuous.
+            //
+            // AND IT ASKS `every_object_with_refs`, NOT THE LOOKUP. This read the lookup alone, which
+            // is why this arm was red on `main` for several merges: refs have two homes since the
+            // fold -- an object's own slot row for the kinds that have one, `object_block_lookup` for
+            // the rest -- and this fixture writes `StringSet`, whose refs moved to the slot. The
+            // lookup answered with the container objects only, the key under test was not among them,
+            // and the APPARATUS assertion below is what caught it. A reader that means EVERY object
+            // must say so.
+            let objects: Vec<&str> = shard
+                .bucket_index
+                .every_object_with_refs()
+                .filter(|(_, _, refs)| {
+                    refs.iter().any(|block_ref| block_ref.routing_bucket == routing_bucket)
+                })
+                .map(|(_, object, _)| object)
+                .collect();
+            assert!(
+                objects.iter().any(|object| *object == PRESENT_KEY),
+                "APPARATUS: the bucket this test reads does not hold {PRESENT_KEY}, so the search \
+                 below is over a node that never carried it"
+            );
+            serde_json::to_value(crate::engine::state::NodeNamedBy(bucket, &objects))
+                .expect("a bucket node serializes to its stored shape")
+        })
     };
     let members = node_wire.as_object().expect(
         "APPARATUS: a bucket node does not serialize as an object, so its members cannot be \

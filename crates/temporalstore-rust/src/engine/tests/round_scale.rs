@@ -328,11 +328,7 @@ fn an_idle_round_still_walks_the_live_block_set() {
     seed_in_batches(&engine, 1, RECORDS, 1);
 
     let dirty_before = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        shards
-            .get(&1)
-            .map(|shard| shard.dirty_objects.len())
-            .unwrap_or(0)
+        engine.shards.with_state(1, |shard| shard.map_or(0, |shard| shard.dirty_objects.len()))
     };
     assert_eq!(
         dirty_before, RECORDS,
@@ -346,11 +342,7 @@ fn an_idle_round_still_walks_the_live_block_set() {
     );
 
     let dirty_after = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        shards
-            .get(&1)
-            .map(|shard| shard.dirty_objects.len())
-            .unwrap_or(0)
+        engine.shards.with_state(1, |shard| shard.map_or(0, |shard| shard.dirty_objects.len()))
     };
     assert_eq!(
         dirty_after, 0,
@@ -399,11 +391,7 @@ fn the_dump_threshold_counts_log_records_not_dirty_objects() {
             ..round_request()
         });
         let dirty = {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            shards
-                .get(&1)
-                .map(|shard| shard.dirty_objects.len())
-                .unwrap_or(0)
+            engine.shards.with_state(1, |shard| shard.map_or(0, |shard| shard.dirty_objects.len()))
         };
         println!(
             "  {records} objects in batches of {batch:<5} -> undumped log records {:>5}, \
@@ -786,17 +774,18 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     // from the shard below rather than written down, so a fixture that stops releasing anything
     // fails the denominator instead of quietly measuring the easy case.
     let (indexed_blocks, released_buckets) = {
-        let shards = engine.shards.read().expect("shards lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
-        (
-            shard
-                .bucket_index
-                .bucket_map
-                .values()
-                .map(|bucket| bucket.block_index.len())
-                .sum::<usize>() as u64,
-            shard.bucket_index.released_buckets.len(),
-        )
+        engine.shards.with_state(1, |state| {
+            let shard = state.expect("shard 1 is loaded");
+            (
+                shard
+                    .bucket_index
+                    .bucket_map
+                    .values()
+                    .map(|bucket| bucket.block_index.len())
+                    .sum::<usize>() as u64,
+                shard.bucket_index.released_buckets.len(),
+            )
+        })
     };
 
     // THE DENOMINATOR for everything below. With nothing released the supplement walk never

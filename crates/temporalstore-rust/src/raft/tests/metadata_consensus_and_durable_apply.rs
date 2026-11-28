@@ -536,6 +536,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
 
     assert!(
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-a".to_string(),
@@ -656,6 +657,7 @@ fn metaserver_raft_replicates_full_metadata_mutation_api() {
 fn metaserver_raft_freeze_stale_server_is_replicated_mutation() {
     let meta = MetaRaftCluster::new([10, 11, 12]);
     meta.register_server(RegisterServerRequest {
+        grpc_addr: None,
         registered_at_ms: 0,
         numa_nodes: Vec::new(),
         server_addr: "server-stale".to_string(),
@@ -710,6 +712,7 @@ fn production_meta_raft_runtime_ticks_failover_and_failure_detection() {
         runtime
             .cluster()
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "server-stale".to_string(),
@@ -3697,7 +3700,7 @@ fn a_rejected_append_retreats_to_an_earlier_entry() {
     let second = cluster.build_append_entries_request(3).unwrap();
     assert!(
         second.prev_log_index < first.prev_log_index,
-        "a rejection must lower the point the next request asks about, but it stayed at {} --          the retry is identical, so the peer can never converge",
+        "a rejection must lower the point the next request asks about, but it stayed at {} -- the retry is identical, so the peer can never converge",
         second.prev_log_index
     );
 }

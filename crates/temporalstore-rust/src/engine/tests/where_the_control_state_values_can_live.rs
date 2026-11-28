@@ -89,18 +89,19 @@ fn engine_at(dir: &std::path::Path) -> TemporalEngine {
 /// only be counted once either way, which is the point.
 fn held(engine: &TemporalEngine) -> (usize, usize, bool) {
     use crate::engine::hll::DistinctBucket;
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let (exact, sketched) = shard
-        .control_state_changes
-        .get(KEY)
-        .map_or((0, 0), |buckets| {
-            buckets.values().fold((0, 0), |(exact, sketched), bucket| match bucket {
-                DistinctBucket::Exact(_) => (exact + 1, sketched),
-                DistinctBucket::Sketch(_) => (exact, sketched + 1),
-            })
-        });
-    (exact, sketched, shard.control_state_selection.contains_key(KEY))
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let (exact, sketched) = shard
+            .control_state_changes
+            .get(KEY)
+            .map_or((0, 0), |buckets| {
+                buckets.values().fold((0, 0), |(exact, sketched), bucket| match bucket {
+                    DistinctBucket::Exact(_) => (exact + 1, sketched),
+                    DistinctBucket::Sketch(_) => (exact, sketched + 1),
+                })
+            });
+        (exact, sketched, shard.control_state_selection.contains_key(KEY))
+    })
 }
 
 /// Turn the distinct-sketch gate on through the real config path, and confirm the shard field the
@@ -135,28 +136,30 @@ fn enable_distinct_sketch(engine: &TemporalEngine) {
         },
     });
     assert!(answer.status.ok, "the seed write failed: {}", answer.status.message);
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    assert!(
-        shard.control_distinct_sketch,
-        "the config gate is on but the shard field `record_change` reads is still false, so the \
-         per-execute assignment in `execute_on_shard` is not reaching it and the arms below would \
-         be measuring the default rather than the gate"
-    );
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        assert!(
+            shard.control_distinct_sketch,
+            "the config gate is on but the shard field `record_change` reads is still false, so the \
+             per-execute assignment in `execute_on_shard` is not reaching it and the arms below would \
+             be measuring the default rather than the gate"
+        );
+    });
 }
 
 /// Drive `record_change` past the conversion threshold on one bucket.
 fn fill_past_the_threshold(engine: &TemporalEngine) {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-    for index in 0..=crate::engine::hll::DISTINCT_SKETCH_THRESHOLD {
-        crate::engine::hll::record_change(
-            shard,
-            KEY,
-            BUCKET_MS,
-            format!("member-{index}").into_bytes(),
-        );
-    }
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        for index in 0..=crate::engine::hll::DISTINCT_SKETCH_THRESHOLD {
+            crate::engine::hll::record_change(
+                shard,
+                KEY,
+                BUCKET_MS,
+                format!("member-{index}").into_bytes(),
+            );
+        }
+    });
 }
 
 /// 1. DURABLE, NOT DERIVED -- driven as a round trip, not read off the attribute.
@@ -233,15 +236,14 @@ fn the_sketch_map_has_no_writer_until_its_flag_is_on() {
     let off_dir = tempfile::tempdir().expect("tempdir");
     let off = engine_at(off_dir.path());
     off.load_shard(1);
-    {
-        let shards = off.shards.read().expect("engine lock poisoned");
-        let shard = shards.get(&1).expect("shard 1 is loaded");
+    off.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
         assert!(
             !shard.control_distinct_sketch,
             "denominator: the distinct-sketch gate must be OFF by default, or this arm is not \
              measuring the default. `Config::flag` is `flag_or(name, false)`."
         );
-    }
+    });
     fill_past_the_threshold(&off);
     let (exact_off, sketch_off, _) = held(&off);
     println!("  gate off -> exact buckets {exact_off}, sketched buckets {sketch_off}");
@@ -302,38 +304,39 @@ fn a_bucket_holds_exactly_one_representation() {
     fill_past_the_threshold(&engine);
 
     use crate::engine::hll::DistinctBucket;
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let buckets = shard
-        .control_state_changes
-        .get(KEY)
-        .expect("the key holds a change series");
-    let shapes: Vec<(u64, &str)> = buckets
-        .iter()
-        .map(|(at, bucket)| {
-            (
-                *at,
-                match bucket {
-                    DistinctBucket::Exact(_) => "exact",
-                    DistinctBucket::Sketch(_) => "sketch",
-                },
-            )
-        })
-        .collect();
-    println!("  buckets held: {shapes:?}");
-    assert_eq!(
-        1,
-        shapes.len(),
-        "the conversion left {} buckets under one key where the fixture wrote to one. A \
-         conversion that ADDS a bucket rather than replacing one in place would look like this, \
-         and it would double the memory the sketch exists to bound.",
-        shapes.len()
-    );
-    assert_eq!(
-        "sketch", shapes[0].1,
-        "the bucket past the threshold with the gate on is still exact, so the conversion did \
-         not happen and this arm is measuring nothing"
-    );
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let buckets = shard
+            .control_state_changes
+            .get(KEY)
+            .expect("the key holds a change series");
+        let shapes: Vec<(u64, &str)> = buckets
+            .iter()
+            .map(|(at, bucket)| {
+                (
+                    *at,
+                    match bucket {
+                        DistinctBucket::Exact(_) => "exact",
+                        DistinctBucket::Sketch(_) => "sketch",
+                    },
+                )
+            })
+            .collect();
+        println!("  buckets held: {shapes:?}");
+        assert_eq!(
+            1,
+            shapes.len(),
+            "the conversion left {} buckets under one key where the fixture wrote to one. A \
+             conversion that ADDS a bucket rather than replacing one in place would look like this, \
+             and it would double the memory the sketch exists to bound.",
+            shapes.len()
+        );
+        assert_eq!(
+            "sketch", shapes[0].1,
+            "the bucket past the threshold with the gate on is still exact, so the conversion did \
+             not happen and this arm is measuring nothing"
+        );
+    });
 }
 
 /// 4. NONE OF THE THREE HAS AN OUTER KIND KEY, WHICH IS WHY A SLOT CANNOT ADDRESS THEM.

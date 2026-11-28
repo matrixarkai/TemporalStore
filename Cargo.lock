@@ -872,7 +872,7 @@ checksum = "0e7465ac9959cc2b1404e8e2367b43684a6d13790fe23056cc8c6c5a6b7bcb94"
 [[package]]
 name = "matrixcache"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/matrixcache.git?rev=bcf26e100f1fe414076a4771468fbaec704eafc3#bcf26e100f1fe414076a4771468fbaec704eafc3"
+source = "git+https://github.com/matrixarkai/matrixcache.git?rev=8b5f929fa686c02f02a681d15cb283ddf30ed258#8b5f929fa686c02f02a681d15cb283ddf30ed258"
 dependencies = [
  "ahash",
  "core_affinity",
@@ -1765,6 +1765,7 @@ dependencies = [
  "prost 0.13.5",
  "protoc-bin-vendored",
  "rmp-serde",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",

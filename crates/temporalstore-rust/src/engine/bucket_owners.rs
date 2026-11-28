@@ -26,7 +26,7 @@
 //! slack on top; two vectors are 17 bytes an entry. A bucket holds a few hundred objects at most, so
 //! the scan that removes a key is short.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use super::storage_bucket_internals::StoredModelKind;
@@ -56,7 +56,7 @@ impl BucketList {
 
 #[derive(Debug, Default)]
 pub(super) struct BucketOwners {
-    by_bucket: HashMap<u32, BucketList>,
+    by_bucket: BTreeMap<u32, BucketList>,
 }
 
 impl BucketOwners {
@@ -160,5 +160,92 @@ impl OwnersCell {
 
     pub(super) fn set(&mut self, owners: BucketOwners) {
         self.0 = Some(Box::new(owners));
+    }
+}
+
+#[cfg(test)]
+mod ordered_directory_tests {
+    use super::*;
+
+    #[test]
+    fn growth_retains_every_bucket_and_shared_key() {
+        let mut owners = BucketOwners::default();
+        let keys: Vec<Arc<str>> = (0..4096)
+            .map(|id| Arc::from(format!("key-{id}")))
+            .collect();
+        for id in (0..4096u32).rev() {
+            owners.add(id, StoredModelKind::ALL[0], &keys[id as usize]);
+        }
+        assert_eq!(owners.entries(), keys.len());
+        assert_eq!(owners.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+                   (0..4096u32).collect::<Vec<_>>());
+        for (id, key) in keys.iter().enumerate() {
+            let list = owners.owners_of(id as u32).unwrap();
+            let entries: Vec<_> = list.iter().collect();
+            assert_eq!(entries.len(), 1);
+            assert_eq!(entries[0].0, StoredModelKind::ALL[0]);
+            assert!(Arc::ptr_eq(entries[0].1, key));
+        }
+        owners.shrink();
+        assert_eq!(owners.entries(), keys.len());
+    }
+
+    #[test]
+    fn forgetting_a_key_removes_all_kinds_but_keeps_other_keys_and_buckets() {
+        assert!(!StoredModelKind::ALL.is_empty());
+        let mut owners = BucketOwners::default();
+        let removed: Arc<str> = Arc::from("removed");
+        let retained: Arc<str> = Arc::from("retained");
+        for &kind in StoredModelKind::ALL {
+            owners.add(3, kind, &removed);
+        }
+        owners.add(3, StoredModelKind::ALL[0], &retained);
+        owners.add(9, StoredModelKind::ALL[0], &removed);
+        owners.forget_key(3, "removed");
+        let list = owners.owners_of(3).unwrap();
+        for &kind in StoredModelKind::ALL {
+            assert!(!list.contains(kind, "removed"));
+        }
+        assert!(list.contains(StoredModelKind::ALL[0], "retained"));
+        assert!(owners.owners_of(9).unwrap().contains(StoredModelKind::ALL[0], "removed"));
+        owners.forget_key(3, "retained");
+        assert!(owners.owners_of(3).is_none());
+        owners.forget_key(44, "absent");
+        assert!(owners.owners_of(44).is_none());
+        assert_eq!(owners.entries(), 1);
+    }
+
+    #[test]
+    fn reset_and_bucket_removal_allow_exact_refiling() {
+        let mut owners = BucketOwners::default();
+        let old: Arc<str> = Arc::from("old");
+        let new: Arc<str> = Arc::from("new");
+        owners.add(7, StoredModelKind::ALL[0], &old);
+        owners.reset_bucket(7);
+        assert_eq!(owners.owners_of(7).unwrap().iter().count(), 0);
+        owners.add(7, StoredModelKind::ALL[0], &new);
+        assert_eq!(owners.entries(), 1);
+        assert!(!owners.owners_of(7).unwrap().contains(StoredModelKind::ALL[0], "old"));
+        assert!(owners.owners_of(7).unwrap().contains(StoredModelKind::ALL[0], "new"));
+        owners.forget_bucket(7);
+        assert!(owners.owners_of(7).is_none());
+        owners.add(7, StoredModelKind::ALL[0], &old);
+        assert_eq!(owners.entries(), 1);
+        assert!(owners.owners_of(7).unwrap().contains(StoredModelKind::ALL[0], "old"));
+    }
+
+    #[test]
+    fn a_capture_clone_stays_absent_and_does_not_change_live_ownership() {
+        let mut owners = BucketOwners::default();
+        let key: Arc<str> = Arc::from("live");
+        owners.add(2, StoredModelKind::ALL[0], &key);
+        let mut cell = OwnersCell::default();
+        cell.set(owners);
+        let captured = cell.clone();
+        assert!(captured.get().is_none());
+        assert!(cell.get().unwrap().owners_of(2).unwrap()
+            .contains(StoredModelKind::ALL[0], "live"));
+        cell.get_mut().unwrap().forget_bucket(2);
+        assert!(cell.get().unwrap().owners_of(2).is_none());
     }
 }

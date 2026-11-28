@@ -1196,28 +1196,29 @@ mod shared_registration_tests {
         let owner = engine.block_store.store_id();
         assert_eq!(registry().lock().unwrap().entries(owner, 1).count(), 0);
         assert_eq!(physical::count(&engine.block_store, 1), 8);
-        let shards = engine.shards.read().unwrap();
-        let shard = shards.get(&1).unwrap();
-        assert_eq!(shard.wal_resident_blocks.len(), 8);
-        let mut allocations = HashSet::new();
-        for row in 0..8u8 {
-            let key = format!("row-{row}");
-            let object = crate::engine::stable_block_object_id(1, "hash", &key);
-            let fields = shard.bucket_index.hashes.get(&key).unwrap();
-            for name in fields.keys() { allocations.insert(Arc::as_ptr(name) as *const () as usize); }
-            for field in 0..3u8 {
-                let name = format!("field-{field}");
-                let address = fields.get(&name).unwrap();
-                let location = physical::lookup(&engine.block_store, 1, object,
-                    crate::engine::live_block_key(address)).unwrap().unwrap();
-                assert_eq!(location.4, Some(row as usize));
-                let frame = read_block_at(&engine.block_store, 1, object, Some(&name), address).unwrap();
-                let ContainerElementRead::Found(value) = select_container_element(&frame, &name)
-                    else { panic!("registered field must select a value") };
-                assert_eq!(value, vec![row * 3 + field; 48]);
+        engine.shards.with_state(1, |state| {
+            let shard = state.unwrap();
+            assert_eq!(shard.wal_resident_blocks.len(), 8);
+            let mut allocations = HashSet::new();
+            for row in 0..8u8 {
+                let key = format!("row-{row}");
+                let object = crate::engine::stable_block_object_id(1, "hash", &key);
+                let fields = shard.bucket_index.hashes.get(&key).unwrap();
+                for name in fields.keys() { allocations.insert(Arc::as_ptr(name) as *const () as usize); }
+                for field in 0..3u8 {
+                    let name = format!("field-{field}");
+                    let address = fields.get(&name).unwrap();
+                    let location = physical::lookup(&engine.block_store, 1, object,
+                        crate::engine::live_block_key(address)).unwrap().unwrap();
+                    assert_eq!(location.4, Some(row as usize));
+                    let frame = read_block_at(&engine.block_store, 1, object, Some(&name), address).unwrap();
+                    let ContainerElementRead::Found(value) = select_container_element(&frame, &name)
+                        else { panic!("registered field must select a value") };
+                    assert_eq!(value, vec![row * 3 + field; 48]);
+                }
             }
-        }
-        assert_eq!(allocations.len(), 3, "one field-name allocation per column, not per row");
+            assert_eq!(allocations.len(), 3, "one field-name allocation per column, not per row");
+        });
     }
 
     #[test]

@@ -231,10 +231,9 @@ fn background_compaction_partial_failure_is_durable_and_resumable() {
     );
     let anchor = engine.compaction_rounds.read().unwrap().get(&1).copied();
     assert!(anchor.is_some());
-    {
-        let shards = engine.shards_write_marked();
-        assert_the_index_names_what_the_maps_hold(shards.get(&1).unwrap());
-    }
+    engine.shards.with_state_mut(1, |owner_state| {
+        assert_the_index_names_what_the_maps_hold(owner_state.as_deref().unwrap());
+    });
     check_values(&engine, 16);
     // Reopen the partially published image before another round can repair anything.
     drop(engine);
@@ -256,16 +255,15 @@ fn background_compaction_still_rejects_misfiled_ownership_before_rolling() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path(), false);
     seed(&engine, 8);
-    {
-        let mut shards = engine.shards_write_marked();
-        let shard = shards.get_mut(&1).unwrap();
+    engine.shards.with_state_mut(1, |owner_state| {
+        let shard = owner_state.unwrap();
         let original = *shard.bucket_index.bucket_map.keys().next().unwrap();
         let mut wrong = original.wrapping_add(1);
         while shard.bucket_index.bucket_map.contains_key(&wrong) { wrong = wrong.wrapping_add(1); }
         let mut bucket = shard.bucket_index.bucket_map.remove(&original).unwrap();
         bucket.routing_bucket = wrong;
         shard.bucket_index.bucket_map.insert(wrong, bucket);
-    }
+    });
     let slabs_before = engine.block_store().slab_ids().unwrap();
     let failure = engine.compact_shard_blocks_relocating_inner(
         1, u64::MAX, usize::MAX, None, false,
@@ -442,16 +440,15 @@ fn a_drain_round_asks_only_about_keys_that_hold_a_block_on_the_drain_slab() {
         });
         assert!(response.status.ok);
     }
-    {
-        let shards = engine.shards.read().unwrap();
-        let mut drain_keys: Vec<_> = collect_live_block_entries(shards.get(&1).unwrap())
+    engine.shards.with_state(1, |owner_state| {
+        let mut drain_keys: Vec<_> = collect_live_block_entries(owner_state.unwrap())
             .into_iter()
             .filter(|entry| entry.address.block_slab_id() == drain_slab)
             .map(|entry| entry.object_key.to_string())
             .collect();
         drain_keys.sort_unstable();
         assert_eq!(drain_keys, ["late-0", "late-1", "late-2"]);
-    }
+    });
     let report = engine
         .compact_shard_blocks_relocating_inner(
             1, u64::MAX, usize::MAX, Some(std::collections::BTreeSet::from([drain_slab])), true,
@@ -497,14 +494,15 @@ fn a_compaction_round_keeps_every_buckets_dirty_generation() {
         assert!(response.status.ok);
     }
     let generations = |engine: &TemporalEngine| {
-        let shards = engine.shards.read().unwrap();
-        let shard = shards.get(&1).unwrap();
-        shard
-            .bucket_index
-            .bucket_map
-            .iter()
-            .map(|(bucket, node)| (*bucket, node.dirty_generation))
-            .collect::<BTreeMap<u32, u64>>()
+        engine.shards.with_state(1, |owner_state| {
+            let shard = owner_state.unwrap();
+            shard
+                .bucket_index
+                .bucket_map
+                .iter()
+                .map(|(bucket, node)| (*bucket, node.dirty_generation))
+                .collect::<BTreeMap<u32, u64>>()
+        })
     };
     let before = generations(&engine);
     assert!(
@@ -617,35 +615,35 @@ fn a_round_that_updates_the_bucket_index_in_place_changes_only_the_blocks_it_mov
     });
     assert!(response.status.ok);
 
-    let before = {
-        let shards = engine.shards_write_marked();
-        bucket_what_a_move_leaves(shards.get(&1).unwrap())
-    };
+    let before = engine.shards.with_state_mut(1, |owner_state| {
+        bucket_what_a_move_leaves(owner_state.as_deref().unwrap())
+    });
     engine.compact_shard_blocks(1).unwrap();
     assert_eq!(
         last_round_index_update_for_test(),
         1,
         "the round fell back to a rebuild, so this would test the rebuild against itself"
     );
-    let mut shards = engine.shards_write_marked();
-    let shard = shards.get_mut(&1).unwrap();
-    assert_eq!(
-        bucket_what_a_move_leaves(shard),
-        before,
-        "the round changed more of the bucket index than the blocks it moved"
-    );
-    assert_the_index_names_what_the_maps_hold(shard);
-    // THE COUNTS A REBUILD WOULD EARN, for the two figures the in-place update maintains by hand:
-    // the lookup total and the per-slab tally. The blocks agree with the maps (above), so a rebuild
-    // re-earns exactly these, and the ones the round left must be the same.
-    let lookup_after_round = shard.bucket_index.object_element_name_block_refs;
-    let drift = reconcile_block_slab_live(shard);
-    assert!(drift.slabs_compared > 0, "no slab was compared: {drift:?}");
-    assert_eq!(drift.drifted_slabs, 0, "the live tally disagrees with a walk of the index: {drift:?}");
-    let (start, end) = shard.routing_range();
-    rebuild_bucket_block_ownership(1, shard, start, end);
-    assert_eq!(
-        shard.bucket_index.object_element_name_block_refs, lookup_after_round,
-        "the round left a different number of block lookup refs than a rebuild earns"
-    );
+    engine.shards.with_state_mut(1, |owner_state| {
+        let shard = owner_state.unwrap();
+        assert_eq!(
+            bucket_what_a_move_leaves(shard),
+            before,
+            "the round changed more of the bucket index than the blocks it moved"
+        );
+        assert_the_index_names_what_the_maps_hold(shard);
+        // THE COUNTS A REBUILD WOULD EARN, for the two figures the in-place update maintains by hand:
+        // the lookup total and the per-slab tally. The blocks agree with the maps (above), so a rebuild
+        // re-earns exactly these, and the ones the round left must be the same.
+        let lookup_after_round = shard.bucket_index.object_element_name_block_refs;
+        let drift = reconcile_block_slab_live(shard);
+        assert!(drift.slabs_compared > 0, "no slab was compared: {drift:?}");
+        assert_eq!(drift.drifted_slabs, 0, "the live tally disagrees with a walk of the index: {drift:?}");
+        let (start, end) = shard.routing_range();
+        rebuild_bucket_block_ownership(1, shard, start, end);
+        assert_eq!(
+            shard.bucket_index.object_element_name_block_refs, lookup_after_round,
+            "the round left a different number of block lookup refs than a rebuild earns"
+        );
+    });
 }

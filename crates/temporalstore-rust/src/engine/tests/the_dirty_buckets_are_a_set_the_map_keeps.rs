@@ -195,11 +195,7 @@ fn round_request() -> StorageManagerCycleRequest {
 fn bucket_count(engine: &TemporalEngine) -> usize {
     engine
         .shards
-        .read()
-        .expect("engine lock poisoned")
-        .get(&1)
-        .map(|shard| shard.bucket_index.bucket_map.len())
-        .unwrap_or(0)
+        .with_state(1, |shard| shard.map_or(0, |state| state.bucket_index.bucket_map.len()))
 }
 
 #[test]

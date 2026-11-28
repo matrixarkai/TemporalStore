@@ -44,11 +44,16 @@ use temporalstore_rust::{
 };
 use tracing::{debug, error, info, warn};
 
+#[path = "metaserver/grpc.rs"]
+mod grpc;
+
 fn main() {
     temporalstore_rust::telemetry::init();
-    let addr = temporalstore_rust::env_flag::env_value("TS_META_BIND_ADDR")
-        .or_else(|| temporalstore_rust::env_flag::env_value("TS_META_ADDR"))
-        .unwrap_or_else(|| "127.0.0.1:17001".to_string());
+    let explicit_bind = temporalstore_rust::env_flag::env_value("TS_META_BIND_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_META_ADDR"));
+    let grpc_bind = temporalstore_rust::env_flag::env_value("TS_META_GRPC_BIND_ADDR")
+        .or_else(|| explicit_bind.is_none().then(|| "127.0.0.1:17201".to_owned()));
+    let addr = explicit_bind.unwrap_or_else(|| "127.0.0.1:17001".to_owned());
     let backend = MetaBackend::from_env().expect("failed to initialize metaserver backend");
     let scheduler =
         MetaTaskScheduler::from_env().expect("failed to initialize metaserver scheduler");
@@ -342,7 +347,7 @@ fn main() {
             }
             MetaBackend::Raft(_) => {
                 warn!(
-                    "TS_RAFT_AUTO_FAILOVER ignored: this setting drives failover for datanode                      raft shard groups, which the raft backend does not do -- a frozen datanode                      leaves its groups without a trigger and writes to them stall"
+                    "TS_RAFT_AUTO_FAILOVER ignored: this setting drives failover for datanode raft shard groups, which the raft backend does not do -- a frozen datanode leaves its groups without a trigger and writes to them stall"
                 );
                 None
             }
@@ -354,6 +359,10 @@ fn main() {
     // security-relevant setting. Changing the variable on a running process
     // deliberately does nothing.
     let admin_token = temporalstore_rust::meta::admin_auth_token();
+    if let Some(grpc_addr) = grpc_bind {
+        grpc::start(&grpc_addr, backend.clone(), admin_token.clone())
+            .expect("metaserver gRPC bind failed");
+    }
     if admin_token.is_some() {
         info!("metaserver admin token required (TS_META_ADMIN_TOKEN is set)");
     }
@@ -2208,6 +2217,10 @@ struct MasterTableOptionsRequest {
     io_timeout_ms: Option<u64>,
     #[serde(default)]
     connect_timeout_ms: Option<u64>,
+    #[serde(default)]
+    cache_class: Option<bool>,
+    #[serde(default)]
+    cache_budget_bytes: Option<u64>,
 }
 
 impl MasterTableOptionsRequest {
@@ -2233,6 +2246,8 @@ impl MasterTableOptionsRequest {
             continuous_failed_time_ms: self.continuous_failed_time_ms,
             io_timeout_ms: self.io_timeout_ms,
             connect_timeout_ms: self.connect_timeout_ms,
+            cache_class: self.cache_class,
+            cache_budget_bytes: self.cache_budget_bytes,
         }
     }
 }
@@ -2579,6 +2594,7 @@ mod tests {
 
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "node-a".to_string(),
@@ -2774,6 +2790,7 @@ mod tests {
         let scheduler = MetaTaskScheduler::default();
         assert!(meta
             .register_server(RegisterServerRequest {
+                grpc_addr: None,
                 registered_at_ms: 0,
                 numa_nodes: Vec::new(),
                 server_addr: "node-a".to_string(),
@@ -2987,6 +3004,7 @@ mod tests {
                 .iter()
                 .enumerate()
                 .map(|(index, (records, bytes))| temporalstore_rust::meta::ServerShardServingState {
+                    raft_role: None,
                     shard_id: index as temporalstore_rust::types::ShardId + 1,
                     serving_state: "serving".to_string(),
                     worker_index: 0,
@@ -3030,6 +3048,7 @@ mod tests {
 
     fn joined(meta: &SingleNodeMeta, addr: &str) {
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: addr.to_string(),
             node_id: 1,
@@ -3103,6 +3122,7 @@ mod tests {
         // had no way to say so.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3126,6 +3146,7 @@ mod tests {
         // trap as the placement figures beside it.
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3147,6 +3168,7 @@ mod tests {
     fn a_node_that_has_said_nothing_reports_nothing() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             server_addr: "node-a".to_string(),
             node_id: 1,
@@ -3307,6 +3329,7 @@ mod tests {
     fn metaserver_metrics_expose_inventory_state_and_scheduler() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "metrics-server-a".to_string(),
@@ -3501,6 +3524,7 @@ mod tests {
         let snapshot_path = dir.path().join("meta-route-snapshot.json");
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "server-route-a".to_string(),
@@ -3638,6 +3662,7 @@ mod tests {
     fn metaserver_safe_mode_route_reports_frozen_cooldown_resources() {
         let meta = SingleNodeMeta::default();
         meta.register_server(RegisterServerRequest {
+            grpc_addr: None,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: "safe-server".to_string(),
@@ -3735,6 +3760,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: "raft-server-a".to_string(),
@@ -4236,6 +4262,7 @@ mod tests {
                 method: "POST".to_string(),
                 path: "/servers/register".to_string(),
                 body: serde_json::to_vec(&RegisterServerRequest {
+                    grpc_addr: None,
                     registered_at_ms: 0,
                     numa_nodes: Vec::new(),
                     server_addr: node_addr.clone(),

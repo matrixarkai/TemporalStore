@@ -969,11 +969,19 @@ pub(super) const BINARY_RECORD_MAGIC: u8 = 0xA7;
 /// Encode one record as it should appear in a segment file: the magic, a little-endian length and
 /// the protobuf envelope. There is no other encoding of a record.
 pub(super) fn encode_record_line(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>> {
-    let payload = encode_envelope(envelope)?;
-    let mut out = Vec::with_capacity(payload.len() + 5);
+    let message = envelope_to_proto(envelope)?;
+    let payload_size = message.encoded_len();
+    let framed_len = payload_size
+        .checked_add(5)
+        .ok_or_else(|| io::Error::other("Raft WAL frame length overflow"))?;
+    let payload_len = u32::try_from(payload_size)
+        .map_err(|_| io::Error::other("Raft WAL payload exceeds the frame limit"))?;
+    let mut out = Vec::with_capacity(framed_len);
     out.push(BINARY_RECORD_MAGIC);
-    out.extend_from_slice(&(payload.len() as u32).to_le_bytes());
-    out.extend_from_slice(&payload);
+    out.extend_from_slice(&payload_len.to_le_bytes());
+    message
+        .encode(&mut out)
+        .map_err(|error| io::Error::other(error.to_string()))?;
     Ok(out)
 }
 
@@ -1056,8 +1064,7 @@ pub(crate) fn decode_append_entries(body: &[u8]) -> io::Result<AppendEntriesRequ
     })
 }
 
-/// Encode one envelope as a binary message.
-pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>> {
+fn envelope_to_proto(envelope: &RaftWalEnvelope) -> io::Result<v1::WalEnvelope> {
     let record = &envelope.record;
     // The snapshot gets first-class fields: its state image is slab and index BYTES, and in
     // the side blob those become text again -- re-inflating exactly what compaction bounds.
@@ -1085,7 +1092,7 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
         checksum_to_bytes(&record.storage_apply_fence.checksum);
     let (checksum, checksum_is_text) = checksum_to_bytes(&envelope.checksum);
 
-    let message = v1::WalEnvelope {
+    Ok(v1::WalEnvelope {
         sequence: envelope.sequence,
         checksum,
         checksum_is_text,
@@ -1129,8 +1136,12 @@ pub(super) fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>>
             log_first_index: delta.log_first_index,
             log_last_index: delta.log_last_index,
         }),
-    };
-    Ok(message.encode_to_vec())
+    })
+}
+
+#[cfg(test)]
+fn encode_envelope(envelope: &RaftWalEnvelope) -> io::Result<Vec<u8>> {
+    Ok(envelope_to_proto(envelope)?.encode_to_vec())
 }
 
 /// Decode one binary message back into an envelope.
@@ -1420,6 +1431,24 @@ fn every_command_the_raft_wal_carries_is_protobuf() {
             value: b"hello".to_vec(),
             ttl_ms: 5_000,
         });
+    }
+
+    #[test]
+    fn wal_frame_matches_the_envelope_encoding_for_tensor_sized_values() {
+        let mut value = vec![0; 9 * 1024 * 1024];
+        value[1] = 255;
+        value[9 * 1024 * 1024 - 1] = 128;
+        let envelope = envelope_with(Command::StringSet { key: "kv".into(), value });
+        let expected = encode_envelope(&envelope).unwrap();
+        let framed = encode_record_line(&envelope).unwrap();
+
+        assert_eq!(framed[0], BINARY_RECORD_MAGIC);
+        assert_eq!(
+            u32::from_le_bytes(framed[1..5].try_into().unwrap()) as usize,
+            expected.len(),
+        );
+        assert_eq!(&framed[5..], expected.as_slice());
+        assert_eq!(next_envelope(&framed), Some((framed.len(), envelope)));
     }
 
     #[test]
@@ -1894,7 +1923,13 @@ fn every_command_the_raft_wal_carries_is_protobuf() {
             .next()
             .expect("the file has a production half");
         assert!(production.len() > 20_000, "the scan found almost nothing");
-        for name in ["fn encode_envelope", "fn decode_envelope", "fn encode_append_entries", "fn decode_append_entries"] {
+        for name in [
+            "fn envelope_to_proto",
+            "fn encode_record_line",
+            "fn decode_envelope",
+            "fn encode_append_entries",
+            "fn decode_append_entries",
+        ] {
             assert!(production.contains(name), "{name} is no longer in the production half");
         }
         let uncommented = |text: &str| -> String {

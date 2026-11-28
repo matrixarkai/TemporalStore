@@ -215,9 +215,10 @@ fn seeded_index_bytes(arm: &str) -> Vec<u8> {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on_shard(dir.path());
     seed(&engine, arm);
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&SHARD).expect("shard is loaded");
-    crate::engine::encode_index_bytes(shard)
+    engine.shards.with_state(SHARD, |state| {
+        let shard = state.expect("shard is loaded");
+        crate::engine::encode_index_bytes(shard)
+    })
 }
 
 /// The shared question: repack this state and say nothing appeared and no byte moved.

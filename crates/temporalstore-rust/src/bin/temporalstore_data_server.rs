@@ -70,6 +70,12 @@ use tracing::{debug, error, info, warn};
 #[path = "server/context_explicit_route.rs"]
 mod context_explicit_route;
 
+#[path = "server/cache_tiers.rs"]
+mod cache_tiers;
+
+#[path = "server/grpc.rs"]
+mod grpc;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 struct ServerTopologyValidationRequest {
     #[serde(default)]
@@ -98,6 +104,9 @@ struct BlobReceipt {
     chunks: u64,
 }
 
+#[path = "temporalstore_data_server/blob_staging.rs"]
+mod blob_staging;
+
 fn main() {
     // Before telemetry and before any thread that allocates: the cap only governs arenas created
     // after it, and the server's resident memory otherwise drifts up with every write.
@@ -106,9 +115,11 @@ fn main() {
     if let Some(arenas) = arena_cap {
         tracing::info!(arena_max = arenas, "capped malloc arenas (TS_MALLOC_ARENA_MAX overrides; MALLOC_ARENA_MAX wins)");
     }
-    let addr = temporalstore_rust::env_flag::env_value("TS_SERVER_BIND_ADDR")
-        .or_else(|| temporalstore_rust::env_flag::env_value("TS_SERVER_ADDR"))
-        .unwrap_or_else(|| "127.0.0.1:17002".to_string());
+    let explicit_bind = temporalstore_rust::env_flag::env_value("TS_SERVER_BIND_ADDR")
+        .or_else(|| temporalstore_rust::env_flag::env_value("TS_SERVER_ADDR"));
+    let grpc_bind = temporalstore_rust::env_flag::env_value("TS_SERVER_GRPC_BIND_ADDR")
+        .or_else(|| explicit_bind.is_none().then(|| "127.0.0.1:17202".to_owned()));
+    let addr = explicit_bind.unwrap_or_else(|| "127.0.0.1:17002".to_owned());
     let advertised_addr = temporalstore_rust::env_flag::env_value("TS_SERVER_ADVERTISE_ADDR")
         .or_else(|| temporalstore_rust::env_flag::env_value("TS_SERVER_ADDR"))
         .unwrap_or_else(|| addr.clone());
@@ -150,6 +161,7 @@ fn main() {
     let local_state_present =
         local_shard_state_present(&[&cache_dir, &block_store_dir, &index_dir]);
     let block_store_options = block_store_options_from_env();
+    let replica_block_store_options = block_store_options.clone();
     // Resolved BEFORE the engine is built, because the cache's shape depends on it: the disk
     // cache tier exists to span the distance to shared storage, and there is no such distance
     // when the durable copy is this node's own disk. Resolving after construction (where this
@@ -189,14 +201,29 @@ fn main() {
         disk_cache_tier,
         "deployment profile - cache tier follows the storage backend"
     );
-    let engine = TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
+    let engine = match cache_tiers::open_configured_cache(
+        std::path::Path::new(&cache_dir),
         cache_memory_bytes,
-        cache_dir,
-        block_store_dir,
-        index_dir,
-        block_store_options,
         disk_cache_tier,
-    );
+    ) {
+        Ok(Some(cache)) => TemporalEngine::with_cache_block_store_and_index_dir(
+            cache,
+            temporalstore_rust::BlockStore::with_options(block_store_dir, block_store_options),
+            index_dir,
+        ),
+        Ok(None) => TemporalEngine::with_local_dirs_block_store_options_and_disk_cache(
+            cache_memory_bytes,
+            cache_dir,
+            block_store_dir,
+            index_dir,
+            block_store_options,
+            disk_cache_tier,
+        ),
+        Err(message) => {
+            error!(%message, "could not configure cache tiers");
+            std::process::exit(2);
+        }
+    };
     // Join-empty mode (TS_SERVER_JOIN_EMPTY): register as a server but load and
     // self-register no shard, waiting for the metaserver to place shards here via
     // `/load`. This is the clean path for metaserver-driven placement onto a fresh
@@ -428,7 +455,14 @@ fn main() {
         .ok()
         .and_then(|v| v.trim().parse().ok())
         .unwrap_or(3_000);
-    let raft_state = start_server_raft_from_env(shard_id, node_id, &advertised_addr);
+    let raft_state = start_server_raft_from_env(
+        shard_id,
+        node_id,
+        &advertised_addr,
+        cache_memory_bytes,
+        disk_cache_tier,
+        replica_block_store_options,
+    );
 
     // The maintenance scheduler was started ~80 lines above this, BEFORE consensus existed, and
     // it re-reads this slot every round -- so the rounds before this point see `Unknown` and
@@ -437,6 +471,7 @@ fn main() {
     // byte-for-byte the behaviour this server had before the check existed.
     if let Some(state) = raft_state.as_ref() {
         runtime.set_shard_leadership_source(std::sync::Arc::new(RaftShardLeadership {
+            runtime: state.runtime.clone(),
             cluster: state.runtime.cluster(),
             local_node_id: state.local_node_id,
             raft_shard_id: state.raft_shard_id,
@@ -461,7 +496,22 @@ fn main() {
     // ("local", "none", "standalone", "off", or empty) always mean standalone.
     // Decided once, up where the deployment profile is named, so the profile the
     // node logs and the topology it actually runs cannot drift apart.
+    let grpc_advertised_addr = grpc_bind.map(|grpc_addr| {
+        let bound = grpc::start(&grpc_addr, runtime.clone(), raft_state.clone())
+            .expect("failed to start datanode gRPC listener");
+        temporalstore_rust::env_flag::env_value("TS_SERVER_GRPC_ADVERTISE_ADDR")
+            .unwrap_or_else(|| {
+                assert!(is_single_node || !bound.ip().is_unspecified(),
+                    "TS_SERVER_GRPC_ADVERTISE_ADDR is required for a wildcard gRPC bind");
+                bound.to_string()
+            })
+    });
     let standalone = is_single_node;
+    let meta_control = if standalone {
+        DatanodeMetadata::Http(meta_addr.clone())
+    } else {
+        datanode_metadata(&meta_addr)
+    };
     if standalone {
         info!(
             shard_id,
@@ -470,6 +520,7 @@ fn main() {
         );
     } else {
         let server_registration = RegisterServerRequest {
+            grpc_addr: grpc_advertised_addr,
             registered_at_ms: 0,
             numa_nodes: Vec::new(),
             server_addr: advertised_addr.clone(),
@@ -477,20 +528,14 @@ fn main() {
             location,
             binary_version: binary_version.clone(),
         };
-        match post_json_with_options_and_headers::<_, AckResponse>(
-            &meta_addr,
-            "/servers/register",
-            &server_registration,
-            &temporalstore_rust::meta::admin_auth_header(),
-            HttpRequestOptions::default(),
-        ) {
-            Ok(response) if response.status.ok => {
-                info!(server = %advertised_addr, meta = %meta_addr, "registered server with metaserver");
+        match meta_control.register_server(&server_registration) {
+            Ok(status) if status.ok => {
+                info!(server = %advertised_addr, meta = %meta_control.address(), "registered server with metaserver");
             }
-            Ok(response) => {
+            Ok(status) => {
                 warn!(
                     server = %advertised_addr,
-                    message = %response.status.message,
+                    message = %status.message,
                     "metaserver rejected server registration"
                 );
             }
@@ -505,20 +550,14 @@ fn main() {
                 shard_id,
                 server_addr: advertised_addr.clone(),
             };
-            match post_json_with_options_and_headers::<_, RegisterShardResponse>(
-                &meta_addr,
-                "/register_shard",
-                &registration,
-                &temporalstore_rust::meta::admin_auth_header(),
-                HttpRequestOptions::default(),
-            ) {
-                Ok(response) if response.status.ok => {
-                    info!(shard_id, meta = %meta_addr, "registered shard with metaserver");
+            match meta_control.register_shard(&registration) {
+                Ok(status) if status.ok => {
+                    info!(shard_id, meta = %meta_control.address(), "registered shard with metaserver");
                 }
-                Ok(response) => {
+                Ok(status) => {
                     warn!(
                         shard_id,
-                        message = %response.status.message,
+                        message = %status.message,
                         "metaserver rejected shard registration"
                     );
                 }
@@ -531,7 +570,8 @@ fn main() {
         start_heartbeat_loop(
             engine.clone(),
             runtime.clone(),
-            meta_addr.clone(),
+            raft_state.clone(),
+            meta_control.clone(),
             advertised_addr.clone(),
             binary_version.clone(),
             heartbeat_interval_ms,
@@ -855,7 +895,7 @@ fn main() {
                     .trim_start_matches("/server/storage/cache/")
                     .parse()
                     .unwrap_or_default();
-                json_response(200, &engine.storage_cache_inspection_report(shard_id))
+                json_response(200, &runtime.storage_cache_inspection_report(shard_id))
             }
             ("POST", "/server/storage/cache/invalidate_slot") => {
                 match parse_json::<StorageCacheInvalidateBucketRequest>(&request.body) {
@@ -923,7 +963,8 @@ fn main() {
                 &send_heartbeat(
                     &engine,
                     &runtime,
-                    &meta_addr,
+                    raft_state.as_ref(),
+                    &meta_control,
                     &advertised_addr,
                     &binary_version,
                     boot_time_ms,
@@ -1994,9 +2035,8 @@ fn replace_blob_from_body(
         .ok_or_else(|| std::io::Error::other("blob path has no parent"))?;
     std::fs::create_dir_all(parent)?;
     // Keep the previous blob readable until its replacement has arrived in full.
-    let mut file = tempfile::Builder::new()
-        .prefix(".blob-upload-")
-        .tempfile_in(parent)?;
+    let mut staging = blob_staging::StagedBlob::new(parent)?;
+    let file = staging.file_mut();
     let mut buffer = vec![0u8; chunk_bytes.max(1).min(length)];
     let mut remaining = length;
     let mut chunks = 0u64;
@@ -2018,7 +2058,7 @@ fn replace_blob_from_body(
         chunks += 1;
     }
     file.flush()?;
-    file.persist(path).map_err(|error| error.error)?;
+    staging.publish(path, parent)?;
     let length = length as u64;
     Ok((length, length, chunks.max(1)))
 }
@@ -2294,7 +2334,38 @@ impl std::fmt::Debug for MatrixObjectNetworkedWalSink {
 
 impl temporalstore_rust::SharedWalSink for MatrixObjectNetworkedWalSink {
     fn record_write(&self, shard_id: u64, command: &Command) {
-        self.record_entry(shard_id, Some(command.clone()), Vec::new());
+        self.record_owned_write(shard_id, command.clone());
+    }
+
+    fn record_owned_write(&self, shard_id: u64, command: Command) {
+        self.record_entry(shard_id, Some(command), Vec::new());
+    }
+
+    fn record_owned_writes(&self, shard_id: u64, commands: Vec<Command>) {
+        let _ = self.publish_owned_writes(shard_id, commands);
+    }
+
+    fn publish_owned_write(&self, shard_id: u64, command: Command) -> bool {
+        self.record_entry(shard_id, Some(command), Vec::new())
+    }
+
+    fn publish_owned_writes(&self, shard_id: u64, mut commands: Vec<Command>) -> Result<(), usize> {
+        if commands.len() < 2 {
+            return match commands.pop() {
+                Some(command) => self.publish_owned_write(shard_id, command).then_some(()).ok_or(0),
+                None => Ok(()),
+            };
+        }
+        match self.handle.block_on(self.writer.write_sync_batch_counted(shard_id, commands)) {
+            Ok(()) => {
+                self.observe_write_result(shard_id, Ok(()));
+                Ok(())
+            }
+            Err((confirmed, error)) => {
+                self.observe_write_result(shard_id, Err(error));
+                Err(confirmed)
+            }
+        }
     }
 
     fn record_outcomes(&self, shard_id: u64, outcomes: &[temporalstore_rust::wal::WalOutcomeItem]) {
@@ -2308,7 +2379,7 @@ impl MatrixObjectNetworkedWalSink {
         shard_id: u64,
         command: Option<Command>,
         outcomes: Vec<temporalstore_rust::wal::WalOutcomeItem>,
-    ) {
+    ) -> bool {
         let writer = Arc::clone(&self.writer);
         let result = self
             .handle
@@ -2318,8 +2389,18 @@ impl MatrixObjectNetworkedWalSink {
                     None => writer.write_outcomes(shard_id, outcomes).await,
                 }
             });
+        let published = result.is_ok();
+        self.observe_write_result(shard_id, result.map(|_| ()));
+        published
+    }
+
+    fn observe_write_result(
+        &self,
+        shard_id: u64,
+        result: Result<(), SharedStoreReplicationError>,
+    ) {
         match result {
-            Ok(_) => {}
+            Ok(()) => {}
             Err(err) => {
                 // The local write already succeeded, so the node stays available. The shared log
                 // does NOT catch up by itself: a publish that failed after its retries leaves an
@@ -2418,7 +2499,12 @@ fn wire_matrixobject_networked_durability(
             return None;
         }
     };
-    let replicator = Arc::new(SharedStoreReplicator::new(cluster_id, Arc::new(store)));
+    let max_wal_segment_bytes =
+        matrixobjectstore_rs::net::cluster_gateway::GatewayOptions::default().max_object_bytes as u64;
+    let replicator = Arc::new(
+        SharedStoreReplicator::new(cluster_id, Arc::new(store))
+            .with_wal_segment_max_bytes(max_wal_segment_bytes),
+    );
     if let Err(err) = replicator.reattach_lazy_checkpoint_sources(&engine.block_store()) {
         error!(shard_id, %err, "cannot reattach saved lazy checkpoints");
         return None;
@@ -2592,6 +2678,14 @@ fn raft_config_from_env() -> RaftConfig {
         replication_deadline_ms: env_u64(
             "TS_RAFT_REPLICATION_DEADLINE_MS",
             defaults.replication_deadline_ms,
+        ),
+        max_memory_replicate_log_bytes: env_u64(
+            "TS_RAFT_MAX_MEMORY_REPLICATE_LOG_BYTES",
+            defaults.max_memory_replicate_log_bytes,
+        ),
+        max_apply_batch_bytes: env_u64(
+            "TS_RAFT_MAX_APPLY_BATCH_BYTES",
+            defaults.max_apply_batch_bytes,
         ),
         max_inflights_replicate: env_u64(
             "TS_RAFT_MAX_INFLIGHTS_REPLICATE",
@@ -2793,6 +2887,7 @@ struct ServerRaftState {
 /// compaction off on every deployment where the question is unanswerable -- which is far more
 /// damage than the waste it was meant to save.
 struct RaftShardLeadership {
+    runtime: ProductionRaftRuntime,
     cluster: RaftCluster,
     local_node_id: RaftNodeId,
     raft_shard_id: ShardId,
@@ -2809,6 +2904,19 @@ impl std::fmt::Debug for RaftShardLeadership {
 }
 
 impl ShardLeadershipSource for RaftShardLeadership {
+    fn reclaim_cache_budget(
+        &self,
+        budget: temporalstore_rust::meta::ShardCacheBudget,
+        limit: usize,
+        authorized: &dyn Fn() -> bool,
+    ) -> Option<(u64, usize)> {
+        self.runtime.reclaim_cache_budget(budget, limit, authorized)
+    }
+
+    fn shard_storage_engine(&self, shard_id: ShardId) -> Option<TemporalEngine> {
+        self.cluster.local_replica_engine(shard_id)
+    }
+
     fn shard_leadership(&self, shard_id: ShardId) -> ShardLeadership {
         // A shard this node's raft does not cover. Consensus has no opinion about it, so
         // neither do we.
@@ -2836,6 +2944,9 @@ fn start_server_raft_from_env(
     shard_id: u64,
     node_id: u64,
     advertised_addr: &str,
+    cache_memory_bytes: usize,
+    disk_cache_tier: bool,
+    block_store_options: BlockStoreOptions,
 ) -> Option<ServerRaftState> {
     if !env_bool("TS_SERVER_RAFT", false) {
         return None;
@@ -2855,7 +2966,7 @@ fn start_server_raft_from_env(
     // max_inflights_replicate stays 128. (This entrypoint is env-only; there is no config-file
     // loader in scope here, so the `[raft]` file equivalents are not read at this layer.)
     let raft_config = raft_config_from_env();
-    let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
+    let options = ProductionRaftRuntimeOptions {
         // The cadence the metaserver already uses; 0 disables the check.
         snapshot_check_interval_ms: env_u64("TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS", 30_000),
         engine: ProductionRaftEngineKind::TemporalRaft,
@@ -2877,7 +2988,21 @@ fn start_server_raft_from_env(
             256,
         ),
         allow_plaintext_for_local_chaos: security.allow_plaintext_for_local_chaos,
-    })
+    };
+    let configure_replica = disk_cache_tier
+        || ["TS_CACHE_DISK_TIER", "TS_CACHE_MEMORY_BYTES", "TS_CACHE_COMPRESSION_ENABLED"]
+            .iter()
+            .any(|key| temporalstore_rust::env_flag::env_value(key).is_some());
+    let runtime = if configure_replica {
+        ProductionRaftRuntime::start_with_local_engine_factory(options, move || {
+            TemporalEngine::with_scratch_replica_storage(block_store_options.clone(), |root| {
+                cache_tiers::open_replica_cache(root, cache_memory_bytes, disk_cache_tier)
+            })
+            .map_err(temporalstore_rust::RaftError::InvalidConfig)
+        })
+    } else {
+        ProductionRaftRuntime::start(options)
+    }
     .expect("failed to start server raft runtime");
     let _timer = runtime.start_timer_loop();
     Some(ServerRaftState {
@@ -2891,6 +3016,7 @@ fn start_server_raft_from_env(
 }
 
 include!("server/raft_route.rs");
+include!("server/datanode_metadata.rs");
 include!("server/server_metrics.rs");
 fn validate_node_topology_from_meta(
     runtime: &DataNodeRuntime,
@@ -2963,7 +3089,8 @@ fn validate_node_topology_from_meta(
 fn send_heartbeat(
     engine: &TemporalEngine,
     runtime: &DataNodeRuntime,
-    meta_addr: &str,
+    raft_state: Option<&ServerRaftState>,
+    meta_control: &DatanodeMetadata,
     server_addr: &str,
     binary_version: &str,
     boot_time_ms: u64,
@@ -2991,6 +3118,20 @@ fn send_heartbeat(
             shard_stat_info: stats.shard_stat_info,
         })
         .collect();
+    let mut shard_states = runtime.shard_serving_states();
+    if let Some(raft) = raft_state {
+        let status = raft.runtime.status();
+        let local = status.nodes.iter().find(|node| node.node_id == raft.local_node_id);
+        let shard = shard_states.iter_mut().find(|shard| shard.shard_id == raft.raft_shard_id);
+        if let (Some(node), Some(shard)) = (local, shard) {
+            shard.raft_role = Some(temporalstore_rust::meta::DataRaftShardRole {
+                term: node.current_term,
+                is_leader: status.leader_id == raft.local_node_id
+                    && node.role == temporalstore_rust::raft::RaftRole::Leader
+                    && node.alive,
+            });
+        }
+    }
     let request = ServerHeartbeatRequest {
         server_addr: server_addr.to_string(),
         boot_time_ms,
@@ -2998,22 +3139,17 @@ fn send_heartbeat(
         shard_loads,
         shard_stat_loads,
         runtime_load: runtime.server_runtime_load(),
-        shard_states: runtime.shard_serving_states(),
+        shard_states,
     };
-    let response =
-        post_json_with_options_and_headers::<_, ServerHeartbeatResponse>(
-            meta_addr,
-            "/servers/heartbeat",
-            &request,
-            &temporalstore_rust::meta::admin_auth_header(),
-            HttpRequestOptions::default(),
-        )
-            .unwrap_or_else(|err| ServerHeartbeatResponse {
-                status: Status::error("heartbeat_failed", err.to_string()),
-                forbid_auto_register: false,
-                topology_version: 0,
-                server_state: String::new(),
-            });
+    let response = meta_control
+        .heartbeat(&request)
+        .unwrap_or_else(|err| ServerHeartbeatResponse {
+            status: Status::error("heartbeat_failed", err.to_string()),
+            forbid_auto_register: false,
+            topology_version: 0,
+            server_state: String::new(),
+            cache_budgets: Vec::new(),
+        });
     runtime.record_metaserver_heartbeat(&response);
     response
 }
@@ -4000,6 +4136,7 @@ mod tests {
                                 forbid_auto_register: false,
                                 topology_version: 0,
                                 server_state: String::new(),
+                                cache_budgets: Vec::new(),
                             },
                         )
                     }
@@ -4014,7 +4151,8 @@ mod tests {
         let _ = send_heartbeat(
             &engine,
             &runtime,
-            &meta_addr,
+            None,
+            &DatanodeMetadata::Http(meta_addr),
             "127.0.0.1:19",
             "test",
             boot_time_ms,
@@ -4087,6 +4225,7 @@ mod tests {
                                         temporalstore_rust::meta::TableServingOptions::default(),
                                 }),
                                 shards: vec![temporalstore_rust::meta::TableShard {
+                                    raft_route: None,
                                     load_version: 0,
                                     shard_id: 9,
                                     start_bucket: 90,
@@ -4326,6 +4465,37 @@ mod tests {
         );
         assert_eq!(response.status.code, "raft_error");
         assert!(response.status.message.contains("not leader"));
+
+        let response = crate::grpc::execute_raft_sdk_command(
+            &state,
+            ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: "retryable-follower-write".to_string(),
+                    value: b"blocked".to_vec(),
+                },
+            },
+        );
+        assert_eq!(response.status.code, "raft_write_not_started");
+        assert_eq!(state.runtime.status().commit_index, 0);
+    }
+
+    #[test]
+    fn grpc_primary_reads_reject_a_follower_without_waiting_on_the_leader_shadow() {
+        let dir = tempdir().unwrap();
+        let mut state = test_server_raft_state(dir.path(), 2, vec![1, 2, 3], false);
+        for mode in [DataRaftReadMode::Leader, DataRaftReadMode::Linearizable] {
+            state.read_policy.mode = mode;
+            let response = crate::grpc::execute_raft_sdk_command(
+                &state,
+                ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringLen { key: "chunk".to_owned() },
+                },
+            );
+            assert_eq!(response.status.code, "raft_not_leader");
+            assert_eq!(response.response, CommandResponse::Empty);
+        }
     }
 
     #[test]
@@ -4758,6 +4928,9 @@ mod tests {
     fn server_raft_control_scale_up_down_preserves_serving() {
         let dir = tempdir().unwrap();
         let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3, 4], false);
+        let replicas: Vec<_> = (2..=4)
+            .map(|node_id| test_server_raft_state(dir.path(), node_id, vec![1, 2, 3, 4], false))
+            .collect();
         for node_id in [2, 3, 4] {
             state.runtime.cluster().set_alive(node_id, true).unwrap();
             state.runtime.cluster().catch_up(node_id).unwrap();
@@ -4786,11 +4959,14 @@ mod tests {
                 value: b"after-scale-down".to_vec(),
             })
             .unwrap();
-        for node_id in [1, 2, 3] {
-            let read = state
+        for replica in std::iter::once(&state).chain(replicas.iter().take(2)) {
+            if replica.local_node_id != state.local_node_id {
+                apply_test_replica_entries(&state, replica);
+            }
+            let read = replica
                 .runtime
                 .read_local(
-                    node_id,
+                    replica.local_node_id,
                     Command::StringGet {
                         key: "server-scale-down".to_string(),
                     },
@@ -4830,11 +5006,14 @@ mod tests {
                 value: b"after-scale-up".to_vec(),
             })
             .unwrap();
-        for node_id in [1, 2, 3, 4] {
-            let read = state
+        for replica in std::iter::once(&state).chain(replicas.iter().take(3)) {
+            if replica.local_node_id != state.local_node_id {
+                apply_test_replica_entries(&state, replica);
+            }
+            let read = replica
                 .runtime
                 .read_local(
-                    node_id,
+                    replica.local_node_id,
                     Command::StringGet {
                         key: "server-scale-up".to_string(),
                     },
@@ -4887,6 +5066,7 @@ mod tests {
     fn server_raft_admin_wait_applied_reports_lag_and_success_after_catchup() {
         let dir = tempdir().unwrap();
         let state = test_server_raft_state(dir.path(), 1, vec![1, 2, 3], true);
+        let replica = test_server_raft_state(dir.path(), 3, vec![1, 2, 3], true);
         let cluster = state.runtime.cluster();
         cluster.set_alive(3, false).unwrap();
         cluster
@@ -4905,7 +5085,7 @@ mod tests {
             )
             .unwrap(),
         };
-        let (code, body) = handle_server_raft_route(&state, &wait_request).unwrap();
+        let (code, body) = handle_server_raft_route(&replica, &wait_request).unwrap();
         assert_eq!(code, 200);
         let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(response.status.code, "raft_error");
@@ -4920,6 +5100,10 @@ mod tests {
         assert_eq!(code, 200);
         let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
         assert!(response.status.ok, "{response:?}");
+        let (_, body) = handle_server_raft_route(&state, &wait_request).unwrap();
+        let shadow: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(shadow.status.code, "raft_error");
+        apply_test_replica_entries(&state, &replica);
 
         let wait_request = HttpRequest {
             method: "POST".to_string(),
@@ -4929,7 +5113,7 @@ mod tests {
             )
             .unwrap(),
         };
-        let (code, body) = handle_server_raft_route(&state, &wait_request).unwrap();
+        let (code, body) = handle_server_raft_route(&replica, &wait_request).unwrap();
         assert_eq!(code, 200);
         let response: RaftAdminLivenessResponse = serde_json::from_slice(&body).unwrap();
         assert!(response.status.ok, "{response:?}");
@@ -4988,6 +5172,27 @@ mod tests {
         listener.local_addr().unwrap().to_string()
     }
 
+    fn reserve_local_listeners(count: usize) -> Vec<TcpListener> {
+        (0..count)
+            .map(|_| TcpListener::bind("127.0.0.1:0").unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn raft_test_listener_reservations_are_distinct_and_still_bound() {
+        let listeners = reserve_local_listeners(4);
+        let addresses: BTreeSet<_> = listeners
+            .iter()
+            .map(|listener| listener.local_addr().unwrap())
+            .collect();
+        assert_eq!(addresses.len(), 4);
+        for address in addresses {
+            let error = TcpListener::bind(address)
+                .expect_err("a held test reservation must prevent a second bind");
+            assert_eq!(error.kind(), std::io::ErrorKind::AddrInUse);
+        }
+    }
+
     fn wait_for_http(addr: &str) {
         let deadline = Instant::now() + Duration::from_secs(5);
         loop {
@@ -5012,19 +5217,48 @@ mod tests {
         }
     }
 
+    fn apply_test_replica_entries(leader: &ServerRaftState, replica: &ServerRaftState) {
+        // Deliver AppendEntries to the runtime that owns the target's state machine.
+        let leader = leader.runtime.cluster();
+        let follower = replica.runtime.cluster();
+        let node_id = replica.local_node_id;
+        for _ in 0..4 {
+            let request = leader.build_append_entries_request(node_id).unwrap();
+            let committed = request.leader_commit;
+            let response = follower.receive_append_entries(request).unwrap();
+            leader.record_append_entries_response(node_id, &response).unwrap();
+            if response.success && response.match_index >= committed {
+                replica.runtime.wait_for_applied_index(node_id, committed, 0).unwrap();
+                return;
+            }
+        }
+        panic!("replica {node_id} did not receive its committed entries");
+    }
+
     fn test_server_raft_state(
         root: &std::path::Path,
         local_node_id: RaftNodeId,
         voters: Vec<RaftNodeId>,
         local_admin_enabled: bool,
     ) -> ServerRaftState {
+        let listeners = reserve_local_listeners(voters.len());
         let nodes = voters
             .into_iter()
-            .map(|node_id| ProductionRaftNode {
+            .zip(listeners.iter())
+            .map(|(node_id, listener)| ProductionRaftNode {
                 node_id,
-                addr: free_local_addr(),
+                addr: listener.local_addr().unwrap().to_string(),
             })
             .collect::<Vec<_>>();
+        assert_eq!(
+            nodes
+                .iter()
+                .map(|node| &node.addr)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            nodes.len(),
+            "test raft voter addresses must be distinct"
+        );
         let runtime = ProductionRaftRuntime::start(ProductionRaftRuntimeOptions {
             // The cadence the metaserver already uses; 0 disables the check.
             snapshot_check_interval_ms: env_u64("TS_RAFT_SNAPSHOT_CHECK_INTERVAL_MS", 30_000),
@@ -5057,6 +5291,9 @@ mod tests {
             allow_plaintext_for_local_chaos: true,
         })
         .unwrap();
+        // Startup validates addresses but does not bind sockets.
+        // Keep every reservation until it returns.
+        drop(listeners);
         ServerRaftState {
             runtime,
             local_node_id,

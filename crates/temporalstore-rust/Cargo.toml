@@ -26,7 +26,7 @@ base64 = "0.22"
 bloomfilter = { version = "3.0.2", default-features = false }
 sha2 = "0.10"
 matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "58fb9573db087635877323dfbc2bb2ddf2e65702" }
-matrixcache = { git = "https://github.com/matrixarkai/matrixcache.git", rev = "bcf26e100f1fe414076a4771468fbaec704eafc3", features = ["rocksdb-ssd"] }
+matrixcache = { git = "https://github.com/matrixarkai/matrixcache.git", rev = "8b5f929fa686c02f02a681d15cb283ddf30ed258", features = ["rocksdb-ssd"] }
 matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "1ca38c65d0b8e8a92dbb65840a77037f9c897777" }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
@@ -36,6 +36,9 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 uuid = { version = "=1.8.0", features = ["v4", "serde"] }
 zstd = "0.13"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+rustix = { version = "0.38.44", features = ["fs"] }
 
 [build-dependencies]
 protoc-bin-vendored = "3"

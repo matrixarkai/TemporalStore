@@ -157,28 +157,29 @@ fn bytes_of(width: usize, index: usize) -> Vec<u8> {
 /// Both off the engine's own block index rather than off the model maps: the index is what a load
 /// reads and what `HashLen` counts, and the point of the fold is that the two numbers come apart.
 fn addresses_and_entries(engine: &TemporalEngine, kind: &str, object_key: &str) -> (usize, usize) {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut addresses = BTreeSet::new();
-    let mut entries = 0usize;
-    for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, block) in &bucket.block_index {
-            if block.deleted()
-                || block.model_id().as_str() != kind
-                || &**named.at(bucket.routing_bucket, *handle) != object_key
-            {
-                continue;
+    engine.shards.with_state(1, |shard| {
+        let shard = shard.expect("shard is loaded");
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut addresses = BTreeSet::new();
+        let mut entries = 0usize;
+        for bucket in shard.bucket_index.bucket_map.values() {
+            for (handle, block) in &bucket.block_index {
+                if block.deleted()
+                    || block.model_id().as_str() != kind
+                    || &**named.at(bucket.routing_bucket, *handle) != object_key
+                {
+                    continue;
+                }
+                entries += 1;
+                addresses.insert((
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                ));
             }
-            entries += 1;
-            addresses.insert((
-                block.address.block_slab_id(),
-                block.address.offset(),
-                block.address.length(),
-            ));
         }
-    }
-    (addresses.len(), entries)
+        (addresses.len(), entries)
+    })
 }
 
 /// Seed one container of each kind under one object key per kind.
@@ -913,30 +914,31 @@ fn what_the_fold_is_worth_per_element_in_bytes() {
         }
 
         let stored_bytes = |kind: &str| -> u64 {
-            let shards = engine.shards.read().expect("engine lock poisoned");
-            let shard = shards.get(&1).expect("shard is loaded");
-            let named = super::BlockObjects::of(&shard.bucket_index);
-            let mut seen = BTreeSet::new();
-            let mut total = 0u64;
-            for bucket in shard.bucket_index.bucket_map.values() {
-                for (handle, block) in &bucket.block_index {
-                    if block.deleted()
-                        || block.model_id().as_str() != kind
-                        || &**named.at(bucket.routing_bucket, *handle) != "priced"
-                    {
-                        continue;
-                    }
-                    let identity = (
-                        block.address.block_slab_id(),
-                        block.address.offset(),
-                        block.address.length(),
-                    );
-                    if seen.insert(identity) {
-                        total += block.address.length();
+            engine.shards.with_state(1, |shard| {
+                let shard = shard.expect("shard is loaded");
+                let named = super::BlockObjects::of(&shard.bucket_index);
+                let mut seen = BTreeSet::new();
+                let mut total = 0u64;
+                for bucket in shard.bucket_index.bucket_map.values() {
+                    for (handle, block) in &bucket.block_index {
+                        if block.deleted()
+                            || block.model_id().as_str() != kind
+                            || &**named.at(bucket.routing_bucket, *handle) != "priced"
+                        {
+                            continue;
+                        }
+                        let identity = (
+                            block.address.block_slab_id(),
+                            block.address.offset(),
+                            block.address.length(),
+                        );
+                        if seen.insert(identity) {
+                            total += block.address.length();
+                        }
                     }
                 }
-            }
-            total
+                total
+            })
         };
 
         let before: Vec<(&str, u64)> = ["hash", "set", "list"]

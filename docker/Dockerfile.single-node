@@ -1,7 +1,7 @@
 # Single-node TemporalStore (Rust) — the simplest way to run it in Docker.
 #
 #   docker build -f docker/Dockerfile.single-node -t temporalstore:single-node .
-#   docker run --rm -p 17101:17101 -p 17102:17102 temporalstore:single-node
+#   docker run --rm -p 17101:17101 -p 17102:17102 -p 127.0.0.1:17201:17201 -p 127.0.0.1:17202:17202 temporalstore:single-node
 #
 # Or, from the repo root, one command:  docker compose -f docker-compose.single-node.yml up --build
 #
@@ -36,8 +36,10 @@ USER temporalstore
 WORKDIR /var/lib/temporalstore
 ENV TS_DATA_DIR=/var/lib/temporalstore \
     TS_META_PORT=17101 \
-    TS_DATA_PORT=17102
-EXPOSE 17101 17102
+    TS_DATA_PORT=17102 \
+    TS_META_GRPC_PORT=17201 \
+    TS_DATA_GRPC_PORT=17202
+EXPOSE 17101 17102 17201 17202
 HEALTHCHECK --interval=10s --timeout=3s --start-period=30s --retries=5 \
   CMD curl -fsS http://127.0.0.1:17102/health || exit 1
 ENTRYPOINT ["/usr/local/bin/single-node-entrypoint.sh"]
