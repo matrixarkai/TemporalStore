@@ -132,7 +132,7 @@ pub(super) fn qualify_image_tombstones(shard: &ShardState) -> Result<QualifiedTo
             qualified.entries.push(LiveBlockEntry {
                 object_key: Arc::clone(&row.object_key),
                 kind: block.model_id(),
-                element_name: Some(row.element_name.to_string()),
+                element_name: Some(Arc::clone(&row.element_name)),
                 address: block.address.clone(),
                 dirty: block.dirty(),
                 deleted: true,
