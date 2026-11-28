@@ -36,19 +36,20 @@ fn verify(engine: &TemporalEngine, fields: &[String], generation: u8) {
         };
         assert_eq!(values, fields.iter().enumerate()
             .map(|(column, _)| Some(vec![generation + column as u8; 48])).collect::<Vec<_>>());
-        let shards = engine.shards.read().unwrap();
-        let shard = shards.get(&1).unwrap();
-        let key = format!("completion-{row}");
-        let addresses: std::collections::BTreeSet<_> = shard.bucket_index.hashes.get(&key).unwrap()
-            .values().map(crate::engine::live_block_key).collect();
-        assert_eq!(addresses.len(), 1);
-        let refs = shard.bucket_index.object_block_refs("hash", &key).unwrap();
-        assert_eq!(refs.len(), 1, "the primary packed filing must remain reachable exactly once");
-        let block_ref = refs.iter().next().unwrap();
-        let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket).unwrap();
-        let block = bucket.block_index.get(&block_ref.block_ref_key).unwrap();
-        assert!(!block.deleted());
-        assert!(addresses.contains(&crate::engine::live_block_key(&block.address)));
+        engine.shards.with_state(1, |state| {
+            let shard = state.unwrap();
+            let key = format!("completion-{row}");
+            let addresses: std::collections::BTreeSet<_> = shard.bucket_index.hashes.get(&key).unwrap()
+                .values().map(crate::engine::live_block_key).collect();
+            assert_eq!(addresses.len(), 1);
+            let refs = shard.bucket_index.object_block_refs("hash", &key).unwrap();
+            assert_eq!(refs.len(), 1, "the primary packed filing must remain reachable exactly once");
+            let block_ref = refs.iter().next().unwrap();
+            let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket).unwrap();
+            let block = bucket.block_index.get(&block_ref.block_ref_key).unwrap();
+            assert!(!block.deleted());
+            assert!(addresses.contains(&crate::engine::live_block_key(&block.address)));
+        })
     }
 }
 
@@ -74,12 +75,13 @@ fn packed_hash_completion_removes_the_second_index_pass() {
             let before = bucket_block_upserts();
             reset_binary_search_count_for_test();
             {
-                let mut shards = engine.shards.write().unwrap();
-                let shard = shards.get_mut(&1).unwrap();
-                for row in 0..4 {
-                    assert!(crate::engine::storage_bucket_internals::sync_written_hash_fields(
-                        shard, 1, &format!("completion-{row}"), fields.iter().map(String::as_str)));
-                }
+                engine.shards.with_state_mut(1, |state| {
+                    let shard = state.unwrap();
+                    for row in 0..4 {
+                        assert!(crate::engine::storage_bucket_internals::sync_written_hash_fields(
+                            shard, 1, &format!("completion-{row}"), fields.iter().map(String::as_str)));
+                    }
+                })
             }
             assert_eq!(bucket_block_upserts() - before, 4);
             assert_eq!(binary_search_count_for_test(), (4 * width) as u64);
@@ -132,29 +134,30 @@ fn packed_hash_completion_timestamp_rows_keep_stale_writes_inert() {
 fn packed_hash_completion_marker_excludes_empty_and_scalar_writes() {
     let dir = tempfile::tempdir().unwrap();
     let engine = open(dir.path());
-    let mut shards = engine.shards.write().unwrap();
-    let shard = shards.get_mut(&1).unwrap();
-    let (start, end) = shard.routing_range();
-    let key = "marker";
-    let bucket = block_routing_bucket(key, start, end);
-    let object = stable_block_object_id(1, "hash", key);
-    let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
-        &engine.cache, &engine.block_store, 1, bucket, object, shard, true, true,
-        key.into(), Vec::new(), true, None, PackedFrameCache::Eager);
-    assert!(!outcome.mutated && filed.is_none());
-    let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
-        &engine.cache, &engine.block_store, 1, bucket, object, shard, true, false,
-        key.into(), vec![("a".into(), vec![1; 48])], true, None, PackedFrameCache::Eager);
-    assert!(outcome.mutated && filed.is_none());
-    let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
-        &engine.cache, &engine.block_store, 1, bucket, object, shard, true, true,
-        key.into(), vec![("b".into(), vec![2; 48])], true, None, PackedFrameCache::Eager);
-    assert!(outcome.mutated && filed.is_some());
-    let (outcome, _, filed) = execute_packed_conditional_hash_write_at_bucket(
-        &engine.cache, &engine.block_store, 1, bucket, object, shard, true,
-        key.into(), "ts".into(), 30, 0, Some(60_000), Vec::new(), true, None, None, PackedFrameCache::Eager);
-    assert!(outcome.mutated && filed.is_none(), "expiry alone is not a completed packed write");
-    let _ = crate::engine::block_in_wal::take_outcomes();
+    engine.shards.with_state_mut(1, |state| {
+        let shard = state.unwrap();
+        let (start, end) = shard.routing_range();
+        let key = "marker";
+        let bucket = block_routing_bucket(key, start, end);
+        let object = stable_block_object_id(1, "hash", key);
+        let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
+            &engine.cache, &engine.block_store, 1, bucket, object, shard, true, true,
+            key.into(), Vec::new(), true, None, PackedFrameCache::Eager);
+        assert!(!outcome.mutated && filed.is_none());
+        let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
+            &engine.cache, &engine.block_store, 1, bucket, object, shard, true, false,
+            key.into(), vec![("a".into(), vec![1; 48])], true, None, PackedFrameCache::Eager);
+        assert!(outcome.mutated && filed.is_none());
+        let (outcome, _, filed) = execute_hash_multi_set_reusing_metadata_at_bucket(
+            &engine.cache, &engine.block_store, 1, bucket, object, shard, true, true,
+            key.into(), vec![("b".into(), vec![2; 48])], true, None, PackedFrameCache::Eager);
+        assert!(outcome.mutated && filed.is_some());
+        let (outcome, _, filed) = execute_packed_conditional_hash_write_at_bucket(
+            &engine.cache, &engine.block_store, 1, bucket, object, shard, true,
+            key.into(), "ts".into(), 30, 0, Some(60_000), Vec::new(), true, None, None, PackedFrameCache::Eager);
+        assert!(outcome.mutated && filed.is_none(), "expiry alone is not a completed packed write");
+        let _ = crate::engine::block_in_wal::take_outcomes();
+    })
 }
 
 #[test]
@@ -206,15 +209,16 @@ fn packed_hash_completion_bounds_demand_lookups_for_new_projections() {
             for row in &result.rows {
                 assert_eq!(row.0, expected);
             }
-            let shards = engine.shards.read().unwrap();
-            let shard = shards.get(&1).unwrap();
-            for row in 0..4 {
-                let key = format!("completion-{row}");
-                let addresses: std::collections::BTreeSet<_> = shard.bucket_index.hashes.get(&key)
-                    .unwrap().values().map(crate::engine::live_block_key).collect();
-                assert_eq!(addresses.len(), 2, "both partial-view frames must remain reachable");
-                assert_eq!(shard.bucket_index.object_block_refs("hash", &key).unwrap().len(), 2);
-            }
+            engine.shards.with_state(1, |state| {
+                let shard = state.unwrap();
+                for row in 0..4 {
+                    let key = format!("completion-{row}");
+                    let addresses: std::collections::BTreeSet<_> = shard.bucket_index.hashes.get(&key)
+                        .unwrap().values().map(crate::engine::live_block_key).collect();
+                    assert_eq!(addresses.len(), 2, "both partial-view frames must remain reachable");
+                    assert_eq!(shard.bucket_index.object_block_refs("hash", &key).unwrap().len(), 2);
+                }
+            })
         };
         verify_both(&engine);
         engine.write_ahead_log_store().flush(1).unwrap();

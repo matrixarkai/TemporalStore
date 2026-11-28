@@ -5,6 +5,22 @@ servers used by vLLM. It stores each KV-cache chunk as one binary value.
 The Python SDK discovers table placement over gRPC and sends protobuf
 commands either directly to the selected datanode or through a gRPC proxy.
 
+
+## Direct shard access
+
+Set `storage_backend` to `"kv"` and set `data_url` and `shard_id` to a
+dedicated, already loaded datanode shard. Leave `blob_url` and `namespace`
+out of this configuration. The adapter stores each chunk under LMCache's
+encoded key as one binary string value. It uses conditional writes to keep
+the first payload, `StringLen` for lookup, and `StringGet` for reads. Reads
+require an exact destination size. `ttl_seconds` applies to the value
+itself, and an existing value keeps its original expiry.
+
+This path requires the datanode's MessagePack batch route. Its capacity
+setting limits individual chunks, and its usage counters reflect entries
+written and tracked by that adapter. Configure a dedicated test shard and
+a TTL for bounded test runs. Use the distributed configuration below for metaserver table discovery and replica failover.
+
 ## Distributed KV tables
 
 Install the SDK and both integration packages from the same checkout.
@@ -100,19 +116,24 @@ in the connector extra config, pass `--disable-hybrid-kv-cache-manager` to
 vLLM, and run the LMCache server with
 `--supported-transfer-mode engine_driven`.
 
-To verify L2 reuse, send a prompt longer than one LMCache chunk, wait for the
-L2 adapter to report a store in LMCache's `/status`, clear LMCache L1 with
-`POST /cache/clear` on the test server, then send the same prompt. The L2
-adapter's `loads` counter must increase. Leaving L1 warm can produce a hit
-without reading from TemporalStore. To test handoff between two vLLM
-processes attached to this LMCache server, pass the second process's URL
-with `--reload-vllm-url`. Use the same model and KV layout on both processes.
+To verify L2 reuse, send a fresh prompt longer than one LMCache chunk and
+wait for the writer adapter's `stores` plus `stores_confirmed_by_read` to
+increase in LMCache's `/status`. The second counter records writes that the
+adapter confirmed by reading the exact bytes after an uncertain reply.
+Clear L1 with `POST /cache/clear` on both LMCache servers, then replay the
+prompt. The replay adapter's `loads` counter must increase.
 
-Run the check against dedicated test servers with prefix caching disabled:
+Run the check against dedicated test servers with prefix caching disabled.
+Use the same model, KV layout, and TemporalStore namespace on both workers.
 
 ```bash
-python integrations/lmcache/tests/vllm_smoke.py --model "$MODEL"
+python integrations/lmcache/tests/vllm_smoke.py --model "$MODEL" \
+  --vllm-url "$WRITER_VLLM_URL" --lmcache-url "$WRITER_LMCACHE_URL" \
+  --reload-vllm-url "$READER_VLLM_URL" --reload-lmcache-url "$READER_LMCACHE_URL"
 ```
+
+For a single LMCache server, omit `--reload-lmcache-url`. For a
+single vLLM worker, also omit `--reload-vllm-url`.
 
 
 ### SSD cache sizing
@@ -138,6 +159,24 @@ For tensor payloads, measure compression before setting
 `TS_BLOCK_STORE_COMPRESSION_ENABLED=false` on dedicated nodes. These flags
 apply to the cache, WAL, and block store respectively.
 
+
+### Raft write sizing
+
+For Raft-backed tables, size the replication and apply budgets on every
+datanode for the largest encoded tensor write and its batch. The default
+replication budget is 32 KiB and the default apply batch budget is 64 KiB.
+A larger chunk can be rejected even if it fits in the SSD cache. Leave room
+for the command and replication framing.
+
+The 1 MiB tensor test used these settings on each replica:
+
+```bash
+export TS_RAFT_MAX_MEMORY_REPLICATE_LOG_BYTES=16777216
+export TS_RAFT_MAX_APPLY_BATCH_BYTES=16777216
+```
+
+The replication budget also bounds in-flight bytes per follower. Use the
+smallest values that cover the planned writes and batches.
 
 Raft replicas open their serving cache in an isolated storage directory
 under the process temporary directory. Set `TMPDIR` to the intended local
@@ -180,6 +219,13 @@ datanodes. After a transport failure, that adapter reports metadata misses for
 one second before retrying on the next lookup. This lets reachable replicas
 serve queued requests while the link recovers. Blob transfers and metadata
 writes still use `timeout_seconds`.
+
+For distributed KV storage, `store_retry_timeout_seconds` sets the retry
+window after the datanode or proxy reports that a cache insert was rejected
+before it started. It defaults to five seconds and cannot exceed
+`timeout_seconds`. Direct Raft writes with an uncertain outcome may be checked
+by exact readback. A timeout with unknown publication durability is returned
+as a failure.
 
 To measure the L2 path independent of model inference, use LMCache's adapter
 benchmark against a disposable datanode:

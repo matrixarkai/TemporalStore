@@ -167,79 +167,80 @@ impl IndexWalk {
 
 /// Walk shard 1's bucket index and account for every allocation it owns.
 pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
-    let shards = engine.shards.read().expect("engine lock poisoned");
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut out = IndexWalk::default();
-    // Distinct allocations, by DATA POINTER. Two entries of one object share one allocation and it
-    // must be charged once, which is exactly what a per-entry charge gets wrong.
-    let mut seen_keys: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
-    let mut seen_element_names: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
-    let pair_stride = std::mem::size_of::<(u64, BlockIndex)>() as u64;
-    let entry_width = std::mem::size_of::<BlockIndex>() as u64;
+    engine.shards.with_state(1, |shard_state| {
+        let shard = shard_state.expect("shard 1 is loaded");
+        let mut out = IndexWalk::default();
+        // Distinct allocations, by DATA POINTER. Two entries of one object share one allocation and it
+        // must be charged once, which is exactly what a per-entry charge gets wrong.
+        let mut seen_keys: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+        let mut seen_element_names: BTreeMap<usize, (usize, usize)> = BTreeMap::new();
+        let pair_stride = std::mem::size_of::<(u64, BlockIndex)>() as u64;
+        let entry_width = std::mem::size_of::<BlockIndex>() as u64;
 
-    for bucket in shard.bucket_index.bucket_map.values() {
-        out.buckets += 1;
-        match &bucket.block_index {
-            BlockIndexMap::Empty => out.arm_empty += 1,
-            BlockIndexMap::One(_, _) => {
-                out.arm_one += 1;
-                // The handle rides in the enum; the allocation is one entry wide.
-                out.block_heap_request += entry_width;
-                out.alloc_sizes.push(entry_width as usize);
-            }
-            BlockIndexMap::Many(blocks) => {
-                out.arm_many += 1;
-                out.list_len += blocks.len() as u64;
-                out.list_capacity += blocks.capacity() as u64;
-                out.block_heap_request += blocks.capacity() as u64 * pair_stride;
-                if blocks.capacity() > 0 {
-                    out.alloc_sizes
-                        .push(blocks.capacity() * pair_stride as usize);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            out.buckets += 1;
+            match &bucket.block_index {
+                BlockIndexMap::Empty => out.arm_empty += 1,
+                BlockIndexMap::One(_, _) => {
+                    out.arm_one += 1;
+                    // The handle rides in the enum; the allocation is one entry wide.
+                    out.block_heap_request += entry_width;
+                    out.alloc_sizes.push(entry_width as usize);
                 }
-                *out.list_lengths.entry(blocks.len()).or_insert(0) += 1;
+                BlockIndexMap::Many(blocks) => {
+                    out.arm_many += 1;
+                    out.list_len += blocks.len() as u64;
+                    out.list_capacity += blocks.capacity() as u64;
+                    out.block_heap_request += blocks.capacity() as u64 * pair_stride;
+                    if blocks.capacity() > 0 {
+                        out.alloc_sizes
+                            .push(blocks.capacity() * pair_stride as usize);
+                    }
+                    *out.list_lengths.entry(blocks.len()).or_insert(0) += 1;
+                }
+            }
+            for (_handle, _block) in bucket.block_index.iter() {
+                out.blocks += 1;
+                // NO KEY REQUEST PER ENTRY EITHER, AND THIS CENSUS IS THE BLOCK INDEX'S OWN BYTES.
+                //
+                // This asked the allocator-request model what one entry's `Arc<str>` of key text
+                // costs, and deduplicated by pointer so that blocks of one object charged it once.
+                // The entry has no key, so the block index requests NOTHING on that account -- the
+                // counter is a structural zero and the ownership pass below has nothing to attribute.
+                //
+                // THE BYTES DID NOT VANISH AND THIS IS NOT WHERE THEY ARE. One allocation per
+                // (kind, object) lives in the bucket index's object lookup, which this walk does not
+                // enter: it walks `bucket_map` and reports what the BLOCK INDEX holds resident.
+                // `index_bytes_per_key::walk_bucket_index_strings` is the walk that enters both and
+                // charges each allocation once, and it is where the key text is counted now.
+                //
+                // THE COUNTER IS KEPT AT ZERO RATHER THAN REMOVED because the arms below print it as
+                // a column of the per-entry request table, beside the block-list and entry strides
+                // that still have a subject.
+                //
+                // NO ELEMENT NAME REQUEST PER ENTRY: the entry carries no element name, so it asks the
+                // allocator for nothing on that account. The counter and the `seen_element_names` census
+                // therefore stay at zero by construction rather than by measurement.
             }
         }
-        for (_handle, _block) in bucket.block_index.iter() {
-            out.blocks += 1;
-            // NO KEY REQUEST PER ENTRY EITHER, AND THIS CENSUS IS THE BLOCK INDEX'S OWN BYTES.
-            //
-            // This asked the allocator-request model what one entry's `Arc<str>` of key text
-            // costs, and deduplicated by pointer so that blocks of one object charged it once.
-            // The entry has no key, so the block index requests NOTHING on that account -- the
-            // counter is a structural zero and the ownership pass below has nothing to attribute.
-            //
-            // THE BYTES DID NOT VANISH AND THIS IS NOT WHERE THEY ARE. One allocation per
-            // (kind, object) lives in the bucket index's object lookup, which this walk does not
-            // enter: it walks `bucket_map` and reports what the BLOCK INDEX holds resident.
-            // `index_bytes_per_key::walk_bucket_index_strings` is the walk that enters both and
-            // charges each allocation once, and it is where the key text is counted now.
-            //
-            // THE COUNTER IS KEPT AT ZERO RATHER THAN REMOVED because the arms below print it as
-            // a column of the per-entry request table, beside the block-list and entry strides
-            // that still have a subject.
-            //
-            // NO ELEMENT NAME REQUEST PER ENTRY: the entry carries no element name, so it asks the
-            // allocator for nothing on that account. The counter and the `seen_element_names` census
-            // therefore stay at zero by construction rather than by measurement.
-        }
-    }
-    // THE SECOND PASS IS GONE WITH THE FIRST, AND ITS THREE COUNTERS ARE STRUCTURAL ZEROES.
-    //
-    // It existed to settle how many entries held each key allocation, which can only be known
-    // after the whole index has been walked, and then to ask whether anything OUTSIDE the block
-    // index held that allocation too -- `strong_count` against the count of entries holding it.
-    // With no key on the entry, `seen_keys` is empty, `key_allocs` and `key_request` are zero,
-    // and `keys_held_outside` has no question left: the block index holds no key allocation at
-    // all, so there is no "outside" to compare against. Every key in this store is held outside
-    // it, which is the change rather than a finding this census could report.
-    //
-    // RETIRED RATHER THAN LEFT RUNNING OVER AN EMPTY MAP. A loop over `seen_keys` would still
-    // compile, still pass, and print three zeroes that read as a measurement.
-    debug_assert!(
-        seen_keys.is_empty(),
-        "the first pass recorded a key allocation on a block entry, which has no key field"
-    );
-    out
+        // THE SECOND PASS IS GONE WITH THE FIRST, AND ITS THREE COUNTERS ARE STRUCTURAL ZEROES.
+        //
+        // It existed to settle how many entries held each key allocation, which can only be known
+        // after the whole index has been walked, and then to ask whether anything OUTSIDE the block
+        // index held that allocation too -- `strong_count` against the count of entries holding it.
+        // With no key on the entry, `seen_keys` is empty, `key_allocs` and `key_request` are zero,
+        // and `keys_held_outside` has no question left: the block index holds no key allocation at
+        // all, so there is no "outside" to compare against. Every key in this store is held outside
+        // it, which is the change rather than a finding this census could report.
+        //
+        // RETIRED RATHER THAN LEFT RUNNING OVER AN EMPTY MAP. A loop over `seen_keys` would still
+        // compile, still pass, and print three zeroes that read as a measurement.
+        debug_assert!(
+            seen_keys.is_empty(),
+            "the first pass recorded a key allocation on a block entry, which has no key field"
+        );
+        out
+    })
 }
 
 // =============================================================================================
@@ -259,28 +260,29 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
 /// Returns `(free_bytes, frees)` with the carrier vector's own free already discharged.
 #[cfg(feature = "alloc-probe")]
 pub(super) fn freed_by_dropping_block_indexes(engine: &TemporalEngine) -> (u64, u64) {
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-    let buckets = shard.bucket_index.bucket_map.len();
-    // Allocated OUTSIDE the probe window and never grown inside it, so the carrier contributes
-    // exactly one free of a known size and nothing else.
-    let mut taken: Vec<BlockIndexMap> = Vec::with_capacity(buckets);
-    for bucket in shard.bucket_index.bucket_map.values_mut() {
-        taken.push(std::mem::take(&mut bucket.block_index));
-    }
-    assert_eq!(
-        taken.capacity(),
-        buckets,
-        "the carrier grew inside the measurement and its own buffer is now an unknown term"
-    );
-    let carrier_bytes = (taken.capacity() * std::mem::size_of::<BlockIndexMap>()) as u64;
-    let probe = Probe::start();
-    drop(taken);
-    let counts = probe.stop();
-    (
-        counts.free_bytes.saturating_sub(carrier_bytes),
-        counts.frees.saturating_sub(1),
-    )
+    engine.shards.with_state_mut(1, |shard_state| {
+        let shard = shard_state.expect("shard 1 is loaded");
+        let buckets = shard.bucket_index.bucket_map.len();
+        // Allocated OUTSIDE the probe window and never grown inside it, so the carrier contributes
+        // exactly one free of a known size and nothing else.
+        let mut taken: Vec<BlockIndexMap> = Vec::with_capacity(buckets);
+        for bucket in shard.bucket_index.bucket_map.values_mut() {
+            taken.push(std::mem::take(&mut bucket.block_index));
+        }
+        assert_eq!(
+            taken.capacity(),
+            buckets,
+            "the carrier grew inside the measurement and its own buffer is now an unknown term"
+        );
+        let carrier_bytes = (taken.capacity() * std::mem::size_of::<BlockIndexMap>()) as u64;
+        let probe = Probe::start();
+        drop(taken);
+        let counts = probe.stop();
+        (
+            counts.free_bytes.saturating_sub(carrier_bytes),
+            counts.frees.saturating_sub(1),
+        )
+    })
 }
 
 /// What the allocator SETS ASIDE for a list of request sizes, against what was asked for.

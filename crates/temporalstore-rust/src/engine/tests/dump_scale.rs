@@ -581,13 +581,11 @@ fn the_dump_budget_moves_with_batching_in_records_and_in_bytes_but_not_in_object
             ..Default::default()
         });
         let undumped_bytes = engine.wal_store.undumped_len_since_dump(1);
-        let dirty = {
-            let shards = engine.shards.read().expect("shards lock poisoned");
-            shards
-                .get(&1)
+        let dirty = engine.shards.with_state(1, |shard_state| {
+            shard_state
                 .map(|shard| shard.dirty_objects.len())
                 .unwrap_or(0)
-        };
+        });
         (
             plan.undumped_wal_records,
             undumped_bytes,

@@ -7,20 +7,20 @@
 //!
 //! The footprint of this path was first measured as a resident-set delta around the writes, in a
 //! separate process per arm. That instrument does not work, and its own sweep proved it: the exact
-//! arm read 31.13, then 138.61, then 46.12 bytes per value at 12,500 / 25,000 / 50,000 — not
-//! monotonic — the sketched arm read HIGHER than the exact one at 12,500, and at 50,000 it
+//! arm read 31.13, then 138.61, then 46.12 bytes per value at 12,500 / 25,000 / 50,000 â€” not
+//! monotonic â€” the sketched arm read HIGHER than the exact one at 12,500, and at 50,000 it
 //! reported **zero growth**. Resident size follows allocator high-water marks and block reuse, so a
 //! single sample of it was read as a 65% saving that the next two samples contradicted.
 //!
 //! So this counts the bytes the shard is holding, from the shard. `DistinctBucket` is either
-//! `Exact(BTreeSet<Vec<u8>>)` — every member, kept — or `Sketch(Hll)`, whose `registers` is
+//! `Exact(BTreeSet<Vec<u8>>)` â€” every member, kept â€” or `Sketch(Hll)`, whose `registers` is
 //! exactly `1 << 12` = 4,096 `u8`. Both are countable, the count is the same in debug and
 //! release, and no allocator is involved in the answer.
 //!
 //! # THE CLAIM UNDER TEST
 //!
-//! Unbounded, one key's exact set grows with its cardinality and has no ceiling. Bounded — which
-//! is the native design, converting at 4,096 per bucket to a fixed-size sketch — the members are
+//! Unbounded, one key's exact set grows with its cardinality and has no ceiling. Bounded â€” which
+//! is the native design, converting at 4,096 per bucket to a fixed-size sketch â€” the members are
 //! dropped and the held bytes stop moving. Two cardinalities above the threshold are the minimum
 //! that can tell "flat" from "smaller", which the invalid instrument could not.
 //!
@@ -59,7 +59,7 @@ fn drive(gate_on: bool, distinct: usize) -> Census {
     );
     engine.load_shard(1);
     let mut extend_config = std::collections::BTreeMap::new();
-    // Spelled in BOTH arms, so the figures never depend on what the default happens to be —
+    // Spelled in BOTH arms, so the figures never depend on what the default happens to be â€”
     // which is the thing this measurement exists to inform and would otherwise silently become
     // the control.
     extend_config.insert(
@@ -115,38 +115,39 @@ fn drive(gate_on: bool, distinct: usize) -> Census {
     // THE CENSUS, FROM THE SHARD. Not a resident-set delta: these are the containers themselves.
     // `shards` is a std `RwLock`, so `read()` yields a `Result` -- unwrapped here because a
     // poisoned lock means another test panicked and this measurement is void anyway.
-    let shards = engine.shards.read().unwrap();
-    let shard = shards.get(&1).expect("shard 1 is loaded");
-    let series = shard
-        .control_state_changes
-        .get(KEY)
-        .expect("the key must be present; if it is not, the writes did not land");
-    let mut census = Census {
-        buckets: 0,
-        exact_buckets: 0,
-        sketched_buckets: 0,
-        members_held: 0,
-        member_payload_bytes: 0,
-        sketch_bytes: 0,
-        answer,
-    };
-    for (_bucket_ms, bucket) in series.iter() {
-        census.buckets += 1;
-        match bucket {
-            crate::engine::hll::DistinctBucket::Exact(members) => {
-                census.exact_buckets += 1;
-                census.members_held += members.len();
-                census.member_payload_bytes += members.iter().map(|m| m.len()).sum::<usize>();
-            }
-            crate::engine::hll::DistinctBucket::Sketch(_) => {
-                census.sketched_buckets += 1;
-                // The register array is the whole of a sketch's footprint and its width is fixed
-                // by `P`, so this is arithmetic rather than a measurement.
-                census.sketch_bytes += SKETCH_REGISTERS;
+    engine.shards.with_state(1, |state| {
+        let shard = state.expect("shard 1 is loaded");
+        let series = shard
+            .control_state_changes
+            .get(KEY)
+            .expect("the key must be present; if it is not, the writes did not land");
+        let mut census = Census {
+            buckets: 0,
+            exact_buckets: 0,
+            sketched_buckets: 0,
+            members_held: 0,
+            member_payload_bytes: 0,
+            sketch_bytes: 0,
+            answer,
+        };
+        for (_bucket_ms, bucket) in series.iter() {
+            census.buckets += 1;
+            match bucket {
+                crate::engine::hll::DistinctBucket::Exact(members) => {
+                    census.exact_buckets += 1;
+                    census.members_held += members.len();
+                    census.member_payload_bytes += members.iter().map(|m| m.len()).sum::<usize>();
+                }
+                crate::engine::hll::DistinctBucket::Sketch(_) => {
+                    census.sketched_buckets += 1;
+                    // The register array is the whole of a sketch's footprint and its width is fixed
+                    // by `P`, so this is arithmetic rather than a measurement.
+                    census.sketch_bytes += SKETCH_REGISTERS;
+                }
             }
         }
-    }
-    census
+        census
+    })
 }
 
 #[test]

@@ -521,7 +521,7 @@ fn what_the_payload_cache_holds_per_user_byte() {
     // that changes a measured law owes a run of every arm that measured it -- a filter is not that.
     assert_eq!(
         noise_row.cache_bytes, run_row.cache_bytes,
-        "noise charged {} B and a run charged {} B at the same value size. Since #2279 the payload          is a msgpack byte string, which charges by length alone, so the byte distribution must not          matter -- if these differ again the field has reverted to an element-wise encoding",
+        "noise charged {} B and a run charged {} B at the same value size. Since #2279 the payload is a msgpack byte string, which charges by length alone, so the byte distribution must not matter -- if these differ again the field has reverted to an element-wise encoding",
         noise_row.cache_bytes,
         run_row.cache_bytes
     );

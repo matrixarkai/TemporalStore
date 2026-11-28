@@ -260,82 +260,83 @@ fn whether_the_reconcile_keeps_a_container_only_element_when_it_is_run_by_name()
     );
 
     let node_key = "ctx:node:7:1";
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard is loaded");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard is loaded");
 
-    // 1. IS THE NODE IN THE BUCKET INDEX? Asked of the index itself rather than of a comment.
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut index_entries_for_node = Vec::new();
-    let mut index_entries_for_control = 0usize;
-    for (bucket_id, bucket) in &shard.bucket_index.bucket_map {
-        for (handle, block) in &bucket.block_index {
-            let object_key = named.at(*bucket_id, *handle);
-            if object_key.as_ref() == node_key {
-                index_entries_for_node.push((
-                    block.model_id().to_string(),
-                    None::<String>,
-                    block.deleted(),
-                ));
-            }
-            if object_key.as_ref() == "control-hash" {
-                index_entries_for_control += 1;
+        // 1. IS THE NODE IN THE BUCKET INDEX? Asked of the index itself rather than of a comment.
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut index_entries_for_node = Vec::new();
+        let mut index_entries_for_control = 0usize;
+        for (bucket_id, bucket) in &shard.bucket_index.bucket_map {
+            for (handle, block) in &bucket.block_index {
+                let object_key = named.at(*bucket_id, *handle);
+                if object_key.as_ref() == node_key {
+                    index_entries_for_node.push((
+                        block.model_id().to_string(),
+                        None::<String>,
+                        block.deleted(),
+                    ));
+                }
+                if object_key.as_ref() == "control-hash" {
+                    index_entries_for_control += 1;
+                }
             }
         }
-    }
-    println!(
-        "[why] bucket-index entries naming {node_key}: {index_entries_for_node:?}  \
+        println!(
+            "[why] bucket-index entries naming {node_key}: {index_entries_for_node:?}  \
          (control-hash entries: {index_entries_for_control})"
-    );
-    assert!(
-        index_entries_for_control > 0,
-        "CONTROL: the index holds no entry for a HashSet field either, so this walk is not reading \
+        );
+        assert!(
+            index_entries_for_control > 0,
+            "CONTROL: the index holds no entry for a HashSet field either, so this walk is not reading \
          the index correctly and its answer about the node means nothing"
-    );
+        );
 
-    // 2. IS IT IN THE RESIDENT MAP before the reconcile?
-    let in_map_before = shard
-        .bucket_index.hashes
-        .get(node_key)
-        .map(|fields| fields.get("meta").is_some())
-        .unwrap_or(false);
-    println!("[why] resident hashes holds {node_key}/meta before the reconcile: {in_map_before}");
-    assert!(
-        in_map_before,
-        "the node is not in the resident map before the reconcile, so this test cannot ask what \
+        // 2. IS IT IN THE RESIDENT MAP before the reconcile?
+        let in_map_before = shard
+            .bucket_index.hashes
+            .get(node_key)
+            .map(|fields| fields.get("meta").is_some())
+            .unwrap_or(false);
+        println!("[why] resident hashes holds {node_key}/meta before the reconcile: {in_map_before}");
+        assert!(
+            in_map_before,
+            "the node is not in the resident map before the reconcile, so this test cannot ask what \
          the reconcile does to it"
-    );
+        );
 
-    // 3. RUN THE RECONCILE BY NAME, which is what no load path here is proven to do.
-    crate::engine::storage_bucket_internals::rebuild_unserialized_model_maps_from_bucket_index(
-        shard,
-    );
+        // 3. RUN THE RECONCILE BY NAME, which is what no load path here is proven to do.
+        crate::engine::storage_bucket_internals::rebuild_unserialized_model_maps_from_bucket_index(
+            shard,
+        );
 
-    let in_map_after = shard
-        .bucket_index.hashes
-        .get(node_key)
-        .map(|fields| fields.get("meta").is_some())
-        .unwrap_or(false);
-    let control_after = shard
-        .bucket_index.hashes
-        .get("control-hash")
-        .map(|fields| fields.get("f-0").is_some())
-        .unwrap_or(false);
-    println!(
-        "[why] after the reconcile: node={in_map_after} control={control_after}"
-    );
-    assert!(
-        control_after,
-        "CONTROL: the reconcile dropped the index-registered HashSet field too, so it is not \
+        let in_map_after = shard
+            .bucket_index.hashes
+            .get(node_key)
+            .map(|fields| fields.get("meta").is_some())
+            .unwrap_or(false);
+        let control_after = shard
+            .bucket_index.hashes
+            .get("control-hash")
+            .map(|fields| fields.get("f-0").is_some())
+            .unwrap_or(false);
+        println!(
+            "[why] after the reconcile: node={in_map_after} control={control_after}"
+        );
+        assert!(
+            control_after,
+            "CONTROL: the reconcile dropped the index-registered HashSet field too, so it is not \
          behaving as its own documentation describes and nothing here is attributable"
-    );
+        );
 
-    // No assertion on `in_map_after` either way -- this test REPORTS it. Which value is correct is
-    // the open question; pinning today's answer as an expectation would freeze the thing under
-    // discussion.
-    println!(
-        "[why] VERDICT: a container-only element {} the reconcile when it is run by name",
-        if in_map_after { "SURVIVES" } else { "DOES NOT SURVIVE" }
-    );
+        // No assertion on `in_map_after` either way -- this test REPORTS it. Which value is correct is
+        // the open question; pinning today's answer as an expectation would freeze the thing under
+        // discussion.
+        println!(
+            "[why] VERDICT: a container-only element {} the reconcile when it is run by name",
+            if in_map_after { "SURVIVES" } else { "DOES NOT SURVIVE" }
+        );
+    });
 }
 
 /// SO IS A CONTAINER-ONLY ELEMENT REACHABLE AT ALL, AND WHAT HAPPENS TO ONE?
@@ -367,108 +368,109 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
         }],
     );
 
-    let mut shards = engine.shards.write().expect("engine lock poisoned");
-    let shard = shards.get_mut(&1).expect("shard is loaded");
+    engine.shards.with_state_mut(1, |shard| {
+        let shard = shard.expect("shard is loaded");
 
-    // Borrow a real, live address from the control's own block so the subject cannot be refused
-    // merely for pointing at a block that does not exist. The ONLY thing that differs between the
-    // control and the subject is whether the INDEX names it.
-    let live_address = shard
-        .bucket_index.hashes
-        .get("control-hash")
-        .and_then(|fields| fields.get("f-0"))
-        .cloned()
-        .expect("the control field must be in the resident map to lend its address");
+        // Borrow a real, live address from the control's own block so the subject cannot be refused
+        // merely for pointing at a block that does not exist. The ONLY thing that differs between the
+        // control and the subject is whether the INDEX names it.
+        let live_address = shard
+            .bucket_index.hashes
+            .get("control-hash")
+            .and_then(|fields| fields.get("f-0"))
+            .cloned()
+            .expect("the control field must be in the resident map to lend its address");
 
-    shard
-        .bucket_index.hashes
-        .replay_install_element("orphan-object", std::sync::Arc::from("meta"), live_address);
+        shard
+            .bucket_index.hashes
+            .replay_install_element("orphan-object", std::sync::Arc::from("meta"), live_address);
 
-    let orphan_before = shard
-        .bucket_index.hashes
-        .get("orphan-object")
-        .map(|fields| fields.get("meta").is_some())
-        .unwrap_or(false);
-    let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut index_names_orphan = false;
-    for (bucket_id, bucket) in &shard.bucket_index.bucket_map {
-        for (handle, _block) in &bucket.block_index {
-            if named.at(*bucket_id, *handle).as_ref() == "orphan-object" {
-                index_names_orphan = true;
+        let orphan_before = shard
+            .bucket_index.hashes
+            .get("orphan-object")
+            .map(|fields| fields.get("meta").is_some())
+            .unwrap_or(false);
+        let named = super::BlockObjects::of(&shard.bucket_index);
+        let mut index_names_orphan = false;
+        for (bucket_id, bucket) in &shard.bucket_index.bucket_map {
+            for (handle, _block) in &bucket.block_index {
+                if named.at(*bucket_id, *handle).as_ref() == "orphan-object" {
+                    index_names_orphan = true;
+                }
             }
         }
-    }
-    println!(
-        "[orphan] before the reconcile: in resident map={orphan_before} named by index={index_names_orphan}"
-    );
-    assert!(
-        orphan_before && !index_names_orphan,
-        "the fixture failed to build a CONTAINER-ONLY element (map={orphan_before}, \
+        println!(
+            "[orphan] before the reconcile: in resident map={orphan_before} named by index={index_names_orphan}"
+        );
+        assert!(
+            orphan_before && !index_names_orphan,
+            "the fixture failed to build a CONTAINER-ONLY element (map={orphan_before}, \
          index={index_names_orphan}), so this test cannot ask its question"
-    );
+        );
 
-    crate::engine::storage_bucket_internals::rebuild_unserialized_model_maps_from_bucket_index(
-        shard,
-    );
+        crate::engine::storage_bucket_internals::rebuild_unserialized_model_maps_from_bucket_index(
+            shard,
+        );
 
-    let orphan_after = shard
-        .bucket_index.hashes
-        .get("orphan-object")
-        .map(|fields| fields.get("meta").is_some())
-        .unwrap_or(false);
-    let control_after = shard
-        .bucket_index.hashes
-        .get("control-hash")
-        .map(|fields| fields.get("f-0").is_some())
-        .unwrap_or(false);
-    println!("[orphan] after the reconcile: orphan={orphan_after} control={control_after}");
-    assert!(
-        control_after,
-        "CONTROL: the index-registered field was dropped too, so the reconcile is not doing what \
+        let orphan_after = shard
+            .bucket_index.hashes
+            .get("orphan-object")
+            .map(|fields| fields.get("meta").is_some())
+            .unwrap_or(false);
+        let control_after = shard
+            .bucket_index.hashes
+            .get("control-hash")
+            .map(|fields| fields.get("f-0").is_some())
+            .unwrap_or(false);
+        println!("[orphan] after the reconcile: orphan={orphan_after} control={control_after}");
+        assert!(
+            control_after,
+            "CONTROL: the index-registered field was dropped too, so the reconcile is not doing what \
          its documentation says and the orphan result is not attributable to the live filter"
-    );
-    println!(
-        "[orphan] VERDICT: a container-only element {} the reconcile",
-        if orphan_after { "SURVIVES" } else { "IS REFUSED BY" }
-    );
+        );
+        println!(
+            "[orphan] VERDICT: a container-only element {} the reconcile",
+            if orphan_after { "SURVIVES" } else { "IS REFUSED BY" }
+        );
 
-    // THE COMPLEMENTARY CONTROL, and without it the result above is unreadable: if the filter
-    // never fires at all, "survives" says nothing about why. A second orphan gets an address for a
-    // block NOTHING holds, so the only live-set lookup that can decide it must fail.
-    shard.bucket_index.hashes.replay_install_element(
-        "orphan-dead-block",
-        std::sync::Arc::from("meta"),
-        crate::engine::ElementEntry::from_parts(9_999, 1_234_567, 64, None, None),
-    );
-    assert!(
-        shard
+        // THE COMPLEMENTARY CONTROL, and without it the result above is unreadable: if the filter
+        // never fires at all, "survives" says nothing about why. A second orphan gets an address for a
+        // block NOTHING holds, so the only live-set lookup that can decide it must fail.
+        shard.bucket_index.hashes.replay_install_element(
+            "orphan-dead-block",
+            std::sync::Arc::from("meta"),
+            crate::engine::ElementEntry::from_parts(9_999, 1_234_567, 64, None, None),
+        );
+        assert!(
+            shard
+                .bucket_index.hashes
+                .get("orphan-dead-block")
+                .map(|fields| fields.get("meta").is_some())
+                .unwrap_or(false),
+            "the dead-block control was not installed, so it cannot test the filter"
+        );
+        crate::engine::storage_bucket_internals::rebuild_unserialized_model_maps_from_bucket_index(
+            shard,
+        );
+        let dead_after = shard
             .bucket_index.hashes
             .get("orphan-dead-block")
             .map(|fields| fields.get("meta").is_some())
-            .unwrap_or(false),
-        "the dead-block control was not installed, so it cannot test the filter"
-    );
-    crate::engine::storage_bucket_internals::rebuild_unserialized_model_maps_from_bucket_index(
-        shard,
-    );
-    let dead_after = shard
-        .bucket_index.hashes
-        .get("orphan-dead-block")
-        .map(|fields| fields.get("meta").is_some())
-        .unwrap_or(false);
-    println!("[orphan] dead-block control after the reconcile: {dead_after} (must be false)");
-    assert!(
-        !dead_after,
-        "THE LIVE FILTER NEVER FIRES: an element pointing at a block nothing holds also survived,          so the first result above cannot be read as `the block was live`"
-    );
-    // MEASURED, and it REFUTED the prediction this test was written to confirm: a container-only
-    // element whose BLOCK is live SURVIVES. `LiveBlockKey` is `(slab_id, offset, length)` -- a block
-    // identity carrying no element, element name or object key -- so the filter asks only whether the
-    // block is still there, never whether the index names this element.
-    assert!(
-        orphan_after,
-        "a container-only element on a LIVE block was dropped, contradicting the measured behaviour          this assertion records"
-    );
+            .unwrap_or(false);
+        println!("[orphan] dead-block control after the reconcile: {dead_after} (must be false)");
+        assert!(
+            !dead_after,
+            "THE LIVE FILTER NEVER FIRES: an element pointing at a block nothing holds also survived, so the first result above cannot be read as `the block was live`"
+        );
+        // MEASURED, and it REFUTED the prediction this test was written to confirm: a container-only
+        // element whose BLOCK is live SURVIVES. `LiveBlockKey` is `(slab_id, offset, length)` -- a block
+        // identity carrying no element, element name or object key -- so the filter asks only whether the
+        // block is still there, never whether the index names this element.
+        assert!(
+            orphan_after,
+            "a container-only element on a LIVE block was dropped, contradicting the measured behaviour this assertion records"
+        );
+    });
 }
 
 /// THE SAME QUESTION FOR THE OTHER THREE KINDS, ASKED OF THE FUNCTION THAT DECIDES.

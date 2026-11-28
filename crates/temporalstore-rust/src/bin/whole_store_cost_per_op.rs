@@ -429,7 +429,7 @@ fn main() {
     const PREALLOC_STEP: u64 = 256 * 1024;
     assert!(
         grew % PREALLOC_STEP != 0 || grew < PREALLOC_STEP,
-        "THIS IS A PREALLOCATION STEP, NOT A COST: the directory grew {grew} B, an exact multiple          of the {PREALLOC_STEP} B segment this store reserves in advance. Re-run with          TS_WAL_PREALLOCATE=0 so the log's length follows its records."
+        "THIS IS A PREALLOCATION STEP, NOT A COST: the directory grew {grew} B, an exact multiple of the {PREALLOC_STEP} B segment this store reserves in advance. Re-run with TS_WAL_PREALLOCATE=0 so the log's length follows its records."
     );
     let rounds = std::env::var("WSC_MAINTENANCE_ROUNDS")
         .map(|value| value.parse::<usize>().expect("WSC_MAINTENANCE_ROUNDS must be an integer"))

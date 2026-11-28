@@ -458,11 +458,21 @@ impl RaftCluster {
         // now only an ACCEPTED append marked it back up -- so a follower that is merely behind,
         // which rejects appends while it catches up, held a healthy leader as down and refused
         // every operation that needs one.
-        let heard_from_the_leader = inner
-            .nodes
-            .get(&target_id)
-            .map(|node| term >= node.current_term)
-            .unwrap_or(false);
+        let contact_term = match inner.nodes.get(&target_id) {
+            Some(node) => Some(node.current_term),
+            None if inner.local_node_id == Some(target_id) && inner.leader_id == leader_id => {
+                // A removed process still receives heartbeats once the leader adds
+                // it back on its side. Refresh contact without accepting entries
+                // until the local membership adds this node again.
+                inner
+                    .nodes
+                    .get(&leader_id)
+                    .filter(|leader| leader.role == RaftRole::Leader)
+                    .map(|leader| leader.current_term)
+            }
+            None => None,
+        };
+        let heard_from_the_leader = contact_term.is_some_and(|current_term| term >= current_term);
         if heard_from_the_leader && leader_id != target_id {
             if let Some(leader) = inner.nodes.get_mut(&leader_id) {
                 leader.alive = true;
@@ -479,12 +489,7 @@ impl RaftCluster {
         // up kept timing out and campaigning, which bumped the term, which made the
         // leader's in-flight appends stale, which got them rejected -- catch-up and
         // election fighting each other instead of converging.
-        let local_current_term = inner
-            .nodes
-            .get(&target_id)
-            .map(|node| node.current_term)
-            .unwrap_or_default();
-        if term >= local_current_term {
+        if heard_from_the_leader {
             inner.leader_contact_epoch = inner.leader_contact_epoch.saturating_add(1);
         }
         let enable_reorder_queue = inner.config.enable_reorder_queue;

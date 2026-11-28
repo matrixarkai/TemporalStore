@@ -30,9 +30,14 @@ reuses its gRPC channel, and supplies the shard's load version when
 available. Batch results follow input order across shards. Serialized
 relays can forward command bytes through the same routing path.
 
-Set `ClientOptions::meta_grpc_target` to the metaserver's gRPC address
-to use protobuf for table lookup and topology version checks. Start the
-metaserver with `TS_META_GRPC_BIND_ADDR` to expose that service.
+Use `ClientOptions::direct("127.0.0.1:17201")` to discover a table over gRPC
+and route commands directly to its primary. The single-node Compose setup
+exposes the metaserver at that address. For other deployments, set
+`TS_META_GRPC_BIND_ADDR` on the metaserver.
+
+With default local settings, the metaserver, datanode, and service proxy
+listen on gRPC ports 17201, 17202, and 17200 respectively. A deployment using
+custom bind addresses can configure the gRPC addresses explicitly.
 
 With a configured gRPC metaserver, the synchronous `TemporalStoreTable`
 command and batch methods also use the protobuf data connection. The client
