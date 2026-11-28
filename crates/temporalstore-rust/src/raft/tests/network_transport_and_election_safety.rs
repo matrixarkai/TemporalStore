@@ -1332,7 +1332,42 @@ fn foreground_quorum_continues_when_one_follower_append_window_is_full() {
         Err(RaftError::AppendBackpressure { node_id: 3, .. })
     ));
 
-    leader.propose_distributed(put("second"), &transport).unwrap();
+    #[derive(Clone)]
+    struct ForegroundAppends {
+        transport: OneFailedFollowerTransport,
+        attempts: Arc<Mutex<Vec<(RaftNodeId, usize)>>>,
+    }
+
+    impl RaftTransport for ForegroundAppends {
+        fn append_entries(
+            &self,
+            request: AppendEntriesRequest,
+        ) -> Result<AppendEntriesResponse, RaftError> {
+            self.attempts
+                .lock()
+                .unwrap()
+                .push((request.target_id, request.entries.len()));
+            self.transport.append_entries(request)
+        }
+
+        fn request_vote(&self, request: VoteRequest) -> Result<VoteResponse, RaftError> {
+            self.transport.request_vote(request)
+        }
+
+        fn install_snapshot(
+            &self,
+            request: InstallSnapshotRequest,
+        ) -> Result<InstallSnapshotResponse, RaftError> {
+            self.transport.install_snapshot(request)
+        }
+    }
+
+    let foreground = ForegroundAppends {
+        transport: transport.clone(),
+        attempts: Arc::new(Mutex::new(Vec::new())),
+    };
+    leader.propose_distributed(put("second"), &foreground).unwrap();
+    assert_eq!(foreground.attempts.lock().unwrap().as_slice(), &[(2, 1)]);
 
     assert_eq!(leader.commit_index(1).unwrap(), 2);
     assert_eq!(follower.local_status(2).unwrap().last_log_index, 2);
